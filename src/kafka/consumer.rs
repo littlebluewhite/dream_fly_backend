@@ -283,4 +283,3 @@ async fn handle_audit_event(db: &PgPool, payload: &str) -> Result<(), Processing
     tracing::debug!(%action, "Audit event recorded");
     Ok(())
 }
-
