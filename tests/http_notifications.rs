@@ -17,34 +17,46 @@ async fn list_notifications_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn list_notifications_returns_only_own(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let alice = app.register_member("alice-n@example.com", "Password!234").await;
-    let bob = app.register_member("bob-n@example.com", "Password!234").await;
-    seed_notification(&app.db, alice.user_id, "Alice#1", false).await;
-    seed_notification(&app.db, alice.user_id, "Alice#2", false).await;
-    seed_notification(&app.db, bob.user_id, "Bob#1", false).await;
+    // Seed users directly (bypassing register) so no welcome notification is
+    // written — the assertions below count rows exactly.
+    let (alice_id, alice_token) = app
+        .seed_user_with_roles("alice-n@example.com", &["member"])
+        .await;
+    let (bob_id, _bob_token) = app
+        .seed_user_with_roles("bob-n@example.com", &["member"])
+        .await;
+    seed_notification(&app.db, alice_id, "Alice#1", false).await;
+    seed_notification(&app.db, alice_id, "Alice#2", false).await;
+    seed_notification(&app.db, bob_id, "Bob#1", false).await;
 
     let resp = app
         .get("/api/v1/notifications")
-        .authorization_bearer(&alice.access_token)
+        .authorization_bearer(&alice_token)
         .await;
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().unwrap();
     assert_eq!(arr.len(), 2);
-    assert!(arr.iter().all(|n| n["title"].as_str().unwrap().starts_with("Alice")));
+    assert!(
+        arr.iter()
+            .all(|n| n["title"].as_str().unwrap().starts_with("Alice"))
+    );
 }
 
 #[sqlx::test]
 async fn unread_count_returns_correct_number(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("n-u@example.com", "Password!234").await;
-    seed_notification(&app.db, user.user_id, "a", false).await;
-    seed_notification(&app.db, user.user_id, "b", false).await;
-    seed_notification(&app.db, user.user_id, "c", true).await; // already read
+    // Seed directly (no register → no welcome row) so the count is exact.
+    let (user_id, token) = app
+        .seed_user_with_roles("n-u@example.com", &["member"])
+        .await;
+    seed_notification(&app.db, user_id, "a", false).await;
+    seed_notification(&app.db, user_id, "b", false).await;
+    seed_notification(&app.db, user_id, "c", true).await; // already read
 
     let resp = app
         .get("/api/v1/notifications/unread-count")
-        .authorization_bearer(&user.access_token)
+        .authorization_bearer(&token)
         .await;
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = resp.json();
@@ -123,15 +135,16 @@ async fn unread_count_decreases_after_mark_read(db: PgPool) {
     // Defends the `unread_count` query path against any future change
     // that forgets to filter on `is_read = false`.
     let app = spawn_test_app(db).await;
-    let user = app
-        .register_member("n-dec@example.com", "Password!234")
+    // Seed directly (no register → no welcome row) so counts are exact.
+    let (user_id, token) = app
+        .seed_user_with_roles("n-dec@example.com", &["member"])
         .await;
-    let first = seed_notification(&app.db, user.user_id, "#1", false).await;
-    seed_notification(&app.db, user.user_id, "#2", false).await;
+    let first = seed_notification(&app.db, user_id, "#1", false).await;
+    seed_notification(&app.db, user_id, "#2", false).await;
 
     let resp = app
         .get("/api/v1/notifications/unread-count")
-        .authorization_bearer(&user.access_token)
+        .authorization_bearer(&token)
         .await;
     let before: serde_json::Value = resp.json();
     let before_count = before
@@ -144,13 +157,13 @@ async fn unread_count_decreases_after_mark_read(db: PgPool) {
 
     let mr = app
         .patch(&format!("/api/v1/notifications/{first}/read"))
-        .authorization_bearer(&user.access_token)
+        .authorization_bearer(&token)
         .await;
     assert_eq!(mr.status_code(), 200);
 
     let resp2 = app
         .get("/api/v1/notifications/unread-count")
-        .authorization_bearer(&user.access_token)
+        .authorization_bearer(&token)
         .await;
     let after: serde_json::Value = resp2.json();
     let after_count = after
@@ -166,23 +179,24 @@ async fn unread_count_decreases_after_mark_read(db: PgPool) {
 async fn list_notifications_respects_pagination(db: PgPool) {
     // Seed 5 notifications. page=1 per_page=2 → 2 rows; page=3 per_page=2 → 1 row.
     let app = spawn_test_app(db).await;
-    let user = app
-        .register_member("n-pag@example.com", "Password!234")
+    // Seed directly (no register → no welcome row) so pagination math is exact.
+    let (user_id, token) = app
+        .seed_user_with_roles("n-pag@example.com", &["member"])
         .await;
     for i in 0..5 {
-        seed_notification(&app.db, user.user_id, &format!("n{i}"), false).await;
+        seed_notification(&app.db, user_id, &format!("n{i}"), false).await;
     }
 
     let p1 = app
         .get("/api/v1/notifications?page=1&per_page=2")
-        .authorization_bearer(&user.access_token)
+        .authorization_bearer(&token)
         .await;
     assert_eq!(p1.status_code(), 200);
     assert_eq!(p1.json::<serde_json::Value>().as_array().unwrap().len(), 2);
 
     let p3 = app
         .get("/api/v1/notifications?page=3&per_page=2")
-        .authorization_bearer(&user.access_token)
+        .authorization_bearer(&token)
         .await;
     assert_eq!(p3.status_code(), 200);
     assert_eq!(p3.json::<serde_json::Value>().as_array().unwrap().len(), 1);

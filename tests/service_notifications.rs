@@ -1,13 +1,13 @@
 //! Service-layer tests for `modules::notifications::service`.
 //!
-//! Covers the read/write path and, importantly, the helper functions used
-//! by other modules (`send_booking_confirmation`, `send_order_update`)
-//! which the HTTP suite cannot reach directly.
+//! Covers the read path and the public domain verbs used by other modules
+//! (`order_placed`, `booking_confirmed`, `user_welcomed`) which the HTTP
+//! suite cannot reach directly.
 
 mod common;
 
-use common::seed_member;
 use common::fixtures::seed_notification;
+use common::seed_member;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -63,12 +63,11 @@ async fn mark_as_read_flips_flag_on_own_notification(db: PgPool) {
     let resp = service::mark_as_read(&db, id, user).await.unwrap();
     assert!(resp.is_read);
 
-    let (is_read,): (bool,) =
-        sqlx::query_as("SELECT is_read FROM notifications WHERE id = $1")
-            .bind(id)
-            .fetch_one(&db)
-            .await
-            .unwrap();
+    let (is_read,): (bool,) = sqlx::query_as("SELECT is_read FROM notifications WHERE id = $1")
+        .bind(id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert!(is_read);
 }
 
@@ -84,12 +83,11 @@ async fn mark_as_read_cross_user_returns_not_found(db: PgPool) {
     assert!(matches!(err, AppError::NotFound(_)));
 
     // Alice's notification is still unread.
-    let (is_read,): (bool,) =
-        sqlx::query_as("SELECT is_read FROM notifications WHERE id = $1")
-            .bind(id)
-            .fetch_one(&db)
-            .await
-            .unwrap();
+    let (is_read,): (bool,) = sqlx::query_as("SELECT is_read FROM notifications WHERE id = $1")
+        .bind(id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert!(!is_read);
 }
 
@@ -103,54 +101,71 @@ async fn mark_as_read_unknown_id_returns_not_found(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn send_booking_confirmation_inserts_row_with_metadata(db: PgPool) {
-    // Exercises the helper that other modules (bookings service) call to
-    // notify a user after a successful booking. Verifies both the row is
-    // created and the `metadata` JSON contains the booking id.
-    let user = seed_member(&db, "bn@example.com", "Password!234").await;
-    let booking_id = Uuid::now_v7();
-
-    service::send_booking_confirmation(&db, user, booking_id)
-        .await
-        .unwrap();
-
-    let (title, metadata): (String, Option<serde_json::Value>) = sqlx::query_as(
-        "SELECT title, metadata FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(user)
-    .fetch_one(&db)
-    .await
-    .unwrap();
-
-    assert_eq!(title, "Booking Confirmed");
-    let md = metadata.expect("metadata column populated");
-    assert_eq!(
-        md["booking_id"].as_str().unwrap(),
-        booking_id.to_string()
-    );
-}
-
-#[sqlx::test]
-async fn send_order_update_inserts_row_with_status_metadata(db: PgPool) {
+async fn order_placed_writes_exactly_one_correct_row(db: PgPool) {
+    // The public verb other modules (orders service) call after checkout.
+    // Verifies exactly one row with the converged type/title/message/metadata.
     let user = seed_member(&db, "on@example.com", "Password!234").await;
     let order_id = Uuid::now_v7();
 
-    service::send_order_update(&db, user, order_id, "paid")
-        .await
-        .unwrap();
+    service::order_placed(&db, user, order_id, "ORD-123").await;
 
-    let (title, message, metadata): (String, String, Option<serde_json::Value>) =
-        sqlx::query_as(
-            "SELECT title, message, metadata FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let rows: Vec<(String, String, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT type::text, title, message, metadata FROM notifications WHERE user_id = $1",
+    )
+    .bind(user)
+    .fetch_all(&db)
+    .await
+    .unwrap();
 
-    assert_eq!(title, "Order Update");
-    assert!(message.contains("paid"));
-    let md = metadata.expect("metadata populated");
-    assert_eq!(md["status"].as_str().unwrap(), "paid");
+    assert_eq!(rows.len(), 1, "exactly one notification row");
+    let (notif_type, title, message, metadata) = &rows[0];
+    assert_eq!(notif_type, "order_placed");
+    assert_eq!(title, "Order Placed");
+    assert_eq!(message, "Your order ORD-123 has been placed.");
+    let md = metadata.as_ref().expect("metadata populated");
     assert_eq!(md["order_id"].as_str().unwrap(), order_id.to_string());
+    assert_eq!(md["order_number"].as_str().unwrap(), "ORD-123");
+}
+
+#[sqlx::test]
+async fn booking_confirmed_writes_exactly_one_correct_row(db: PgPool) {
+    let user = seed_member(&db, "bn@example.com", "Password!234").await;
+    let booking_id = Uuid::now_v7();
+
+    service::booking_confirmed(&db, user, booking_id).await;
+
+    let rows: Vec<(String, String, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT type::text, title, message, metadata FROM notifications WHERE user_id = $1",
+    )
+    .bind(user)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+
+    assert_eq!(rows.len(), 1, "exactly one notification row");
+    let (notif_type, title, message, metadata) = &rows[0];
+    assert_eq!(notif_type, "booking_confirmed");
+    assert_eq!(title, "Booking Confirmed");
+    assert_eq!(message, "Your booking has been confirmed.");
+    let md = metadata.as_ref().expect("metadata populated");
+    assert_eq!(md["booking_id"].as_str().unwrap(), booking_id.to_string());
+}
+
+#[sqlx::test]
+async fn user_welcomed_writes_exactly_one_correct_row(db: PgPool) {
+    let user = seed_member(&db, "wn@example.com", "Password!234").await;
+
+    service::user_welcomed(&db, user).await;
+
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT type::text, title FROM notifications WHERE user_id = $1")
+            .bind(user)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+
+    assert_eq!(rows.len(), 1, "exactly one notification row");
+    let (notif_type, title) = &rows[0];
+    assert_eq!(notif_type, "system");
+    assert_eq!(title, "Welcome to Dream Fly");
 }

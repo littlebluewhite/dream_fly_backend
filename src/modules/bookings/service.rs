@@ -7,12 +7,9 @@ use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
-use crate::kafka::events::{
-    event_types, topics, BookingCancelledPayload, BookingCreatedPayload,
-};
+use crate::kafka::events::{BookingCancelledPayload, BookingCreatedPayload, event_types, topics};
 use crate::kafka::outbox;
-use crate::modules::notifications::repository as notif_repo;
-use crate::modules::notifications::model::NotificationType;
+use crate::modules::notifications::service as notify;
 use crate::modules::schedule;
 
 use super::dto::{BookingResponse, CreateBookingRequest, PaginatedBookingsResponse};
@@ -112,18 +109,7 @@ pub async fn create_booking(
 
     // Post-commit: write an in-DB notification directly so the user gets
     // feedback without waiting for the outbox dispatcher tick.
-    if let Err(e) = notif_repo::create_notification(
-        db,
-        booking.user_id,
-        &NotificationType::BookingConfirmed,
-        "Booking Confirmed",
-        "Your booking has been confirmed.",
-        Some(serde_json::json!({"booking_id": booking.id})),
-    )
-    .await
-    {
-        tracing::error!(error = ?e, "failed to write booking notification");
-    }
+    notify::booking_confirmed(db, booking.user_id, booking.id).await;
 
     Ok(BookingResponse::from(booking))
 }
@@ -211,18 +197,7 @@ pub async fn cancel_booking(
     tx.commit().await?;
 
     // Post-commit inline notification (independent of the outbox).
-    if let Err(e) = notif_repo::create_notification(
-        db,
-        updated.user_id,
-        &NotificationType::BookingCancelled,
-        "Booking Cancelled",
-        "Your booking has been cancelled.",
-        Some(serde_json::json!({"booking_id": updated.id})),
-    )
-    .await
-    {
-        tracing::error!(error = ?e, "failed to write booking-cancel notification");
-    }
+    notify::booking_cancelled(db, updated.user_id, updated.id).await;
 
     Ok(BookingResponse::from(updated))
 }
@@ -233,8 +208,8 @@ pub async fn my_bookings(
     pagination: &PaginationParams,
 ) -> Result<PaginatedBookingsResponse, AppError> {
     let total = repository::count_by_user(db, user_id).await?;
-    let bookings = repository::find_by_user(db, user_id, pagination.limit(), pagination.offset())
-        .await?;
+    let bookings =
+        repository::find_by_user(db, user_id, pagination.limit(), pagination.offset()).await?;
 
     Ok(PaginatedBookingsResponse {
         bookings: bookings.into_iter().map(BookingResponse::from).collect(),

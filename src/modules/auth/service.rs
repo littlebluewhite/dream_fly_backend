@@ -5,18 +5,19 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, AuthConfig};
 use crate::error::AppError;
-use crate::kafka::events::{event_types, topics, UserRegisteredPayload};
+use crate::kafka::events::{UserRegisteredPayload, event_types, topics};
 use crate::kafka::outbox;
+use crate::modules::notifications::service as notify;
+use crate::utils::email::EmailSender;
 use crate::utils::google_oauth;
 use crate::utils::jwt;
 use crate::utils::password;
-use crate::utils::email::EmailSender;
 use crate::utils::sms::SmsSender;
 
 use super::dto::{
-    AuthResponse, ForgotPasswordRequest, LoginRequest, MessageResponse, OtpSendRequest,
-    OtpVerifyRequest, RegisterRequest, RefreshRequest, ResetPasswordRequest,
-    GoogleAuthRequest, UserResponse,
+    AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, LoginRequest, MessageResponse,
+    OtpSendRequest, OtpVerifyRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
+    UserResponse,
 };
 use super::repository;
 
@@ -34,9 +35,7 @@ async fn build_auth_response(
     let expires_at = Utc::now() + Duration::days(config.jwt_refresh_expiration_days as i64);
     let token_hash = jwt::hash_token(&refresh_token);
 
-    repository::save_refresh_token(db, user.id, &token_hash, expires_at)
-        .await
-?;
+    repository::save_refresh_token(db, user.id, &token_hash, expires_at).await?;
 
     Ok(AuthResponse {
         access_token,
@@ -102,9 +101,10 @@ pub async fn register(
     // transaction rolls back — no phantom user row.
     let response = build_auth_response_tx(&mut tx, config, &user).await?;
 
-    // Queue the user_registered event inside the same tx so the welcome
-    // notification pipeline is guaranteed to fire as long as the user row
-    // commits.
+    // Queue the user_registered event inside the same tx. The event is for
+    // audit / external integration only — the welcome notification is now
+    // written synchronously post-commit via `notify::user_welcomed` below,
+    // not derived from this event.
     outbox::insert_event_tx(
         &mut tx,
         topics::USERS_REGISTERED,
@@ -120,6 +120,9 @@ pub async fn register(
     .await?;
 
     tx.commit().await?;
+
+    // Welcome notification is written synchronously after commit.
+    notify::user_welcomed(db, user.id).await;
 
     Ok(response)
 }
@@ -152,9 +155,7 @@ pub async fn login(
     // 2. Always return the same Unauthorized message so we don't leak:
     //    whether the email exists, whether the account is Google-linked,
     //    whether the password is correct.
-    let user_opt = repository::find_user_by_email(db, &email)
-        .await
-?;
+    let user_opt = repository::find_user_by_email(db, &email).await?;
 
     let user = match user_opt {
         Some(u) => u,
@@ -190,9 +191,7 @@ pub async fn login(
     // 3. Success — clear the failure counter and log last_login.
     let _: Result<(), _> = redis.del::<_, ()>(&fail_key).await;
 
-    repository::update_last_login(db, user.id)
-        .await
-?;
+    repository::update_last_login(db, user.id).await?;
 
     build_auth_response(db, config, &user).await
 }
@@ -248,10 +247,11 @@ pub async fn google_auth(
         return Err(AppError::BadRequest("Google authentication failed".into()));
     }
 
-    let token_data: GoogleTokenResponse = token_response
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to parse Google token response: {e}")))?;
+    let token_data: GoogleTokenResponse = token_response.json().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!(
+            "failed to parse Google token response: {e}"
+        ))
+    })?;
 
     // 2. Verify id_token signature against Google's published JWKS and
     //    enforce iss/aud/exp/email_verified. This is defense-in-depth over
@@ -278,6 +278,11 @@ pub async fn google_auth(
     let existing_by_google = repository::find_user_by_google_id(db, &claims.sub).await?;
     let existed = existing_by_google.is_some();
 
+    // Set ONLY in the genuinely brand-new branch below. `!existed` is not a
+    // proxy for "new user": it also covers linking Google to a pre-existing
+    // password account (which already got a welcome at register time).
+    let mut created_new_user = false;
+
     let user = if existing_by_google.is_some() {
         // Returning Google user — update their profile inside the tx.
         repository::create_or_update_google_user_tx(
@@ -292,16 +297,15 @@ pub async fn google_auth(
         // First-time Google login. Check if a password-registered user
         // already owns this email. If so, link the Google account rather
         // than hitting the email UNIQUE constraint with an unhandled 500.
-        if let Some(existing_by_email) =
-            repository::find_user_by_email_tx(&mut tx, &email).await?
-        {
+        if let Some(existing_by_email) = repository::find_user_by_email_tx(&mut tx, &email).await? {
             if existing_by_email.google_id.is_some() {
                 // Different google_id but same email — conflict.
                 return Err(AppError::Conflict(
                     "email already associated with another account".into(),
                 ));
             }
-            // Link Google account to the existing password user.
+            // Link Google account to the existing password user — not a new
+            // user, so no welcome.
             repository::link_google_account_tx(
                 &mut tx,
                 existing_by_email.id,
@@ -310,7 +314,8 @@ pub async fn google_auth(
             )
             .await?
         } else {
-            // Brand-new user via Google.
+            // Brand-new user via Google — the only place the flag is set.
+            created_new_user = true;
             repository::create_or_update_google_user_tx(
                 &mut tx,
                 &email,
@@ -351,6 +356,15 @@ pub async fn google_auth(
 
     tx.commit().await?;
 
+    // Deliberate asymmetry: the user_registered event above fires for BOTH a
+    // freshly-created user and a Google-link of an existing account (the
+    // pre-existing wire contract, out of scope to change), but the welcome
+    // notification fires only for genuinely new users — a linked account was
+    // already welcomed at register time.
+    if created_new_user {
+        notify::user_welcomed(db, user.id).await;
+    }
+
     Ok(response)
 }
 
@@ -369,8 +383,7 @@ pub async fn refresh_token(
     let mut tx = db.begin().await?;
 
     let stored = repository::find_refresh_token_tx(&mut tx, &token_hash)
-        .await
-?
+        .await?
         .ok_or(AppError::Unauthorized)?;
 
     if stored.revoked {
@@ -394,9 +407,7 @@ pub async fn refresh_token(
         return Err(AppError::Unauthorized);
     }
 
-    repository::revoke_refresh_token_tx(&mut tx, &token_hash)
-        .await
-?;
+    repository::revoke_refresh_token_tx(&mut tx, &token_hash).await?;
 
     // 4. Load user from JWT sub
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
@@ -406,17 +417,14 @@ pub async fn refresh_token(
     }
 
     let user = repository::find_user_by_id_tx(&mut tx, user_id)
-        .await
-?
+        .await?
         .ok_or(AppError::Unauthorized)?;
 
     // Deactivated users cannot mint new access tokens, even with a valid
     // refresh token. This closes the window where a disabled user could
     // keep refreshing until the cached is_active flag expires.
     if !user.is_active {
-        repository::revoke_all_user_tokens_tx(&mut tx, user.id)
-            .await
-    ?;
+        repository::revoke_all_user_tokens_tx(&mut tx, user.id).await?;
         tx.commit().await?;
         return Err(AppError::Unauthorized);
     }
@@ -427,9 +435,7 @@ pub async fn refresh_token(
     let new_hash = jwt::hash_token(&new_refresh);
     let new_expires = Utc::now() + Duration::days(config.jwt_refresh_expiration_days as i64);
 
-    repository::save_refresh_token_tx(&mut tx, user.id, &new_hash, new_expires)
-        .await
-?;
+    repository::save_refresh_token_tx(&mut tx, user.id, &new_hash, new_expires).await?;
 
     tx.commit().await?;
 
@@ -440,11 +446,7 @@ pub async fn refresh_token(
     })
 }
 
-pub async fn logout(
-    db: &PgPool,
-    config: &AuthConfig,
-    req: RefreshRequest,
-) -> Result<(), AppError> {
+pub async fn logout(db: &PgPool, config: &AuthConfig, req: RefreshRequest) -> Result<(), AppError> {
     // Verify the JWT first so random strings cannot be used to revoke tokens.
     // If it doesn't parse, treat as success so logout is idempotent client-side.
     if jwt::decode_refresh_token(config, &req.refresh_token).is_err() {
@@ -452,9 +454,7 @@ pub async fn logout(
     }
 
     let token_hash = jwt::hash_token(&req.refresh_token);
-    repository::revoke_refresh_token(db, &token_hash)
-        .await
-?;
+    repository::revoke_refresh_token(db, &token_hash).await?;
     Ok(())
 }
 
@@ -546,8 +546,7 @@ pub async fn verify_otp(
     // 2. Load the OTP payload keyed by the authenticated user.
     let otp_key = format!("otp:{}", auth_user_id);
     let stored: Option<String> = redis.get(&otp_key).await?;
-    let stored =
-        stored.ok_or_else(|| AppError::BadRequest("verification code expired".into()))?;
+    let stored = stored.ok_or_else(|| AppError::BadRequest("verification code expired".into()))?;
 
     let payload: serde_json::Value = serde_json::from_str(&stored)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("otp payload corrupted: {e}")))?;
@@ -561,10 +560,7 @@ pub async fn verify_otp(
     }
 
     // 4. Constant-time code comparison.
-    let codes_equal: bool = stored_code
-        .as_bytes()
-        .ct_eq(req.code.as_bytes())
-        .into();
+    let codes_equal: bool = stored_code.as_bytes().ct_eq(req.code.as_bytes()).into();
     if !codes_equal {
         return Err(AppError::BadRequest("invalid verification code".into()));
     }
@@ -574,9 +570,7 @@ pub async fn verify_otp(
     let _: () = redis.del(&attempts_key).await?;
 
     // 6. Update phone_verified
-    repository::update_phone_verified(db, auth_user_id, &req.phone)
-        .await
-?;
+    repository::update_phone_verified(db, auth_user_id, &req.phone).await?;
 
     Ok(MessageResponse {
         message: "phone verified successfully".into(),
@@ -599,9 +593,7 @@ pub async fn forgot_password(
 
     // 1. Find user by email (return success even if not found - prevents enumeration)
     let email_lower = req.email.to_lowercase();
-    let user = repository::find_user_by_email(db, &email_lower)
-        .await
-?;
+    let user = repository::find_user_by_email(db, &email_lower).await?;
 
     let user = match user {
         Some(u) => u,
@@ -634,9 +626,9 @@ pub async fn forgot_password(
 
     // 3. Generate a URL-safe random token. URL_SAFE_NO_PAD avoids `=`/`+`/`/`
     //    which get URL-encoded inconsistently by email clients.
-    use rand::Rng;
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use rand::Rng;
 
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
@@ -693,13 +685,10 @@ pub async fn reset_password(
     // 1. Atomically consume the token: GETDEL returns the old value and
     //    deletes the key in one round-trip, preventing double-use races.
     let key = format!("password_reset:{}", req.token);
-    let user_id_str: Option<String> = redis::cmd("GETDEL")
-        .arg(&key)
-        .query_async(redis)
-        .await?;
+    let user_id_str: Option<String> = redis::cmd("GETDEL").arg(&key).query_async(redis).await?;
 
-    let user_id_str = user_id_str
-        .ok_or_else(|| AppError::BadRequest("invalid or expired token".into()))?;
+    let user_id_str =
+        user_id_str.ok_or_else(|| AppError::BadRequest("invalid or expired token".into()))?;
 
     let user_id: Uuid = user_id_str
         .parse()

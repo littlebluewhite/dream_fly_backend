@@ -13,9 +13,7 @@ mod common;
 use sqlx::PgPool;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::modules::auth::dto::{
-    LoginRequest, RefreshRequest, RegisterRequest,
-};
+use dream_fly_backend::modules::auth::dto::{LoginRequest, RefreshRequest, RegisterRequest};
 use dream_fly_backend::modules::auth::service;
 use dream_fly_backend::utils::jwt;
 
@@ -41,7 +39,10 @@ async fn register_creates_user_with_hashed_password(db: PgPool) {
         .fetch_one(&db)
         .await
         .expect("read user");
-    assert!(stored_hash.starts_with("$argon2"), "password hash must be argon2");
+    assert!(
+        stored_hash.starts_with("$argon2"),
+        "password hash must be argon2"
+    );
     assert_ne!(stored_hash, "sup3rsecret");
 
     // Refresh token is stored as a SHA-256 hash (hex, 64 chars), not the raw JWT.
@@ -62,6 +63,16 @@ async fn register_creates_user_with_hashed_password(db: PgPool) {
         .await
         .expect("read email");
     assert_eq!(stored_email, "alice@example.com");
+
+    // A welcome notification is written synchronously post-commit.
+    let (notif_type, title): (String, String) =
+        sqlx::query_as("SELECT type::text, title FROM notifications WHERE user_id = $1")
+            .bind(resp.user.id)
+            .fetch_one(&db)
+            .await
+            .expect("welcome notification row");
+    assert_eq!(notif_type, "system");
+    assert_eq!(title, "Welcome to Dream Fly");
 }
 
 #[sqlx::test]
@@ -171,13 +182,12 @@ async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
     assert_eq!(r2.user.id, r1.user.id);
 
     // Old token row is now marked revoked
-    let old_revoked: bool = sqlx::query_scalar(
-        "SELECT revoked FROM refresh_tokens WHERE token_hash = $1",
-    )
-    .bind(jwt::hash_token(&r1.refresh_token))
-    .fetch_one(&db)
-    .await
-    .expect("fetch old token row");
+    let old_revoked: bool =
+        sqlx::query_scalar("SELECT revoked FROM refresh_tokens WHERE token_hash = $1")
+            .bind(jwt::hash_token(&r1.refresh_token))
+            .fetch_one(&db)
+            .await
+            .expect("fetch old token row");
     assert!(old_revoked, "old refresh token should be revoked");
 
     // New token works

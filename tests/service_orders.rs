@@ -42,6 +42,16 @@ async fn checkout_creates_order_and_clears_cart(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(order_count, 1);
+
+    // An "Order Placed" notification is written post-commit.
+    let title: String = sqlx::query_scalar(
+        "SELECT title FROM notifications WHERE user_id = $1 AND type = 'order_placed'::notification_type",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .expect("order placed notification row");
+    assert_eq!(title, "Order Placed");
 }
 
 #[sqlx::test]
@@ -85,7 +95,10 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(cart_count, 1, "cart should still exist after failed checkout");
+    assert_eq!(
+        cart_count, 1,
+        "cart should still exist after failed checkout"
+    );
 
     let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
         .bind(user)
@@ -123,24 +136,18 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
     let db_a = Arc::new(db.clone());
     let db_b = Arc::new(db.clone());
 
-    let task_a = tokio::spawn(async move {
-        service::checkout(db_a.as_ref(), user_a, None).await
-    });
-    let task_b = tokio::spawn(async move {
-        service::checkout(db_b.as_ref(), user_b, None).await
-    });
+    let task_a = tokio::spawn(async move { service::checkout(db_a.as_ref(), user_a, None).await });
+    let task_b = tokio::spawn(async move { service::checkout(db_b.as_ref(), user_b, None).await });
 
     let (res_a, res_b) = tokio::join!(task_a, task_b);
     let res_a = res_a.expect("task a panicked");
     let res_b = res_b.expect("task b panicked");
 
     // Exactly one succeeded.
-    let (ok_count, err_count) = [&res_a, &res_b]
-        .iter()
-        .fold((0, 0), |(o, e), r| match r {
-            Ok(_) => (o + 1, e),
-            Err(_) => (o, e + 1),
-        });
+    let (ok_count, err_count) = [&res_a, &res_b].iter().fold((0, 0), |(o, e), r| match r {
+        Ok(_) => (o + 1, e),
+        Err(_) => (o, e + 1),
+    });
     assert_eq!(ok_count, 1, "exactly one checkout should succeed");
     assert_eq!(err_count, 1, "the other should fail");
 
@@ -159,4 +166,41 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(total_orders, 1);
+}
+
+#[sqlx::test]
+async fn update_order_status_transitions_and_notifies(db: PgPool) {
+    // A fresh checkout leaves the order in `pending`. Transition it to `paid`
+    // (a valid edge) and assert both the persisted status and the
+    // "Order Update" notification the seam writes post-commit.
+    let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let order = service::checkout(&db, user, None).await.expect("checkout");
+    assert_eq!(order.status, "pending");
+
+    let updated = service::update_order_status(&db, order.id, "paid")
+        .await
+        .expect("update status");
+    assert_eq!(updated.status, "paid");
+
+    // Status persisted in the DB.
+    let db_status: String = sqlx::query_scalar("SELECT status::text FROM orders WHERE id = $1")
+        .bind(order.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(db_status, "paid");
+
+    // An "Order Update" notification (type order_status) is written.
+    let (title, message): (String, String) = sqlx::query_as(
+        "SELECT title, message FROM notifications WHERE user_id = $1 AND type = 'order_status'::notification_type",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .expect("order status notification row");
+    assert_eq!(title, "Order Update");
+    assert!(message.contains("paid"));
 }

@@ -49,6 +49,16 @@ async fn create_booking_increments_slot_booked(db: PgPool) {
     assert_eq!(booking.user_id, user);
     assert_eq!(booking.time_slot_id, slot);
     assert_eq!(common::slot_booked(&db, slot).await, 1);
+
+    // A "Booking Confirmed" notification is written post-commit.
+    let title: String = sqlx::query_scalar(
+        "SELECT title FROM notifications WHERE user_id = $1 AND type = 'booking_confirmed'::notification_type",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .expect("booking confirmation notification row");
+    assert_eq!(title, "Booking Confirmed");
 }
 
 #[sqlx::test]
@@ -146,6 +156,16 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
         .await
         .expect("first cancel");
     assert_eq!(common::slot_booked(&db, slot).await, 0);
+
+    // A "Booking Cancelled" notification is written post-commit.
+    let title: String = sqlx::query_scalar(
+        "SELECT title FROM notifications WHERE user_id = $1 AND type = 'booking_cancelled'::notification_type",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .expect("booking cancellation notification row");
+    assert_eq!(title, "Booking Cancelled");
 
     // Second cancel of the same booking should fail cleanly (not underflow
     // the slot's booked counter).

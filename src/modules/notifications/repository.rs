@@ -47,7 +47,7 @@ pub async fn mark_read(
     .await
 }
 
-pub async fn create_notification(
+pub(super) async fn create_notification(
     db: &PgPool,
     user_id: Uuid,
     notification_type: &NotificationType,

@@ -3,13 +3,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::kafka::events::{
-    event_types, topics, OrderCreatedPayload, OrderStatusChangedPayload,
-};
+use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
 use crate::kafka::outbox;
 use crate::modules::cart::repository as cart_repo;
-use crate::modules::notifications::model::NotificationType;
-use crate::modules::notifications::repository as notif_repo;
+use crate::modules::notifications::service as notify;
 use crate::modules::products::repository as product_repo;
 
 use super::dto::{OrderListResponse, OrderResponse, OrderSummary};
@@ -27,9 +24,7 @@ pub async fn checkout(
     // 1. Idempotency pre-check (outside tx). If we've already processed this
     //    key for this user, return the prior order.
     if let Some(key) = &idempotency_key {
-        if let Some(existing_id) =
-            repository::find_idempotency(db, user_id, key).await?
-        {
+        if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
             let order = repository::find_by_id(db, existing_id)
                 .await?
                 .ok_or_else(|| {
@@ -55,8 +50,8 @@ pub async fn checkout(
 
     // 3. Decrement product stock for items that track stock; fail fast on shortage
     for item in &cart_items {
-        let result = product_repo::try_decrement_stock_tx(&mut tx, item.product_id, item.quantity)
-            .await?;
+        let result =
+            product_repo::try_decrement_stock_tx(&mut tx, item.product_id, item.quantity).await?;
         if result.is_none() {
             return Err(AppError::Conflict(format!(
                 "insufficient stock for product {}",
@@ -82,11 +77,7 @@ pub async fn checkout(
     //    component — no birthday collisions and no modulo bias.
     let order_number = {
         let suffix = Uuid::now_v7().as_u128() as u32;
-        format!(
-            "DF-{}{:08X}",
-            Utc::now().format("%Y%m%d"),
-            suffix
-        )
+        format!("DF-{}{:08X}", Utc::now().format("%Y%m%d"), suffix)
     };
 
     // 6. Create the order
@@ -112,16 +103,15 @@ pub async fn checkout(
                 // Concurrent retry beat us. Roll back and let the caller
                 // re-read the winning row.
                 drop(tx);
-                if let Some(existing_id) =
-                    repository::find_idempotency(db, user_id, key).await?
-                {
-                    let order = repository::find_by_id(db, existing_id)
-                        .await?
-                        .ok_or_else(|| {
-                            AppError::Internal(anyhow::anyhow!(
-                                "idempotency row referenced missing order {existing_id}"
-                            ))
-                        })?;
+                if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
+                    let order =
+                        repository::find_by_id(db, existing_id)
+                            .await?
+                            .ok_or_else(|| {
+                                AppError::Internal(anyhow::anyhow!(
+                                    "idempotency row referenced missing order {existing_id}"
+                                ))
+                            })?;
                     let items = repository::find_items_by_order(db, existing_id).await?;
                     return Ok(OrderResponse::from_order_and_items(order, items));
                 }
@@ -155,18 +145,7 @@ pub async fn checkout(
     // 11. Inline notification — the user expects order confirmation
     //     regardless of whether Kafka is enabled, and even if the
     //     dispatcher hasn't drained the event yet.
-    if let Err(e) = notif_repo::create_notification(
-        db,
-        order.user_id,
-        &NotificationType::OrderPlaced,
-        "Order Placed",
-        &format!("Your order {} has been placed.", order.order_number),
-        Some(serde_json::json!({"order_id": order.id, "order_number": order.order_number})),
-    )
-    .await
-    {
-        tracing::error!(error = ?e, "failed to write order_placed notification");
-    }
+    notify::order_placed(db, order.user_id, order.id, &order.order_number).await;
 
     Ok(OrderResponse::from_order_and_items(order, order_items))
 }
@@ -183,7 +162,9 @@ pub async fn get_order(
 
     // Check ownership or admin
     if order.user_id != user_id && !is_admin {
-        return Err(AppError::Forbidden("not authorized to view this order".into()));
+        return Err(AppError::Forbidden(
+            "not authorized to view this order".into(),
+        ));
     }
 
     let items = repository::find_items_by_order(db, order_id).await?;
@@ -264,22 +245,14 @@ pub async fn update_order_status(
 
     // Inline notification — every status change is user-visible and
     // shouldn't wait for the outbox dispatcher tick.
-    if let Err(e) = notif_repo::create_notification(
+    notify::order_status_changed(
         db,
         updated.user_id,
-        &NotificationType::OrderStatus,
-        "Order Update",
-        &format!("Your order status has been updated to: {}", target.as_str()),
-        Some(serde_json::json!({
-            "order_id": updated.id,
-            "order_number": updated.order_number,
-            "status": target.as_str(),
-        })),
+        updated.id,
+        &updated.order_number,
+        target.as_str(),
     )
-    .await
-    {
-        tracing::error!(error = ?e, "failed to write order_status notification");
-    }
+    .await;
 
     Ok(OrderResponse::from_order_and_items(updated, items))
 }
