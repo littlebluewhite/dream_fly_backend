@@ -1,0 +1,9 @@
+/.idea/
+/target
+.env
+*.swp
+*.swo
+.DS_Store
+*.log
+/CLAUDE.md
+/graphify-out/

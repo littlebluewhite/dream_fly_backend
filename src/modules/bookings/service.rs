@@ -1,0 +1,263 @@
+use chrono::{NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::config::ServerConfig;
+use crate::error::AppError;
+use crate::extractors::auth::AuthUser;
+use crate::extractors::pagination::PaginationParams;
+use crate::kafka::events::{
+    event_types, topics, BookingCancelledPayload, BookingCreatedPayload,
+};
+use crate::kafka::outbox;
+use crate::modules::notifications::repository as notif_repo;
+use crate::modules::notifications::model::NotificationType;
+use crate::modules::schedule;
+
+use super::dto::{BookingResponse, CreateBookingRequest, PaginatedBookingsResponse};
+use super::repository;
+
+/// Resolve the studio timezone. Falls back to UTC with a warning so a
+/// misconfigured deploy still runs, just without correct local-time rules.
+fn studio_tz(server: &ServerConfig) -> Tz {
+    server.studio_timezone.parse::<Tz>().unwrap_or_else(|_| {
+        tracing::warn!(
+            tz = %server.studio_timezone,
+            "invalid studio_timezone; falling back to UTC"
+        );
+        chrono_tz::UTC
+    })
+}
+
+pub async fn create_booking(
+    db: &PgPool,
+    server: &ServerConfig,
+    user_id: Uuid,
+    req: CreateBookingRequest,
+) -> Result<BookingResponse, AppError> {
+    let tz = studio_tz(server);
+
+    // Everything happens inside one transaction so capacity and duplicate
+    // checks share a consistent snapshot.
+    let mut tx = db.begin().await?;
+
+    // Atomically increment booked count (fails if full). Returns the slot
+    // row so we can check the start time without a second SELECT.
+    let slot = schedule::repository::increment_booked_tx(&mut tx, req.time_slot_id).await?;
+    let slot = match slot {
+        Some(s) => s,
+        None => return Err(AppError::BadRequest("time slot is full".into())),
+    };
+
+    // Reject bookings for slots that have already started. We interpret the
+    // naïve (date, start_time) in the studio's local tz, convert to UTC,
+    // and compare to Utc::now.
+    let slot_local = NaiveDateTime::new(slot.date, slot.start_time);
+    let slot_utc = match tz.from_local_datetime(&slot_local).single() {
+        Some(dt) => dt.with_timezone(&Utc),
+        None => {
+            // Ambiguous or non-existent local time (DST transitions). Treat
+            // it as invalid rather than picking one arbitrarily.
+            return Err(AppError::BadRequest(
+                "time slot falls on an ambiguous local time".into(),
+            ));
+        }
+    };
+
+    if slot_utc <= Utc::now() {
+        return Err(AppError::BadRequest(
+            "cannot book a time slot that has already started".into(),
+        ));
+    }
+
+    // The partial unique index `uq_bookings_user_slot_active` is the
+    // authoritative duplicate guard — translate the unique-violation into a
+    // friendly Conflict instead of racing on a pre-check SELECT.
+    let booking = match repository::create_tx(
+        &mut tx,
+        user_id,
+        req.time_slot_id,
+        req.note.as_deref(),
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
+            return Err(AppError::Conflict(
+                "you already have a booking for this time slot".into(),
+            ));
+        }
+        Err(e) => return Err(AppError::Database(e)),
+    };
+
+    // Queue the booking_created event atomically with the booking row. The
+    // background dispatcher publishes it to Kafka with at-least-once
+    // semantics — no more silent loss if Kafka is down at checkout time.
+    outbox::insert_event_tx(
+        &mut tx,
+        topics::BOOKINGS_CREATED,
+        event_types::BOOKING_CREATED,
+        &booking.id.to_string(),
+        BookingCreatedPayload {
+            booking_id: booking.id,
+            user_id: booking.user_id,
+            time_slot_id: booking.time_slot_id,
+        },
+        None,
+    )
+    .await?;
+
+    tx.commit().await?;
+
+    // Post-commit: write an in-DB notification directly so the user gets
+    // feedback without waiting for the outbox dispatcher tick.
+    if let Err(e) = notif_repo::create_notification(
+        db,
+        booking.user_id,
+        &NotificationType::BookingConfirmed,
+        "Booking Confirmed",
+        "Your booking has been confirmed.",
+        Some(serde_json::json!({"booking_id": booking.id})),
+    )
+    .await
+    {
+        tracing::error!(error = ?e, "failed to write booking notification");
+    }
+
+    Ok(BookingResponse::from(booking))
+}
+
+pub async fn cancel_booking(
+    db: &PgPool,
+    server: &ServerConfig,
+    auth: &AuthUser,
+    booking_id: Uuid,
+) -> Result<BookingResponse, AppError> {
+    let tz = studio_tz(server);
+
+    // 1. Open the tx first so the ownership check, status check, 24-hour
+    //    check, and conditional UPDATE all see a consistent snapshot.
+    let mut tx = db.begin().await?;
+
+    let booking = repository::find_by_id_tx(&mut tx, booking_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("booking not found".into()))?;
+
+    // 2. Ownership or admin
+    if booking.user_id != auth.user_id && !auth.is_admin() {
+        return Err(AppError::Forbidden(
+            "you can only cancel your own bookings".into(),
+        ));
+    }
+
+    // 3. State machine: only pending/confirmed bookings can be cancelled.
+    //    Cancelling a Completed / NoShow booking would decrement the slot
+    //    counter for a session that already happened.
+    if !booking.status.is_cancellable() {
+        return Err(AppError::BadRequest(format!(
+            "booking in state '{}' cannot be cancelled",
+            booking.status.as_str()
+        )));
+    }
+
+    // 4. 24-hour rule (skipped for admins). Read the slot with a row lock
+    //    inside the same tx so it cannot be rescheduled mid-check.
+    if !auth.is_admin() {
+        let slot = schedule::repository::find_by_id_tx(&mut tx, booking.time_slot_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("time slot not found".into()))?;
+
+        let slot_local = NaiveDateTime::new(slot.date, slot.start_time);
+        let slot_utc = tz
+            .from_local_datetime(&slot_local)
+            .single()
+            .ok_or_else(|| {
+                AppError::BadRequest("time slot falls on an ambiguous local time".into())
+            })?
+            .with_timezone(&Utc);
+
+        let hours_until = (slot_utc - Utc::now()).num_hours();
+        if hours_until < 24 {
+            return Err(AppError::BadRequest(
+                "cannot cancel within 24 hours of the scheduled time".into(),
+            ));
+        }
+    }
+
+    // 5. Conditional update. This is the authoritative race guard — if
+    //    another concurrent cancel slipped through the pre-check, the
+    //    `status <> 'cancelled'` clause makes it a no-op and we return 409.
+    let updated = repository::cancel_if_active_tx(&mut tx, booking_id)
+        .await?
+        .ok_or_else(|| AppError::Conflict("booking is already cancelled".into()))?;
+
+    schedule::repository::decrement_booked_tx(&mut tx, booking.time_slot_id).await?;
+
+    outbox::insert_event_tx(
+        &mut tx,
+        topics::BOOKINGS_CANCELLED,
+        event_types::BOOKING_CANCELLED,
+        &updated.id.to_string(),
+        BookingCancelledPayload {
+            booking_id: updated.id,
+            user_id: updated.user_id,
+            time_slot_id: updated.time_slot_id,
+        },
+        None,
+    )
+    .await?;
+
+    tx.commit().await?;
+
+    // Post-commit inline notification (independent of the outbox).
+    if let Err(e) = notif_repo::create_notification(
+        db,
+        updated.user_id,
+        &NotificationType::BookingCancelled,
+        "Booking Cancelled",
+        "Your booking has been cancelled.",
+        Some(serde_json::json!({"booking_id": updated.id})),
+    )
+    .await
+    {
+        tracing::error!(error = ?e, "failed to write booking-cancel notification");
+    }
+
+    Ok(BookingResponse::from(updated))
+}
+
+pub async fn my_bookings(
+    db: &PgPool,
+    user_id: Uuid,
+    pagination: &PaginationParams,
+) -> Result<PaginatedBookingsResponse, AppError> {
+    let total = repository::count_by_user(db, user_id).await?;
+    let bookings = repository::find_by_user(db, user_id, pagination.limit(), pagination.offset())
+        .await?;
+
+    Ok(PaginatedBookingsResponse {
+        bookings: bookings.into_iter().map(BookingResponse::from).collect(),
+        total,
+        page: pagination.page,
+        per_page: pagination.limit(),
+    })
+}
+
+pub async fn list_all(
+    db: &PgPool,
+    auth: &AuthUser,
+    pagination: &PaginationParams,
+) -> Result<PaginatedBookingsResponse, AppError> {
+    auth.require_role("admin")?;
+
+    let total = repository::count_all(db).await?;
+    let bookings = repository::find_all(db, pagination.limit(), pagination.offset()).await?;
+
+    Ok(PaginatedBookingsResponse {
+        bookings: bookings.into_iter().map(BookingResponse::from).collect(),
+        total,
+        page: pagination.page,
+        per_page: pagination.limit(),
+    })
+}

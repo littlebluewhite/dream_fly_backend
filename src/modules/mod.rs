@@ -1,0 +1,14 @@
+pub mod auth;
+pub mod bookings;
+pub mod cart;
+pub mod coaches;
+pub mod contact;
+pub mod courses;
+pub mod notifications;
+pub mod orders;
+pub mod permissions;
+pub mod posts;
+pub mod products;
+pub mod schedule;
+pub mod users;
+pub mod venues;

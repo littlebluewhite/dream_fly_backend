@@ -1,0 +1,46 @@
+[server]
+host = "0.0.0.0"
+port = 3000
+allowed_origins = []
+# Set to true only when running behind a reverse proxy that strips/rewrites
+# X-Forwarded-For for untrusted clients. Enabling this with direct exposure
+# lets any caller spoof their rate-limit bucket.
+trust_proxy = false
+# IANA timezone for the studio. Bookings' stored naïve date+time are
+# interpreted in this zone for rules like the 24-hour cancellation window.
+studio_timezone = "Asia/Taipei"
+
+[database]
+url = "postgresql://dreamfly:dreamfly_dev@localhost:5432/dream_fly"
+max_connections = 10
+min_connections = 2
+
+[redis]
+url = "redis://localhost:6379"
+
+[kafka]
+brokers = "localhost:9092"
+group_id = "dreamfly_backend"
+enabled = false
+
+[auth]
+jwt_secret = ""
+jwt_access_expiration_minutes = 15
+jwt_refresh_expiration_days = 30
+google_client_id = ""
+google_client_secret = ""
+google_redirect_url = "http://localhost:3000/api/v1/auth/google/callback"
+google_token_url = "https://oauth2.googleapis.com/token"
+
+[email]
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_username = ""
+smtp_password = ""
+from_email = "info@dreamfly.com.tw"
+from_name = "Dream Fly 體操館"
+
+[sms]
+twilio_account_sid = ""
+twilio_auth_token = ""
+twilio_from_number = ""

@@ -1,0 +1,8 @@
+[server]
+port = 3000
+
+[database]
+max_connections = 5
+
+[auth]
+jwt_secret = "dev-only-not-for-production"

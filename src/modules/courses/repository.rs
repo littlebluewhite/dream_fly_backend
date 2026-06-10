@@ -1,0 +1,147 @@
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use super::model::{Course, CourseLevel};
+
+pub async fn find_all_active(
+    db: &PgPool,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<Course>, sqlx::Error> {
+    sqlx::query_as::<_, Course>(
+        "SELECT id, name, slug, level, description, duration_minutes, price_cents, \
+         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at \
+         FROM courses WHERE is_active = true ORDER BY name \
+         LIMIT $1 OFFSET $2",
+    )
+    .bind(limit as i64)
+    .bind(offset as i64)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn count_active(db: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM courses WHERE is_active = true")
+        .fetch_one(db)
+        .await
+}
+
+pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sqlx::Error> {
+    sqlx::query_as::<_, Course>(
+        "SELECT id, name, slug, level, description, duration_minutes, price_cents, \
+         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at \
+         FROM courses WHERE LOWER(slug) = LOWER($1)",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::Error> {
+    sqlx::query_as::<_, Course>(
+        "SELECT id, name, slug, level, description, duration_minutes, price_cents, \
+         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at \
+         FROM courses WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create(
+    db: &PgPool,
+    name: &str,
+    slug: &str,
+    level: &CourseLevel,
+    description: Option<&str>,
+    duration_minutes: i32,
+    price_cents: i64,
+    max_students: i32,
+    min_age: Option<i32>,
+    max_age: Option<i32>,
+    features: &[String],
+    coach_id: Option<Uuid>,
+) -> Result<Course, sqlx::Error> {
+    sqlx::query_as::<_, Course>(
+        "INSERT INTO courses (id, name, slug, level, description, duration_minutes, price_cents, \
+         max_students, min_age, max_age, features, coach_id, created_at, updated_at) \
+         VALUES (gen_random_uuid(), $1, $2, $3::course_level, $4, $5, $6, $7, $8, $9, $10, $11, now(), now()) \
+         RETURNING id, name, slug, level, description, duration_minutes, price_cents, \
+         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at",
+    )
+    .bind(name)
+    .bind(slug)
+    .bind(level.as_str())
+    .bind(description)
+    .bind(duration_minutes)
+    .bind(price_cents)
+    .bind(max_students)
+    .bind(min_age)
+    .bind(max_age)
+    .bind(features)
+    .bind(coach_id)
+    .fetch_one(db)
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update(
+    db: &PgPool,
+    id: Uuid,
+    name: Option<&str>,
+    slug: Option<&str>,
+    level: Option<&str>,
+    description: Option<&str>,
+    duration_minutes: Option<i32>,
+    price_cents: Option<i64>,
+    max_students: Option<i32>,
+    min_age: Option<Option<i32>>,
+    max_age: Option<Option<i32>>,
+    features: Option<&[String]>,
+    coach_id: Option<Option<Uuid>>,
+) -> Result<Option<Course>, sqlx::Error> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE courses SET updated_at = now()");
+
+    if let Some(v) = name {
+        qb.push(", name = ").push_bind(v);
+    }
+    if let Some(v) = slug {
+        qb.push(", slug = ").push_bind(v);
+    }
+    if let Some(v) = level {
+        qb.push(", level = ").push_bind(v).push("::course_level");
+    }
+    if let Some(v) = description {
+        qb.push(", description = ").push_bind(v);
+    }
+    if let Some(v) = duration_minutes {
+        qb.push(", duration_minutes = ").push_bind(v);
+    }
+    if let Some(v) = price_cents {
+        qb.push(", price_cents = ").push_bind(v);
+    }
+    if let Some(v) = max_students {
+        qb.push(", max_students = ").push_bind(v);
+    }
+    if let Some(v) = min_age {
+        qb.push(", min_age = ").push_bind(v);
+    }
+    if let Some(v) = max_age {
+        qb.push(", max_age = ").push_bind(v);
+    }
+    if let Some(v) = features {
+        qb.push(", features = ").push_bind(v);
+    }
+    if let Some(v) = coach_id {
+        qb.push(", coach_id = ").push_bind(v);
+    }
+
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.push(
+        " RETURNING id, name, slug, level, description, duration_minutes, price_cents, \
+          max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at",
+    );
+
+    qb.build_query_as::<Course>().fetch_optional(db).await
+}

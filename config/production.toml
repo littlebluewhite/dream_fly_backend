@@ -1,0 +1,10 @@
+[server]
+port = 8080
+trust_proxy = true
+
+[database]
+max_connections = 20
+min_connections = 5
+
+[kafka]
+enabled = true

@@ -1,0 +1,85 @@
+[package]
+name = "dream_fly_backend"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+
+[dependencies]
+# Web framework
+axum = { version = "0.8", features = ["macros", "multipart"] }
+axum-extra = { version = "0.12", features = ["typed-header", "cookie"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["util", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "limit", "request-id", "propagate-header", "set-header"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Database
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "json"] }
+
+# Redis
+redis = { version = "1", features = ["tokio-comp", "connection-manager", "json"] }
+
+# Kafka
+rdkafka = { version = "0.39", features = ["cmake-build"] }
+
+# Authentication
+oauth2 = "5"
+# jsonwebtoken 10.x no longer picks a crypto provider by default — you must
+# explicitly enable `rust_crypto` or `aws_lc_rs`, otherwise every encode/decode
+# call panics at runtime. We pick `rust_crypto` to avoid a C dependency.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+argon2 = "0.5"
+
+# Email
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "builder", "smtp-transport"] }
+
+# HTTP client (Twilio SMS, Google OAuth, etc.)
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+validator = { version = "0.20", features = ["derive"] }
+config = "0.15"
+dotenvy = "0.15"
+rand = "0.10"
+base64 = "0.22"
+sha2 = "0.11"
+hex = "0.4"
+subtle = "2"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Async trait support — used so AppState can hold `Arc<dyn EmailSender>` /
+# `Arc<dyn SmsSender>` trait objects, allowing integration tests to inject
+# in-memory mocks in place of the real SMTP / Twilio clients.
+async-trait = "0.1"
+
+[dev-dependencies]
+# In-process Axum HTTP test client — spawns the real router/middleware stack
+# inside the test, without binding a TCP socket. Used by every `tests/http_*`.
+axum-test = "20"
+# Raw tower ServiceExt::oneshot is kept as a backup for edge cases that
+# axum-test can't easily express (e.g. streaming bodies, custom connect info).
+http-body-util = "0.1"
+# Mock HTTP server for external-service tests (Google OAuth token endpoint,
+# Twilio API) so we never hit real upstreams from the test suite.
+wiremock = "0.6"
+# Fake data generators for test fixtures.
+fake = { version = "5.1", features = ["derive", "chrono"] }
+# Force serial execution for tests that touch shared global state such as the
+# Redis db 15 used by the rate-limit middleware test.
+serial_test = "3"
+# Better assertion diffs.
+pretty_assertions = "1"
