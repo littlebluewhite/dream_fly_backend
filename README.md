@@ -198,7 +198,7 @@ Kafka 預設停用（`APP__KAFKA__ENABLED=false`）。啟用後：
 
 - `src/kafka/producer.rs` — gzip 壓縮、`acks=all` 的 producer
 - `src/kafka/events.rs` — `KafkaEvent<T>` 事件封包（UUID v7 `event_id` + timestamp + data）
-- `src/kafka/consumer.rs` — 背景 tokio task，訂閱 6 個 `dreamfly.*` topic，路由到 `audit_log` 或 `notifications` 資料表
+- `src/kafka/consumer.rs` — 背景 tokio task，僅訂閱 `dreamfly.audit.log`，寫入 `audit_log` 資料表（純稽核用途；通知改由 `notifications::service` 同步寫入）
 - Consumer 會在 `main.rs` 依 `APP__KAFKA__ENABLED` 自動啟動
 
 ## 錯誤回應格式
