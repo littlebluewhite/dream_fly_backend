@@ -29,7 +29,15 @@ pub async fn apply_delta_tx(
     let balance_after = match repository::adjust_balance_tx(tx, user_id, delta).await {
         Ok(Some(balance)) => balance,
         Ok(None) => return Err(AppError::NotFound("user not found".into())),
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_check_violation() => {
+        // Scoped to the balance constraint by name: `users` carries other
+        // CHECK constraints (`users_has_auth_method` today, possibly more
+        // later), and only a `users_points_balance_check` violation means
+        // "insufficient points". Any other check violation falls through
+        // to the generic Database arm.
+        Err(sqlx::Error::Database(ref db_err))
+            if db_err.is_check_violation()
+                && db_err.constraint() == Some("users_points_balance_check") =>
+        {
             return Err(AppError::Conflict("insufficient points".into()));
         }
         Err(e) => return Err(AppError::Database(e)),

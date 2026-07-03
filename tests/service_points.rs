@@ -201,6 +201,42 @@ async fn adjust_balance_tx_check_violation_reports_expected_constraint_and_sqlst
 }
 
 #[sqlx::test]
+async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_points(db: PgPool) {
+    // The Conflict("insufficient points") mapping must be scoped to the
+    // `users_points_balance_check` constraint specifically — `users`
+    // carries other CHECK constraints (`users_has_auth_method` exists
+    // today, and future ones like a balance cap could be added), and a
+    // blanket is_check_violation() → Conflict mapping would misreport
+    // those as "insufficient points". Simulate that future: add an
+    // artificial cap constraint in this test's throwaway database and
+    // violate it — the error must surface as a generic Database error,
+    // not Conflict.
+    let user_id = common::seed_member(&db, "pts-cap@example.com", "Password!234").await;
+    sqlx::query(
+        "ALTER TABLE users ADD CONSTRAINT test_points_balance_cap CHECK (points_balance <= 1000)",
+    )
+    .execute(&db)
+    .await
+    .expect("add artificial cap constraint");
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let err = service::apply_delta_tx(&mut tx, user_id, 5000, PointReason::AdminAdjust, None)
+        .await
+        .expect_err("cap violation must be rejected");
+    tx.rollback().await.expect("rollback");
+
+    match err {
+        AppError::Database(sqlx::Error::Database(db_err)) => {
+            assert!(db_err.is_check_violation(), "got {db_err:?}");
+            assert_eq!(db_err.constraint(), Some("test_points_balance_cap"));
+        }
+        other => panic!(
+            "an unrelated check violation must pass through as Database, got {other:?}"
+        ),
+    }
+}
+
+#[sqlx::test]
 async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-clamp@example.com", "Password!234").await;
 
