@@ -148,7 +148,7 @@ async fn e2e_shopping_flow(db: PgPool) {
     let member = app.register_member("shopper@example.com", "Password!234").await;
     app.post("/api/v1/cart/items")
         .authorization_bearer(&member.access_token)
-        .json(&json!({ "product_id": product_id, "quantity": 1 }))
+        .json(&json!({ "item_type": "product", "item_id": product_id, "quantity": 1 }))
         .await;
 
     let order = app

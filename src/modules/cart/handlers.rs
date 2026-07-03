@@ -29,7 +29,8 @@ pub async fn add_item(
     ValidatedJson(req): ValidatedJson<AddCartItemRequest>,
 ) -> Result<Json<CartResponse>, AppError> {
     let quantity = req.quantity.unwrap_or(1);
-    let cart = service::add_item(&state.db, auth.user_id, req.product_id, quantity).await?;
+    let cart = service::add_item(&state.db, auth.user_id, &req.item_type, req.item_id, quantity)
+        .await?;
     Ok(Json(cart))
 }
 
@@ -37,10 +38,10 @@ pub async fn add_item(
 pub async fn update_quantity(
     State(state): State<AppState>,
     auth: AuthUser,
-    Path(product_id): Path<Uuid>,
+    Path(item_id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateCartItemRequest>,
 ) -> Result<Json<CartResponse>, AppError> {
-    let cart = service::update_quantity(&state.db, auth.user_id, product_id, req.quantity).await?;
+    let cart = service::update_quantity(&state.db, auth.user_id, item_id, req.quantity).await?;
     Ok(Json(cart))
 }
 
@@ -48,9 +49,9 @@ pub async fn update_quantity(
 pub async fn remove_item(
     State(state): State<AppState>,
     auth: AuthUser,
-    Path(product_id): Path<Uuid>,
+    Path(item_id): Path<Uuid>,
 ) -> Result<Json<CartResponse>, AppError> {
-    let cart = service::remove_item(&state.db, auth.user_id, product_id).await?;
+    let cart = service::remove_item(&state.db, auth.user_id, item_id).await?;
     Ok(Json(cart))
 }
 

@@ -49,7 +49,7 @@ async fn checkout_happy_path_creates_order_and_clears_cart(db: PgPool) {
 
     app.post("/api/v1/cart/items")
         .authorization_bearer(&user.access_token)
-        .json(&json!({ "product_id": pid, "quantity": 2 }))
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 2 }))
         .await;
 
     let resp = app
@@ -81,7 +81,7 @@ async fn my_orders_returns_only_mine(db: PgPool) {
     let pid = seed_product_via_admin(&app, "X", Some(10)).await;
     app.post("/api/v1/cart/items")
         .authorization_bearer(&user.access_token)
-        .json(&json!({ "product_id": pid, "quantity": 1 }))
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
         .await;
     app.post("/api/v1/orders")
         .authorization_bearer(&user.access_token)
@@ -106,7 +106,7 @@ async fn get_order_other_users_order_is_hidden(db: PgPool) {
     // Alice creates an order.
     app.post("/api/v1/cart/items")
         .authorization_bearer(&alice.access_token)
-        .json(&json!({ "product_id": pid, "quantity": 1 }))
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
         .await;
     let alice_order: serde_json::Value = app
         .post("/api/v1/orders")
@@ -137,7 +137,7 @@ async fn update_status_as_member_returns_403(db: PgPool) {
     let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
     app.post("/api/v1/cart/items")
         .authorization_bearer(&user.access_token)
-        .json(&json!({ "product_id": pid, "quantity": 1 }))
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
         .await;
     let order: serde_json::Value = app
         .post("/api/v1/orders")

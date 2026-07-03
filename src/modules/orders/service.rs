@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
 use crate::kafka::outbox;
+use crate::modules::cart::model::CartItemType;
 use crate::modules::cart::repository as cart_repo;
 use crate::modules::notifications::service as notify;
 use crate::modules::products::repository as product_repo;
@@ -48,14 +49,30 @@ pub async fn checkout(
         return Err(AppError::BadRequest("cart is empty".into()));
     }
 
+    // Task 9 replaces this: course checkout isn't implemented yet (no
+    // enrolment creation, no order_items support for course lines). Reject
+    // the whole checkout rather than silently dropping course lines, so the
+    // temporary limitation is visible to the caller instead of the order
+    // just missing what the user asked to buy.
+    if cart_items
+        .iter()
+        .any(|item| matches!(item.item_type, CartItemType::Course))
+    {
+        return Err(AppError::Validation(
+            "course checkout not yet supported".into(),
+        ));
+    }
+
     // 3. Decrement product stock for items that track stock; fail fast on shortage
     for item in &cart_items {
-        let result =
-            product_repo::try_decrement_stock_tx(&mut tx, item.product_id, item.quantity).await?;
+        let product_id = item
+            .product_id
+            .expect("guarded above: only product lines reach this point");
+        let result = product_repo::try_decrement_stock_tx(&mut tx, product_id, item.quantity).await?;
         if result.is_none() {
             return Err(AppError::Conflict(format!(
                 "insufficient stock for product {}",
-                item.product_name
+                item.name
             )));
         }
     }
@@ -83,10 +100,17 @@ pub async fn checkout(
     // 6. Create the order
     let order = repository::create_order(&mut tx, user_id, &order_number, total_cents).await?;
 
-    // 7. Create order items from the (locked) cart snapshot
+    // 7. Create order items from the (locked) cart snapshot. Product lines
+    //    only for now — Task 9 replaces this with product/course dual-target
+    //    order_items creation.
     let items_data: Vec<(Uuid, i32, i64)> = cart_items
         .iter()
-        .map(|ci| (ci.product_id, ci.quantity, ci.price_cents))
+        .map(|ci| {
+            let product_id = ci
+                .product_id
+                .expect("guarded above: only product lines reach this point");
+            (product_id, ci.quantity, ci.price_cents)
+        })
         .collect();
 
     let order_items = repository::create_order_items(&mut tx, order.id, &items_data).await?;
