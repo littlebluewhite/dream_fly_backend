@@ -321,6 +321,34 @@ pub async fn seed_enrolment(
     id
 }
 
+/// Insert a waitlist entry row directly (bypassing the service's fullness
+/// check) so tests can set up exact states — status and `created_at`
+/// ordering — without needing a real full course. Returns the entry id.
+pub async fn seed_waitlist_entry(
+    db: &PgPool,
+    user_id: Uuid,
+    course_id: Uuid,
+    status: &str,
+    created_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO waitlist_entries (id, user_id, course_id, status, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::waitlist_status, $5, $5)
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(course_id)
+    .bind(status)
+    .bind(created_at)
+    .execute(db)
+    .await
+    .expect("insert waitlist entry");
+    id
+}
+
 /// Small slug helper — lower, replace non-alnum with dashes.
 pub fn slugify(s: &str) -> String {
     s.chars()

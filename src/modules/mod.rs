@@ -15,3 +15,4 @@ pub mod schedule;
 pub mod subscriptions;
 pub mod users;
 pub mod venues;
+pub mod waitlist;
