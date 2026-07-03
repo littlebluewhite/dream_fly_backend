@@ -204,9 +204,6 @@ async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
 #[sqlx::test]
 async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
     let user = common::seed_member(&db, "coupon-buyer@example.com", "passw0rd!").await;
-    // Subtotal must comfortably exceed 2x the discount so the post-discount
-    // total still satisfies the `orders_discount_bound` CHECK constraint
-    // (discount_cents <= total_cents).
     let product = common::seed_product(&db, "coupon-prod", 30_000, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
     common::fixtures::seed_coupon(&db, "DREAMFLY100", 10_000, true, None).await;
@@ -220,6 +217,88 @@ async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.coupon_code, Some("DREAMFLY100".to_string()));
     assert_eq!(resp.total_cents, 20_000);
+}
+
+#[sqlx::test]
+async fn checkout_coupon_over_half_subtotal_succeeds(db: PgPool) {
+    // Regression (task-9 review): the original `orders_discount_bound`
+    // CHECK compared `discount_cents` against the *post-discount* total, so
+    // any coupon worth more than half the subtotal tripped it at INSERT
+    // time and surfaced as a 500. Migration 20260704000002 relaxes the
+    // constraint to non-negativity only; the app-level
+    // `min(discount, subtotal)` clamp is the real upper bound.
+    let user = common::seed_member(&db, "bigcoupon-buyer@example.com", "passw0rd!").await;
+    // NT$150 product + NT$100 coupon: discount (10000) > 50% of subtotal (15000).
+    let product = common::seed_product(&db, "bigcoupon-prod", 15_000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    common::fixtures::seed_coupon(&db, "BIG100", 10_000, true, None).await;
+
+    let req = CheckoutRequest {
+        coupon_code: Some("BIG100".to_string()),
+        use_points: None,
+    };
+    let resp = service::checkout(&db, user, None, req).await.expect("checkout");
+
+    assert_eq!(resp.discount_cents, 10_000);
+    assert_eq!(resp.total_cents, 5_000);
+}
+
+#[sqlx::test]
+async fn checkout_coupon_at_or_above_subtotal_clamps_to_free_order(db: PgPool) {
+    let user = common::seed_member(&db, "freecoupon-buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "freecoupon-prod", 5_000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    // Coupon worth twice the subtotal — clamped down to the subtotal.
+    common::fixtures::seed_coupon(&db, "MEGA", 10_000, true, None).await;
+
+    let req = CheckoutRequest {
+        coupon_code: Some("MEGA".to_string()),
+        use_points: None,
+    };
+    let resp = service::checkout(&db, user, None, req).await.expect("checkout");
+
+    assert_eq!(resp.discount_cents, 5_000, "discount clamps to the subtotal");
+    assert_eq!(resp.total_cents, 0);
+    assert_eq!(resp.points_earned, 0, "a free order earns no points");
+
+    // points_earned == 0 must also mean no earn ledger row was written.
+    let earn_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger WHERE user_id = $1 AND reason = 'checkout_earn'::point_reason",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(earn_count, 0);
+}
+
+#[sqlx::test]
+async fn checkout_coupon_plus_points_can_reach_zero_total(db: PgPool) {
+    let user = common::seed_member(&db, "combo-buyer@example.com", "passw0rd!").await;
+    set_points_balance(&db, user, 100).await;
+    // Subtotal NT$200; the NT$100 coupon leaves NT$100 payable; 100 points
+    // cover exactly the rest — total lands on 0 with discount 10000 stored.
+    let product = common::seed_product(&db, "combo-prod", 20_000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    common::fixtures::seed_coupon(&db, "COMBO100", 10_000, true, None).await;
+
+    let req = CheckoutRequest {
+        coupon_code: Some("COMBO100".to_string()),
+        use_points: Some(true),
+    };
+    let resp = service::checkout(&db, user, None, req).await.expect("checkout");
+
+    assert_eq!(resp.discount_cents, 10_000);
+    assert_eq!(resp.points_used, 100);
+    assert_eq!(resp.total_cents, 0);
+    assert_eq!(resp.points_earned, 0, "a fully-covered order earns nothing");
+
+    let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(balance, 0, "all 100 points redeemed, none earned back");
 }
 
 #[sqlx::test]
