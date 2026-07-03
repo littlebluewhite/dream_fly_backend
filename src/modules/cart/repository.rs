@@ -30,7 +30,7 @@ pub async fn add_item(
     sqlx::query_as::<_, CartItem>(
         "INSERT INTO cart_items (id, user_id, product_id, quantity, created_at, updated_at) \
          VALUES (gen_random_uuid(), $1, $2, $3, NOW(), NOW()) \
-         ON CONFLICT (user_id, product_id) \
+         ON CONFLICT (user_id, product_id) WHERE product_id IS NOT NULL \
          DO UPDATE SET quantity = cart_items.quantity + $3, updated_at = NOW() \
          RETURNING *",
     )

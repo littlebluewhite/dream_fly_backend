@@ -9,9 +9,12 @@ pub async fn find_all_active(
     offset: u32,
 ) -> Result<Vec<Course>, sqlx::Error> {
     sqlx::query_as::<_, Course>(
-        "SELECT id, name, slug, level, description, duration_minutes, price_cents, \
-         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at \
-         FROM courses WHERE is_active = true ORDER BY name \
+        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         FROM courses c WHERE c.is_active = true ORDER BY c.name \
          LIMIT $1 OFFSET $2",
     )
     .bind(limit as i64)
@@ -28,9 +31,12 @@ pub async fn count_active(db: &PgPool) -> Result<i64, sqlx::Error> {
 
 pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sqlx::Error> {
     sqlx::query_as::<_, Course>(
-        "SELECT id, name, slug, level, description, duration_minutes, price_cents, \
-         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at \
-         FROM courses WHERE LOWER(slug) = LOWER($1)",
+        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         FROM courses c WHERE LOWER(c.slug) = LOWER($1)",
     )
     .bind(slug)
     .fetch_optional(db)
@@ -39,9 +45,12 @@ pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sql
 
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::Error> {
     sqlx::query_as::<_, Course>(
-        "SELECT id, name, slug, level, description, duration_minutes, price_cents, \
-         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at \
-         FROM courses WHERE id = $1",
+        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         FROM courses c WHERE c.id = $1",
     )
     .bind(id)
     .fetch_optional(db)
@@ -62,13 +71,20 @@ pub async fn create(
     max_age: Option<i32>,
     features: &[String],
     coach_id: Option<Uuid>,
+    category: Option<&str>,
+    schedule_text: Option<&str>,
+    is_highlighted: bool,
 ) -> Result<Course, sqlx::Error> {
     sqlx::query_as::<_, Course>(
-        "INSERT INTO courses (id, name, slug, level, description, duration_minutes, price_cents, \
-         max_students, min_age, max_age, features, coach_id, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3::course_level, $4, $5, $6, $7, $8, $9, $10, $11, now(), now()) \
-         RETURNING id, name, slug, level, description, duration_minutes, price_cents, \
-         max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at",
+        "INSERT INTO courses AS c (id, name, slug, level, description, duration_minutes, price_cents, \
+         max_students, min_age, max_age, features, coach_id, category, schedule_text, is_highlighted, \
+         created_at, updated_at) \
+         VALUES (gen_random_uuid(), $1, $2, $3::course_level, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now()) \
+         RETURNING c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
     )
     .bind(name)
     .bind(slug)
@@ -81,6 +97,9 @@ pub async fn create(
     .bind(max_age)
     .bind(features)
     .bind(coach_id)
+    .bind(category)
+    .bind(schedule_text)
+    .bind(is_highlighted)
     .fetch_one(db)
     .await
 }
@@ -100,8 +119,11 @@ pub async fn update(
     max_age: Option<Option<i32>>,
     features: Option<&[String]>,
     coach_id: Option<Option<Uuid>>,
+    category: Option<Option<&str>>,
+    schedule_text: Option<Option<&str>>,
+    is_highlighted: Option<bool>,
 ) -> Result<Option<Course>, sqlx::Error> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE courses SET updated_at = now()");
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE courses AS c SET updated_at = now()");
 
     if let Some(v) = name {
         qb.push(", name = ").push_bind(v);
@@ -136,11 +158,23 @@ pub async fn update(
     if let Some(v) = coach_id {
         qb.push(", coach_id = ").push_bind(v);
     }
+    if let Some(v) = category {
+        qb.push(", category = ").push_bind(v);
+    }
+    if let Some(v) = schedule_text {
+        qb.push(", schedule_text = ").push_bind(v);
+    }
+    if let Some(v) = is_highlighted {
+        qb.push(", is_highlighted = ").push_bind(v);
+    }
 
-    qb.push(" WHERE id = ").push_bind(id);
+    qb.push(" WHERE c.id = ").push_bind(id);
     qb.push(
-        " RETURNING id, name, slug, level, description, duration_minutes, price_cents, \
-          max_students, min_age, max_age, features, is_active, coach_id, created_at, updated_at",
+        " RETURNING c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+          (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
     );
 
     qb.build_query_as::<Course>().fetch_optional(db).await

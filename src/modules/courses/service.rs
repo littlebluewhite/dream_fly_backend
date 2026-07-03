@@ -79,6 +79,9 @@ pub async fn create_course(
         req.max_age,
         &features,
         req.coach_id,
+        req.category.as_deref(),
+        req.schedule_text.as_deref(),
+        req.is_highlighted,
     )
     .await?;
 
@@ -125,6 +128,9 @@ pub async fn update_course(
         req.max_age,
         req.features.as_deref(),
         req.coach_id,
+        req.category.as_ref().map(|o| o.as_deref()),
+        req.schedule_text.as_ref().map(|o| o.as_deref()),
+        req.is_highlighted,
     )
     .await?;
 

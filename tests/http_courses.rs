@@ -28,6 +28,13 @@ async fn list_courses_returns_seeded(db: PgPool) {
     assert_eq!(body["courses"].as_array().unwrap().len(), 1);
     assert_eq!(body["courses"][0]["name"], "Intro Flow");
     assert_eq!(body["total"], 1);
+    // No enrolments/waitlist_entries rows exist yet (tables land empty until
+    // Task 9 wires checkout), so the computed counts must both be 0.
+    assert_eq!(body["courses"][0]["enrolled_count"], 0);
+    assert_eq!(body["courses"][0]["waitlist_count"], 0);
+    assert!(body["courses"][0]["category"].is_null());
+    assert!(body["courses"][0]["schedule_text"].is_null());
+    assert_eq!(body["courses"][0]["is_highlighted"], false);
 }
 
 #[sqlx::test]
@@ -40,6 +47,8 @@ async fn get_course_by_slug_returns_detail(db: PgPool) {
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["id"].as_str().unwrap(), id.to_string());
+    assert_eq!(body["enrolled_count"], 0);
+    assert_eq!(body["waitlist_count"], 0);
 }
 
 #[sqlx::test]
@@ -105,6 +114,56 @@ async fn create_course_as_admin_succeeds(db: PgPool) {
     let body: serde_json::Value = resp.json();
     assert_eq!(body["name"], "Advanced");
     assert_eq!(body["level"], "advanced");
+}
+
+#[sqlx::test]
+async fn create_course_as_admin_can_set_category_schedule_and_highlight(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/courses")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "name": "Tumbling Basics",
+            "level": "beginner",
+            "duration_minutes": 60,
+            "price_cents": 80000,
+            "max_students": 10,
+            "category": "體操",
+            "schedule_text": "週三 19:00-20:00",
+            "is_highlighted": true,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["category"], "體操");
+    assert_eq!(body["schedule_text"], "週三 19:00-20:00");
+    assert_eq!(body["is_highlighted"], true);
+    assert_eq!(body["enrolled_count"], 0);
+    assert_eq!(body["waitlist_count"], 0);
+}
+
+#[sqlx::test]
+async fn update_course_as_admin_can_set_category_schedule_and_highlight(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let id = seed_course(&app.db, "Intro Flow", None).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/courses/{id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "category": "跳床",
+            "schedule_text": "週五 18:00-19:00",
+            "is_highlighted": true,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["category"], "跳床");
+    assert_eq!(body["schedule_text"], "週五 18:00-19:00");
+    assert_eq!(body["is_highlighted"], true);
 }
 
 #[sqlx::test]

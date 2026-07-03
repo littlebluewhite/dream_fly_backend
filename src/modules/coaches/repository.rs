@@ -8,7 +8,7 @@ use super::model::{ClockRecord, Coach, CoachSchedule};
 pub async fn find_all_active(db: &PgPool) -> Result<Vec<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
         "SELECT id, user_id, title, bio, experience, specialties, certifications, \
-         is_active, display_order, created_at, updated_at \
+         is_active, display_order, slug, photo_url, created_at, updated_at \
          FROM coaches \
          WHERE is_active = true \
          ORDER BY display_order, created_at",
@@ -20,7 +20,7 @@ pub async fn find_all_active(db: &PgPool) -> Result<Vec<Coach>, sqlx::Error> {
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
         "SELECT id, user_id, title, bio, experience, specialties, certifications, \
-         is_active, display_order, created_at, updated_at \
+         is_active, display_order, slug, photo_url, created_at, updated_at \
          FROM coaches WHERE id = $1",
     )
     .bind(id)
@@ -31,7 +31,7 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, sqlx::Er
 pub async fn find_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
         "SELECT id, user_id, title, bio, experience, specialties, certifications, \
-         is_active, display_order, created_at, updated_at \
+         is_active, display_order, slug, photo_url, created_at, updated_at \
          FROM coaches WHERE user_id = $1",
     )
     .bind(user_id)

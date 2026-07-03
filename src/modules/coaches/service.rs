@@ -21,6 +21,8 @@ fn coach_to_response(c: super::model::Coach) -> CoachResponse {
         certifications: c.certifications,
         is_active: c.is_active,
         display_order: c.display_order,
+        slug: c.slug,
+        photo_url: c.photo_url,
         created_at: c.created_at,
     }
 }

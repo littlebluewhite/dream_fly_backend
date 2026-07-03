@@ -16,6 +16,8 @@ pub struct ProductCreate<'a> {
     pub is_highlighted: bool,
     pub badge: Option<&'a str>,
     pub stock: Option<i32>,
+    pub valid_days: Option<i32>,
+    pub session_count: Option<i32>,
 }
 
 /// Input payload for `update`. Every field is `Option` because this is a
@@ -34,6 +36,8 @@ pub struct ProductUpdate<'a> {
     pub is_highlighted: Option<bool>,
     pub badge: Option<Option<&'a str>>,
     pub stock: Option<Option<i32>>,
+    pub valid_days: Option<Option<i32>>,
+    pub session_count: Option<Option<i32>>,
     pub is_active: Option<bool>,
 }
 
@@ -46,7 +50,7 @@ pub async fn find_all_active(
     sqlx::query_as::<_, Product>(
         "SELECT id, name, slug, product_type, description, price_cents, \
          original_price_cents, features, is_highlighted, badge, stock, \
-         is_active, created_at, updated_at \
+         valid_days, session_count, is_active, created_at, updated_at \
          FROM products \
          WHERE is_active = true \
            AND ($1::text IS NULL OR product_type = $1::product_type) \
@@ -80,7 +84,7 @@ pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Product>, sq
     sqlx::query_as::<_, Product>(
         "SELECT id, name, slug, product_type, description, price_cents, \
          original_price_cents, features, is_highlighted, badge, stock, \
-         is_active, created_at, updated_at \
+         valid_days, session_count, is_active, created_at, updated_at \
          FROM products WHERE LOWER(slug) = LOWER($1)",
     )
     .bind(slug)
@@ -92,7 +96,7 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Product>, sqlx::
     sqlx::query_as::<_, Product>(
         "SELECT id, name, slug, product_type, description, price_cents, \
          original_price_cents, features, is_highlighted, badge, stock, \
-         is_active, created_at, updated_at \
+         valid_days, session_count, is_active, created_at, updated_at \
          FROM products WHERE id = $1",
     )
     .bind(id)
@@ -132,9 +136,9 @@ pub async fn try_decrement_stock_tx(
 pub async fn create(db: &PgPool, input: ProductCreate<'_>) -> Result<Product, sqlx::Error> {
     sqlx::query_as::<_, Product>(
         "INSERT INTO products (id, name, slug, product_type, description, price_cents, \
-         original_price_cents, features, is_highlighted, badge, stock, \
+         original_price_cents, features, is_highlighted, badge, stock, valid_days, session_count, \
          is_active, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3::product_type, $4, $5, $6, $7, $8, $9, $10, \
+         VALUES (gen_random_uuid(), $1, $2, $3::product_type, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
          true, NOW(), NOW()) \
          RETURNING *",
     )
@@ -148,6 +152,8 @@ pub async fn create(db: &PgPool, input: ProductCreate<'_>) -> Result<Product, sq
     .bind(input.is_highlighted)
     .bind(input.badge)
     .bind(input.stock)
+    .bind(input.valid_days)
+    .bind(input.session_count)
     .fetch_one(db)
     .await
 }
@@ -188,6 +194,12 @@ pub async fn update(
     }
     if let Some(v) = input.stock {
         qb.push(", stock = ").push_bind(v);
+    }
+    if let Some(v) = input.valid_days {
+        qb.push(", valid_days = ").push_bind(v);
+    }
+    if let Some(v) = input.session_count {
+        qb.push(", session_count = ").push_bind(v);
     }
     if let Some(v) = input.is_active {
         qb.push(", is_active = ").push_bind(v);

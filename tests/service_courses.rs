@@ -32,6 +32,9 @@ fn minimal_create(name: &str) -> CreateCourseRequest {
         max_age: None,
         features: None,
         coach_id: None,
+        category: None,
+        schedule_text: None,
+        is_highlighted: false,
     }
 }
 
@@ -184,6 +187,9 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
             max_age: None,
             features: None,
             coach_id: None,
+            category: None,
+            schedule_text: None,
+            is_highlighted: None,
         },
     )
     .await
@@ -206,6 +212,9 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
             max_age: None,
             features: None,
             coach_id: None,
+            category: None,
+            schedule_text: None,
+            is_highlighted: None,
         },
     )
     .await

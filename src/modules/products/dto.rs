@@ -18,6 +18,8 @@ pub struct ProductResponse {
     pub is_highlighted: bool,
     pub badge: Option<String>,
     pub stock: Option<i32>,
+    pub valid_days: Option<i32>,
+    pub session_count: Option<i32>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -43,6 +45,8 @@ impl From<Product> for ProductResponse {
             is_highlighted: p.is_highlighted,
             badge: p.badge,
             stock: p.stock,
+            valid_days: p.valid_days,
+            session_count: p.session_count,
             is_active: p.is_active,
             created_at: p.created_at,
             updated_at: p.updated_at,
@@ -72,6 +76,10 @@ pub struct CreateProductRequest {
     pub badge: Option<String>,
     #[validate(range(min = 0, max = 1_000_000))]
     pub stock: Option<i32>,
+    #[validate(range(min = 1, max = 3650))]
+    pub valid_days: Option<i32>,
+    #[validate(range(min = 1, max = 1000))]
+    pub session_count: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -94,6 +102,10 @@ pub struct UpdateProductRequest {
     pub badge: Option<Option<String>>,
     /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
     pub stock: Option<Option<i32>>,
+    /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    pub valid_days: Option<Option<i32>>,
+    /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    pub session_count: Option<Option<i32>>,
     pub is_active: Option<bool>,
 }
 

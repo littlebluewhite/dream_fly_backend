@@ -68,6 +68,8 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
             is_highlighted: req.is_highlighted,
             badge: req.badge.as_deref(),
             stock: req.stock,
+            valid_days: req.valid_days,
+            session_count: req.session_count,
         },
     )
     .await
@@ -108,6 +110,8 @@ pub async fn update(
             is_highlighted: req.is_highlighted,
             badge: req.badge.as_ref().map(|o| o.as_deref()),
             stock: req.stock,
+            valid_days: req.valid_days,
+            session_count: req.session_count,
             is_active: req.is_active,
         },
     )

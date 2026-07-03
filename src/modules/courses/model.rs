@@ -48,6 +48,15 @@ pub struct Course {
     pub features: Vec<String>,
     pub is_active: bool,
     pub coach_id: Option<Uuid>,
+    pub category: Option<String>,
+    pub schedule_text: Option<String>,
+    pub is_highlighted: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Computed via a correlated subquery against `enrolments` (not a table
+    /// column) — see `COURSE_COLUMNS` in `repository.rs`.
+    pub enrolled_count: i64,
+    /// Computed via a correlated subquery against `waitlist_entries` (not a
+    /// table column) — see `COURSE_COLUMNS` in `repository.rs`.
+    pub waitlist_count: i64,
 }

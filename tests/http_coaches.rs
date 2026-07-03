@@ -29,6 +29,38 @@ async fn list_coaches_includes_seeded(db: PgPool) {
     let body: serde_json::Value = resp.json();
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["title"], "Head Coach");
+    // slug/photo_url weren't set — must default to null.
+    assert!(body[0]["slug"].is_null());
+    assert!(body[0]["photo_url"].is_null());
+}
+
+#[sqlx::test]
+async fn coach_list_and_detail_expose_slug_and_photo_url(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("coach-profile@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, user.user_id, "Profile Coach").await;
+    sqlx::query("UPDATE coaches SET slug = $1, photo_url = $2 WHERE id = $3")
+        .bind("profile-coach")
+        .bind("https://cdn.example.com/coach.jpg")
+        .bind(coach_id)
+        .execute(&app.db)
+        .await
+        .expect("set coach profile fields");
+
+    let list_resp = app.get("/api/v1/coaches").await;
+    assert_eq!(list_resp.status_code(), 200);
+    let list_body: serde_json::Value = list_resp.json();
+    assert_eq!(list_body[0]["slug"], "profile-coach");
+    assert_eq!(list_body[0]["photo_url"], "https://cdn.example.com/coach.jpg");
+
+    let detail_resp = app.get(&format!("/api/v1/coaches/{coach_id}")).await;
+    assert_eq!(detail_resp.status_code(), 200);
+    let detail_body: serde_json::Value = detail_resp.json();
+    assert_eq!(detail_body["coach"]["slug"], "profile-coach");
+    assert_eq!(
+        detail_body["coach"]["photo_url"],
+        "https://cdn.example.com/coach.jpg"
+    );
 }
 
 #[sqlx::test]

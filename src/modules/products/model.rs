@@ -24,6 +24,8 @@ pub struct Product {
     pub is_highlighted: bool,
     pub badge: Option<String>,
     pub stock: Option<i32>,
+    pub valid_days: Option<i32>,
+    pub session_count: Option<i32>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

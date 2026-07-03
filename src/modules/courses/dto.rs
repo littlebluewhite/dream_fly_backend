@@ -20,8 +20,13 @@ pub struct CourseResponse {
     pub features: Vec<String>,
     pub is_active: bool,
     pub coach_id: Option<Uuid>,
+    pub category: Option<String>,
+    pub schedule_text: Option<String>,
+    pub is_highlighted: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub enrolled_count: i64,
+    pub waitlist_count: i64,
 }
 
 impl From<Course> for CourseResponse {
@@ -40,8 +45,13 @@ impl From<Course> for CourseResponse {
             features: c.features,
             is_active: c.is_active,
             coach_id: c.coach_id,
+            category: c.category,
+            schedule_text: c.schedule_text,
+            is_highlighted: c.is_highlighted,
             created_at: c.created_at,
             updated_at: c.updated_at,
+            enrolled_count: c.enrolled_count,
+            waitlist_count: c.waitlist_count,
         }
     }
 }
@@ -76,6 +86,12 @@ pub struct CreateCourseRequest {
     pub max_age: Option<i32>,
     pub features: Option<Vec<String>>,
     pub coach_id: Option<Uuid>,
+    #[validate(length(max = 50))]
+    pub category: Option<String>,
+    #[validate(length(max = 100))]
+    pub schedule_text: Option<String>,
+    #[serde(default)]
+    pub is_highlighted: bool,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -98,4 +114,7 @@ pub struct UpdateCourseRequest {
     pub max_age: Option<Option<i32>>,
     pub features: Option<Vec<String>>,
     pub coach_id: Option<Option<Uuid>>,
+    pub category: Option<Option<String>>,
+    pub schedule_text: Option<Option<String>>,
+    pub is_highlighted: Option<bool>,
 }

@@ -32,6 +32,8 @@ fn create(name: &str, slug: Option<&str>, product_type: &str) -> CreateProductRe
         is_highlighted: false,
         badge: None,
         stock: Some(10),
+        valid_days: None,
+        session_count: None,
     }
 }
 
@@ -140,6 +142,8 @@ async fn update_product_nonexistent_returns_not_found(db: PgPool) {
             is_highlighted: None,
             badge: None,
             stock: None,
+            valid_days: None,
+            session_count: None,
             is_active: None,
         },
     )
@@ -168,6 +172,8 @@ async fn update_product_invalid_type_returns_validation(db: PgPool) {
             is_highlighted: None,
             badge: None,
             stock: None,
+            valid_days: None,
+            session_count: None,
             is_active: None,
         },
     )

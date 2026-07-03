@@ -14,6 +14,8 @@ pub struct CoachResponse {
     pub certifications: Vec<String>,
     pub is_active: bool,
     pub display_order: i32,
+    pub slug: Option<String>,
+    pub photo_url: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
