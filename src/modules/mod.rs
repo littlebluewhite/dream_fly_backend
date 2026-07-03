@@ -9,6 +9,7 @@ pub mod enrolments;
 pub mod notifications;
 pub mod orders;
 pub mod permissions;
+pub mod points;
 pub mod posts;
 pub mod products;
 pub mod schedule;

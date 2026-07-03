@@ -349,6 +349,54 @@ pub async fn seed_waitlist_entry(
     id
 }
 
+/// Insert a point_ledger row directly (bypassing `points::service::apply_delta_tx`)
+/// so tests can control `created_at` ordering and exact `reason`/`order_id`
+/// combinations without a real balance mutation. `reason` is a snake_case
+/// string (`"checkout_earn"`, `"checkout_redeem"`, `"admin_adjust"`) cast to
+/// `point_reason` in the query. Returns the entry id. Does not touch
+/// `users.points_balance` — pair with `set_points_balance` when a test also
+/// needs the balance to agree with the seeded ledger history.
+pub async fn seed_point_ledger_entry(
+    db: &PgPool,
+    user_id: Uuid,
+    delta: i64,
+    balance_after: i64,
+    reason: &str,
+    order_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO point_ledger (id, user_id, delta, balance_after, reason, order_id, created_at)
+        VALUES ($1, $2, $3, $4, $5::point_reason, $6, $7)
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(delta)
+    .bind(balance_after)
+    .bind(reason)
+    .bind(order_id)
+    .bind(created_at)
+    .execute(db)
+    .await
+    .expect("insert point_ledger entry");
+    id
+}
+
+/// Directly set a user's `users.points_balance` (bypassing
+/// `apply_delta_tx`) so tests can arrange an exact starting balance before
+/// exercising a service call. Bypasses ledger bookkeeping entirely.
+pub async fn set_points_balance(db: &PgPool, user_id: Uuid, balance: i64) {
+    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(balance)
+        .execute(db)
+        .await
+        .expect("set points balance");
+}
+
 /// Small slug helper — lower, replace non-alnum with dashes.
 pub fn slugify(s: &str) -> String {
     s.chars()
