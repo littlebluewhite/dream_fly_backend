@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -156,6 +156,33 @@ pub async fn seed_time_slot_full(
     .execute(db)
     .await
     .expect("insert time_slot");
+    id
+}
+
+/// Insert a coupon row directly, bypassing the service layer so tests can
+/// set fields the create endpoint doesn't expose (e.g. `is_active`).
+pub async fn seed_coupon(
+    db: &PgPool,
+    code: &str,
+    discount_cents: i64,
+    is_active: bool,
+    expires_at: Option<DateTime<Utc>>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO coupons (id, code, discount_cents, is_active, expires_at, created_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(code)
+    .bind(discount_cents)
+    .bind(is_active)
+    .bind(expires_at)
+    .execute(db)
+    .await
+    .expect("insert coupon");
     id
 }
 

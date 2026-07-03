@@ -3,6 +3,7 @@ pub mod bookings;
 pub mod cart;
 pub mod coaches;
 pub mod contact;
+pub mod coupons;
 pub mod courses;
 pub mod notifications;
 pub mod orders;
