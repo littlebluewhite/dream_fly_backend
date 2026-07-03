@@ -66,22 +66,16 @@ pub async fn find_by_user(
     .await
 }
 
-/// Same shape as [`find_by_user`] but for a single subscription by id — used
-/// to build the response after a successful redeem.
-pub async fn find_by_id_with_product(
-    db: &PgPool,
-    id: Uuid,
-) -> Result<Option<SubscriptionWithProduct>, sqlx::Error> {
-    sqlx::query_as::<_, SubscriptionWithProduct>(
-        "SELECT s.id, s.product_id, p.name AS product_name, s.status, s.started_at, \
-                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents \
-         FROM subscriptions s \
-         JOIN products p ON p.id = s.product_id \
-         WHERE s.id = $1",
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await
+/// Product name for response assembly after a redeem.
+/// `subscriptions.product_id` is a NOT NULL FK into `products` (which has no
+/// cascading delete), so the row always exists; if that invariant somehow
+/// breaks, `fetch_one`'s `RowNotFound` surfaces as a 500 — the appropriate
+/// severity.
+pub async fn product_name(db: &PgPool, product_id: Uuid) -> Result<String, sqlx::Error> {
+    sqlx::query_scalar::<_, String>("SELECT name FROM products WHERE id = $1")
+        .bind(product_id)
+        .fetch_one(db)
+        .await
 }
 
 /// Atomically decrement one session. Returns `None` if the subscription

@@ -366,3 +366,51 @@ async fn redeem_nonexistent_id_returns_not_found(db: PgPool) {
         .expect_err("a nonexistent subscription id must 404");
     assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
 }
+
+#[sqlx::test]
+async fn concurrent_redeems_each_report_their_own_decrement(db: PgPool) {
+    // Five concurrent redeems on remaining=5. The atomic UPDATE serializes
+    // them on the row lock, so the five RETURNING rows carry the distinct
+    // values 4,3,2,1,0 — and each call's RESPONSE must carry the value its
+    // own UPDATE produced. If the service re-read the subscription between
+    // its UPDATE and response assembly, a sibling call's later decrement
+    // could leak into the response (duplicate/missing values here).
+    let user_id = common::seed_member(&db, "redeem-f@example.com", "Password!234").await;
+    let product_id =
+        seed_entitlement_product(&db, "ticket-redeem-f", "ticket", 5_000, None, Some(5)).await;
+    let sub_id = seed_subscription(
+        &db, user_id, product_id, "active", None, Some(5), Some(5), 5_000, Utc::now(),
+    )
+    .await;
+
+    let mut handles = Vec::new();
+    for _ in 0..5 {
+        let pool = db.clone();
+        handles.push(tokio::spawn(
+            async move { service::redeem(&pool, sub_id).await },
+        ));
+    }
+
+    let mut reported: Vec<i32> = Vec::new();
+    for handle in handles {
+        let resp = handle
+            .await
+            .expect("join")
+            .expect("all 5 redeems fit within the quota and must succeed");
+        reported.push(resp.remaining_sessions.expect("session-based subscription"));
+    }
+    reported.sort_unstable();
+    assert_eq!(
+        reported,
+        vec![0, 1, 2, 3, 4],
+        "each response must reflect its own call's decrement, not a sibling's later state"
+    );
+
+    let final_remaining: i32 =
+        sqlx::query_scalar("SELECT remaining_sessions FROM subscriptions WHERE id = $1")
+            .bind(sub_id)
+            .fetch_one(&db)
+            .await
+            .expect("fetch remaining");
+    assert_eq!(final_remaining, 0);
+}

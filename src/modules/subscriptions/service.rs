@@ -84,25 +84,22 @@ pub async fn list_my_subscriptions(
     Ok(rows.into_iter().map(SubscriptionResponse::from).collect())
 }
 
-/// Redeem (consume) one session from a subscription. The decrement itself is
-/// a single atomic `UPDATE ... RETURNING`; on failure (0 rows) we re-read the
-/// row to tell a missing id (404) apart from the specific reason it isn't
-/// redeemable (409).
+/// Redeem (consume) one session from a subscription. The decrement is a
+/// single atomic `UPDATE ... RETURNING`, and the response is built from the
+/// exact row that UPDATE returned — re-reading the subscription here could
+/// observe a *concurrent* redeem's later decrement and misreport what this
+/// call consumed. Only `product_name` is fetched separately. On 0 rows we
+/// re-read the row to tell a missing id (404) apart from the specific
+/// reason it isn't redeemable (409).
 pub async fn redeem(db: &PgPool, id: Uuid) -> Result<SubscriptionResponse, AppError> {
-    if repository::redeem_one_session(db, id)
+    if let Some(sub) = repository::redeem_one_session(db, id)
         .await
         .map_err(AppError::Database)?
-        .is_some()
     {
-        let detail = repository::find_by_id_with_product(db, id)
+        let product_name = repository::product_name(db, sub.product_id)
             .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!(
-                    "subscription {id} vanished immediately after redeem"
-                ))
-            })?;
-        return Ok(SubscriptionResponse::from(detail));
+            .map_err(AppError::Database)?;
+        return Ok(SubscriptionResponse::from_subscription(sub, product_name));
     }
 
     let current = repository::find_by_id(db, id)

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::model::SubscriptionWithProduct;
+use super::model::{Subscription, SubscriptionWithProduct};
 
 #[derive(Debug, Serialize)]
 pub struct SubscriptionResponse {
@@ -24,6 +24,28 @@ impl From<SubscriptionWithProduct> for SubscriptionResponse {
             id: s.id,
             product_id: s.product_id,
             product_name: s.product_name,
+            status,
+            started_at: s.started_at,
+            expires_at: s.expires_at,
+            total_sessions: s.total_sessions,
+            remaining_sessions: s.remaining_sessions,
+            price_cents: s.price_cents,
+        }
+    }
+}
+
+impl SubscriptionResponse {
+    /// Build from a bare subscription row plus a separately-fetched product
+    /// name. Used by the redeem path, which must serialize the exact row its
+    /// atomic `UPDATE ... RETURNING` produced — re-reading the subscription
+    /// could observe a concurrent redeem's later decrement and misreport
+    /// what this call consumed.
+    pub fn from_subscription(s: Subscription, product_name: String) -> Self {
+        let status = s.derived_status().to_string();
+        Self {
+            id: s.id,
+            product_id: s.product_id,
+            product_name,
             status,
             started_at: s.started_at,
             expires_at: s.expires_at,
