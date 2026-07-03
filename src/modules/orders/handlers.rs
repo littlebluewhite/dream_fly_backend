@@ -11,7 +11,10 @@ use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{OrderListResponse, OrderResponse, UpdateOrderStatusRequest};
+use super::dto::{
+    AdminOrderListResponse, CheckoutRequest, OrderListResponse, OrderResponse,
+    UpdateOrderStatusRequest,
+};
 use super::service;
 
 /// Read the `Idempotency-Key` header (if present). We bound the length to
@@ -36,9 +39,20 @@ pub async fn checkout(
     State(state): State<AppState>,
     auth: AuthUser,
     headers: HeaderMap,
+    // `Option<Json<T>>` rather than `ValidatedJson<T>`: axum's built-in
+    // `OptionalFromRequest` impl for `Json` yields `None` when the request
+    // has no `Content-Type` header at all (the existing no-body `POST
+    // /orders` calls), instead of failing extraction the way a bare
+    // `ValidatedJson<CheckoutRequest>` would. A present-but-non-JSON
+    // content type still errors; a present JSON body (including `{}`, since
+    // every `CheckoutRequest` field is `Option`) is parsed normally. This
+    // must be the last handler argument (only one extractor per handler may
+    // consume the body).
+    body: Option<Json<CheckoutRequest>>,
 ) -> Result<Json<OrderResponse>, AppError> {
     let idempotency_key = extract_idempotency_key(&headers);
-    let order = service::checkout(&state.db, auth.user_id, idempotency_key).await?;
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let order = service::checkout(&state.db, auth.user_id, idempotency_key, req).await?;
     Ok(Json(order))
 }
 
@@ -72,4 +86,16 @@ pub async fn update_status(
     auth.require_role("admin")?;
     let order = service::update_order_status(&state.db, id, &req.status).await?;
     Ok(Json(order))
+}
+
+/// Paginated order list across all users (admin only).
+#[tracing::instrument(skip_all)]
+pub async fn admin_list_orders(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<AdminOrderListResponse>, AppError> {
+    auth.require_role("admin")?;
+    let result = service::list_all_orders(&state.db, &params).await?;
+    Ok(Json(result))
 }

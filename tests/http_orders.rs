@@ -60,8 +60,9 @@ async fn checkout_happy_path_creates_order_and_clears_cart(db: PgPool) {
     let body: serde_json::Value = resp.json();
     assert!(body["total_cents"].as_i64().unwrap() > 0);
     assert!(body["items"].as_array().unwrap().len() >= 1);
-    // `status` starts as pending per the `orders` schema.
-    assert_eq!(body["status"], "pending");
+    // Checkout creates the order already `paid` — there's no separate
+    // payment-capture step in this application.
+    assert_eq!(body["status"], "paid");
 
     // Cart should be emptied post-checkout.
     let cart = app
@@ -152,4 +153,58 @@ async fn update_status_as_member_returns_403(db: PgPool) {
         .json(&json!({ "status": "paid" }))
         .await;
     assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn admin_list_orders_without_auth_returns_401(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let resp = app.get("/api/v1/orders").await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[sqlx::test]
+async fn admin_list_orders_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("o5@example.com", "Password!234").await;
+    let resp = app
+        .get("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn admin_list_orders_as_admin_paginates_and_includes_user_info(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("o6@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+
+    for _ in 0..3 {
+        app.post("/api/v1/cart/items")
+            .authorization_bearer(&user.access_token)
+            .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+            .await;
+        app.post("/api/v1/orders")
+            .authorization_bearer(&user.access_token)
+            .await
+            .assert_status_ok();
+    }
+
+    let (_admin, admin_token) = app.seed_admin().await;
+    let resp = app
+        .get("/api/v1/orders?page=1&per_page=2")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["orders"].as_array().unwrap().len(), 2);
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["page"], 1);
+    assert_eq!(body["per_page"], 2);
+
+    let first = &body["orders"][0];
+    assert_eq!(first["user_email"], "o6@example.com");
+    assert!(first["user_name"].is_string());
+    assert!(first["order_number"].is_string());
+    assert_eq!(first["status"], "paid");
 }

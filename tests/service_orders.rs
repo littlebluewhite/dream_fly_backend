@@ -2,16 +2,25 @@
 //!
 //! The checkout flow is the most concurrency-sensitive code path in the
 //! application: it reads the cart under `FOR UPDATE`, decrements product
-//! stock atomically, creates an order + order_items, and clears the cart —
-//! all inside a single transaction. These tests exercise the happy path and
-//! the critical race-condition boundary (two users, one last unit).
+//! stock atomically, resolves a coupon and points redemption, creates an
+//! order + order_items (product and course lines), grants the resulting
+//! enrolments/subscriptions, adjusts the points ledger, and clears the cart —
+//! all inside a single transaction. These tests exercise the happy path, the
+//! coupon/points math, the mixed product+course artifact creation, the
+//! critical race-condition boundary (two users, one last unit), and the
+//! full-rollback guarantee when an artifact step (course capacity) fails.
 
 mod common;
 
 use sqlx::PgPool;
 use std::sync::Arc;
 
+use common::add_course_to_cart;
+use common::fixtures::{
+    seed_course_with_capacity, seed_enrolment, seed_entitlement_product, set_points_balance,
+};
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::service;
 
 #[sqlx::test]
@@ -20,12 +29,22 @@ async fn checkout_creates_order_and_clears_cart(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    let resp = service::checkout(&db, user, None).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
 
     assert_eq!(resp.total_cents, 3000);
     assert_eq!(resp.items.len(), 1);
     assert_eq!(resp.items[0].quantity, 2);
     assert_eq!(resp.items[0].unit_price_cents, 1500);
+    assert_eq!(resp.items[0].item_type, "product");
+
+    // No coupon/points regression: a plain product checkout still behaves
+    // exactly as before, and now also earns points — 5% of NT$30 (3000
+    // cents), rounded to the nearest point: (30*5+50)/100 = 2.
+    assert_eq!(resp.coupon_code, None);
+    assert_eq!(resp.points_used, 0);
+    assert_eq!(resp.points_earned, 2);
 
     // Cart is now empty
     let cart_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cart_items WHERE user_id = $1")
@@ -60,7 +79,9 @@ async fn checkout_decrements_stock(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    service::checkout(&db, user, None).await.expect("checkout");
+    service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
 
     assert_eq!(common::product_stock(&db, product).await, Some(1));
 }
@@ -73,7 +94,9 @@ async fn checkout_unlimited_stock_unchanged(db: PgPool) {
     let product = common::seed_product(&db, "ticket-1", 500, None).await;
     common::add_to_cart(&db, user, product, 10).await;
 
-    service::checkout(&db, user, None).await.expect("checkout");
+    service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
 
     assert_eq!(common::product_stock(&db, product).await, None);
 }
@@ -84,7 +107,7 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1000, Some(1)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    let err = service::checkout(&db, user, None)
+    let err = service::checkout(&db, user, None, CheckoutRequest::default())
         .await
         .expect_err("insufficient stock should fail");
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
@@ -114,10 +137,273 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
 async fn checkout_empty_cart_fails(db: PgPool) {
     let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
 
-    let err = service::checkout(&db, user, None)
+    let err = service::checkout(&db, user, None, CheckoutRequest::default())
         .await
         .expect_err("empty cart should fail");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
+}
+
+#[sqlx::test]
+async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
+    let user = common::seed_member(&db, "mixed-buyer@example.com", "passw0rd!").await;
+    let course = seed_course_with_capacity(&db, "Mixed Cart Course", None, 12).await;
+    let product = seed_entitlement_product(&db, "membership-mix", "membership", 8000, None, None).await;
+
+    add_course_to_cart(&db, user, course).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let resp = service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
+
+    // order_items: two lines, correctly discriminated.
+    assert_eq!(resp.items.len(), 2);
+    let course_item = resp
+        .items
+        .iter()
+        .find(|i| i.item_type == "course")
+        .expect("a course order_item");
+    assert_eq!(course_item.course_id, Some(course));
+    assert_eq!(course_item.product_id, None);
+    let product_item = resp
+        .items
+        .iter()
+        .find(|i| i.item_type == "product")
+        .expect("a product order_item");
+    assert_eq!(product_item.product_id, Some(product));
+    assert_eq!(product_item.course_id, None);
+
+    // Exactly one enrolment + one subscription were produced, and both are
+    // reflected directly in the response.
+    assert_eq!(resp.enrolments.len(), 1);
+    assert_eq!(resp.enrolments[0].course_id, course);
+    assert_eq!(resp.subscriptions.len(), 1);
+    assert_eq!(resp.subscriptions[0].product_id, product);
+
+    let enrolment_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM enrolments WHERE user_id = $1 AND course_id = $2 AND status = 'active'",
+    )
+    .bind(user)
+    .bind(course)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(enrolment_count, 1);
+
+    let subscription_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM subscriptions WHERE user_id = $1 AND product_id = $2",
+    )
+    .bind(user)
+    .bind(product)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(subscription_count, 1);
+}
+
+#[sqlx::test]
+async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
+    let user = common::seed_member(&db, "coupon-buyer@example.com", "passw0rd!").await;
+    // Subtotal must comfortably exceed 2x the discount so the post-discount
+    // total still satisfies the `orders_discount_bound` CHECK constraint
+    // (discount_cents <= total_cents).
+    let product = common::seed_product(&db, "coupon-prod", 30_000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    common::fixtures::seed_coupon(&db, "DREAMFLY100", 10_000, true, None).await;
+
+    let req = CheckoutRequest {
+        coupon_code: Some("DREAMFLY100".to_string()),
+        use_points: None,
+    };
+    let resp = service::checkout(&db, user, None, req).await.expect("checkout");
+
+    assert_eq!(resp.discount_cents, 10_000);
+    assert_eq!(resp.coupon_code, Some("DREAMFLY100".to_string()));
+    assert_eq!(resp.total_cents, 20_000);
+}
+
+#[sqlx::test]
+async fn checkout_with_invalid_coupon_returns_validation_error(db: PgPool) {
+    let user = common::seed_member(&db, "badcoupon-buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let req = CheckoutRequest {
+        coupon_code: Some("NOSUCHCODE".to_string()),
+        use_points: None,
+    };
+    let err = service::checkout(&db, user, None, req)
+        .await
+        .expect_err("invalid coupon should fail");
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+
+    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(order_count, 0, "no order should be created on invalid coupon");
+}
+
+#[sqlx::test]
+async fn checkout_use_points_caps_at_balance(db: PgPool) {
+    let user = common::seed_member(&db, "points-buyer@example.com", "passw0rd!").await;
+    set_points_balance(&db, user, 500).await;
+    // Payable NT$3000 = 300,000 cents.
+    let product = common::seed_product(&db, "points-prod", 300_000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let req = CheckoutRequest {
+        coupon_code: None,
+        use_points: Some(true),
+    };
+    let resp = service::checkout(&db, user, None, req).await.expect("checkout");
+
+    assert_eq!(resp.points_used, 500);
+    assert_eq!(resp.total_cents, 300_000 - 50_000);
+
+    let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    // Started at 500, redeemed all 500 (-> 0), then earned this checkout's
+    // own `points_earned` on top.
+    assert_eq!(balance, resp.points_earned);
+}
+
+#[sqlx::test]
+async fn checkout_use_points_zero_balance_uses_none(db: PgPool) {
+    let user = common::seed_member(&db, "nopoints-buyer@example.com", "passw0rd!").await;
+    // No `set_points_balance` call — a fresh user's balance defaults to 0.
+    let product = common::seed_product(&db, "nopoints-prod", 1000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let req = CheckoutRequest {
+        coupon_code: None,
+        use_points: Some(true),
+    };
+    let resp = service::checkout(&db, user, None, req).await.expect("checkout");
+
+    assert_eq!(resp.points_used, 0);
+    assert_eq!(resp.total_cents, 1000);
+
+    // No redeem ledger row should exist since points_used == 0 is skipped.
+    let redeem_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger WHERE user_id = $1 AND reason = 'checkout_redeem'::point_reason",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(redeem_count, 0);
+}
+
+#[sqlx::test]
+async fn checkout_full_course_rolls_back_everything(db: PgPool) {
+    let other_user = common::seed_member(&db, "already-in@example.com", "passw0rd!").await;
+    let user = common::seed_member(&db, "latecomer@example.com", "passw0rd!").await;
+    let course = seed_course_with_capacity(&db, "Full Class", None, 1).await;
+    seed_enrolment(&db, other_user, course, "active", chrono::Utc::now()).await;
+
+    let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
+    add_course_to_cart(&db, user, course).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    // Also request points redemption so, if the failure did NOT roll back
+    // everything, a stray point_ledger row or balance mutation would show
+    // up below. The enrolment check (course capacity) runs before the
+    // points-ledger step, so this must never be reached either.
+    set_points_balance(&db, user, 100).await;
+    let req = CheckoutRequest {
+        coupon_code: None,
+        use_points: Some(true),
+    };
+
+    let err = service::checkout(&db, user, None, req)
+        .await
+        .expect_err("full course must reject the whole checkout");
+    assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
+
+    // Nothing was written: no order, enrolment count for the course
+    // unchanged (still just the pre-existing one), stock untouched, no
+    // ledger row, and the points balance untouched.
+    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(order_count, 0);
+
+    let enrolment_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM enrolments WHERE course_id = $1 AND status = 'active'",
+    )
+    .bind(course)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(enrolment_count, 1, "enrolment count must be unchanged");
+
+    assert_eq!(common::product_stock(&db, product).await, Some(3));
+
+    let ledger_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(ledger_count, 0, "no ledger row should survive the rollback");
+
+    let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(balance, 100, "points balance must be unchanged");
+
+    // The cart itself is untouched too (checkout never got to clear it).
+    let cart_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cart_items WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(cart_count, 2);
+}
+
+#[sqlx::test]
+async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool) {
+    let user = common::seed_member(&db, "replay-buyer@example.com", "passw0rd!").await;
+    let course = seed_course_with_capacity(&db, "Replay Course", None, 12).await;
+    add_course_to_cart(&db, user, course).await;
+
+    let key = Some("idempotency-key-1".to_string());
+    let first = service::checkout(&db, user, key.clone(), CheckoutRequest::default())
+        .await
+        .expect("first checkout");
+    assert_eq!(first.enrolments.len(), 1);
+
+    let second = service::checkout(&db, user, key, CheckoutRequest::default())
+        .await
+        .expect("replayed checkout");
+
+    assert_eq!(first.order_number, second.order_number);
+    assert_eq!(second.enrolments.len(), 1, "replay must still surface artifacts");
+    assert_eq!(second.enrolments[0].course_id, course);
+
+    let enrolment_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM enrolments WHERE user_id = $1 AND course_id = $2",
+    )
+    .bind(user)
+    .bind(course)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(enrolment_count, 1, "replay must not create a duplicate enrolment");
+
+    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(order_count, 1, "replay must not create a duplicate order");
 }
 
 #[sqlx::test]
@@ -136,8 +422,12 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
     let db_a = Arc::new(db.clone());
     let db_b = Arc::new(db.clone());
 
-    let task_a = tokio::spawn(async move { service::checkout(db_a.as_ref(), user_a, None).await });
-    let task_b = tokio::spawn(async move { service::checkout(db_b.as_ref(), user_b, None).await });
+    let task_a = tokio::spawn(async move {
+        service::checkout(db_a.as_ref(), user_a, None, CheckoutRequest::default()).await
+    });
+    let task_b = tokio::spawn(async move {
+        service::checkout(db_b.as_ref(), user_b, None, CheckoutRequest::default()).await
+    });
 
     let (res_a, res_b) = tokio::join!(task_a, task_b);
     let res_a = res_a.expect("task a panicked");
@@ -170,20 +460,24 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
 
 #[sqlx::test]
 async fn update_order_status_transitions_and_notifies(db: PgPool) {
-    // A fresh checkout leaves the order in `pending`. Transition it to `paid`
-    // (a valid edge) and assert both the persisted status and the
-    // "Order Update" notification the seam writes post-commit.
+    // Checkout now creates the order already `paid` (checkout succeeding IS
+    // the payment in this application — there's no separate capture step).
+    // Transition it to `processing` (a valid edge from `paid`) and assert
+    // both the persisted status and the "Order Update" notification the
+    // seam writes post-commit.
     let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
     let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
 
-    let order = service::checkout(&db, user, None).await.expect("checkout");
-    assert_eq!(order.status, "pending");
+    let order = service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
+    assert_eq!(order.status, "paid");
 
-    let updated = service::update_order_status(&db, order.id, "paid")
+    let updated = service::update_order_status(&db, order.id, "processing")
         .await
         .expect("update status");
-    assert_eq!(updated.status, "paid");
+    assert_eq!(updated.status, "processing");
 
     // Status persisted in the DB.
     let db_status: String = sqlx::query_scalar("SELECT status::text FROM orders WHERE id = $1")
@@ -191,7 +485,7 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(db_status, "paid");
+    assert_eq!(db_status, "processing");
 
     // An "Order Update" notification (type order_status) is written.
     let (title, message): (String, String) = sqlx::query_as(
@@ -202,5 +496,5 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
     .await
     .expect("order status notification row");
     assert_eq!(title, "Order Update");
-    assert!(message.contains("paid"));
+    assert!(message.contains("processing"));
 }

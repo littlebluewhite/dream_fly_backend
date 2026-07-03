@@ -1,53 +1,85 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::{Order, OrderItem, OrderStatus};
+use crate::modules::enrolments::model::EnrolmentWithCourse;
+use crate::modules::subscriptions::model::SubscriptionWithProduct;
 
+use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus};
+
+/// Create the order row. Checkout in this application has no separate
+/// payment-capture step — succeeding IS the payment — so the row is
+/// inserted already `status = 'paid'` with `paid_at` stamped, rather than
+/// starting `pending` and needing a follow-up transition.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_order(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     order_number: &str,
     total_cents: i64,
+    discount_cents: i64,
+    coupon_code: Option<&str>,
+    points_used: i64,
+    points_earned: i64,
 ) -> Result<Order, sqlx::Error> {
     sqlx::query_as::<_, Order>(
-        "INSERT INTO orders (id, user_id, order_number, status, total_cents, \
-         discount_cents, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, 'pending'::order_status, $3, 0, NOW(), NOW()) \
+        "INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, \
+         coupon_code, points_used, points_earned, paid_at, created_at, updated_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'paid'::order_status, $3, $4, $5, $6, $7, NOW(), \
+         NOW(), NOW()) \
          RETURNING *",
     )
     .bind(user_id)
     .bind(order_number)
     .bind(total_cents)
+    .bind(discount_cents)
+    .bind(coupon_code)
+    .bind(points_used)
+    .bind(points_earned)
     .fetch_one(&mut **tx)
     .await
 }
 
+/// Insert order_items for both product and course lines in one bulk
+/// INSERT. Each tuple is `(product_id, course_id, quantity,
+/// unit_price_cents)` with exactly one of `product_id`/`course_id` set;
+/// `item_type` is derived server-side from which one is present (rather
+/// than passed as a separate value) so the column can never disagree with
+/// the ids that actually got stored.
 pub async fn create_order_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     order_id: Uuid,
-    items: &[(Uuid, i32, i64)],
+    items: &[(Option<Uuid>, Option<Uuid>, i32, i64)],
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     let len = items.len();
     let mut ids: Vec<Uuid> = Vec::with_capacity(len);
-    let mut product_ids: Vec<Uuid> = Vec::with_capacity(len);
+    let mut product_ids: Vec<Option<Uuid>> = Vec::with_capacity(len);
+    let mut course_ids: Vec<Option<Uuid>> = Vec::with_capacity(len);
     let mut quantities: Vec<i32> = Vec::with_capacity(len);
     let mut prices: Vec<i64> = Vec::with_capacity(len);
 
-    for (product_id, quantity, unit_price_cents) in items {
+    for (product_id, course_id, quantity, unit_price_cents) in items {
         ids.push(Uuid::now_v7());
         product_ids.push(*product_id);
+        course_ids.push(*course_id);
         quantities.push(*quantity);
         prices.push(*unit_price_cents);
     }
 
     sqlx::query_as::<_, OrderItem>(
-        "INSERT INTO order_items (id, order_id, product_id, quantity, unit_price_cents, created_at) \
-         SELECT unnest($1::uuid[]), $2, unnest($3::uuid[]), unnest($4::int[]), unnest($5::bigint[]), NOW() \
+        "INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, \
+         unit_price_cents, created_at) \
+         SELECT u.id, $2, \
+                CASE WHEN u.product_id IS NOT NULL THEN 'product'::cart_item_type \
+                     ELSE 'course'::cart_item_type END, \
+                u.product_id, u.course_id, u.quantity, u.unit_price_cents, NOW() \
+         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[]) \
+              AS u(id, product_id, course_id, quantity, unit_price_cents) \
          RETURNING *",
     )
     .bind(&ids)
     .bind(order_id)
     .bind(&product_ids)
+    .bind(&course_ids)
     .bind(&quantities)
     .bind(&prices)
     .fetch_all(&mut **tx)
@@ -57,7 +89,7 @@ pub async fn create_order_items(
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Order>, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "SELECT id, user_id, order_number, status, total_cents, discount_cents, \
-         paid_at, created_at, updated_at \
+         coupon_code, points_used, points_earned, paid_at, created_at, updated_at \
          FROM orders WHERE id = $1",
     )
     .bind(id)
@@ -71,7 +103,7 @@ pub async fn find_by_id_tx(
 ) -> Result<Option<Order>, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "SELECT id, user_id, order_number, status, total_cents, discount_cents, \
-         paid_at, created_at, updated_at \
+         coupon_code, points_used, points_earned, paid_at, created_at, updated_at \
          FROM orders WHERE id = $1 \
          FOR UPDATE",
     )
@@ -88,7 +120,7 @@ pub async fn find_by_user(
 ) -> Result<Vec<Order>, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "SELECT id, user_id, order_number, status, total_cents, discount_cents, \
-         paid_at, created_at, updated_at \
+         coupon_code, points_used, points_earned, paid_at, created_at, updated_at \
          FROM orders \
          WHERE user_id = $1 \
          ORDER BY created_at DESC \
@@ -115,7 +147,7 @@ pub async fn find_items_by_order(
     order_id: Uuid,
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     sqlx::query_as::<_, OrderItem>(
-        "SELECT id, order_id, product_id, quantity, unit_price_cents, created_at \
+        "SELECT id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, created_at \
          FROM order_items \
          WHERE order_id = $1 \
          ORDER BY created_at",
@@ -125,25 +157,14 @@ pub async fn find_items_by_order(
     .await
 }
 
-pub async fn find_items_by_order_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    order_id: Uuid,
-) -> Result<Vec<OrderItem>, sqlx::Error> {
-    sqlx::query_as::<_, OrderItem>(
-        "SELECT id, order_id, product_id, quantity, unit_price_cents, created_at \
-         FROM order_items \
-         WHERE order_id = $1 \
-         ORDER BY created_at",
-    )
-    .bind(order_id)
-    .fetch_all(&mut **tx)
-    .await
-}
-
 /// Single atomic UPDATE: changes the status AND, if transitioning into
 /// `paid`, stamps `paid_at` in the same statement. Replaces the older
 /// split `update_status` + `set_paid_at` sequence that could leave the row
 /// in an inconsistent `paid` + `paid_at = NULL` state on partial failure.
+/// (In practice every order is already `paid` from creation — see
+/// `create_order` — so this branch is now only relevant if a future status
+/// ever needs `paid_at` semantics again; kept as-is since it's still
+/// correct and harmless.)
 pub async fn update_status_and_paid_at_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
@@ -205,4 +226,98 @@ pub async fn insert_idempotency_tx(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Points balance lock (checkout-only helper)
+// ---------------------------------------------------------------------------
+
+/// Lock the user's row and read their current points balance inside the
+/// checkout transaction, so a second concurrent checkout for the same user
+/// can never compute `points_used` against the same stale balance (double
+/// spend). The lock is held until the caller's transaction commits or rolls
+/// back — a concurrent checkout for the same user blocks here until then,
+/// and re-reads the now-updated balance afterward.
+pub async fn lock_user_points_balance_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT points_balance FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts by order_id — checkout response assembly + idempotent replay
+// ---------------------------------------------------------------------------
+//
+// These mirror `enrolments::repository::find_by_user_with_course` and
+// `subscriptions::repository::find_by_user` (same JOIN, same row shape)
+// but filter by `order_id` instead of `user_id`. They live here rather than
+// in the enrolments/subscriptions modules because reconstructing the
+// checkout response (fresh, replayed, or re-fetched via `GET
+// /orders/{id}`) is strictly an orders-module concern.
+
+pub async fn find_enrolments_by_order(
+    db: &PgPool,
+    order_id: Uuid,
+) -> Result<Vec<EnrolmentWithCourse>, sqlx::Error> {
+    sqlx::query_as::<_, EnrolmentWithCourse>(
+        "SELECT e.id, e.course_id, c.name AS course_name, c.level AS course_level, \
+                c.schedule_text, e.status, e.enrolled_at \
+         FROM enrolments e \
+         JOIN courses c ON c.id = e.course_id \
+         WHERE e.order_id = $1 \
+         ORDER BY e.enrolled_at",
+    )
+    .bind(order_id)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn find_subscriptions_by_order(
+    db: &PgPool,
+    order_id: Uuid,
+) -> Result<Vec<SubscriptionWithProduct>, sqlx::Error> {
+    sqlx::query_as::<_, SubscriptionWithProduct>(
+        "SELECT s.id, s.product_id, p.name AS product_name, s.status, s.started_at, \
+                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents \
+         FROM subscriptions s \
+         JOIN products p ON p.id = s.product_id \
+         WHERE s.order_id = $1 \
+         ORDER BY s.created_at",
+    )
+    .bind(order_id)
+    .fetch_all(db)
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Admin order list
+// ---------------------------------------------------------------------------
+
+pub async fn find_all_with_user(
+    db: &PgPool,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<AdminOrderRow>, sqlx::Error> {
+    sqlx::query_as::<_, AdminOrderRow>(
+        "SELECT o.id, o.order_number, u.name AS user_name, u.email AS user_email, \
+                o.status, o.total_cents, o.points_used, o.coupon_code, o.created_at \
+         FROM orders o \
+         JOIN users u ON u.id = o.user_id \
+         ORDER BY o.created_at DESC \
+         LIMIT $1 OFFSET $2",
+    )
+    .bind(limit as i64)
+    .bind(offset as i64)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orders")
+        .fetch_one(db)
+        .await
 }

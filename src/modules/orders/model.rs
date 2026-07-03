@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::modules::cart::model::CartItemType;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "order_status", rename_all = "snake_case")]
 pub enum OrderStatus {
@@ -67,17 +69,44 @@ pub struct Order {
     pub status: OrderStatus,
     pub total_cents: i64,
     pub discount_cents: i64,
+    pub coupon_code: Option<String>,
+    pub points_used: i64,
+    pub points_earned: i64,
     pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
+/// `order_items` row. Exactly one of `product_id`/`course_id` is set,
+/// matching `item_type` (enforced by the `order_items_one_target` CHECK) —
+/// mirrors `cart::model::CartItem`'s product/course dual-target shape, and
+/// reuses the same `cart_item_type` Postgres enum since an order line is
+/// just a cart line's frozen snapshot at checkout time.
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct OrderItem {
     pub id: Uuid,
     pub order_id: Uuid,
-    pub product_id: Uuid,
+    pub item_type: CartItemType,
+    pub product_id: Option<Uuid>,
+    pub course_id: Option<Uuid>,
     pub quantity: i32,
     pub unit_price_cents: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// `orders` JOINed with `users` for the two fields the admin order list
+/// needs (`user_name`, `user_email`). Kept as its own flat row type (rather
+/// than nesting an [`Order`] inside it) because sqlx's derived `FromRow`
+/// maps one column per field and has no support for nested structs.
+#[derive(Debug, sqlx::FromRow)]
+pub struct AdminOrderRow {
+    pub id: Uuid,
+    pub order_number: String,
+    pub user_name: String,
+    pub user_email: String,
+    pub status: OrderStatus,
+    pub total_cents: i64,
+    pub points_used: i64,
+    pub coupon_code: Option<String>,
     pub created_at: DateTime<Utc>,
 }

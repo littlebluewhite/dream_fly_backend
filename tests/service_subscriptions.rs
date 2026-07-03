@@ -32,10 +32,19 @@ async fn seed_order(
     user_id: Uuid,
     total_cents: i64,
 ) -> Uuid {
-    orders_repo::create_order(tx, user_id, &format!("TEST-{}", Uuid::now_v7()), total_cents)
-        .await
-        .expect("seed order")
-        .id
+    orders_repo::create_order(
+        tx,
+        user_id,
+        &format!("TEST-{}", Uuid::now_v7()),
+        total_cents,
+        0,
+        None,
+        0,
+        0,
+    )
+    .await
+    .expect("seed order")
+    .id
 }
 
 // ---------------------------------------------------------------------------

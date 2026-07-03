@@ -86,6 +86,10 @@ pub struct OrderCreatedPayload {
     pub user_id: Uuid,
     pub order_number: String,
     pub total_cents: i64,
+    pub discount_cents: i64,
+    pub coupon_code: Option<String>,
+    pub points_used: i64,
+    pub points_earned: i64,
 }
 
 #[derive(Debug, Serialize)]

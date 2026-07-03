@@ -3,27 +3,44 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::extractors::pagination::PaginationParams;
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
 use crate::kafka::outbox;
-use crate::modules::cart::model::CartItemType;
+use crate::modules::cart::model::{CartItemType, CheckoutLine};
 use crate::modules::cart::repository as cart_repo;
+use crate::modules::coupons::repository as coupons_repo;
+use crate::modules::enrolments::dto::EnrolmentResponse;
+use crate::modules::enrolments::service as enrolments_service;
 use crate::modules::notifications::service as notify;
+use crate::modules::points::model::PointReason;
+use crate::modules::points::service as points_service;
 use crate::modules::products::repository as product_repo;
+use crate::modules::subscriptions::dto::SubscriptionResponse;
+use crate::modules::subscriptions::service as subscriptions_service;
 
-use super::dto::{OrderListResponse, OrderResponse, OrderSummary};
-use super::model::OrderStatus;
+use super::dto::{
+    AdminOrderListResponse, AdminOrderSummary, CheckoutRequest, OrderListResponse, OrderResponse,
+    OrderSummary,
+};
+use super::model::{Order, OrderStatus};
 use super::repository;
 
 /// Checkout the user's cart. When an `idempotency_key` is supplied, a second
 /// attempt with the same (user_id, key) returns the original order instead
 /// of creating a duplicate (double-click, network retry, mobile 502 retry).
+///
+/// Rule order (see task brief): subtotal -> coupon -> points -> total ->
+/// stock decrement -> create order (paid) -> order_items -> artifacts
+/// (enrolments, subscriptions, points ledger) -> clear cart -> idempotency
+/// -> outbox + notify.
 pub async fn checkout(
     db: &PgPool,
     user_id: Uuid,
     idempotency_key: Option<String>,
+    req: CheckoutRequest,
 ) -> Result<OrderResponse, AppError> {
     // 1. Idempotency pre-check (outside tx). If we've already processed this
-    //    key for this user, return the prior order.
+    //    key for this user, return the prior order (artifacts included).
     if let Some(key) = &idempotency_key {
         if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
             let order = repository::find_by_id(db, existing_id)
@@ -33,42 +50,95 @@ pub async fn checkout(
                         "idempotency row referenced missing order {existing_id}"
                     ))
                 })?;
-            let items = repository::find_items_by_order(db, existing_id).await?;
-            return Ok(OrderResponse::from_order_and_items(order, items));
+            return assemble_response(db, order).await;
         }
     }
 
     // All reads and writes happen inside the transaction so the cart snapshot,
-    // product prices, and stock decrement are consistent and serialized.
+    // product/course prices, stock decrement, and every artifact created are
+    // consistent and serialized.
     let mut tx = db.begin().await?;
 
-    // 2. Lock and read cart items + current product prices
+    // 2. Lock and read cart items + current product/course prices. Course
+    //    lines are now first-class (the Task-3 "not yet supported" guard is
+    //    gone).
     let cart_items = cart_repo::find_cart_items_for_checkout_tx(&mut tx, user_id).await?;
 
     if cart_items.is_empty() {
         return Err(AppError::BadRequest("cart is empty".into()));
     }
 
-    // Task 9 replaces this: course checkout isn't implemented yet (no
-    // enrolment creation, no order_items support for course lines). Reject
-    // the whole checkout rather than silently dropping course lines, so the
-    // temporary limitation is visible to the caller instead of the order
-    // just missing what the user asked to buy.
-    if cart_items
-        .iter()
-        .any(|item| matches!(item.item_type, CartItemType::Course))
-    {
-        return Err(AppError::Validation(
-            "course checkout not yet supported".into(),
-        ));
+    // 3. Subtotal, checked arithmetic (existing style).
+    let mut subtotal_cents: i64 = 0;
+    for item in &cart_items {
+        let line = item
+            .price_cents
+            .checked_mul(item.quantity as i64)
+            .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
+        subtotal_cents = subtotal_cents
+            .checked_add(line)
+            .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
     }
 
-    // 3. Decrement product stock for items that track stock; fail fast on shortage
-    for item in &cart_items {
+    // 4. Coupon (optional). An unknown/inactive/expired code is rejected
+    //    outright — the caller should not be silently charged full price
+    //    while believing a discount applied. The discount is clamped to the
+    //    subtotal so a coupon larger than the cart can never drive the
+    //    payable amount below zero (and stays within the `orders` table's
+    //    pre-existing `discount_cents <= total_cents` CHECK as long as the
+    //    coupon is at most about half the subtotal).
+    let mut discount_cents: i64 = 0;
+    let mut applied_coupon_code: Option<String> = None;
+    if let Some(code) = req
+        .coupon_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let coupon = coupons_repo::find_valid_by_code_tx(&mut tx, code)
+            .await?
+            .ok_or_else(|| AppError::Validation("invalid coupon".into()))?;
+        discount_cents = coupon.discount_cents.min(subtotal_cents);
+        applied_coupon_code = Some(coupon.code);
+    }
+    let after_coupon_cents = subtotal_cents - discount_cents;
+
+    // 5. Points redemption (optional). Balance is read with `FOR UPDATE`
+    //    inside this transaction so a second concurrent checkout by the
+    //    same user cannot compute `points_used` against the same
+    //    now-stale balance (double spend) — it blocks on this lock until
+    //    we commit or roll back.
+    let mut points_used: i64 = 0;
+    if req.use_points.unwrap_or(false) {
+        let balance = repository::lock_user_points_balance_tx(&mut tx, user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+        let max_points_by_amount = after_coupon_cents / 100;
+        points_used = balance.min(max_points_by_amount);
+    }
+
+    // 6. Total.
+    let total_cents = after_coupon_cents - points_used * 100;
+
+    // 7. Stock decrement — product lines only; fail fast on shortage.
+    //    Sorted by product_id (deterministic global lock order) before
+    //    touching any row: two concurrent checkouts that share two products
+    //    added to their carts in opposite order could otherwise acquire the
+    //    per-row UPDATE locks in opposite orders and deadlock. The cart
+    //    read's own order is per-user cart-insertion order, which is not
+    //    globally consistent across different users' carts.
+    let mut product_lines: Vec<&CheckoutLine> = cart_items
+        .iter()
+        .filter(|item| matches!(item.item_type, CartItemType::Product))
+        .collect();
+    product_lines.sort_by_key(|line| line.product_id);
+
+    for item in &product_lines {
         let product_id = item
             .product_id
-            .expect("guarded above: only product lines reach this point");
-        let result = product_repo::try_decrement_stock_tx(&mut tx, product_id, item.quantity).await?;
+            .expect("product line always carries product_id");
+        let result =
+            product_repo::try_decrement_stock_tx(&mut tx, product_id, item.quantity).await?;
         if result.is_none() {
             return Err(AppError::Conflict(format!(
                 "insufficient stock for product {}",
@@ -77,19 +147,7 @@ pub async fn checkout(
         }
     }
 
-    // 4. Compute total with overflow-checked arithmetic
-    let mut total_cents: i64 = 0;
-    for item in &cart_items {
-        let line = item
-            .price_cents
-            .checked_mul(item.quantity as i64)
-            .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
-        total_cents = total_cents
-            .checked_add(line)
-            .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
-    }
-
-    // 5. Generate an order number. UUID-v7 suffix (base36-encoded last 32
+    // 8. Generate an order number. UUID-v7 suffix (base36-encoded last 32
     //    bits) gives us an unambiguous, monotonic, unguessable unique
     //    component — no birthday collisions and no modulo bias.
     let order_number = {
@@ -97,29 +155,112 @@ pub async fn checkout(
         format!("DF-{}{:08X}", Utc::now().format("%Y%m%d"), suffix)
     };
 
-    // 6. Create the order
-    let order = repository::create_order(&mut tx, user_id, &order_number, total_cents).await?;
+    // 9. Earn — 5% of the final total, rounded to the nearest point.
+    let total_nt = total_cents / 100;
+    let points_earned = (total_nt * 5 + 50) / 100;
 
-    // 7. Create order items from the (locked) cart snapshot. Product lines
-    //    only for now — Task 9 replaces this with product/course dual-target
-    //    order_items creation.
-    let items_data: Vec<(Uuid, i32, i64)> = cart_items
+    // 10. Create the order row FIRST, already `paid` — order_id is needed
+    //     before enrolments/subscriptions/ledger rows can link to it.
+    let order = repository::create_order(
+        &mut tx,
+        user_id,
+        &order_number,
+        total_cents,
+        discount_cents,
+        applied_coupon_code.as_deref(),
+        points_used,
+        points_earned,
+    )
+    .await?;
+
+    // 11. order_items from the (locked) cart snapshot — both product and
+    //     course lines.
+    let items_data: Vec<(Option<Uuid>, Option<Uuid>, i32, i64)> = cart_items
         .iter()
-        .map(|ci| {
-            let product_id = ci
-                .product_id
-                .expect("guarded above: only product lines reach this point");
-            (product_id, ci.quantity, ci.price_cents)
-        })
+        .map(|ci| (ci.product_id, ci.course_id, ci.quantity, ci.price_cents))
         .collect();
+    repository::create_order_items(&mut tx, order.id, &items_data).await?;
 
-    let order_items = repository::create_order_items(&mut tx, order.id, &items_data).await?;
+    // 12. Artifacts.
+    // 12a. Enrolments — course lines, sorted by course_id (deterministic
+    //      global lock order: `enrol_from_purchase_tx` takes `FOR UPDATE`
+    //      on the course row, and two concurrent checkouts sharing two
+    //      courses could otherwise lock them in opposite orders and
+    //      deadlock — same rationale as the product-line sort above). A
+    //      full course or a duplicate active enrolment rolls back the
+    //      *entire* checkout (order, order_items, stock decrement — all of
+    //      it), which is correct: partially fulfilling a cart is not an
+    //      acceptable outcome.
+    let mut course_lines: Vec<&CheckoutLine> = cart_items
+        .iter()
+        .filter(|item| matches!(item.item_type, CartItemType::Course))
+        .collect();
+    course_lines.sort_by_key(|line| line.course_id);
 
-    // 8. Clear the cart within the same transaction
+    for line in &course_lines {
+        let course_id = line
+            .course_id
+            .expect("course line always carries course_id");
+        enrolments_service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order.id).await?;
+    }
+
+    // 12b. Subscriptions — product lines whose product_type is
+    //      entitlement-eligible. `grant_from_purchase_tx` itself returns
+    //      `Ok(None)` for non-eligible types, so every product line is
+    //      simply offered to it. It does not itself validate quantity >= 1;
+    //      cart quantity is enforced to 1..=999 at add-time, so that always
+    //      holds by the time we get here.
+    for item in &product_lines {
+        let product_id = item
+            .product_id
+            .expect("product line always carries product_id");
+        let product = product_repo::find_by_id_tx(&mut tx, product_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "product {product_id} vanished mid-checkout after stock decrement"
+                ))
+            })?;
+        subscriptions_service::grant_from_purchase_tx(
+            &mut tx,
+            user_id,
+            &product,
+            item.quantity,
+            item.price_cents,
+            order.id,
+        )
+        .await?;
+    }
+
+    // 12c. Points ledger — redeem (negative) then earn (positive), each
+    //      skipped when zero (`apply_delta_tx` rejects a zero delta).
+    if points_used > 0 {
+        points_service::apply_delta_tx(
+            &mut tx,
+            user_id,
+            -points_used,
+            PointReason::CheckoutRedeem,
+            Some(order.id),
+        )
+        .await?;
+    }
+    if points_earned > 0 {
+        points_service::apply_delta_tx(
+            &mut tx,
+            user_id,
+            points_earned,
+            PointReason::CheckoutEarn,
+            Some(order.id),
+        )
+        .await?;
+    }
+
+    // 13. Clear the cart within the same transaction.
     cart_repo::clear_cart_tx(&mut tx, user_id).await?;
 
-    // 9. Record the idempotency key inside the same tx so a concurrent retry
-    //    sees either nothing (and races for the lock) or the committed row.
+    // 14. Record the idempotency key inside the same tx so a concurrent
+    //     retry sees either nothing (and races for the lock) or the
+    //     committed row.
     if let Some(key) = &idempotency_key {
         match repository::insert_idempotency_tx(&mut tx, user_id, key, order.id).await {
             Ok(()) => {}
@@ -128,16 +269,14 @@ pub async fn checkout(
                 // re-read the winning row.
                 drop(tx);
                 if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
-                    let order =
-                        repository::find_by_id(db, existing_id)
-                            .await?
-                            .ok_or_else(|| {
-                                AppError::Internal(anyhow::anyhow!(
-                                    "idempotency row referenced missing order {existing_id}"
-                                ))
-                            })?;
-                    let items = repository::find_items_by_order(db, existing_id).await?;
-                    return Ok(OrderResponse::from_order_and_items(order, items));
+                    let existing_order = repository::find_by_id(db, existing_id)
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Internal(anyhow::anyhow!(
+                                "idempotency row referenced missing order {existing_id}"
+                            ))
+                        })?;
+                    return assemble_response(db, existing_order).await;
                 }
                 return Err(AppError::Conflict("duplicate checkout".into()));
             }
@@ -145,8 +284,8 @@ pub async fn checkout(
         }
     }
 
-    // 10. Queue the order_created event into the outbox — persisted atomically
-    //     with the order itself. The background dispatcher (see
+    // 15. Queue the order_created event into the outbox — persisted
+    //     atomically with the order itself. The background dispatcher (see
     //     `kafka::outbox::start_dispatcher`) publishes it to Kafka with
     //     at-least-once semantics.
     outbox::insert_event_tx(
@@ -159,6 +298,10 @@ pub async fn checkout(
             user_id: order.user_id,
             order_number: order.order_number.clone(),
             total_cents: order.total_cents,
+            discount_cents: order.discount_cents,
+            coupon_code: order.coupon_code.clone(),
+            points_used: order.points_used,
+            points_earned: order.points_earned,
         },
         None,
     )
@@ -166,12 +309,41 @@ pub async fn checkout(
 
     tx.commit().await?;
 
-    // 11. Inline notification — the user expects order confirmation
+    // 16. Inline notification — the user expects order confirmation
     //     regardless of whether Kafka is enabled, and even if the
     //     dispatcher hasn't drained the event yet.
     notify::order_placed(db, order.user_id, order.id, &order.order_number).await;
 
-    Ok(OrderResponse::from_order_and_items(order, order_items))
+    // 17. Assemble the response (items + artifacts, looked up by order_id).
+    assemble_response(db, order).await
+}
+
+/// Fetch the enrolments/subscriptions a given order produced, mapped to
+/// their response DTOs. Shared by `assemble_response` (checkout, replay,
+/// `get_order`) so every read path presents identical artifacts.
+async fn fetch_artifacts(
+    db: &PgPool,
+    order_id: Uuid,
+) -> Result<(Vec<EnrolmentResponse>, Vec<SubscriptionResponse>), AppError> {
+    let enrolments = repository::find_enrolments_by_order(db, order_id)
+        .await?
+        .into_iter()
+        .map(EnrolmentResponse::from)
+        .collect();
+    let subscriptions = repository::find_subscriptions_by_order(db, order_id)
+        .await?
+        .into_iter()
+        .map(SubscriptionResponse::from)
+        .collect();
+    Ok((enrolments, subscriptions))
+}
+
+/// Build the full `OrderResponse` for an already-fetched order row: its
+/// items plus its artifacts, both looked up by `order.id`.
+async fn assemble_response(db: &PgPool, order: Order) -> Result<OrderResponse, AppError> {
+    let items = repository::find_items_by_order(db, order.id).await?;
+    let (enrolments, subscriptions) = fetch_artifacts(db, order.id).await?;
+    Ok(OrderResponse::assemble(order, items, enrolments, subscriptions))
 }
 
 pub async fn get_order(
@@ -191,9 +363,7 @@ pub async fn get_order(
         ));
     }
 
-    let items = repository::find_items_by_order(db, order_id).await?;
-
-    Ok(OrderResponse::from_order_and_items(order, items))
+    assemble_response(db, order).await
 }
 
 pub async fn my_orders(
@@ -215,6 +385,23 @@ pub async fn my_orders(
         total,
         page: page.max(1),
         per_page: limit,
+    })
+}
+
+/// Paginated order list for admins, newest first — `AdminOrderSummary`
+/// carries the buyer's name/email (JOINed) alongside the order.
+pub async fn list_all_orders(
+    db: &PgPool,
+    pagination: &PaginationParams,
+) -> Result<AdminOrderListResponse, AppError> {
+    let total = repository::count_all(db).await?;
+    let rows = repository::find_all_with_user(db, pagination.limit(), pagination.offset()).await?;
+
+    Ok(AdminOrderListResponse {
+        orders: rows.into_iter().map(AdminOrderSummary::from).collect(),
+        total,
+        page: pagination.page,
+        per_page: pagination.limit(),
     })
 }
 
@@ -248,8 +435,6 @@ pub async fn update_order_status(
         .await?
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
 
-    let items = repository::find_items_by_order_tx(&mut tx, order_id).await?;
-
     // Queue the status-change event atomically with the status update.
     outbox::insert_event_tx(
         &mut tx,
@@ -278,5 +463,5 @@ pub async fn update_order_status(
     )
     .await;
 
-    Ok(OrderResponse::from_order_and_items(updated, items))
+    assemble_response(db, updated).await
 }

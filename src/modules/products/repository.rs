@@ -104,6 +104,25 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Product>, sqlx::
     .await
 }
 
+/// Transactional counterpart of [`find_by_id`], consumed by the checkout
+/// flow (Task 9) to fetch the full `Product` row for subscription-eligible
+/// cart lines inside the checkout transaction (`grant_from_purchase_tx`
+/// needs the whole row, not just price/quantity).
+pub async fn find_by_id_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<Option<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
+        "SELECT id, name, slug, product_type, description, price_cents, \
+         original_price_cents, features, is_highlighted, badge, stock, \
+         valid_days, session_count, is_active, created_at, updated_at \
+         FROM products WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+}
+
 /// Attempts to decrement `stock` by `quantity` atomically.
 ///
 /// Returns:

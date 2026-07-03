@@ -196,6 +196,24 @@ pub async fn add_to_cart(db: &PgPool, user_id: Uuid, product_id: Uuid, quantity:
     .expect("insert cart_item");
 }
 
+/// Add a course to a user's cart (course lines are always quantity 1).
+/// Mirrors `add_to_cart` above but targets `course_id` with `item_type =
+/// 'course'` instead of the default product line.
+pub async fn add_course_to_cart(db: &PgPool, user_id: Uuid, course_id: Uuid) {
+    sqlx::query(
+        r#"
+        INSERT INTO cart_items (id, user_id, item_type, course_id, quantity, created_at, updated_at)
+        VALUES ($1, $2, 'course'::cart_item_type, $3, 1, NOW(), NOW())
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(user_id)
+    .bind(course_id)
+    .execute(db)
+    .await
+    .expect("insert course cart_item");
+}
+
 /// Fetch the current `stock` of a product.
 pub async fn product_stock(db: &PgPool, product_id: Uuid) -> Option<i32> {
     sqlx::query_scalar::<_, Option<i32>>("SELECT stock FROM products WHERE id = $1")
