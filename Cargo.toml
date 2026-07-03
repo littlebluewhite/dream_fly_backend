@@ -3,6 +3,10 @@ name = "dream_fly_backend"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
+# `src/bin/seed.rs` adds a second binary target, which makes plain `cargo run`
+# ambiguous. Pin it back to the server so the documented `cargo run` /
+# `cargo run --bin seed` split keeps working.
+default-run = "dream_fly_backend"
 
 [dependencies]
 # Web framework

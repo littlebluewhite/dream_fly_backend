@@ -142,6 +142,39 @@ cargo run
 curl http://localhost:3000/api/v1/health
 ```
 
+## Dev Seed 與 Smoke Test
+
+### 灌入開發用假資料
+
+```bash
+cargo run --bin seed
+```
+
+冪等：可重複執行，每次都用 `ON CONFLICT DO NOTHING`（或先查後插）比對既有資料，不會產生重複列或報錯。內容包含：
+
+- admin 帳號 `admin@dreamfly.tw` / `Admin#2026`、測試會員 `member@dreamfly.tw` / `Member#2026`（points_balance=1250）
+- 4 位教練帳號（`coach1..coach4@dreamfly.tw` / `Coach#2026`，各附教練資料）
+- 6 門課程、5 筆商品/方案（單堂體驗券／十堂票／月票／季票／年卡）、3 組優惠碼（`DREAMFLY100`/`NEWYEAR500`/`WELCOME50`）、3 篇公告、4 個場館
+
+前端任務（Task 11 起）皆假設此指令已執行過。
+
+### 執行 API 端對端 Smoke Test
+
+```bash
+# 1. 確保 server 正在跑（另開一個終端機）
+cargo run
+
+# 2. 確保已跑過 seed（見上方）
+
+# 3. 執行 smoke test
+scripts/smoke.sh                          # 預設打 http://localhost:3000/api/v1
+scripts/smoke.sh http://localhost:3000/api/v1  # 也可自行指定 BASE_URL
+```
+
+腳本會依序打 health → 註冊 → 登入 → 加課程/月票入購物車 → 驗證優惠碼 → 帶 `Idempotency-Key` 結帳 → 交叉比對 `/enrolments/me`、`/subscriptions/me`、`/points/me` → 重放同一組 `Idempotency-Key` 確認回傳同一張訂單。每個步驟印出明確的 `PASS`/`FAIL`，任何一步失敗即以非零狀態碼結束。
+
+API 完整契約（端點、認證、DTO 欄位、分頁/金額/點數慣例）見 [`docs/api/integration-contract.md`](docs/api/integration-contract.md)。
+
 ## 常用指令
 
 ```bash
