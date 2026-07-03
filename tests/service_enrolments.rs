@@ -4,15 +4,20 @@
 //! - `enrol_from_purchase_tx`: happy path, capacity-full conflict, and the
 //!   duplicate-active pre-check conflict.
 //! - cancelling an enrolment frees the seat for a second enrol.
-//! - concurrent enrol attempts for the same user+course: exactly one wins,
-//!   backstopped by the partial unique index `uniq_enrolments_active`.
+//! - concurrent enrol attempts for the same user+course: exactly one wins
+//!   (the `FOR UPDATE` course lock serializes the two transactions).
+//! - the partial unique index `uniq_enrolments_active` itself: a direct
+//!   duplicate insert (bypassing the service's lock + pre-check) raises a
+//!   unique violation, and the service maps a genuine DB-level violation
+//!   to Conflict("already enrolled") even when its pre-check is blind.
 
 mod common;
 
+use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use common::fixtures::{seed_course, seed_course_with_capacity};
+use common::fixtures::{seed_course, seed_course_with_capacity, seed_enrolment};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::enrolments::repository as enrolments_repo;
 use dream_fly_backend::modules::enrolments::service;
@@ -134,11 +139,83 @@ async fn cancel_then_reenrol_succeeds(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn duplicate_active_insert_trips_partial_unique_index(db: PgPool) {
+    // Bypass the service's course lock and pre-check entirely: two direct
+    // repository inserts for the same user+course. The second must be
+    // rejected by the partial unique index `uniq_enrolments_active` itself,
+    // and the error must be recognizable via `is_unique_violation()` — the
+    // exact condition `enrol_from_purchase_tx`'s fallback arm matches on.
+    // If the index were missing, misnamed, or no longer partial-on-active,
+    // this test is the one that catches it.
+    let course_id = seed_course(&db, "Constraint Course", None).await;
+    let user_id = common::seed_member(&db, "enrol-uniq@example.com", "Password!234").await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let order_a = seed_order(&mut tx, user_id, 50_000).await;
+    enrolments_repo::insert_tx(&mut tx, user_id, course_id, order_a)
+        .await
+        .expect("first insert");
+    tx.commit().await.expect("commit");
+
+    let mut tx2 = db.begin().await.expect("begin tx2");
+    let order_b = seed_order(&mut tx2, user_id, 50_000).await;
+    let err = enrolments_repo::insert_tx(&mut tx2, user_id, course_id, order_b)
+        .await
+        .expect_err("second active insert for the same user+course must violate uniq_enrolments_active");
+    tx2.rollback().await.expect("rollback");
+
+    assert!(
+        matches!(err, sqlx::Error::Database(ref e) if e.is_unique_violation()),
+        "expected a unique violation from the partial index, got {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
+    // Forces the INSERT itself to trip `uniq_enrolments_active` *through
+    // the service*, proving the `is_unique_violation()` fallback arm maps
+    // the DB error to Conflict("already enrolled"). Under READ COMMITTED
+    // the pre-check would see any committed duplicate first, so we blind
+    // it: pin a REPEATABLE READ snapshot before the conflicting row is
+    // committed. The in-tx capacity count and exists pre-check then read
+    // the old (empty) snapshot, while the INSERT still collides with the
+    // committed index entry — deterministically exercising the second
+    // line of defense.
+    let course_id = seed_course(&db, "Unique Map Course", None).await;
+    let user_id = common::seed_member(&db, "enrol-map@example.com", "Password!234").await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
+        .await
+        .expect("set isolation level");
+    // First query in the tx pins the snapshot (before the duplicate exists).
+    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+
+    // Commit the conflicting active enrolment from outside the transaction.
+    seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+
+    let err = service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order_id)
+        .await
+        .expect_err("the insert must trip the partial unique index");
+    tx.rollback().await.expect("rollback");
+
+    match err {
+        AppError::Conflict(msg) => assert_eq!(msg, "already enrolled"),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
+#[sqlx::test]
 async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
     // Two concurrent enrol_from_purchase_tx calls for the same user+course.
-    // Whichever mechanism actually trips first — the pre-check SELECT or a
-    // unique-violation on `uniq_enrolments_active` — exactly one call must
-    // succeed and exactly one active row must exist afterward.
+    // Exactly one must succeed and exactly one active row must exist after.
+    // Note: this validates the `FOR UPDATE` course-lock serialization — the
+    // loser blocks on the lock until the winner commits, so it is the
+    // pre-check that rejects it here. The unique-index second line of
+    // defense is exercised directly by
+    // `duplicate_active_insert_trips_partial_unique_index` and
+    // `enrol_maps_db_unique_violation_to_already_enrolled` above.
     let course_id = seed_course(&db, "Race Course", None).await;
     let user_id = common::seed_member(&db, "enrol-race@example.com", "Password!234").await;
 
