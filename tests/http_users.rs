@@ -58,6 +58,9 @@ async fn update_me_changes_name(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert_eq!(body["name"], "Brand New Name");
+    // The frontend refreshes its local user state from this response, so
+    // roles must survive a profile update — not get washed to [].
+    assert_eq!(body["roles"], json!(["member"]));
 }
 
 #[sqlx::test]

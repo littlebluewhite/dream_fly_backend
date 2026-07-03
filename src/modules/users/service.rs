@@ -35,7 +35,12 @@ pub async fn update_me(
     )
     .await?;
 
-    Ok(UserResponse::from(user))
+    let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
+
+    Ok(UserResponse {
+        roles,
+        ..UserResponse::from(user)
+    })
 }
 
 pub async fn list_users(
