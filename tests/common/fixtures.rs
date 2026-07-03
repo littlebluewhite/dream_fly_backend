@@ -186,6 +186,83 @@ pub async fn seed_coupon(
     id
 }
 
+/// Insert a product with entitlement config (`product_type` + `valid_days` +
+/// `session_count`). Compatible extension of `seed_product` (defined in
+/// `tests/common/mod.rs`), which is hardcoded to `merchandise` and has no
+/// entitlement fields — subscriptions tests need `ticket`/`membership`
+/// products carrying `valid_days`/`session_count` instead.
+pub async fn seed_entitlement_product(
+    db: &PgPool,
+    slug: &str,
+    product_type: &str,
+    price_cents: i64,
+    valid_days: Option<i32>,
+    session_count: Option<i32>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO products (
+            id, name, slug, product_type, price_cents, features,
+            is_highlighted, valid_days, session_count, is_active, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4::product_type, $5, '{}'::text[], false, $6, $7, true, NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(format!("Test Entitlement Product {}", slug))
+    .bind(slug)
+    .bind(product_type)
+    .bind(price_cents)
+    .bind(valid_days)
+    .bind(session_count)
+    .execute(db)
+    .await
+    .expect("insert entitlement product");
+    id
+}
+
+/// Insert a subscription row directly (bypassing `grant_from_purchase_tx`) so
+/// redeem/status tests can set up exact states — remaining sessions,
+/// expiry, or a cancelled status — the grant flow's own rule combinations
+/// wouldn't otherwise produce. Returns the subscription id.
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_subscription(
+    db: &PgPool,
+    user_id: Uuid,
+    product_id: Uuid,
+    status: &str,
+    expires_at: Option<DateTime<Utc>>,
+    total_sessions: Option<i32>,
+    remaining_sessions: Option<i32>,
+    price_cents: i64,
+    created_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO subscriptions (
+            id, user_id, product_id, status, started_at, expires_at,
+            total_sessions, remaining_sessions, price_cents, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4::subscription_status, $9, $5, $6, $7, $8, $9, $9)
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(product_id)
+    .bind(status)
+    .bind(expires_at)
+    .bind(total_sessions)
+    .bind(remaining_sessions)
+    .bind(price_cents)
+    .bind(created_at)
+    .execute(db)
+    .await
+    .expect("insert subscription");
+    id
+}
+
 /// Small slug helper — lower, replace non-alnum with dashes.
 pub fn slugify(s: &str) -> String {
     s.chars()

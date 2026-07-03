@@ -11,5 +11,6 @@ pub mod permissions;
 pub mod posts;
 pub mod products;
 pub mod schedule;
+pub mod subscriptions;
 pub mod users;
 pub mod venues;
