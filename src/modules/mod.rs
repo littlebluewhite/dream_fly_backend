@@ -5,6 +5,7 @@ pub mod coaches;
 pub mod contact;
 pub mod coupons;
 pub mod courses;
+pub mod enrolments;
 pub mod notifications;
 pub mod orders;
 pub mod permissions;

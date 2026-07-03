@@ -49,6 +49,35 @@ pub async fn seed_course(db: &PgPool, name: &str, coach_id: Option<Uuid>) -> Uui
     id
 }
 
+/// Insert a published course with a unique slug, a caller-chosen
+/// `max_students` capacity, and a non-null `schedule_text`. Additive variant
+/// of `seed_course` (which hardcodes `max_students = 12` and leaves
+/// `schedule_text` NULL) for capacity-guard and enrolment-response tests.
+pub async fn seed_course_with_capacity(
+    db: &PgPool,
+    name: &str,
+    coach_id: Option<Uuid>,
+    max_students: i32,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    let slug = format!("{}-{}", slugify(name), &id.to_string()[..8]);
+    sqlx::query(
+        r#"
+        INSERT INTO courses (id, name, slug, level, description, duration_minutes, price_cents, max_students, features, is_active, coach_id, schedule_text, created_at, updated_at)
+        VALUES ($1, $2, $3, 'beginner'::course_level, 'Test course', 60, 50000, $5, ARRAY['drop-in'], true, $4, 'Mon/Wed 19:00', NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(slug)
+    .bind(coach_id)
+    .bind(max_students)
+    .execute(db)
+    .await
+    .expect("insert course");
+    id
+}
+
 pub async fn seed_venue_category(db: &PgPool, name: &str) -> Uuid {
     let id = Uuid::now_v7();
     let slug = format!("{}-{}", slugify(name), &id.to_string()[..8]);
@@ -260,6 +289,35 @@ pub async fn seed_subscription(
     .execute(db)
     .await
     .expect("insert subscription");
+    id
+}
+
+/// Insert an enrolment row directly (bypassing `enrol_from_purchase_tx`) so
+/// HTTP tests can set up exact states — status and `enrolled_at` ordering —
+/// without a real checkout. `order_id` is left NULL (a nullable FK; these
+/// tests don't need a real order row). Returns the enrolment id.
+pub async fn seed_enrolment(
+    db: &PgPool,
+    user_id: Uuid,
+    course_id: Uuid,
+    status: &str,
+    enrolled_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO enrolments (id, user_id, course_id, order_id, status, enrolled_at, created_at, updated_at)
+        VALUES ($1, $2, $3, NULL, $4::enrolment_status, $5, $5, $5)
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(course_id)
+    .bind(status)
+    .bind(enrolled_at)
+    .execute(db)
+    .await
+    .expect("insert enrolment");
     id
 }
 
