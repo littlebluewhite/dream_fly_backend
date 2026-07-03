@@ -8,6 +8,7 @@ use crate::error::AppError;
 use crate::kafka::events::{UserRegisteredPayload, event_types, topics};
 use crate::kafka::outbox;
 use crate::modules::notifications::service as notify;
+use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::email::EmailSender;
 use crate::utils::google_oauth;
 use crate::utils::jwt;
@@ -37,10 +38,15 @@ async fn build_auth_response(
 
     repository::save_refresh_token(db, user.id, &token_hash, expires_at).await?;
 
+    let roles = permissions_repository::find_role_names_by_user(db, user.id).await?;
+
     Ok(AuthResponse {
         access_token,
         refresh_token,
-        user: UserResponse::from(user.clone()),
+        user: UserResponse {
+            roles,
+            ..UserResponse::from(user.clone())
+        },
     })
 }
 
@@ -58,10 +64,15 @@ async fn build_auth_response_tx(
 
     repository::save_refresh_token_tx(tx, user.id, &token_hash, expires_at).await?;
 
+    let roles = permissions_repository::find_role_names_by_user_tx(tx, user.id).await?;
+
     Ok(AuthResponse {
         access_token,
         refresh_token,
-        user: UserResponse::from(user.clone()),
+        user: UserResponse {
+            roles,
+            ..UserResponse::from(user.clone())
+        },
     })
 }
 
@@ -439,10 +450,15 @@ pub async fn refresh_token(
 
     tx.commit().await?;
 
+    let roles = permissions_repository::find_role_names_by_user(db, user.id).await?;
+
     Ok(AuthResponse {
         access_token,
         refresh_token: new_refresh,
-        user: UserResponse::from(user),
+        user: UserResponse {
+            roles,
+            ..UserResponse::from(user)
+        },
     })
 }
 

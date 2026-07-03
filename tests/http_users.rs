@@ -27,6 +27,22 @@ async fn me_with_token_returns_own_profile(db: PgPool) {
     let body: serde_json::Value = resp.json();
     assert_eq!(body["email"], "me@example.com");
     assert_eq!(body["id"].as_str().unwrap(), user.user_id.to_string());
+    assert_eq!(body["roles"], json!(["member"]));
+}
+
+#[sqlx::test]
+async fn me_as_admin_returns_admin_role(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let roles = body["roles"].as_array().expect("roles array");
+    assert!(roles.contains(&json!("admin")));
 }
 
 #[sqlx::test]
@@ -72,6 +88,34 @@ async fn list_users_as_admin_succeeds(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert!(body["users"].as_array().unwrap().len() >= 3);
+}
+
+#[sqlx::test]
+async fn list_users_as_admin_includes_roles_per_user(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let member = app.register_member("listroles@example.com", "Password!234").await;
+    let (admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .get("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let users = body["users"].as_array().expect("users array");
+
+    let member_entry = users
+        .iter()
+        .find(|u| u["id"] == member.user_id.to_string())
+        .expect("member present in list");
+    assert_eq!(member_entry["roles"], json!(["member"]));
+
+    let admin_entry = users
+        .iter()
+        .find(|u| u["id"] == admin_id.to_string())
+        .expect("admin present in list");
+    let admin_roles = admin_entry["roles"].as_array().expect("roles array");
+    assert!(admin_roles.contains(&json!("admin")));
 }
 
 #[sqlx::test]

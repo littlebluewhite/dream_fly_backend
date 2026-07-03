@@ -35,6 +35,7 @@ async fn register_creates_user_and_returns_tokens(db: PgPool) {
     assert!(body["refresh_token"].as_str().unwrap().len() > 20);
     assert_eq!(body["user"]["email"], "new@example.com");
     assert_eq!(body["user"]["is_active"], true);
+    assert_eq!(body["user"]["roles"], json!(["member"]));
 }
 
 #[sqlx::test]
@@ -105,6 +106,7 @@ async fn login_with_correct_credentials_returns_tokens(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert!(!body["access_token"].as_str().unwrap().is_empty());
+    assert_eq!(body["user"]["roles"], json!(["member"]));
 }
 
 #[sqlx::test]

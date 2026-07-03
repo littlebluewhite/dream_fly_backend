@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::permissions::repository as permissions_repository;
 
 use super::dto::{UpdateProfileRequest, UserListResponse, UserResponse};
 use super::repository;
@@ -12,7 +13,12 @@ pub async fn get_me(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppError
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
-    Ok(UserResponse::from(user))
+    let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
+
+    Ok(UserResponse {
+        roles,
+        ..UserResponse::from(user)
+    })
 }
 
 pub async fn update_me(
@@ -42,8 +48,24 @@ pub async fn list_users(
     let users = repository::find_all(db, limit, offset).await?;
     let total = repository::count_all(db).await?;
 
+    // Single grouped query for the whole page instead of N+1 per-user lookups.
+    let user_ids: Vec<Uuid> = users.iter().map(|u| u.id).collect();
+    let mut roles_by_user =
+        permissions_repository::find_role_names_for_users(db, &user_ids).await?;
+
+    let users = users
+        .into_iter()
+        .map(|u| {
+            let roles = roles_by_user.remove(&u.id).unwrap_or_default();
+            UserResponse {
+                roles,
+                ..UserResponse::from(u)
+            }
+        })
+        .collect();
+
     Ok(UserListResponse {
-        users: users.into_iter().map(UserResponse::from).collect(),
+        users,
         total,
         page: pagination.page,
         per_page: pagination.limit(),
@@ -55,5 +77,10 @@ pub async fn get_user(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppErr
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
-    Ok(UserResponse::from(user))
+    let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
+
+    Ok(UserResponse {
+        roles,
+        ..UserResponse::from(user)
+    })
 }
