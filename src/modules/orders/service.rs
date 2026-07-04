@@ -84,9 +84,12 @@ pub async fn checkout(
     //    outright — the caller should not be silently charged full price
     //    while believing a discount applied. The discount is clamped to the
     //    subtotal so a coupon larger than the cart can never drive the
-    //    payable amount below zero (and stays within the `orders` table's
-    //    pre-existing `discount_cents <= total_cents` CHECK as long as the
-    //    coupon is at most about half the subtotal).
+    //    payable amount below zero. This application-level clamp is now the
+    //    *only* upper bound: the `orders` table's CHECK constraint
+    //    (`orders_discount_nonneg`) only enforces `discount_cents >= 0`. The
+    //    old `discount_cents <= total_cents` bound was dropped by migration
+    //    20260704000002_relax_discount_bound.sql because it compared against
+    //    the post-discount total and rejected legitimate 100%-off coupons.
     let mut discount_cents: i64 = 0;
     let mut applied_coupon_code: Option<String> = None;
     if let Some(code) = req

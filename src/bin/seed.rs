@@ -346,9 +346,32 @@ async fn print_row_counts(db: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Returns true if `app_env` (the value of `APP_ENV`) denotes production,
+/// matched case-insensitively so `Production` / `PRODUCTION` can't slip past
+/// the guard in `main` below. Extracted so it can be unit-tested without
+/// spawning the binary.
+fn is_production_env(app_env: &str) -> bool {
+    app_env.eq_ignore_ascii_case("production")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+
+    // Refuse to run against production: this binary unconditionally upserts
+    // a known admin credential (admin@dreamfly.tw / Admin#2026), which must
+    // never exist outside development/staging. Read `APP_ENV` the same way
+    // `config::AppConfig::load` and `main.rs`'s `validate_production_config`
+    // do, and check it before the config is loaded or any DB connection is
+    // opened.
+    let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
+    if is_production_env(&app_env) {
+        anyhow::bail!(
+            "refusing to run: APP_ENV={app_env} looks like production. This binary seeds \
+             known credentials (admin@dreamfly.tw / Admin#2026) and must never run against \
+             a production database."
+        );
+    }
 
     let config = AppConfig::load().context(
         "failed to load configuration — check APP_ENV, config/*.toml overlays, and APP__* env vars",
@@ -690,4 +713,23 @@ async fn main() -> anyhow::Result<()> {
 
     db.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_production_env_matches_case_insensitively() {
+        assert!(is_production_env("production"));
+        assert!(is_production_env("Production"));
+        assert!(is_production_env("PRODUCTION"));
+    }
+
+    #[test]
+    fn is_production_env_rejects_other_envs() {
+        assert!(!is_production_env("development"));
+        assert!(!is_production_env("staging"));
+        assert!(!is_production_env(""));
+    }
 }
