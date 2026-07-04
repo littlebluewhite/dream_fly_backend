@@ -450,7 +450,9 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 #### `GET /orders/me?page=&per_page=` — 需登入
 回應（`OrderListResponse`）：`{ "orders": [OrderSummary], "total", "page", "per_page" }`。
 
-`OrderSummary`（**摘要，不含 items/artifacts**）：`{ id, order_number, status, total_cents, created_at }`。
+`OrderSummary`（**摘要，不含 enrolments/subscriptions artifacts，但含品項摘要**）：`{ id, order_number, status, total_cents, created_at, items }`。
+
+`items`：`[{ name: string, quantity: number }]`——`name` 取自 `order_items` 下單當時的快照欄位（結帳當下的商品/課程名稱），**不是**即時 join 現在的商品目錄，所以商品改名或下架後，舊訂單的品項名稱仍維持下單當時的樣子。
 
 #### `GET /orders/{id}` — 需登入（本人或 admin）
 回應：完整 `OrderResponse`（同結帳回應形狀，含 items + enrolments + subscriptions）。403 若非本人也非 admin。
@@ -458,7 +460,7 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 #### `GET /orders?page=&per_page=` — admin
 回應（`AdminOrderListResponse`）：`{ "orders": [AdminOrderSummary], "total", "page", "per_page" }`。
 
-`AdminOrderSummary`：`{ id, order_number, user_name, user_email, status, total_cents, points_used, coupon_code, created_at }`（含買家姓名/信箱，一般 `OrderSummary` 沒有）。
+`AdminOrderSummary`：`{ id, order_number, user_name, user_email, status, total_cents, points_used, coupon_code, created_at, items }`（含買家姓名/信箱，一般 `OrderSummary` 沒有；`items` 同上）。
 
 #### `PATCH /orders/{id}/status` — admin
 Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunded" }`。回應：更新後的 `OrderResponse`。

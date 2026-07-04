@@ -20,6 +20,7 @@ use common::fixtures::{
     seed_course_with_capacity, seed_enrolment, seed_entitlement_product, set_points_balance,
 };
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::service;
 
@@ -535,6 +536,93 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(total_orders, 1);
+}
+
+#[sqlx::test]
+async fn my_orders_lists_items_per_order_without_cross_contamination(db: PgPool) {
+    // Two separate orders, each with a different single product line. The
+    // items aggregate (json_agg correlated subquery keyed on order_id) must
+    // not leak order 1's item into order 2's summary or vice versa.
+    let user = common::seed_member(&db, "items-buyer@example.com", "passw0rd!").await;
+    let product_a = common::seed_product(&db, "item-a", 1000, Some(10)).await;
+    let product_b = common::seed_product(&db, "item-b", 2000, Some(10)).await;
+
+    common::add_to_cart(&db, user, product_a, 3).await;
+    service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout 1");
+
+    common::add_to_cart(&db, user, product_b, 1).await;
+    service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout 2");
+
+    let list = service::my_orders(&db, user, 1, 10).await.expect("my_orders");
+    assert_eq!(list.orders.len(), 2);
+
+    // Newest first (ORDER BY created_at DESC): order 2 (item-b) then order 1 (item-a).
+    let newest = &list.orders[0];
+    assert_eq!(newest.items.len(), 1, "newest order must only carry its own item");
+    assert_eq!(newest.items[0].name, "Test Product item-b");
+    assert_eq!(newest.items[0].quantity, 1);
+
+    let oldest = &list.orders[1];
+    assert_eq!(oldest.items.len(), 1, "oldest order must only carry its own item");
+    assert_eq!(oldest.items[0].name, "Test Product item-a");
+    assert_eq!(oldest.items[0].quantity, 3);
+}
+
+#[sqlx::test]
+async fn my_orders_aggregates_multiple_items_in_one_order(db: PgPool) {
+    // A single order with two distinct product lines — both must appear in
+    // that one order's `items`, with the right quantities.
+    let user = common::seed_member(&db, "multi-item-buyer@example.com", "passw0rd!").await;
+    let product_a = common::seed_product(&db, "multi-a", 1000, Some(10)).await;
+    let product_b = common::seed_product(&db, "multi-b", 500, Some(10)).await;
+
+    common::add_to_cart(&db, user, product_a, 2).await;
+    common::add_to_cart(&db, user, product_b, 5).await;
+    service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
+
+    let list = service::my_orders(&db, user, 1, 10).await.expect("my_orders");
+    assert_eq!(list.orders.len(), 1);
+    let items = &list.orders[0].items;
+    assert_eq!(items.len(), 2, "both cart lines must appear in the summary");
+
+    let a = items
+        .iter()
+        .find(|i| i.name == "Test Product multi-a")
+        .expect("item a present");
+    assert_eq!(a.quantity, 2);
+    let b = items
+        .iter()
+        .find(|i| i.name == "Test Product multi-b")
+        .expect("item b present");
+    assert_eq!(b.quantity, 5);
+}
+
+#[sqlx::test]
+async fn admin_list_orders_includes_items(db: PgPool) {
+    let user = common::seed_member(&db, "admin-items-buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "admin-item", 1000, Some(10)).await;
+    common::add_to_cart(&db, user, product, 4).await;
+    service::checkout(&db, user, None, CheckoutRequest::default())
+        .await
+        .expect("checkout");
+
+    let pagination = PaginationParams {
+        page: 1,
+        per_page: 10,
+    };
+    let list = service::list_all_orders(&db, &pagination)
+        .await
+        .expect("list_all_orders");
+    assert_eq!(list.orders.len(), 1);
+    assert_eq!(list.orders[0].items.len(), 1);
+    assert_eq!(list.orders[0].items[0].name, "Test Product admin-item");
+    assert_eq!(list.orders[0].items[0].quantity, 4);
 }
 
 #[sqlx::test]

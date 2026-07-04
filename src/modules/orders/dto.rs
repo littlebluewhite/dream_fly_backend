@@ -6,7 +6,7 @@ use validator::Validate;
 use crate::modules::enrolments::dto::EnrolmentResponse;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
 
-use super::model::{AdminOrderRow, Order, OrderItem};
+use super::model::{AdminOrderRow, Order, OrderItem, OrderItemBrief, OrderSummaryRow};
 
 /// `POST /orders` body. Every field is optional: an empty body (or `{}`)
 /// checks out the cart at full price with no points redeemed — see
@@ -106,16 +106,20 @@ pub struct OrderSummary {
     pub status: String,
     pub total_cents: i64,
     pub created_at: DateTime<Utc>,
+    /// Per-line `{ name, quantity }` brief — `name` is the order_items
+    /// snapshot column (checkout-time name), not a live catalog join.
+    pub items: Vec<OrderItemBrief>,
 }
 
-impl From<Order> for OrderSummary {
-    fn from(o: Order) -> Self {
+impl From<OrderSummaryRow> for OrderSummary {
+    fn from(o: OrderSummaryRow) -> Self {
         Self {
             id: o.id,
             order_number: o.order_number,
             status: o.status.as_str().to_string(),
             total_cents: o.total_cents,
             created_at: o.created_at,
+            items: o.items.0,
         }
     }
 }
@@ -141,6 +145,8 @@ pub struct AdminOrderSummary {
     pub points_used: i64,
     pub coupon_code: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Same `items` brief as `OrderSummary` — see its doc comment.
+    pub items: Vec<OrderItemBrief>,
 }
 
 impl From<AdminOrderRow> for AdminOrderSummary {
@@ -155,6 +161,7 @@ impl From<AdminOrderRow> for AdminOrderSummary {
             points_used: o.points_used,
             coupon_code: o.coupon_code,
             created_at: o.created_at,
+            items: o.items.0,
         }
     }
 }

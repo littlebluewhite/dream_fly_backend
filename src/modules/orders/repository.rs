@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::modules::enrolments::model::EnrolmentWithCourse;
 use crate::modules::subscriptions::model::SubscriptionWithProduct;
 
-use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus};
+use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus, OrderSummaryRow};
 
 /// Create the order row. Checkout in this application has no separate
 /// payment-capture step — succeeding IS the payment — so the row is
@@ -41,14 +41,16 @@ pub async fn create_order(
 
 /// Insert order_items for both product and course lines in one bulk
 /// INSERT. Each tuple is `(product_id, course_id, quantity,
-/// unit_price_cents)` with exactly one of `product_id`/`course_id` set;
-/// `item_type` is derived server-side from which one is present (rather
-/// than passed as a separate value) so the column can never disagree with
-/// the ids that actually got stored.
+/// unit_price_cents, name)` with exactly one of `product_id`/`course_id`
+/// set; `item_type` is derived server-side from which one is present
+/// (rather than passed as a separate value) so the column can never
+/// disagree with the ids that actually got stored. `name` is the
+/// checkout-time display name (from the cart snapshot) — stored verbatim so
+/// later reads never need to join the live product/course catalog.
 pub async fn create_order_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     order_id: Uuid,
-    items: &[(Option<Uuid>, Option<Uuid>, i32, i64)],
+    items: &[(Option<Uuid>, Option<Uuid>, i32, i64, String)],
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     let len = items.len();
     let mut ids: Vec<Uuid> = Vec::with_capacity(len);
@@ -56,24 +58,26 @@ pub async fn create_order_items(
     let mut course_ids: Vec<Option<Uuid>> = Vec::with_capacity(len);
     let mut quantities: Vec<i32> = Vec::with_capacity(len);
     let mut prices: Vec<i64> = Vec::with_capacity(len);
+    let mut names: Vec<String> = Vec::with_capacity(len);
 
-    for (product_id, course_id, quantity, unit_price_cents) in items {
+    for (product_id, course_id, quantity, unit_price_cents, name) in items {
         ids.push(Uuid::now_v7());
         product_ids.push(*product_id);
         course_ids.push(*course_id);
         quantities.push(*quantity);
         prices.push(*unit_price_cents);
+        names.push(name.clone());
     }
 
     sqlx::query_as::<_, OrderItem>(
         "INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, \
-         unit_price_cents, created_at) \
+         unit_price_cents, name, created_at) \
          SELECT u.id, $2, \
                 CASE WHEN u.product_id IS NOT NULL THEN 'product'::cart_item_type \
                      ELSE 'course'::cart_item_type END, \
-                u.product_id, u.course_id, u.quantity, u.unit_price_cents, NOW() \
-         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[]) \
-              AS u(id, product_id, course_id, quantity, unit_price_cents) \
+                u.product_id, u.course_id, u.quantity, u.unit_price_cents, u.name, NOW() \
+         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[], $7::text[]) \
+              AS u(id, product_id, course_id, quantity, unit_price_cents, name) \
          RETURNING *",
     )
     .bind(&ids)
@@ -82,6 +86,7 @@ pub async fn create_order_items(
     .bind(&course_ids)
     .bind(&quantities)
     .bind(&prices)
+    .bind(&names)
     .fetch_all(&mut **tx)
     .await
 }
@@ -112,18 +117,26 @@ pub async fn find_by_id_tx(
     .await
 }
 
+/// Paginated order summaries for a user, `items` aggregated via a single
+/// `jsonb_agg` correlated subquery per row (index-backed by
+/// `idx_order_items_order_id`) — one query total for the whole page, not
+/// one query per order.
 pub async fn find_by_user(
     db: &PgPool,
     user_id: Uuid,
     limit: u32,
     offset: u32,
-) -> Result<Vec<Order>, sqlx::Error> {
-    sqlx::query_as::<_, Order>(
-        "SELECT id, user_id, order_number, status, total_cents, discount_cents, \
-         coupon_code, points_used, points_earned, paid_at, created_at, updated_at \
-         FROM orders \
-         WHERE user_id = $1 \
-         ORDER BY created_at DESC \
+) -> Result<Vec<OrderSummaryRow>, sqlx::Error> {
+    sqlx::query_as::<_, OrderSummaryRow>(
+        "SELECT o.id, o.order_number, o.status, o.total_cents, o.created_at, \
+                COALESCE( \
+                  (SELECT jsonb_agg(jsonb_build_object('name', oi.name, 'quantity', oi.quantity) ORDER BY oi.created_at) \
+                   FROM order_items oi WHERE oi.order_id = o.id), \
+                  '[]'::jsonb \
+                ) AS items \
+         FROM orders o \
+         WHERE o.user_id = $1 \
+         ORDER BY o.created_at DESC \
          LIMIT $2 OFFSET $3",
     )
     .bind(user_id)
@@ -297,6 +310,9 @@ pub async fn find_subscriptions_by_order(
 // Admin order list
 // ---------------------------------------------------------------------------
 
+/// Same `items` aggregation approach as [`find_by_user`] (one `jsonb_agg`
+/// correlated subquery per row, no N+1) — the admin order list is a
+/// paginated list too, so it gets the same treatment.
 pub async fn find_all_with_user(
     db: &PgPool,
     limit: u32,
@@ -304,7 +320,12 @@ pub async fn find_all_with_user(
 ) -> Result<Vec<AdminOrderRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminOrderRow>(
         "SELECT o.id, o.order_number, u.name AS user_name, u.email AS user_email, \
-                o.status, o.total_cents, o.points_used, o.coupon_code, o.created_at \
+                o.status, o.total_cents, o.points_used, o.coupon_code, o.created_at, \
+                COALESCE( \
+                  (SELECT jsonb_agg(jsonb_build_object('name', oi.name, 'quantity', oi.quantity) ORDER BY oi.created_at) \
+                   FROM order_items oi WHERE oi.order_id = o.id), \
+                  '[]'::jsonb \
+                ) AS items \
          FROM orders o \
          JOIN users u ON u.id = o.user_id \
          ORDER BY o.created_at DESC \

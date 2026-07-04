@@ -95,6 +95,13 @@ async fn my_orders_returns_only_mine(db: PgPool) {
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = resp.json();
     assert!(body["orders"].as_array().unwrap().len() >= 1);
+
+    // OrderSummary.items brief — name comes from the order_items snapshot,
+    // not a live product join.
+    let items = body["orders"][0]["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "X");
+    assert_eq!(items[0]["quantity"], 1);
 }
 
 #[sqlx::test]
@@ -207,4 +214,9 @@ async fn admin_list_orders_as_admin_paginates_and_includes_user_info(db: PgPool)
     assert!(first["user_name"].is_string());
     assert!(first["order_number"].is_string());
     assert_eq!(first["status"], "paid");
+
+    let items = first["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "Bundle");
+    assert_eq!(items[0]["quantity"], 1);
 }

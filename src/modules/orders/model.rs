@@ -109,4 +109,33 @@ pub struct AdminOrderRow {
     pub points_used: i64,
     pub coupon_code: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub items: sqlx::types::Json<Vec<OrderItemBrief>>,
+}
+
+/// `{ name, quantity }` — the minimal per-line summary surfaced by
+/// `OrderSummary`/`AdminOrderSummary`'s `items` field. Decoded straight out
+/// of a `jsonb_agg(...)` correlated-subquery aggregate (see
+/// `repository::find_by_user` / `find_all_with_user`), so it needs
+/// `Deserialize` in addition to the `Serialize` every other response type
+/// needs. `name` is the `order_items.name` snapshot column (what the buyer
+/// purchased at checkout time), never the live product/course catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderItemBrief {
+    pub name: String,
+    pub quantity: i32,
+}
+
+/// Row shape for `repository::find_by_user` — a slimmer projection of
+/// `orders` than the full [`Order`] model, plus the aggregated `items`
+/// brief. Kept separate from `Order` because most `Order` readers (checkout,
+/// `get_order`, status transitions) don't want the extra per-row aggregate
+/// subquery this requires.
+#[derive(Debug, sqlx::FromRow)]
+pub struct OrderSummaryRow {
+    pub id: Uuid,
+    pub order_number: String,
+    pub status: OrderStatus,
+    pub total_cents: i64,
+    pub created_at: DateTime<Utc>,
+    pub items: sqlx::types::Json<Vec<OrderItemBrief>>,
 }

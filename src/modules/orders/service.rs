@@ -177,10 +177,20 @@ pub async fn checkout(
     .await?;
 
     // 11. order_items from the (locked) cart snapshot — both product and
-    //     course lines.
-    let items_data: Vec<(Option<Uuid>, Option<Uuid>, i32, i64)> = cart_items
+    //     course lines. `ci.name` becomes the order_items snapshot column,
+    //     so later reads (OrderSummary/AdminOrderSummary `items`) never need
+    //     to join the live product/course catalog.
+    let items_data: Vec<(Option<Uuid>, Option<Uuid>, i32, i64, String)> = cart_items
         .iter()
-        .map(|ci| (ci.product_id, ci.course_id, ci.quantity, ci.price_cents))
+        .map(|ci| {
+            (
+                ci.product_id,
+                ci.course_id,
+                ci.quantity,
+                ci.price_cents,
+                ci.name.clone(),
+            )
+        })
         .collect();
     repository::create_order_items(&mut tx, order.id, &items_data).await?;
 
