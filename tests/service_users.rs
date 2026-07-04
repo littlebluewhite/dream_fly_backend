@@ -31,6 +31,26 @@ async fn get_me_returns_seeded_profile(db: PgPool) {
     assert!(!resp.phone_verified);
 }
 
+/// Task 18: `UserResponse` gained `points_balance` (frontend admin members page
+/// needs it). `seed_member`'s raw INSERT omits the column (relies on the
+/// commerce migration's `DEFAULT 0`), so this bumps it to a known non-zero
+/// value first — proving the field is actually read off the row, not just
+/// defaulting to 0 by coincidence.
+#[sqlx::test]
+async fn get_me_includes_points_balance(db: PgPool) {
+    let user_id = common::seed_member(&db, "points@example.com", "hunter22-secret").await;
+    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(750_i64)
+        .execute(&db)
+        .await
+        .expect("bump points_balance");
+
+    let resp = service::get_me(&db, user_id).await.expect("get_me");
+
+    assert_eq!(resp.points_balance, 750);
+}
+
 #[sqlx::test]
 async fn get_user_by_nonexistent_id_returns_not_found(db: PgPool) {
     let err = service::get_user(&db, Uuid::now_v7()).await.unwrap_err();

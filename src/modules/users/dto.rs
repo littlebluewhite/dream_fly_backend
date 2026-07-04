@@ -28,6 +28,7 @@ pub struct UserResponse {
     pub last_login: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub roles: Vec<String>,
+    pub points_balance: i64,
 }
 
 impl From<User> for UserResponse {
@@ -43,6 +44,7 @@ impl From<User> for UserResponse {
             last_login: user.last_login,
             created_at: user.created_at,
             roles: Vec::new(),
+            points_balance: user.points_balance,
         }
     }
 }

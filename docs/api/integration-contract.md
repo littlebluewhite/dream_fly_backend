@@ -218,14 +218,18 @@ Body：`{ token, new_password }`（new_password 8-128 字）。回應：`{ "mess
   "phone": "string|null", "phone_verified": "boolean",
   "avatar_url": "string|null", "is_active": "boolean",
   "last_login": "ISO8601|null", "created_at": "ISO8601",
-  "roles": ["member"]
+  "roles": ["member"], "points_balance": "number"
 }
 ```
 
 #### `PATCH /users/me` — 需登入
 Body（皆為選填）：`{ name?, phone?, avatar_url? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查）。回應：`UserResponse`。
 
-> 註：`GET /users`（清單）與 `GET /users/{id}`（單筆）為 admin-only 端點，存在於後端但**不列入本次前端整合範圍**（未在 Task 11-19 規劃中使用）；如日後需要管理後台的會員清單頁，屆時再補契約。
+#### `GET /users?page=&per_page=` — admin
+回應（`UserListResponse`）：`{ "users": [UserResponse], "total", "page", "per_page" }`。Task 18 起前端 admin 學員管理頁消費此端點（`points_balance` 映射為學員點數）。
+
+#### `GET /users/{id}` — admin
+回應：單筆 `UserResponse`。404 若查無。
 
 ---
 

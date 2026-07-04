@@ -45,6 +45,30 @@ async fn me_as_admin_returns_admin_role(db: PgPool) {
     assert!(roles.contains(&json!("admin")));
 }
 
+/// Task 18: `UserResponse` gained `points_balance` (frontend admin members page
+/// needs it). `register_member`'s underlying INSERT relies on the commerce
+/// migration's `DEFAULT 0`, so this bumps it to a known non-zero value first —
+/// proving the field is actually read off the row, not just defaulting to 0.
+#[sqlx::test]
+async fn me_includes_points_balance(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("points@example.com", "Password!234").await;
+    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
+        .bind(user.user_id)
+        .bind(500_i64)
+        .execute(&app.db)
+        .await
+        .expect("bump points_balance");
+
+    let resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["points_balance"], 500);
+}
+
 #[sqlx::test]
 async fn update_me_changes_name(db: PgPool) {
     let app = spawn_test_app(db).await;
@@ -119,6 +143,34 @@ async fn list_users_as_admin_includes_roles_per_user(db: PgPool) {
         .expect("admin present in list");
     let admin_roles = admin_entry["roles"].as_array().expect("roles array");
     assert!(admin_roles.contains(&json!("admin")));
+}
+
+/// Task 18: the admin members page needs `points_balance` on each row of
+/// `GET /users`, not just `GET /users/me`.
+#[sqlx::test]
+async fn list_users_as_admin_includes_points_balance(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let member = app.register_member("listpoints@example.com", "Password!234").await;
+    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
+        .bind(member.user_id)
+        .bind(300_i64)
+        .execute(&app.db)
+        .await
+        .expect("bump points_balance");
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .get("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let users = body["users"].as_array().expect("users array");
+    let entry = users
+        .iter()
+        .find(|u| u["id"] == member.user_id.to_string())
+        .expect("member present in list");
+    assert_eq!(entry["points_balance"], 300);
 }
 
 #[sqlx::test]

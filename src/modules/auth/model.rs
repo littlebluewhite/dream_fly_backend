@@ -19,6 +19,11 @@ pub struct User {
     pub last_login: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Added by the commerce migration (`users.points_balance BIGINT NOT NULL
+    /// DEFAULT 0`). Every `query_as::<_, User>` call in this codebase selects
+    /// via `SELECT *` / `RETURNING *`, so adding this field here is safe
+    /// (verified by grep — Task 18).
+    pub points_balance: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
