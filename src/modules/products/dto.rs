@@ -18,6 +18,13 @@ pub struct ProductResponse {
     pub is_highlighted: bool,
     pub badge: Option<String>,
     pub stock: Option<i32>,
+    /// Direct mapping of `products.stock` — `null` = unlimited. Same value
+    /// as `stock`, exposed under the name the admin tickets UI expects.
+    pub quota: Option<i32>,
+    /// SUM of `order_items.quantity` across paid-class orders for this
+    /// product; `0` when it has never been ordered. Not derivable from
+    /// `Product` alone — see `service::to_response` / `repository::find_sold_counts`.
+    pub sold: i64,
     pub valid_days: Option<i32>,
     pub session_count: Option<i32>,
     pub is_active: bool,
@@ -25,8 +32,13 @@ pub struct ProductResponse {
     pub updated_at: DateTime<Utc>,
 }
 
-impl From<Product> for ProductResponse {
-    fn from(p: Product) -> Self {
+impl ProductResponse {
+    /// Build the response from the raw row plus its precomputed `sold`
+    /// aggregate. Not a `From<Product>` impl because `sold` isn't
+    /// derivable from `Product` alone — it requires a join against
+    /// `order_items`/`orders` that callers batch across a whole page (see
+    /// `service::list`) rather than repeat per row.
+    pub fn from_product(p: Product, sold: i64) -> Self {
         let product_type = match p.product_type {
             super::model::ProductType::Ticket => "ticket",
             super::model::ProductType::CoursePackage => "course_package",
@@ -45,6 +57,8 @@ impl From<Product> for ProductResponse {
             is_highlighted: p.is_highlighted,
             badge: p.badge,
             stock: p.stock,
+            quota: p.stock,
+            sold,
             valid_days: p.valid_days,
             session_count: p.session_count,
             is_active: p.is_active,

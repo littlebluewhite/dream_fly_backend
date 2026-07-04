@@ -345,13 +345,14 @@ Body：`{ slots: [{ date, start_time, end_time, venue_id?, course_id?, capacity 
   "description": "string|null", "price_cents": "number",
   "original_price_cents": "number|null", "features": ["string"],
   "is_highlighted": "boolean", "badge": "string|null",
-  "stock": "number|null", "valid_days": "number|null",
+  "stock": "number|null", "quota": "number|null", "sold": "number",
+  "valid_days": "number|null",
   "session_count": "number|null", "is_active": "boolean",
   "created_at": "ISO8601", "updated_at": "ISO8601"
 }
 ```
 
-`stock: null` = 無限庫存（票券/方案皆為 null；只有實體商品 merchandise 才會有限量庫存數字）。
+`stock: null` = 無限庫存（票券/方案皆為 null；只有實體商品 merchandise 才會有限量庫存數字）。`quota` 為 `stock` 的直接映射（同一個值，語意相同，null = 無限）。`sold` = 該商品在「已付款類」訂單（`paid`/`processing`/`completed`）中 `order_items.quantity` 的總和，一次 GROUP BY 查詢算完，無訂單時為 `0`。
 
 #### `GET /products/{slugOrId}` — 公開
 同 courses，slug 或 UUID 皆可。回應：`ProductResponse`。

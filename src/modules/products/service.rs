@@ -7,7 +7,18 @@ use crate::utils::slug::slugify;
 use super::dto::{
     CreateProductRequest, ProductListResponse, ProductResponse, UpdateProductRequest,
 };
+use super::model::Product;
 use super::repository::{self, ProductCreate, ProductUpdate};
+
+/// Attach the `sold` aggregate to a single product. Used by the
+/// single-row endpoints (`get_by_slug`, `get_by_id`, `create`, `update`);
+/// `list` batches `find_sold_counts` across the whole page instead, to
+/// avoid one query per row.
+async fn to_response(db: &PgPool, product: Product) -> Result<ProductResponse, AppError> {
+    let sold_map = repository::find_sold_counts(db, &[product.id]).await?;
+    let sold = sold_map.get(&product.id).copied().unwrap_or(0);
+    Ok(ProductResponse::from_product(product, sold))
+}
 
 pub async fn list(
     db: &PgPool,
@@ -22,8 +33,20 @@ pub async fn list(
     // result set; both queries share the same filter.
     let total = repository::count_active(db, product_type_filter).await?;
     let products = repository::find_all_active(db, product_type_filter, per_page, offset).await?;
+
+    // One batched aggregate for every product on the page — not one query
+    // per row (see `repository::find_sold_counts`'s doc comment).
+    let product_ids: Vec<Uuid> = products.iter().map(|p| p.id).collect();
+    let sold_map = repository::find_sold_counts(db, &product_ids).await?;
+
     Ok(ProductListResponse {
-        products: products.into_iter().map(ProductResponse::from).collect(),
+        products: products
+            .into_iter()
+            .map(|p| {
+                let sold = sold_map.get(&p.id).copied().unwrap_or(0);
+                ProductResponse::from_product(p, sold)
+            })
+            .collect(),
         total,
         page: page.max(1),
         per_page,
@@ -34,14 +57,14 @@ pub async fn get_by_slug(db: &PgPool, slug: &str) -> Result<ProductResponse, App
     let product = repository::find_by_slug(db, slug)
         .await?
         .ok_or_else(|| AppError::NotFound("product not found".into()))?;
-    Ok(ProductResponse::from(product))
+    to_response(db, product).await
 }
 
 pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<ProductResponse, AppError> {
     let product = repository::find_by_id(db, id)
         .await?
         .ok_or_else(|| AppError::NotFound("product not found".into()))?;
-    Ok(ProductResponse::from(product))
+    to_response(db, product).await
 }
 
 pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductResponse, AppError> {
@@ -81,7 +104,7 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
         Err(e) => return Err(AppError::Database(e)),
     };
 
-    Ok(ProductResponse::from(product))
+    to_response(db, product).await
 }
 
 pub async fn update(
@@ -118,5 +141,5 @@ pub async fn update(
     .await?
     .ok_or_else(|| AppError::NotFound("product not found".into()))?;
 
-    Ok(ProductResponse::from(product))
+    to_response(db, product).await
 }

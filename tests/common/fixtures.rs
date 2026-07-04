@@ -215,6 +215,63 @@ pub async fn seed_coupon(
     id
 }
 
+/// Insert an order with a single product line item directly via SQL,
+/// bypassing `orders::service::checkout` entirely, so tests can set an
+/// exact `status` — including `pending`/`cancelled`/`refunded`, which
+/// checkout itself never produces (every order it creates starts `paid`).
+/// Used by the products `sold` aggregate tests to prove only "paid-class"
+/// statuses (`paid`/`processing`/`completed`) count toward `sold`. Returns
+/// the order id.
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_order_with_item(
+    db: &PgPool,
+    user_id: Uuid,
+    product_id: Uuid,
+    item_name: &str,
+    quantity: i32,
+    unit_price_cents: i64,
+    status: &str,
+) -> Uuid {
+    let order_id = Uuid::now_v7();
+    // Uses the full UUID, not a truncated prefix: UUIDv7's leading hex
+    // chars are a millisecond-granularity timestamp, so multiple calls
+    // within the same test (well within the same millisecond) would
+    // otherwise collide on `orders.order_number`'s UNIQUE constraint.
+    let order_number = format!("TEST-{order_id}");
+    sqlx::query(
+        r#"
+        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::order_status, $5, 0, NOW(), NOW())
+        "#,
+    )
+    .bind(order_id)
+    .bind(user_id)
+    .bind(&order_number)
+    .bind(status)
+    .bind(unit_price_cents * quantity as i64)
+    .execute(db)
+    .await
+    .expect("insert order");
+
+    sqlx::query(
+        r#"
+        INSERT INTO order_items (id, order_id, item_type, product_id, quantity, unit_price_cents, name, created_at)
+        VALUES ($1, $2, 'product'::cart_item_type, $3, $4, $5, $6, NOW())
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(order_id)
+    .bind(product_id)
+    .bind(quantity)
+    .bind(unit_price_cents)
+    .bind(item_name)
+    .execute(db)
+    .await
+    .expect("insert order_item");
+
+    order_id
+}
+
 /// Insert a product with entitlement config (`product_type` + `valid_days` +
 /// `session_count`). Compatible extension of `seed_product` (defined in
 /// `tests/common/mod.rs`), which is hardcoded to `merchandise` and has no

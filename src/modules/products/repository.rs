@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -150,6 +152,31 @@ pub async fn try_decrement_stock_tx(
     .await?;
 
     Ok(row.map(|(s,)| s))
+}
+
+/// Sum of `order_items.quantity` per product across "paid-class" orders
+/// (`paid`/`processing`/`completed` — a `pending`/`cancelled`/`refunded`
+/// order never counts toward sold units), computed in one GROUP BY query
+/// for the whole batch of `product_ids`. Callers listing multiple products
+/// must pass every id in a single call rather than looping one-at-a-time —
+/// that would reintroduce the N+1 this exists to avoid. A product id absent
+/// from the returned map has zero sold units.
+pub async fn find_sold_counts(
+    db: &PgPool,
+    product_ids: &[Uuid],
+) -> Result<HashMap<Uuid, i64>, sqlx::Error> {
+    let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+        "SELECT oi.product_id, SUM(oi.quantity)::bigint AS sold \
+         FROM order_items oi \
+         JOIN orders o ON o.id = oi.order_id \
+         WHERE oi.product_id = ANY($1) \
+           AND o.status IN ('paid'::order_status, 'processing'::order_status, 'completed'::order_status) \
+         GROUP BY oi.product_id",
+    )
+    .bind(product_ids)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
 }
 
 pub async fn create(db: &PgPool, input: ProductCreate<'_>) -> Result<Product, sqlx::Error> {
