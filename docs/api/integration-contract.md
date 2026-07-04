@@ -138,6 +138,8 @@
 | Cart | PATCH | `/cart/items/{id}` | 需登入 |
 | Cart | DELETE | `/cart/items/{id}` | 需登入 |
 | Cart | DELETE | `/cart` | 需登入 |
+| Coupons | GET | `/coupons` | admin |
+| Coupons | POST | `/coupons` | admin |
 | Coupons | GET | `/coupons/{code}/validate` | 需登入 |
 | Orders | POST | `/orders` | 需登入 |
 | Orders | GET | `/orders/me` | 需登入 |
@@ -404,12 +406,27 @@ Body：`{ item_type: "product"|"course", item_id: "uuid", quantity? }`（quantit
 
 ### 3.9 Coupons
 
+#### `GET /coupons?page=&per_page=` — admin
+回應（`CouponListResponse`）：`{ "coupons": [CouponResponse], "total", "page", "per_page" }`（分頁慣例見 §1.4）。
+
+`CouponResponse`：
+
+```jsonc
+{
+  "id": "uuid", "code": "string", "discount_cents": "number",
+  "is_active": "boolean", "expires_at": "ISO8601|null", "created_at": "ISO8601"
+}
+```
+
+#### `POST /coupons` — admin
+Body（`CreateCouponRequest`）：`{ code, discount_cents, expires_at? }`（code 1-50 字；discount_cents 須 `>= 1`）。回應：`CouponResponse`（見上）。
+`code` 儲存前會正規化（trim + 轉大寫），回應與後續比對皆用正規化後的值，故大小寫、前後空白視為同一張優惠碼；沒有 update/delete 端點。
+錯誤：409（`"coupon code already exists"` — 正規化後的 code 重複）。
+
 #### `GET /coupons/{code}/validate` — 需登入（任何已登入使用者，無角色限制）
 回應（`CouponValidateResponse`，**故意只有兩個欄位**）：`{ "code": "string", "discount_cents": "number" }`。
 判定「有效」= `is_active = true` 且（`expires_at` 為 null 或尚未過期）。
 錯誤：404（`"coupon not found"` — 不存在、未啟用、已過期皆回此訊息，不區分原因）。
-
-> 註：`POST /coupons`（建立）與 `GET /coupons`（清單）為 admin-only 端點，**不列入本次前端整合範圍**。
 
 ---
 
