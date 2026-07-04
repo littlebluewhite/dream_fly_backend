@@ -7,6 +7,7 @@ use validator::Validate;
 pub struct CoachResponse {
     pub id: Uuid,
     pub user_id: Uuid,
+    pub name: String,
     pub title: String,
     pub bio: Option<String>,
     pub experience: Option<String>,

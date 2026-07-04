@@ -64,6 +64,33 @@ async fn coach_list_and_detail_expose_slug_and_photo_url(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn list_and_detail_expose_coach_name_from_users(db: PgPool) {
+    // `coaches` has no name column — it's joined from `users.name`. Set a
+    // distinct name (different from the seeded `title`) so the assertion
+    // proves the join, not a coincidental match.
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("coach-name@example.com", "Password!234").await;
+    sqlx::query("UPDATE users SET name = $1 WHERE id = $2")
+        .bind("王教練")
+        .bind(user.user_id)
+        .execute(&app.db)
+        .await
+        .expect("set user name");
+    let coach_id = seed_coach(&app.db, user.user_id, "資深體操教練").await;
+
+    let list_resp = app.get("/api/v1/coaches").await;
+    assert_eq!(list_resp.status_code(), 200);
+    let list_body: serde_json::Value = list_resp.json();
+    assert_eq!(list_body[0]["name"], "王教練");
+    assert_eq!(list_body[0]["title"], "資深體操教練");
+
+    let detail_resp = app.get(&format!("/api/v1/coaches/{coach_id}")).await;
+    assert_eq!(detail_resp.status_code(), 200);
+    let detail_body: serde_json::Value = detail_resp.json();
+    assert_eq!(detail_body["coach"]["name"], "王教練");
+}
+
+#[sqlx::test]
 async fn get_coach_by_id_returns_detail(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("coach2@example.com", "Password!234").await;

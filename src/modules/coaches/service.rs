@@ -14,6 +14,7 @@ fn coach_to_response(c: super::model::Coach) -> CoachResponse {
     CoachResponse {
         id: c.id,
         user_id: c.user_id,
+        name: c.name,
         title: c.title,
         bio: c.bio,
         experience: c.experience,

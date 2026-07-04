@@ -7,11 +7,13 @@ use super::model::{ClockRecord, Coach, CoachSchedule};
 
 pub async fn find_all_active(db: &PgPool) -> Result<Vec<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
-        "SELECT id, user_id, title, bio, experience, specialties, certifications, \
-         is_active, display_order, slug, photo_url, created_at, updated_at \
-         FROM coaches \
-         WHERE is_active = true \
-         ORDER BY display_order, created_at",
+        "SELECT c.id, c.user_id, u.name, c.title, c.bio, c.experience, c.specialties, \
+         c.certifications, c.is_active, c.display_order, c.slug, c.photo_url, \
+         c.created_at, c.updated_at \
+         FROM coaches c \
+         JOIN users u ON u.id = c.user_id \
+         WHERE c.is_active = true \
+         ORDER BY c.display_order, c.created_at",
     )
     .fetch_all(db)
     .await
@@ -19,9 +21,12 @@ pub async fn find_all_active(db: &PgPool) -> Result<Vec<Coach>, sqlx::Error> {
 
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
-        "SELECT id, user_id, title, bio, experience, specialties, certifications, \
-         is_active, display_order, slug, photo_url, created_at, updated_at \
-         FROM coaches WHERE id = $1",
+        "SELECT c.id, c.user_id, u.name, c.title, c.bio, c.experience, c.specialties, \
+         c.certifications, c.is_active, c.display_order, c.slug, c.photo_url, \
+         c.created_at, c.updated_at \
+         FROM coaches c \
+         JOIN users u ON u.id = c.user_id \
+         WHERE c.id = $1",
     )
     .bind(id)
     .fetch_optional(db)
@@ -30,9 +35,12 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, sqlx::Er
 
 pub async fn find_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
-        "SELECT id, user_id, title, bio, experience, specialties, certifications, \
-         is_active, display_order, slug, photo_url, created_at, updated_at \
-         FROM coaches WHERE user_id = $1",
+        "SELECT c.id, c.user_id, u.name, c.title, c.bio, c.experience, c.specialties, \
+         c.certifications, c.is_active, c.display_order, c.slug, c.photo_url, \
+         c.created_at, c.updated_at \
+         FROM coaches c \
+         JOIN users u ON u.id = c.user_id \
+         WHERE c.user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(db)

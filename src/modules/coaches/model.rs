@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub struct Coach {
     pub id: Uuid,
     pub user_id: Uuid,
+    /// Joined from `users.name` — coaches has no name column of its own.
+    pub name: String,
     pub title: String,
     pub bio: Option<String>,
     pub experience: Option<String>,
