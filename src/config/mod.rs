@@ -36,24 +36,60 @@ fn default_studio_timezone() -> String {
     "UTC".to_string()
 }
 
-/// Normalizes the shape produced by the `config::Environment` source (see
-/// `env_source()` below) for `APP__SERVER__ALLOWED_ORIGINS`.
+/// Accepts either shape that can reach `server.allowed_origins`:
+///   - a comma-separated **string** from the `APP__SERVER__ALLOWED_ORIGINS`
+///     env var (the `config` env source hands every var over as a raw string),
+///   - a native **array** from a `config/*.toml` overlay.
 ///
-/// `list_separator` is the only way to turn that env var into a `Vec<String>`,
-/// but `str::split` always yields at least one item — splitting `""` by `,`
-/// gives `[""]`, not `[]`. Without this, an operator explicitly setting the
-/// env var to an empty string (meaning "no restricted origins") would instead
-/// get a one-element vec containing an empty string. TOML-sourced values (a
-/// native array, never a single empty string) pass through unchanged.
+/// The env source is deliberately left with no `try_parsing`/`list_separator`
+/// (those are process-global and would corrupt other `String` fields, e.g.
+/// mangling an E.164 `+1…` phone number into an integer), so the comma-split
+/// is done here instead. An empty string means "no restricted origins" and
+/// collapses to an empty `Vec` rather than `[""]`.
 fn deserialize_allowed_origins<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let origins = Vec::<String>::deserialize(deserializer)?;
-    Ok(match origins.as_slice() {
-        [only] if only.is_empty() => Vec::new(),
-        _ => origins,
-    })
+    struct AllowedOrigins;
+
+    impl<'de> serde::de::Visitor<'de> for AllowedOrigins {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a comma-separated string or a list of origin strings")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(if value.is_empty() {
+                Vec::new()
+            } else {
+                value.split(',').map(str::to_owned).collect()
+            })
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            self.visit_str(&value)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut origins = Vec::new();
+            while let Some(origin) = seq.next_element::<String>()? {
+                origins.push(origin);
+            }
+            Ok(origins)
+        }
+    }
+
+    deserializer.deserialize_any(AllowedOrigins)
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -149,19 +185,17 @@ impl fmt::Debug for SmsConfig {
 }
 
 /// Environment-variable source shared by `AppConfig::load()` and its tests,
-/// so tests exercise the exact list-parsing configuration used at runtime.
+/// so tests exercise the exact configuration used at runtime.
 ///
-/// `list_separator` only takes effect when `try_parsing` is enabled (`config`
-/// 0.15 `Environment::list_separator` docs), and is scoped to
-/// `server.allowed_origins` via `with_list_parse_key` so no other config
-/// field is affected by the added parsing.
+/// Intentionally does NOT enable `try_parsing`/`list_separator`: those apply to
+/// every `APP__*` key process-wide and would coerce non-list `String` fields
+/// (e.g. an E.164 `+1…` phone number parsed as an integer, losing the `+`).
+/// The one field that needs list handling, `server.allowed_origins`, is parsed
+/// from its raw string in `deserialize_allowed_origins` instead.
 fn env_source() -> config::Environment {
     config::Environment::default()
         .separator("__")
         .prefix("APP")
-        .try_parsing(true)
-        .list_separator(",")
-        .with_list_parse_key("server.allowed_origins")
 }
 
 impl AppConfig {
@@ -237,6 +271,11 @@ mod tests {
         server: ServerConfig,
     }
 
+    #[derive(Debug, Deserialize)]
+    struct SmsOnly {
+        sms: SmsConfig,
+    }
+
     /// Builds a `ServerConfig` through the same `env_source()` builder used by
     /// `AppConfig::load()`, injecting an in-memory source (`Environment::source`)
     /// instead of mutating real process env vars — keeps tests isolated from
@@ -278,5 +317,39 @@ mod tests {
             allowed_origins_from_env("http://a.com"),
             vec!["http://a.com".to_string()]
         );
+    }
+
+    /// Regression guard for the `try_parsing` footgun: an E.164 phone number
+    /// (`+14155551234`, the only format Twilio accepts) is a `String` field.
+    /// With `Environment::try_parsing(true)` the `config` crate greedily parses
+    /// it as an `i64` — dropping the leading `+` — so it must stay off. Injected
+    /// through the same `env_source()` builder used at runtime; fails loudly if
+    /// process-wide numeric parsing is ever re-introduced.
+    #[test]
+    fn e164_phone_number_survives_config_load_verbatim() {
+        let mut source = HashMap::new();
+        source.insert(
+            "APP__SMS__TWILIO_ACCOUNT_SID".to_string(),
+            "AC_test".to_string(),
+        );
+        source.insert(
+            "APP__SMS__TWILIO_AUTH_TOKEN".to_string(),
+            "tok_test".to_string(),
+        );
+        source.insert(
+            "APP__SMS__TWILIO_FROM_NUMBER".to_string(),
+            "+14155551234".to_string(),
+        );
+
+        let config = config::Config::builder()
+            .add_source(env_source().source(Some(source)))
+            .build()
+            .expect("config should build from injected in-memory source");
+
+        let parsed: SmsOnly = config
+            .try_deserialize()
+            .expect("SmsConfig should deserialize from injected source");
+
+        assert_eq!(parsed.sms.twilio_from_number, "+14155551234");
     }
 }
