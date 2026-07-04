@@ -17,7 +17,7 @@ pub struct AppConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_allowed_origins")]
     pub allowed_origins: Vec<String>,
     /// Whether to trust `X-Forwarded-For`/`X-Real-IP` headers for client IP
     /// extraction. Enable only when the server is behind a reverse proxy
@@ -34,6 +34,26 @@ pub struct ServerConfig {
 
 fn default_studio_timezone() -> String {
     "UTC".to_string()
+}
+
+/// Normalizes the shape produced by the `config::Environment` source (see
+/// `env_source()` below) for `APP__SERVER__ALLOWED_ORIGINS`.
+///
+/// `list_separator` is the only way to turn that env var into a `Vec<String>`,
+/// but `str::split` always yields at least one item — splitting `""` by `,`
+/// gives `[""]`, not `[]`. Without this, an operator explicitly setting the
+/// env var to an empty string (meaning "no restricted origins") would instead
+/// get a one-element vec containing an empty string. TOML-sourced values (a
+/// native array, never a single empty string) pass through unchanged.
+fn deserialize_allowed_origins<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let origins = Vec::<String>::deserialize(deserializer)?;
+    Ok(match origins.as_slice() {
+        [only] if only.is_empty() => Vec::new(),
+        _ => origins,
+    })
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -128,6 +148,22 @@ impl fmt::Debug for SmsConfig {
     }
 }
 
+/// Environment-variable source shared by `AppConfig::load()` and its tests,
+/// so tests exercise the exact list-parsing configuration used at runtime.
+///
+/// `list_separator` only takes effect when `try_parsing` is enabled (`config`
+/// 0.15 `Environment::list_separator` docs), and is scoped to
+/// `server.allowed_origins` via `with_list_parse_key` so no other config
+/// field is affected by the added parsing.
+fn env_source() -> config::Environment {
+    config::Environment::default()
+        .separator("__")
+        .prefix("APP")
+        .try_parsing(true)
+        .list_separator(",")
+        .with_list_parse_key("server.allowed_origins")
+}
+
 impl AppConfig {
     pub fn load() -> Result<Self, config::ConfigError> {
         let env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
@@ -135,11 +171,7 @@ impl AppConfig {
         let config = config::Config::builder()
             .add_source(config::File::with_name("config/default"))
             .add_source(config::File::with_name(&format!("config/{env}")).required(false))
-            .add_source(
-                config::Environment::default()
-                    .separator("__")
-                    .prefix("APP"),
-            )
+            .add_source(env_source())
             .build()?;
 
         let app_config: Self = config.try_deserialize()?;
@@ -192,5 +224,59 @@ impl AppConfig {
         }
 
         Ok(app_config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Deserialize)]
+    struct ServerOnly {
+        server: ServerConfig,
+    }
+
+    /// Builds a `ServerConfig` through the same `env_source()` builder used by
+    /// `AppConfig::load()`, injecting an in-memory source (`Environment::source`)
+    /// instead of mutating real process env vars — keeps tests isolated from
+    /// each other since env vars are process-global.
+    fn allowed_origins_from_env(value: &str) -> Vec<String> {
+        let mut source = HashMap::new();
+        source.insert("APP__SERVER__HOST".to_string(), "0.0.0.0".to_string());
+        source.insert("APP__SERVER__PORT".to_string(), "3000".to_string());
+        source.insert("APP__SERVER__ALLOWED_ORIGINS".to_string(), value.to_string());
+
+        let config = config::Config::builder()
+            .add_source(env_source().source(Some(source)))
+            .build()
+            .expect("config should build from injected in-memory source");
+
+        let parsed: ServerOnly = config
+            .try_deserialize()
+            .expect("ServerConfig should deserialize from injected source");
+
+        parsed.server.allowed_origins
+    }
+
+    #[test]
+    fn empty_env_var_deserializes_to_empty_vec() {
+        assert_eq!(allowed_origins_from_env(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn comma_separated_env_var_deserializes_to_two_element_vec() {
+        assert_eq!(
+            allowed_origins_from_env("http://a.com,http://b.com"),
+            vec!["http://a.com".to_string(), "http://b.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn single_origin_without_comma_is_one_element_vec() {
+        assert_eq!(
+            allowed_origins_from_env("http://a.com"),
+            vec!["http://a.com".to_string()]
+        );
     }
 }
