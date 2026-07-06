@@ -194,6 +194,9 @@
 | Posts | DELETE | `/posts/{id}` | admin |
 | Contact | POST | `/contact` | 公開 |
 | Contact | GET | `/contact/inquiries` | admin |
+| Reports | GET | `/reports/admin` | admin |
+| Reports | GET | `/reports/coach` | coach |
+| Reports | GET | `/reports/me` | 需登入 |
 
 ---
 
@@ -1014,6 +1017,118 @@ Create body：`{ name, description?, points_cost, stock?, display_order? }`（`n
 Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?, stock?, is_active?, display_order? }`。`description`/`stock` 可明確傳 `null` 清空（`description` 清為 `NULL`；`stock` 清為 `NULL` 即改為不限量），欄位不帶則維持原值不動。
 
 錯誤：404（`PATCH` 對象不存在，訊息「獎勵不存在」）；422（`name`/`points_cost` 不符驗證範圍）。
+
+---
+
+### 3.24 Reports（報表）
+
+三個彙總報表端點（admin/coach/member），**純聚合查詢，無新增資料表**。裁決 9：實作前先讀前端三個 surface 既有的 mock 報表形狀（`admin/api.ts`+`data.ts` 的 `getReports()`/`ReportsData`、`coach/api.ts` 的 `getDashboard()`、`member/api.ts` 的 `getReports()`/`REPORTS`），盤點出「有真實資料源」的欄位才收進本契約；沒有資料源的維持既有 mock（見本節末「mock 有但契約無」清單）。
+
+**裁決**：
+1. 三端點皆為**單一物件**回應——不是陣列，也不分頁（與本文件其餘大多數 GET 端點不同）。
+2. 「今日」與月份邊界一律採 `studio_timezone`（見 §3.18 裁決 2）的當地時間；`revenue.trend`/`members.new_this_month` 的月份切分也依此換算，而非 DB session 所在時區。
+3. `attendance_rate`（member）與 `attendance_rate_30d`（coach）定義相同：`present / (present + absent)`；`leave` 不計入分子、也不計入分母；無出勤資料時回 `null`（不是 `0`）。
+4. `fill_rate`（admin `courses[]`）定義為 `enrolled / max_students`。`max_students` 現有 `CHECK (max_students > 0)` 保證恆為正，但計算仍防禦性地在分母為 `0` 時回 `null`，不產生除以零（`NaN`/`Infinity` 無法序列化為合法 JSON）。
+5. `GET /reports/coach` 用 `require_role("coach")`——**單一角色檢查，無 admin 例外**（與部分教練資源端點如 `GET /sessions/today` 的「admin 或 coach」不同：admin 若未同時掛 `coach` 角色，呼叫本端點一律 403）。呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列 → **404**（訊息「coach not found」，比照 `coaches` 模組本身查無資料列時的既有慣例）——這點與 `GET /sessions/today`／`GET /coaches/me/students` 遇到同一資料異常時「降級回空陣列」不同：本端點回傳單一物件而非列表，沒有自然的「空」值可用，零值/null 會與「有效教練但剛好沒有學員」混淆，故改用 404 明確表達「找不到教練身分」。
+
+#### `GET /reports/admin` — admin
+
+```jsonc
+{
+  "revenue": {
+    "this_month_cents": "number",
+    "last_month_cents": "number",
+    "trend": [
+      { "month": "YYYY-MM", "revenue_cents": "number" }
+    ]
+  },
+  "members": { "total": "number", "new_this_month": "number", "active": "number" },
+  "courses": [
+    { "course_id": "uuid", "name": "string", "enrolled": "number",
+      "max_students": "number", "fill_rate": "number|null", "waitlist_count": "number" }
+  ],
+  "coaches": [
+    { "coach_id": "uuid", "name": "string", "course_count": "number", "student_count": "number" }
+  ]
+}
+```
+
+- `revenue`：僅計 orders **paid 家族**（`status IN ('paid','processing','completed')`）；`refunded`/`cancelled`/`pending` 一律不計（退款訂單即使 `paid_at` 仍留有原值也不計，見 §1.8）。以 `paid_at` 歸月。`trend` 固定 **12 筆**，由舊到新，缺資料月份補 `0`（非省略該月）；`this_month_cents`/`last_month_cents` 即 `trend` 最後兩筆。
+- `members`：`total`/`new_this_month` 為 `users` 全體計數（不分角色）；`active` 為擁有至少一筆 `active` enrolment 的 distinct 使用者數。
+- `courses`：全部課程（不篩 `is_active`），依名稱排序；`enrolled` 為該課程 `active` enrolments 數；`waitlist_count` 為 `waiting` 筆數。
+- `coaches`：全部教練（不篩 `is_active`），依姓名排序；`course_count` 為其 `courses.coach_id` 對應課程數；`student_count` 為其課程 active enrolments 之 distinct 學員數（同一學員修該教練多堂課只算一次）。
+
+空庫（無任何 orders/users/enrolments/courses/coaches）：`revenue` 全 `0`（`trend` 12 筆皆 `0`）、`members` 全 `0`、`courses`/`coaches` 皆為 `[]`——不會是 500。
+
+#### `GET /reports/coach` — coach
+
+物化「今日」場次後彙總（同 `GET /sessions/today` 的物化時機）：
+
+```jsonc
+{
+  "today_sessions": "number",
+  "pending_attendance": "number",
+  "unread_messages": "number",
+  "student_count": "number",
+  "attendance_rate_30d": "number|null"
+}
+```
+
+- `today_sessions`：呼叫者名下課程今日場次數（studio 當地日期）。
+- `pending_attendance`：今日場次中「尚無任何一筆 `attendance_records`」者的數量（只要有任一筆紀錄即不算 pending，不要求全班點完）。
+- `unread_messages`：呼叫者參與的所有對話中，對方尚未讀訊息總數（跨對話加總，定義同 §3.21 的 `unread_count`）。
+- `student_count`：呼叫者 active 課程之 active enrolments 之 distinct 學員數（口徑同 `GET /coaches/me/students`，這裡只回總數）。
+- `attendance_rate_30d`：呼叫者名下課程、場次日期落在「今日往前 30 天（含）」內的出勤紀錄，`present/(present+absent)`，`leave` 不計；無資料回 `null`。
+
+錯誤：404（呼叫者掛 `coach` 角色但查無 `coaches` 資料列，見上方裁決 5）。空域（有教練身分但無任何課程/學員/訊息）：`today_sessions`/`pending_attendance`/`unread_messages`/`student_count` 皆 `0`，`attendance_rate_30d` 為 `null`——不會是 500。
+
+#### `GET /reports/me` — 需登入
+
+物化「今日起 7 天」場次後彙總（`from=今天`、`to=今天+7 天`，與 §3.18 `GET /courses/{id}/sessions` 的預設範圍算法一致，即 8 個曆日的區間）：
+
+```jsonc
+{
+  "attended_total": "number",
+  "attendance_rate": "number|null",
+  "points_balance": "number",
+  "active_enrolments": "number",
+  "upcoming_sessions_7d": "number"
+}
+```
+
+- `attended_total`/`attendance_rate`：呼叫者**所有**報名（不論 enrolment 現在是否仍 `active`——已取消的報名不會抹除已發生的出勤歷史）之出勤紀錄；`attended_total` 為 `present` 筆數，`attendance_rate` 為 `present/(present+absent)`，`leave` 不計；無資料時 `attendance_rate` 回 `null`。
+- `points_balance`：即時讀 `users.points_balance`。
+- `active_enrolments`：呼叫者 `active` enrolments 數。
+- `upcoming_sessions_7d`：呼叫者 active enrolments 對應課程，物化後落在上述 8 天區間內的場次數。
+
+空庫（呼叫者無任何報名/出勤紀錄）：`attended_total`/`active_enrolments`/`upcoming_sessions_7d` 皆 `0`，`attendance_rate` 為 `null`，`points_balance` 為使用者當前餘額（通常 `0`）——不會是 500。
+
+#### mock 有但契約無（無對應資料源，前端可視情況移除或維持既有 P2 標記）
+
+**Admin**（`admin/api.ts` 的 `getReports()`／`admin/data.ts`；本節僅收 `revenue`/`members`/`courses`/`coaches` 四組，`ReportsData` 其餘欄位皆維持既有 mock，非本任務範圍）：
+- `kpis`（6 張 KPI 卡：本月營收/課程報名/新增會員/票券銷售/會員留存率/平均出席率——含「較上期成長 %」的格式化字串，無對應趨勢比較資料源）
+- `revenueBreakdown`（訂單來源細分：課程報名/票券銷售/裝備週邊——orders 無「品項分類」彙總維度）
+- `categorySplit`（課程類別佔比——`courses.category` 為自由文字欄位，無標準分類清單可彙總百分比）
+- `incomeSources`（收入來源別，含「場地租借」——無對應收入資料源）
+- `venueUsage`（場地使用率/時數——venues 模組無使用時數統計）
+- `attDist`（會員出席率分布區間——需要 per-member 出席率分布統計，本任務僅提供彙總層級 rate）
+- `retention`（會員留存趨勢——無「留存」定義的資料源）
+- `ageDist`（會員年齡分布——`users` 無出生日期欄位）
+- `tierDist`（會員等級分布——無會員等級/tier 概念的資料表）
+- `campusRevenue`（分校營收——venues/courses 無分校維度）
+- `paymentSplit`（付款方式佔比——系統為模擬付款，無真實付款方式欄位，見 §1.8）
+- `funnel`（體驗轉正式報名漏斗——無體驗課程/轉換追蹤資料源）
+- `weekdayLoad`（各平日課程負載——無此彙總維度）
+- `topCourses`（`{rank,name,count}`——`name`/`count` 可由本契約 `courses[]` 依 `enrolled` 排序近似推導，但 `rank` 純為陣列位置、非資料欄位，形狀也不同，非一比一替換）
+- `coachPerf`（`{students,revenue,revPct,att}`——`students` 已由本契約 `coaches[].student_count` 取代；`revenue`/`revPct`/`att` 為教練個人營收歸因與出席率，orders/attendance 皆無「教練級」維度可歸因，無資料源）
+
+**Coach**（`coach/api.ts` 的 `getDashboard()`）：
+- `conversations`（訊息中心完整內容——`getMessages()` 仍為 mock；本任務僅提供 `unread_messages` 總數，對話列表本身走既有 §3.21 `GET /conversations/me`）
+- 原三個 P2 佔位欄位 `pendingClasses`/`attendanceRate`/`pendingReplies` 由本契約 `pending_attendance`/`attendance_rate_30d`/`unread_messages` 取代，前端接上後可移除佔位邏輯。
+
+**Member**（`member/api.ts` 的 `getReports()`／`REPORTS`）：
+- `getReports()` 整體（`courses`/`reports`/`certs`）是「成績單」（term report + 教練評語 + 技巧評分）功能，與本任務的 `/reports/me` 是完全不同 domain，無對應資料源，維持既有 P2 mock，不受本任務影響。
+- 語意上真正對應 `/reports/me` 的其實是首頁 `STATS`（`Stat[]`：報名課程數/本月出席率/會員點數，目前 `getDashboard()` 也還沒串接，仍為 mock）；未來若要串接，`active_enrolments`/`attendance_rate`/`points_balance` 對應到那三張卡，`attended_total`/`upcoming_sessions_7d` 則是 `STATS` 目前沒有的新欄位。
 
 ---
 
