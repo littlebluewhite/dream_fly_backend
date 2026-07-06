@@ -95,6 +95,76 @@ async fn create_targeting_self_returns_422(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn create_targeting_self_with_dual_roles_returns_422(db: PgPool) {
+    // A coach+member dual-role user self-targeting WOULD pass the
+    // complementary-role check (caller-as-coach + self-as-member), so only
+    // the explicit self-target guard in `resolve_member_coach` stands
+    // between this call and the DB CHECK (member_id <> coach_id) surfacing
+    // as an opaque 500. The coach-only variant above exercises the
+    // role-violation path instead — this one pins the guard itself.
+    let app = spawn_test_app(db).await;
+    let (user_id, token) = app
+        .seed_user_with_roles("msg-dual-self@example.com", &["coach", "member"])
+        .await;
+
+    let resp = app
+        .post("/api/v1/conversations")
+        .authorization_bearer(&token)
+        .json(&json!({"user_id": user_id}))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn create_between_dual_role_users_is_idempotent_in_both_directions(db: PgPool) {
+    // Both users hold BOTH coach and member roles. `resolve_member_coach`
+    // assigns the caller the coach side whenever it can, so A→B normalizes
+    // to (member=B, coach=A) while B→A normalizes to (member=A, coach=B) —
+    // an ORDERED unique key would accept both rows and split the pair's
+    // message history. The pair must be unique UNORDERED: B→A resolves to
+    // the conversation A→B already created.
+    let app = spawn_test_app(db).await;
+    let (user_a, token_a) = app
+        .seed_user_with_roles("msg-dual-a@example.com", &["coach", "member"])
+        .await;
+    let (user_b, token_b) = app
+        .seed_user_with_roles("msg-dual-b@example.com", &["coach", "member"])
+        .await;
+
+    let resp1 = app
+        .post("/api/v1/conversations")
+        .authorization_bearer(&token_a)
+        .json(&json!({"user_id": user_b}))
+        .await;
+    assert_eq!(resp1.status_code(), 200, "body={}", resp1.text());
+    let body1: serde_json::Value = resp1.json();
+    let conv_id = body1["id"].as_str().unwrap().to_string();
+
+    let resp2 = app
+        .post("/api/v1/conversations")
+        .authorization_bearer(&token_b)
+        .json(&json!({"user_id": user_a}))
+        .await;
+    assert_eq!(resp2.status_code(), 200, "body={}", resp2.text());
+    let body2: serde_json::Value = resp2.json();
+    assert_eq!(
+        body2["id"], conv_id,
+        "B→A must resolve to the same conversation A→B created"
+    );
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM conversations \
+         WHERE (member_id = $1 AND coach_id = $2) OR (member_id = $2 AND coach_id = $1)",
+    )
+    .bind(user_a)
+    .bind(user_b)
+    .fetch_one(&app.db)
+    .await
+    .expect("count conversations");
+    assert_eq!(count, 1, "exactly one conversation may exist per user pair");
+}
+
+#[sqlx::test]
 async fn create_between_coach_and_member_is_order_independent_and_idempotent(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (coach_user_id, coach_token) = app

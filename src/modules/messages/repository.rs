@@ -3,27 +3,34 @@ use uuid::Uuid;
 
 use super::model::{Conversation, ConversationParticipants, ConversationSummaryRow, Message};
 
-/// Look up an existing conversation by its normalized (member, coach) pair —
-/// used by `service::create_conversation`'s get-or-create check.
-pub async fn find_by_pair(
+/// Look up the conversation between two users regardless of which side is
+/// stored as member/coach. The lookup must be UNORDERED because two
+/// dual-role (coach+member) users' A→B and B→A calls normalize to opposite
+/// (member, coach) orderings yet must resolve to the same conversation —
+/// matching the DB's `conversations_unique_user_pair` unordered unique
+/// index. Used by `service::create_conversation`'s get-or-create check and
+/// its 23505-race re-fetch.
+pub async fn find_by_user_pair(
     db: &PgPool,
-    member_id: Uuid,
-    coach_id: Uuid,
+    user_a: Uuid,
+    user_b: Uuid,
 ) -> Result<Option<Conversation>, sqlx::Error> {
     sqlx::query_as::<_, Conversation>(
         "SELECT id, member_id, coach_id, created_at, last_message_at \
-         FROM conversations WHERE member_id = $1 AND coach_id = $2",
+         FROM conversations \
+         WHERE (member_id = $1 AND coach_id = $2) OR (member_id = $2 AND coach_id = $1)",
     )
-    .bind(member_id)
-    .bind(coach_id)
+    .bind(user_a)
+    .bind(user_b)
     .fetch_optional(db)
     .await
 }
 
 /// Insert a new conversation for a normalized (member, coach) pair. Relies
-/// on `conversations_unique_pair` to reject a concurrent duplicate; `service`
-/// catches that 23505 and re-fetches via [`find_by_pair`] to keep
-/// `POST /conversations` idempotent even under a create race.
+/// on the unordered unique index `conversations_unique_user_pair` to reject
+/// a concurrent duplicate for the same two users (in either orientation);
+/// `service` catches that 23505 and re-fetches via [`find_by_user_pair`] to
+/// keep `POST /conversations` idempotent even under a create race.
 pub async fn insert(
     db: &PgPool,
     member_id: Uuid,
@@ -66,7 +73,7 @@ pub async fn find_my_conversations(
          JOIN users um ON um.id = c.member_id \
          JOIN users uc ON uc.id = c.coach_id \
          WHERE c.member_id = $1 OR c.coach_id = $1 \
-         ORDER BY c.last_message_at DESC NULLS LAST",
+         ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC",
     )
     .bind(user_id)
     .fetch_all(db)

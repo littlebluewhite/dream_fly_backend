@@ -50,8 +50,11 @@ async fn resolve_member_coach(
 }
 
 /// `POST /conversations` — get-or-create. Returns the existing conversation
-/// if the normalized (member, coach) pair already has one; otherwise creates
-/// it. A unique-violation on insert (concurrent create race) is caught and
+/// between these two users if one exists — looked up as an UNORDERED pair,
+/// because two dual-role users' A→B and B→A calls normalize to opposite
+/// (member, coach) orientations yet must share one conversation — otherwise
+/// creates it. A unique-violation on insert (concurrent create race against
+/// the unordered `conversations_unique_user_pair` index) is caught and
 /// resolved by re-fetching the row a competing request just inserted, so the
 /// endpoint stays idempotent even under a race.
 pub async fn create_conversation(
@@ -61,14 +64,14 @@ pub async fn create_conversation(
 ) -> Result<ConversationResponse, AppError> {
     let (member_id, coach_id) = resolve_member_coach(db, auth, req.user_id).await?;
 
-    if let Some(existing) = repository::find_by_pair(db, member_id, coach_id).await? {
+    if let Some(existing) = repository::find_by_user_pair(db, member_id, coach_id).await? {
         return Ok(ConversationResponse::from(existing));
     }
 
     match repository::insert(db, member_id, coach_id).await {
         Ok(conv) => Ok(ConversationResponse::from(conv)),
         Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            let existing = repository::find_by_pair(db, member_id, coach_id)
+            let existing = repository::find_by_user_pair(db, member_id, coach_id)
                 .await?
                 .ok_or_else(|| {
                     AppError::Internal(anyhow::anyhow!(
