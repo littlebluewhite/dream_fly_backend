@@ -8,15 +8,16 @@ use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 
-use super::dto::EnrolmentResponse;
+use super::dto::{EnrolmentResponse, MyEnrolmentResponse};
 use super::service;
 
-/// This user's enrolments, newest first (plain array, not paginated).
+/// This user's enrolments, newest first (plain array, not paginated), each
+/// with `attended`/`total` attendance stats.
 #[tracing::instrument(skip_all)]
 pub async fn me(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<EnrolmentResponse>>, AppError> {
+) -> Result<Json<Vec<MyEnrolmentResponse>>, AppError> {
     let enrolments = service::list_my_enrolments(&state.db, auth.user_id).await?;
     Ok(Json(enrolments))
 }

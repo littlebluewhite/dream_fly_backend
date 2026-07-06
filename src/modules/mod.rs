@@ -1,3 +1,4 @@
+pub mod attendance;
 pub mod auth;
 pub mod bookings;
 pub mod cart;

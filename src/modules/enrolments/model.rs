@@ -50,3 +50,26 @@ pub struct EnrolmentWithCourse {
     pub status: EnrolmentStatus,
     pub enrolled_at: DateTime<Utc>,
 }
+
+/// Same shape as [`EnrolmentWithCourse`] plus two attendance-stat columns,
+/// aggregated via a `LEFT JOIN attendance_records` in
+/// `repository::find_by_user_with_course` — feeds `GET /enrolments/me` only.
+/// Kept as a separate row type (rather than adding these columns to
+/// `EnrolmentWithCourse` itself) because that struct is also decoded from
+/// `cancel_if_active_tx`'s `RETURNING` and from `orders::repository`'s
+/// checkout-summary query, neither of which computes attendance stats.
+#[derive(Debug, sqlx::FromRow)]
+pub struct MyEnrolmentRow {
+    pub id: Uuid,
+    pub course_id: Uuid,
+    pub course_name: String,
+    pub course_level: CourseLevel,
+    pub schedule_text: Option<String>,
+    pub status: EnrolmentStatus,
+    pub enrolled_at: DateTime<Utc>,
+    /// Count of this enrolment's `attendance_records` with `status = 'present'`.
+    pub attended: i64,
+    /// Count of this enrolment's `attendance_records` total (i.e. how many
+    /// sessions have been marked for it so far, regardless of status).
+    pub total: i64,
+}

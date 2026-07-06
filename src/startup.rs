@@ -78,6 +78,7 @@ pub fn build_router(state: AppState) -> Router {
     let api_v1 = Router::new()
         .route("/health", get(health_check))
         .merge(modules::auth::routes::router())
+        .merge(modules::attendance::routes::router())
         .merge(modules::users::routes::router())
         .merge(modules::permissions::routes::router())
         .merge(modules::coaches::routes::router())

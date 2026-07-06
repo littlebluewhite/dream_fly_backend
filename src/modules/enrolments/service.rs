@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 
-use super::dto::EnrolmentResponse;
+use super::dto::{EnrolmentResponse, MyEnrolmentResponse};
 use super::model::Enrolment;
 use super::repository;
 
@@ -42,13 +42,14 @@ pub async fn enrol_from_purchase_tx(
     }
 }
 
-/// This user's enrolments, newest first.
+/// This user's enrolments, newest first, each with `attended`/`total`
+/// attendance stats.
 pub async fn list_my_enrolments(
     db: &PgPool,
     user_id: Uuid,
-) -> Result<Vec<EnrolmentResponse>, AppError> {
+) -> Result<Vec<MyEnrolmentResponse>, AppError> {
     let rows = repository::find_by_user_with_course(db, user_id).await?;
-    Ok(rows.into_iter().map(EnrolmentResponse::from).collect())
+    Ok(rows.into_iter().map(MyEnrolmentResponse::from).collect())
 }
 
 /// Cancel an enrolment. Owner or admin only; otherwise unconditional (no

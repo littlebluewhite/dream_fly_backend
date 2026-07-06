@@ -1,7 +1,7 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::model::{Enrolment, EnrolmentWithCourse};
+use super::model::{Enrolment, EnrolmentWithCourse, MyEnrolmentRow};
 
 /// Lock the course row for update and return its capacity (`max_students`).
 /// Used by `enrol_from_purchase_tx` so the capacity check and the
@@ -103,17 +103,25 @@ pub async fn cancel_if_active_tx(
     .await
 }
 
-/// This user's enrolments JOINed with course info, newest first.
+/// This user's enrolments JOINed with course info, newest first, plus
+/// per-enrolment attendance stats aggregated with a single `LEFT JOIN
+/// attendance_records` (no N+1 — one query for the whole list). `attended`
+/// counts that enrolment's `present` records; `total` counts all of its
+/// attendance_records regardless of status (i.e. sessions marked so far).
 pub async fn find_by_user_with_course(
     db: &PgPool,
     user_id: Uuid,
-) -> Result<Vec<EnrolmentWithCourse>, sqlx::Error> {
-    sqlx::query_as::<_, EnrolmentWithCourse>(
+) -> Result<Vec<MyEnrolmentRow>, sqlx::Error> {
+    sqlx::query_as::<_, MyEnrolmentRow>(
         "SELECT e.id, e.course_id, c.name AS course_name, c.level AS course_level, \
-                c.schedule_text, e.status, e.enrolled_at \
+                c.schedule_text, e.status, e.enrolled_at, \
+                COUNT(CASE WHEN ar.status = 'present'::attendance_status THEN 1 END) AS attended, \
+                COUNT(ar.id) AS total \
          FROM enrolments e \
          JOIN courses c ON c.id = e.course_id \
+         LEFT JOIN attendance_records ar ON ar.enrolment_id = e.id \
          WHERE e.user_id = $1 \
+         GROUP BY e.id, c.name, c.level, c.schedule_text, e.status, e.enrolled_at \
          ORDER BY e.enrolled_at DESC",
     )
     .bind(user_id)

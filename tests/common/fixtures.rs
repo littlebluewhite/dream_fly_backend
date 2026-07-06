@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use chrono::{DateTime, Duration, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -106,6 +106,34 @@ pub async fn seed_course_schedule_slot(
     .execute(db)
     .await
     .expect("insert course_schedule_slot");
+    id
+}
+
+/// Insert a `course_sessions` row directly (bypassing
+/// `sessions::repository::materialize_range`), so attendance tests get a
+/// concrete session id without first setting up a weekly schedule slot.
+pub async fn seed_course_session(
+    db: &PgPool,
+    course_id: Uuid,
+    session_date: NaiveDate,
+    start_time: NaiveTime,
+    end_time: NaiveTime,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, created_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(course_id)
+    .bind(session_date)
+    .bind(start_time)
+    .bind(end_time)
+    .execute(db)
+    .await
+    .expect("insert course_session");
     id
 }
 

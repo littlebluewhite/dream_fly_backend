@@ -2,11 +2,16 @@
 
 mod common;
 
-use chrono::{Duration, Utc};
-use common::fixtures::{seed_course_with_capacity, seed_enrolment};
+use chrono::{Duration, NaiveTime, Utc};
+use common::fixtures::{seed_course_session, seed_course_with_capacity, seed_enrolment};
 use common::http::spawn_test_app;
+use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+fn t(h: u32, m: u32) -> NaiveTime {
+    NaiveTime::from_hms_opt(h, m, 0).unwrap()
+}
 
 #[sqlx::test]
 async fn me_without_auth_returns_401(db: PgPool) {
@@ -146,4 +151,73 @@ async fn cancel_nonexistent_returns_404(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 404, "body={}", resp.text());
+}
+
+// ---------------------------------------------------------------------------
+// GET /enrolments/me — attendance stats (attended/total)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn me_attendance_stats_present_2_absent_1_gives_attended_2_total_3(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("enr-me-attend@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course_with_capacity(&app.db, "Attendance Stats Course", None, 10).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+
+    let today = Utc::now().date_naive();
+    let session_1 = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
+    let session_2 =
+        seed_course_session(&app.db, course_id, today + Duration::days(1), t(9, 0), t(10, 0)).await;
+    let session_3 =
+        seed_course_session(&app.db, course_id, today + Duration::days(2), t(9, 0), t(10, 0)).await;
+
+    for (session_id, status) in
+        [(session_1, "present"), (session_2, "present"), (session_3, "absent")]
+    {
+        let resp = app
+            .put(&format!("/api/v1/sessions/{session_id}/attendance"))
+            .authorization_bearer(&admin_token)
+            .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": status}]}))
+            .await;
+        assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    }
+
+    let resp = app
+        .get("/api/v1/enrolments/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let arr = body.as_array().expect("plain array, not an envelope");
+    let entry = arr
+        .iter()
+        .find(|e| e["id"] == enrolment_id.to_string())
+        .expect("enrolment present in /enrolments/me");
+    assert_eq!(entry["attended"], 2, "present-count must be 2, got {entry:?}");
+    assert_eq!(entry["total"], 3, "marked-session-count must be 3, got {entry:?}");
+}
+
+#[sqlx::test]
+async fn me_attendance_stats_with_no_marks_is_zero_zero(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("enr-me-noattend@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "No Attendance Course", None, 10).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+
+    let resp = app
+        .get("/api/v1/enrolments/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let arr = body.as_array().expect("plain array, not an envelope");
+    let entry = arr
+        .iter()
+        .find(|e| e["id"] == enrolment_id.to_string())
+        .expect("enrolment present in /enrolments/me");
+    assert_eq!(entry["attended"], 0);
+    assert_eq!(entry["total"], 0);
 }
