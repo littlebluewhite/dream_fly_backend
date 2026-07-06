@@ -66,8 +66,8 @@
 
 - Query 參數：`page`（預設 1）、`per_page`（預設 20，最大 **100**，超過會被 clamp，不會報錯）。
 - 分頁回應形狀一律為：`{ "<items_key>": [...], "total": number, "page": number, "per_page": number }`。
-- **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）。
-- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）。
+- **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）、`GET /leave-requests`（admin/coach，見 §3.20）。
+- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）。
 
 ### 1.5 金額慣例
 
@@ -156,6 +156,12 @@
 | Attendance | GET | `/sessions/{id}/roster` | admin 或該課教練 |
 | Attendance | PUT | `/sessions/{id}/attendance` | admin 或該課教練 |
 | Attendance | GET | `/coaches/me/students` | coach |
+| Leave Requests | POST | `/leave-requests` | 需登入 |
+| Leave Requests | GET | `/leave-requests/me` | 需登入 |
+| Leave Requests | DELETE | `/leave-requests/{id}` | 需登入（僅本人，無 admin 例外） |
+| Leave Requests | GET | `/leave-requests?status=&course_id=` | admin 或該課教練 |
+| Leave Requests | PATCH | `/leave-requests/{id}` | admin 或該課教練 |
+| Leave Requests | POST | `/leave-requests/{id}/makeup` | 需登入（僅本人） |
 | Waitlist | POST | `/waitlist` | 需登入 |
 | Waitlist | GET | `/waitlist/me` | 需登入 |
 | Waitlist | GET | `/waitlist?course_id=` | admin |
@@ -741,6 +747,73 @@ Body：`{ "records": [ { "enrolment_id": "uuid", "status": "present|absent|leave
 ```
 
 呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列時回空陣列（非錯誤，同 `GET /sessions/today` 的慣例）。這是前端「我的學員」列表（FE getStudents）的資料源。
+
+---
+
+### 3.20 Leave Requests（請假/補課）
+
+`leave_requests`：會員針對某一堂已報名課程的特定場次申請請假，由該課教練或 admin 審核。`status` 為 `pending`/`approved`/`rejected`/`cancelled` 四選一；`UNIQUE(enrolment_id, session_id)`（partial，僅 `pending`/`approved` 兩狀態生效）——同一場次的請假若已被取消或駁回，允許重新申請同一場次。
+
+**裁決 4（請假規則 v1，任務規格原文）**：開課前皆可申請（無最短提前期）；教練（該課）或 admin 審核；核准即在該場次寫入 attendance `leave` 紀錄；一張核准假單可預約一次同課程未來場次補課，補課受名額檢查。
+
+其他細節：
+- 「場次已開始」的判定與 §3.18 裁決 2 一致：以 `studio_timezone`（`Asia/Taipei`）當地牆鐘時間比較 `session_date`+`start_time` 與呼叫當下（`POST /leave-requests` 檢查原場次；`POST /leave-requests/{id}/makeup` 檢查補課目標場次）。
+- `DELETE /leave-requests/{id}` **僅本人（owner）可取消，無 admin 例外**——與本節其餘教練/admin 端點的權限模式不同；admin/教練若要否決一張假單，走 `PATCH` 駁回。
+- 核准/駁回後，會對該學員寫入一筆 `system` 類型 notification（見 §3.15），文案：「你的請假申請已核准：{課程名} {場次日期}」或「你的請假申請已婉拒：{課程名} {場次日期}」（`session_date` 為 `YYYY-MM-DD`）。
+- `makeup_session_id`/`makeup_session_date`/`makeup_start_time` 在假單尚未預約補課時皆為 `null`；只有 `POST /leave-requests/{id}/makeup` 成功後才會補上。
+
+#### `POST /leave-requests` — 需登入
+Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，選填）。伺服器由 `session_id` 找出所屬課程，再找呼叫者在該課程的 active enrolment。回應（`LeaveRequestResponse`）：
+
+```jsonc
+{
+  "id": "uuid", "course_id": "uuid", "course_name": "string",
+  "session_id": "uuid", "session_date": "YYYY-MM-DD", "start_time": "HH:MM:SS",
+  "reason": "string|null", "status": "pending",
+  "makeup_session_id": null, "makeup_session_date": null, "makeup_start_time": null,
+  "decided_at": null, "created_at": "ISO8601"
+}
+```
+
+錯誤：404（場次不存在；或呼叫者在該課程無 active enrolment，訊息「未報名此課程」——兩者是不同的 404 情境，各自獨立判定）；422（場次已開始，訊息「場次已開始，無法請假」）；409（`(enrolment_id, session_id)` 已有 `pending`/`approved` 的請假紀錄，訊息「此場次已有請假紀錄」）。
+
+#### `GET /leave-requests/me` — 需登入
+回應：`LeaveRequestResponse[]`（**純陣列，不分頁**，新到舊）——形狀同上，每筆皆含 `makeup_session_id`/`makeup_session_date`/`makeup_start_time`。
+
+#### `DELETE /leave-requests/{id}` — 需登入（僅本人 owner，無 admin 例外）
+無 body。僅 `status = "pending"` 的假單可取消 → 更新為 `cancelled`。回應：**204 No Content**。錯誤：404（不存在）；403（非本人）；409（非 pending，例如已核准/已駁回/已取消）。
+
+#### `GET /leave-requests?status=&course_id=` — admin 或該課教練
+分頁列表；`status`（`pending`/`approved`/`rejected`/`cancelled`）與 `course_id` 皆選填。教練僅能看到自己教的課程（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者）；admin 看全部。回應（`LeaveRequestListResponse`）：
+
+```jsonc
+{
+  "leave_requests": [
+    { "id": "uuid", "course_id": "uuid", "course_name": "string",
+      "user_id": "uuid", "user_name": "string",
+      "session_id": "uuid", "session_date": "YYYY-MM-DD", "start_time": "HH:MM:SS",
+      "reason": "string|null", "status": "pending|approved|rejected|cancelled",
+      "makeup_session_id": "uuid|null", "makeup_session_date": "YYYY-MM-DD|null",
+      "makeup_start_time": "HH:MM:SS|null",
+      "decided_at": "ISO8601|null", "created_at": "ISO8601" }
+  ],
+  "total": "number", "page": "number", "per_page": "number"
+}
+```
+
+呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列時回空頁（`leave_requests: []`, `total: 0`）而非錯誤，同 §3.18/§3.19 既有慣例。`status` 帶入無法辨識的值回 422。
+
+#### `PATCH /leave-requests/{id}` — admin 或該課教練
+Body：`{ status: "approved" | "rejected" }`（其他任何值，包含 `pending`/`cancelled`，一律 422）。僅 `status = "pending"` 的假單可審核。**核准在同一交易內**完成兩件事：更新假單為 `approved`（寫入 `decided_by`/`decided_at`），並 upsert 該場次的 `attendance_records` 為 `status = 'leave'`（`marked_by` = 決定者）；駁回僅更新假單狀態，**不寫入**任何出勤紀錄。決定完成（交易提交後）才同步寫入通知，見上方「其他細節」。回應：更新後的 `LeaveRequestResponse`（此時 `makeup_session_id` 等欄位必為 `null`——補課須另呼叫下方端點）。
+
+錯誤：404（不存在）；403（非本課教練且非 admin）；409（非 pending）；422（`status` 非 `approved`/`rejected`）。
+
+#### `POST /leave-requests/{id}/makeup` — 需登入（僅本人 owner）
+Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順序：假單須為 `approved` 且尚未預約過補課（`makeup_session_id IS NULL`，否則 409）→ 目標場次須與原假單同一課程（否則 422）→ 目標場次須尚未開始（否則 422）→ 名額檢查（見下，否則 409）。成功寫入 `makeup_session_id`，回應更新後的 `LeaveRequestResponse`（`makeup_session_date`/`makeup_start_time` 補上目標場次的日期/時間）。
+
+**名額公式**（裁決 4 任務規格原文，逐字實作）：`course.max_students − 該目標場次所屬課程的 active enrolments 數 − 該目標場次的 approved leave 數 + 已補進該目標場次的 makeup 數 > 0` 時才允許預約。**已知疑慮**：以直覺的物理教室佔用模型推算，「approved leave 數」應該是加項（有人請假讓出名額）、「makeup 數」應該是減項（補課生佔用名額）——與本公式的加減號恰好相反；本次實作依任務規格逐字施作，尚待與 PO 確認公式方向是否為刻意的保守設計。實作以 `FOR UPDATE` 鎖假單列，防止**同一張假單**被併發預約兩次補課；不同假單搶同一目標場次最後一個名額的併發情形不在本次防護範圍內。
+
+錯誤：404（假單或目標場次不存在）；403（非本人）；409（假單非 `approved`、或已預約過補課、或名額已滿）；422（目標場次跨課程、或目標場次已開始）。
 
 ---
 

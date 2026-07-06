@@ -7,6 +7,7 @@ pub mod contact;
 pub mod coupons;
 pub mod courses;
 pub mod enrolments;
+pub mod leave;
 pub mod notifications;
 pub mod orders;
 pub mod permissions;

@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -95,6 +96,30 @@ fn user_welcomed_content() -> NotificationContent {
     }
 }
 
+/// Leave-request approve/reject copy (task brief, verbatim Chinese wording).
+/// Uses `NotificationType::System` — the leave module (`src/modules/leave/`)
+/// is new in this round and the brief didn't ask for a dedicated
+/// `notification_type` enum value (contrast with e.g. `point_reason` gaining
+/// `redeem` elsewhere this round), so this reuses the existing generic type
+/// rather than adding one.
+fn leave_request_decided_content(
+    approved: bool,
+    course_name: &str,
+    session_date: NaiveDate,
+) -> NotificationContent {
+    let verb = if approved { "已核准" } else { "已婉拒" };
+    NotificationContent {
+        notif_type: NotificationType::System,
+        title: "請假申請結果",
+        message: format!("你的請假申請{verb}：{course_name} {session_date}"),
+        metadata: Some(serde_json::json!({
+            "course_name": course_name,
+            "session_date": session_date.to_string(),
+            "approved": approved,
+        })),
+    }
+}
+
 async fn emit(db: &PgPool, user_id: Uuid, c: NotificationContent) {
     if let Err(e) =
         repository::create_notification(db, user_id, &c.notif_type, c.title, &c.message, c.metadata)
@@ -133,6 +158,21 @@ pub async fn order_status_changed(
 
 pub async fn user_welcomed(db: &PgPool, user_id: Uuid) {
     emit(db, user_id, user_welcomed_content()).await
+}
+
+pub async fn leave_request_decided(
+    db: &PgPool,
+    user_id: Uuid,
+    approved: bool,
+    course_name: &str,
+    session_date: NaiveDate,
+) {
+    emit(
+        db,
+        user_id,
+        leave_request_decided_content(approved, course_name, session_date),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -194,5 +234,36 @@ mod tests {
         assert_eq!(c.title, "Welcome to Dream Fly");
         assert_eq!(c.message, "Welcome to Dream Fly! Your account is ready.");
         assert_eq!(c.metadata, None);
+    }
+
+    #[test]
+    fn test_leave_request_decided_content_approved() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let c = leave_request_decided_content(true, "體操初級班", date);
+        assert_eq!(c.notif_type.as_str(), "system");
+        assert_eq!(c.message, "你的請假申請已核准：體操初級班 2026-07-10");
+        assert_eq!(
+            c.metadata,
+            Some(serde_json::json!({
+                "course_name": "體操初級班",
+                "session_date": "2026-07-10",
+                "approved": true,
+            }))
+        );
+    }
+
+    #[test]
+    fn test_leave_request_decided_content_rejected() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let c = leave_request_decided_content(false, "體操初級班", date);
+        assert_eq!(c.message, "你的請假申請已婉拒：體操初級班 2026-07-10");
+        assert_eq!(
+            c.metadata,
+            Some(serde_json::json!({
+                "course_name": "體操初級班",
+                "session_date": "2026-07-10",
+                "approved": false,
+            }))
+        );
     }
 }

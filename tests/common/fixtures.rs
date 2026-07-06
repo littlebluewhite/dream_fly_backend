@@ -513,6 +513,35 @@ pub async fn set_points_balance(db: &PgPool, user_id: Uuid, balance: i64) {
         .expect("set points balance");
 }
 
+/// Insert a `leave_requests` row directly (bypassing
+/// `leave::service::create_leave_request`), so tests can arrange exact
+/// pre-existing states — `status` in particular — without going through the
+/// "not yet started" / duplicate-index checks the create endpoint enforces.
+/// `status` is one of `pending`/`approved`/`rejected`/`cancelled`. Returns
+/// the new row's id.
+pub async fn seed_leave_request(
+    db: &PgPool,
+    enrolment_id: Uuid,
+    session_id: Uuid,
+    status: &str,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO leave_requests (id, enrolment_id, session_id, status, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::leave_status, NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(enrolment_id)
+    .bind(session_id)
+    .bind(status)
+    .execute(db)
+    .await
+    .expect("insert leave_request");
+    id
+}
+
 /// Small slug helper — lower, replace non-alnum with dashes.
 pub fn slugify(s: &str) -> String {
     s.chars()
