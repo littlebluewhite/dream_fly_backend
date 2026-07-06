@@ -10,7 +10,7 @@ use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{UpdateProfileRequest, UserListResponse, UserResponse};
+use super::dto::{CreateUserRequest, UpdateProfileRequest, UpdateUserRequest, UserListResponse, UserResponse};
 use super::service;
 
 #[tracing::instrument(skip_all)]
@@ -51,5 +51,29 @@ pub async fn get_user(
 ) -> Result<Json<UserResponse>, AppError> {
     auth.require_role("admin")?;
     let response = service::get_user(&state.db, id).await?;
+    Ok(Json(response))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn create(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    ValidatedJson(req): ValidatedJson<CreateUserRequest>,
+) -> Result<Json<UserResponse>, AppError> {
+    auth.require_role("admin")?;
+    let response = service::create_user(&state.db, req).await?;
+    Ok(Json(response))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn admin_update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    ValidatedJson(req): ValidatedJson<UpdateUserRequest>,
+) -> Result<Json<UserResponse>, AppError> {
+    auth.require_role("admin")?;
+    let mut redis = state.redis.clone();
+    let response = service::admin_update_user(&state.db, &mut redis, id, req).await?;
     Ok(Json(response))
 }

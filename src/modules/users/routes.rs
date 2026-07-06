@@ -5,6 +5,6 @@ use super::handlers;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/users/me", get(handlers::me).patch(handlers::update_me))
-        .route("/users", get(handlers::list))
-        .route("/users/{id}", get(handlers::get_user))
+        .route("/users", get(handlers::list).post(handlers::create))
+        .route("/users/{id}", get(handlers::get_user).patch(handlers::admin_update))
 }

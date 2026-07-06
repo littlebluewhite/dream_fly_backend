@@ -113,6 +113,8 @@
 | Auth | POST | `/auth/password/reset` | 公開 |
 | Users | GET | `/users/me` | 需登入 |
 | Users | PATCH | `/users/me` | 需登入 |
+| Users | POST | `/users` | admin |
+| Users | PATCH | `/users/{id}` | admin |
 | Courses | GET | `/courses` | 公開 |
 | Courses | GET | `/courses/{slugOrId}` | 公開 |
 | Courses | POST | `/courses` | admin |
@@ -259,6 +261,15 @@ Body（皆為選填）：`{ name?, phone?, avatar_url? }`（name 2-100 字；pho
 
 #### `GET /users/{id}` — admin
 回應：單筆 `UserResponse`。404 若查無。
+
+#### `POST /users` — admin
+Body（`CreateUserRequest`）：`{ email, name, phone?, password }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字）。建立流程比照 `POST /auth/register`：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色。回應：`UserResponse`（見上）。
+錯誤：409（email 已存在，訊息 `"Email 已被使用"`——與 `/auth/register` 刻意通用化的 409 訊息不同，因為呼叫者是 admin，不受帳號枚舉考量限制）；422（password < 8 字）。
+
+#### `PATCH /users/{id}` — admin
+Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phone 8-20 字；phone 異動會重置 `phone_verified = false`，與 `PATCH /users/me` 同一規則）。**不可改 `email`／`roles`／`password`**——這三者不是本端點的欄位，body 中帶了也會被忽略（v1 範圍外）。回應：`UserResponse`。
+錯誤：422（`name`/`phone`/`is_active` 皆未提供，訊息 `"至少提供一個欄位"`）；404（查無此使用者）。
+備註：`is_active` 有變動時，後端會立即清除該使用者的 Redis 快取（角色 + `is_active`），停用在下一次請求即生效，不必等待 `AuthUser` extractor 的 60 秒快取 TTL。
 
 ---
 

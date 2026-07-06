@@ -16,6 +16,36 @@ pub struct UpdateProfileRequest {
     pub avatar_url: Option<String>,
 }
 
+/// `POST /users` (admin) — creates a member account. Mirrors
+/// `auth::dto::RegisterRequest`'s field bounds (email/name/password), plus
+/// an optional `phone` the admin-creation flow supports that self-registration
+/// does not.
+#[derive(Debug, Deserialize, Validate)]
+pub struct CreateUserRequest {
+    #[validate(email, length(max = 256))]
+    pub email: String,
+    #[validate(length(min = 2, max = 100))]
+    pub name: String,
+    #[validate(length(min = 8, max = 20))]
+    pub phone: Option<String>,
+    #[validate(length(min = 8, max = 128))]
+    pub password: String,
+}
+
+/// `PATCH /users/{id}` (admin) — partial update of a member's own-profile
+/// fields. Deliberately excludes `email`/`roles`/`password`: those are out
+/// of v1 scope for this endpoint (see docs/api/integration-contract.md §3.2).
+/// At least one field must be present — enforced in `service::admin_update_user`
+/// since `validator` can't express "not all fields are None" declaratively.
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateUserRequest {
+    #[validate(length(min = 2, max = 100))]
+    pub name: Option<String>,
+    #[validate(length(min = 8, max = 20))]
+    pub phone: Option<String>,
+    pub is_active: Option<bool>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
     pub id: Uuid,

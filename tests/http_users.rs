@@ -227,3 +227,265 @@ async fn get_user_nonexistent_returns_404(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 404);
 }
+
+// ---------------------------------------------------------------------
+// Task 7: `POST /users` / `PATCH /users/{id}` (admin member management)
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn admin_create_user_succeeds_and_new_credentials_can_login(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "newmember@example.com",
+            "name": "New Member",
+            "phone": "0912345678",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["email"], "newmember@example.com");
+    assert_eq!(body["name"], "New Member");
+    assert_eq!(body["phone"], "0912345678");
+    assert_eq!(body["is_active"], true);
+    assert_eq!(body["roles"], json!(["member"]));
+
+    // Full round-trip: the freshly-created credentials must actually work.
+    let login_resp = app
+        .post("/api/v1/auth/login")
+        .json(&json!({
+            "email": "newmember@example.com",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(login_resp.status_code(), 200, "body={}", login_resp.text());
+    let login_body: serde_json::Value = login_resp.json();
+    assert_eq!(login_body["user"]["email"], "newmember@example.com");
+    assert!(login_body["access_token"].as_str().is_some());
+}
+
+#[sqlx::test]
+async fn admin_create_user_duplicate_email_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let payload = json!({
+        "email": "dupe@example.com",
+        "name": "First Caller",
+        "password": "Password!234",
+    });
+
+    let first = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&payload)
+        .await;
+    assert_eq!(first.status_code(), 200, "body={}", first.text());
+
+    let second = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&payload)
+        .await;
+    assert_eq!(second.status_code(), 409, "body={}", second.text());
+    let body: serde_json::Value = second.json();
+    assert_eq!(body["error"], "Email 已被使用");
+}
+
+#[sqlx::test]
+async fn admin_create_user_short_password_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "shortpass@example.com",
+            "name": "Short Pass",
+            "password": "short1",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn admin_create_user_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let caller = app.register_member("caller@example.com", "Password!234").await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&caller.access_token)
+        .json(&json!({
+            "email": "victim@example.com",
+            "name": "Victim",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn admin_update_user_partial_updates_name_only(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("patchme@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .patch(&format!("/api/v1/users/{}", target.user_id))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "name": "Renamed By Admin" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["name"], "Renamed By Admin");
+    // Untouched fields survive the partial update.
+    assert_eq!(body["email"], "patchme@example.com");
+}
+
+/// Task 7: `admin_update`'s phone-change path mirrors `PATCH /users/me`'s
+/// existing invariant — a real phone change resets `phone_verified` to
+/// `false`, since an admin-set number is exactly as unverified as a
+/// self-service one until OTP confirms it.
+#[sqlx::test]
+async fn admin_update_user_phone_change_resets_phone_verified(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("verifiedphone@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    // Arrange: pretend the user already verified an old phone number.
+    sqlx::query("UPDATE users SET phone = $2, phone_verified = true WHERE id = $1")
+        .bind(target.user_id)
+        .bind("0911111111")
+        .execute(&app.db)
+        .await
+        .expect("seed verified phone");
+
+    let resp = app
+        .patch(&format!("/api/v1/users/{}", target.user_id))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "phone": "0922222222" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["phone"], "0922222222");
+    assert_eq!(body["phone_verified"], false);
+}
+
+/// Task 7: `email`/`roles`/`password` are not fields on `UpdateUserRequest`
+/// — proves a body that includes them anyway leaves all three untouched
+/// (email/roles read back unchanged; the OLD password still authenticates).
+#[sqlx::test]
+async fn admin_update_user_ignores_email_roles_and_password_fields(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("immutable@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .patch(&format!("/api/v1/users/{}", target.user_id))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "name": "Still Renamed",
+            "email": "hacked@example.com",
+            "roles": ["admin"],
+            "password": "NewPassword!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["name"], "Still Renamed");
+    assert_eq!(body["email"], "immutable@example.com");
+    assert_eq!(body["roles"], json!(["member"]));
+
+    // The old password must still work — proof the `password` key was
+    // silently ignored rather than applied.
+    let login_resp = app
+        .post("/api/v1/auth/login")
+        .json(&json!({ "email": "immutable@example.com", "password": "Password!234" }))
+        .await;
+    assert_eq!(login_resp.status_code(), 200, "body={}", login_resp.text());
+}
+
+#[sqlx::test]
+async fn admin_update_user_no_fields_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("emptyupdate@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .patch(&format!("/api/v1/users/{}", target.user_id))
+        .authorization_bearer(&admin_token)
+        .json(&json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "至少提供一個欄位");
+}
+
+#[sqlx::test]
+async fn admin_update_user_nonexistent_returns_404(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let ghost = Uuid::now_v7();
+    let resp = app
+        .patch(&format!("/api/v1/users/{ghost}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "name": "Ghost" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+/// Task 7's key deactivation test. Deliberately re-authenticates via
+/// `/auth/login` (which reads `is_active` straight from the DB) rather than
+/// replaying `target.access_token` against a protected route — the latter
+/// depends on the `AuthUser` extractor's 60s `user_active` Redis cache TTL
+/// and would be a flaky/misleading way to prove the deactivation took effect.
+#[sqlx::test]
+async fn admin_deactivate_user_then_login_is_rejected(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("deactivate@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    // Sanity check: login succeeds before deactivation.
+    let pre = app
+        .post("/api/v1/auth/login")
+        .json(&json!({ "email": "deactivate@example.com", "password": "Password!234" }))
+        .await;
+    assert_eq!(pre.status_code(), 200, "body={}", pre.text());
+
+    let patch_resp = app
+        .patch(&format!("/api/v1/users/{}", target.user_id))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "is_active": false }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+    let body: serde_json::Value = patch_resp.json();
+    assert_eq!(body["is_active"], false);
+
+    let login_resp = app
+        .post("/api/v1/auth/login")
+        .json(&json!({ "email": "deactivate@example.com", "password": "Password!234" }))
+        .await;
+    assert_eq!(login_resp.status_code(), 401, "body={}", login_resp.text());
+}
+
+#[sqlx::test]
+async fn admin_update_user_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("target2@example.com", "Password!234").await;
+    let caller = app.register_member("caller2@example.com", "Password!234").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/users/{}", target.user_id))
+        .authorization_bearer(&caller.access_token)
+        .json(&json!({ "name": "Nope" }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
