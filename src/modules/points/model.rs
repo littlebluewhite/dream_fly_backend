@@ -8,6 +8,9 @@ pub enum PointReason {
     CheckoutEarn,
     CheckoutRedeem,
     AdminAdjust,
+    /// Points spent redeeming a `rewards` catalog item (Round 3 Task 6, 裁決
+    /// 7) — added via migration `20260707000004_point_reason_add_redeem.sql`.
+    Redeem,
 }
 
 impl PointReason {
@@ -16,6 +19,7 @@ impl PointReason {
             Self::CheckoutEarn => "checkout_earn",
             Self::CheckoutRedeem => "checkout_redeem",
             Self::AdminAdjust => "admin_adjust",
+            Self::Redeem => "redeem",
         }
     }
 }

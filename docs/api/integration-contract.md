@@ -66,8 +66,8 @@
 
 - Query 參數：`page`（預設 1）、`per_page`（預設 20，最大 **100**，超過會被 clamp，不會報錯）。
 - 分頁回應形狀一律為：`{ "<items_key>": [...], "total": number, "page": number, "per_page": number }`。
-- **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）、`GET /leave-requests`（admin/coach，見 §3.20）、`GET /conversations/{id}/messages`（見 §3.21）。
-- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）、`GET /report-cards/me`、`GET /certificates/me`（後兩者見 §3.22）。
+- **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）、`GET /leave-requests`（admin/coach，見 §3.20）、`GET /conversations/{id}/messages`（見 §3.21）、`GET /rewards/redemptions/me`（見 §3.23）。
+- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）、`GET /report-cards/me`、`GET /certificates/me`（後兩者見 §3.22）、`GET /rewards`（見 §3.23）。
 
 ### 1.5 金額慣例
 
@@ -78,7 +78,8 @@
 
 - **1 點 = NT$1**（消費時每 100 元折抵 1 點，即 `points_used * 100 <= 折扣後金額`）。
 - **賺點**：結帳成功時，依「折扣與點數折抵後的實際應付金額」的 **5%** 無條件四捨五入計算（`round(total_nt * 0.05)`，`total_nt = total_cents / 100`）。例：實付 NT$1000 → 賺 50 點；實付 NT$730 → 賺 37 點（36.5 四捨五入）。
-- 點數餘額與明細見 `GET /points/me`。
+- **兌換**：`POST /rewards/{id}/redeem` 成功會扣點，寫入一筆 `point_ledger`，`reason = "redeem"`（`delta = -points_cost`）——與結帳的 `checkout_redeem` 是不同 reason，前端可用此欄位區分「結帳折抵」與「兌換獎勵」兩種扣點來源。見 §3.23。
+- 點數餘額與明細見 `GET /points/me`。`reason` 目前有 `checkout_earn`/`checkout_redeem`/`admin_adjust`/`redeem` 四種。
 
 ### 1.7 Idempotency-Key（`POST /orders`）
 
@@ -176,6 +177,11 @@
 | Waitlist | GET | `/waitlist?course_id=` | admin |
 | Waitlist | DELETE | `/waitlist/{id}` | 需登入（本人或 admin） |
 | Points | GET | `/points/me` | 需登入 |
+| Rewards | GET | `/rewards?all=` | 需登入（`all=true` 需 admin） |
+| Rewards | POST | `/rewards/{id}/redeem` | 需登入 |
+| Rewards | GET | `/rewards/redemptions/me` | 需登入 |
+| Rewards | POST | `/rewards` | admin |
+| Rewards | PATCH | `/rewards/{id}` | admin |
 | Notifications | GET | `/notifications` | 需登入 |
 | Notifications | GET | `/notifications/unread-count` | 需登入 |
 | Notifications | PATCH | `/notifications/{id}/read` | 需登入 |
@@ -594,14 +600,14 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
   "balance": "number",
   "ledger": [
     { "id": "uuid", "delta": "number", "balance_after": "number",
-      "reason": "checkout_earn|checkout_redeem|admin_adjust",
+      "reason": "checkout_earn|checkout_redeem|admin_adjust|redeem",
       "order_id": "uuid|null", "created_at": "ISO8601" }
   ],
   "total": "number", "page": "number", "per_page": "number"
 }
 ```
 
-`delta` 可正可負（`checkout_redeem` 恆為負、`checkout_earn` 恆為正）。
+`delta` 可正可負（`checkout_redeem`/`redeem` 恆為負、`checkout_earn` 恆為正）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
 
 ---
 
@@ -931,6 +937,62 @@ Body：`{ user_id: "uuid", course_id?: "uuid", title: "string", level?: "string"
 
 #### `GET /certificates/me` — 需登入
 回應：`CertificateResponse[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己的證書。
+
+---
+
+### 3.23 Rewards（點數兌換）
+
+`rewards`/`reward_redemptions`：可用點數兌換的品項目錄與兌換紀錄。**點數扣減沿用既有 `point_ledger` + `users.points_balance` 機制（裁決 7）**——兌換不是第二套點數系統，只是 `point_ledger` 多一種 `reason`（`"redeem"`，見 §1.6）。
+
+`stock`：`null` = 不限量；有限量的品項兌換完（`stock` 降到 `0`）後，後續兌換一律 409。`is_active = false` 的品項對 member 如同不存在（列表濾除、兌換回 404）。
+
+**`POST /rewards/{id}/redeem` 為單一交易，依序**：鎖品項列（`FOR UPDATE`）→ 檢查 `is_active`（否則 404）→ 檢查 `stock`（`null` 略過；`0` → 409）→ 鎖並檢查呼叫者 `users.points_balance`（不足 `points_cost` → 409）→ 寫入 `point_ledger`（`delta = -points_cost`，`reason = "redeem"`）並同步 `users.points_balance` → `stock` 非 `null` 才 `-1` → 插入 `reward_redemptions` 紀錄。**併發防護**：兩筆兌換搶同一品項最後一件庫存時，品項列的 `FOR UPDATE` 序列化兩者的庫存檢查，恰好一筆成功，另一筆回 409「已兌換完畢」。
+
+#### `GET /rewards?all=` — 需登入
+Member（未帶 `all` 或 `all=false`）：僅回傳 `is_active = true` 的品項，依 `display_order` 排序。`all=true` 需 admin，回傳含 inactive 在內的全部品項（排序不變）；非 admin 帶 `all=true` 回 403。回應（`RewardListResponse`，**純陣列，不分頁**）：
+
+```jsonc
+{
+  "rewards": [
+    { "id": "uuid", "name": "string", "description": "string|null",
+      "points_cost": "number", "stock": "number|null", "is_active": "boolean",
+      "display_order": "number", "created_at": "ISO8601", "updated_at": "ISO8601" }
+  ]
+}
+```
+
+錯誤：403（非 admin 帶 `all=true`）。
+
+#### `POST /rewards/{id}/redeem` — 需登入
+無 body。成功回應：
+
+```jsonc
+{ "redemption_id": "uuid", "points_spent": "number", "balance_after": "number" }
+```
+
+錯誤：404（品項不存在或 `is_active = false`，訊息「獎勵不存在」）；409（庫存為 `0`，訊息「已兌換完畢」；或點數餘額低於 `points_cost`，訊息「點數不足」）。
+
+#### `GET /rewards/redemptions/me?page=&per_page=` — 需登入
+回應（`RedemptionListResponse`）：
+
+```jsonc
+{
+  "redemptions": [
+    { "id": "uuid", "reward_id": "uuid", "reward_name": "string",
+      "points_spent": "number", "created_at": "ISO8601" }
+  ],
+  "total": "number", "page": "number", "per_page": "number"
+}
+```
+
+新到舊，僅回傳呼叫者自己的兌換紀錄。`reward_name` 為即時 join 目前的品項名稱（非兌換當下快照）——品項改名後，舊兌換紀錄顯示的名稱會跟著變動。
+
+#### `POST /rewards` / `PATCH /rewards/{id}` — admin
+Create body：`{ name, description?, points_cost, stock?, display_order? }`（`name` 1–200 字；`points_cost` 需 > 0；`stock` 選填且 >= 0，留空即不限量；`display_order` 選填，預設 `0`）。新建品項一律 `is_active = true`。回應：建立後的品項（形狀同 `GET /rewards` 陣列中的單筆）。
+
+Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?, stock?, is_active?, display_order? }`。`description`/`stock` 可明確傳 `null` 清空（`description` 清為 `NULL`；`stock` 清為 `NULL` 即改為不限量），欄位不帶則維持原值不動。
+
+錯誤：404（`PATCH` 對象不存在，訊息「獎勵不存在」）；422（`name`/`points_cost` 不符驗證範圍）。
 
 ---
 

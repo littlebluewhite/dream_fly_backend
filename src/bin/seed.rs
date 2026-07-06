@@ -301,6 +301,49 @@ async fn insert_coupon(db: &PgPool, code: &str, discount_cents: i64) -> anyhow::
 }
 
 // ---------------------------------------------------------------------------
+// rewards
+// ---------------------------------------------------------------------------
+
+struct RewardSeed {
+    name: &'static str,
+    description: &'static str,
+    points_cost: i32,
+    stock: Option<i32>,
+    display_order: i32,
+}
+
+/// Insert a reward (idempotent on `name`). Unlike coupons/products, `rewards`
+/// has no natural unique column to key an `ON CONFLICT` off of (see the
+/// migration — brief's schema doesn't call for one), so idempotency here is
+/// a plain existence check instead.
+async fn insert_reward_if_absent(db: &PgPool, seed: &RewardSeed) -> anyhow::Result<()> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rewards WHERE name = $1)")
+        .bind(seed.name)
+        .fetch_one(db)
+        .await
+        .with_context(|| format!("check existing reward '{}'", seed.name))?;
+    if exists {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO rewards (id, name, description, points_cost, stock, is_active, display_order, created_at, updated_at)
+        VALUES (gen_random_uuid(), $1, $2, $3, $4, true, $5, NOW(), NOW())
+        "#,
+    )
+    .bind(seed.name)
+    .bind(seed.description)
+    .bind(seed.points_cost)
+    .bind(seed.stock)
+    .bind(seed.display_order)
+    .execute(db)
+    .await
+    .with_context(|| format!("insert reward '{}'", seed.name))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // posts (announcements)
 // ---------------------------------------------------------------------------
 
@@ -378,12 +421,13 @@ async fn print_row_counts(db: &PgPool) -> anyhow::Result<()> {
     // `format!`-built string so sqlx's `SqlSafeStr` compile-time check (no
     // dynamic SQL strings) is satisfied without an `AssertSqlSafe` escape
     // hatch.
-    const QUERIES: [(&str, &str); 7] = [
+    const QUERIES: [(&str, &str); 8] = [
         ("users", "SELECT COUNT(*) FROM users"),
         ("coaches", "SELECT COUNT(*) FROM coaches"),
         ("courses", "SELECT COUNT(*) FROM courses"),
         ("products", "SELECT COUNT(*) FROM products"),
         ("coupons", "SELECT COUNT(*) FROM coupons"),
+        ("rewards", "SELECT COUNT(*) FROM rewards"),
         ("posts", "SELECT COUNT(*) FROM posts"),
         ("venues", "SELECT COUNT(*) FROM venues"),
     ];
@@ -706,6 +750,35 @@ async fn main() -> anyhow::Result<()> {
         insert_coupon(&db, code, discount_cents).await?;
     }
     println!("[coupons]  {} coupons ready", coupon_seeds.len());
+
+    // -- rewards (points redemption catalog) ----------------------------------
+    let reward_seeds: [RewardSeed; 3] = [
+        RewardSeed {
+            name: "夢想飛翔運動毛巾",
+            description: "館內限定運動毛巾，吸濕排汗，訓練必備。",
+            points_cost: 50,
+            stock: None,
+            display_order: 0,
+        },
+        RewardSeed {
+            name: "免費體驗課程一堂",
+            description: "可折抵任一常規課程的單堂體驗名額。",
+            points_cost: 150,
+            stock: Some(10),
+            display_order: 1,
+        },
+        RewardSeed {
+            name: "教練簽名限量海報",
+            description: "館內教練團簽名海報，數量有限，換完為止。",
+            points_cost: 300,
+            stock: Some(2),
+            display_order: 2,
+        },
+    ];
+    for seed in &reward_seeds {
+        insert_reward_if_absent(&db, seed).await?;
+    }
+    println!("[rewards]  {} rewards ready", reward_seeds.len());
 
     // -- posts (announcements) ------------------------------------------------
     let post_seeds: [PostSeed; 3] = [

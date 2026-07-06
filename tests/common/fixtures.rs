@@ -574,6 +574,36 @@ pub async fn seed_message(
     id
 }
 
+/// Insert a reward row directly, bypassing the service layer so tests can
+/// set fields the create endpoint doesn't expose (e.g. `is_active`,
+/// `display_order`). `stock = None` means unlimited. Returns the reward id.
+pub async fn seed_reward(
+    db: &PgPool,
+    name: &str,
+    points_cost: i32,
+    stock: Option<i32>,
+    is_active: bool,
+    display_order: i32,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO rewards (id, name, description, points_cost, stock, is_active, display_order, created_at, updated_at)
+        VALUES ($1, $2, 'Test reward', $3, $4, $5, $6, NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(points_cost)
+    .bind(stock)
+    .bind(is_active)
+    .bind(display_order)
+    .execute(db)
+    .await
+    .expect("insert reward");
+    id
+}
+
 /// Small slug helper — lower, replace non-alnum with dashes.
 pub fn slugify(s: &str) -> String {
     s.chars()

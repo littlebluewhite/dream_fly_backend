@@ -16,6 +16,7 @@ pub mod permissions;
 pub mod points;
 pub mod posts;
 pub mod products;
+pub mod rewards;
 pub mod schedule;
 pub mod sessions;
 pub mod subscriptions;
