@@ -1,12 +1,61 @@
+use chrono::NaiveTime;
 use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::sessions::dto::{CourseScheduleSlotEntry, CourseScheduleSlotResponse};
+use crate::modules::sessions::repository::{self as sessions_repository, CourseSlotRow};
 use crate::utils::slug::slugify;
 
-use super::dto::{CourseListResponse, CourseResponse, CreateCourseRequest, UpdateCourseRequest};
+use super::dto::{
+    CourseDetailResponse, CourseListResponse, CourseResponse, CreateCourseRequest,
+    UpdateCourseRequest,
+};
 use super::model::CourseLevel;
 use super::repository;
+
+/// Parse an `HH:MM` or `HH:MM:SS` time-of-day string. Mirrors
+/// `schedule::service::parse_time_of_day` / `coaches::repository`'s inline
+/// equivalent — kept as its own small copy rather than a shared cross-module
+/// helper, consistent with how those two already duplicate it independently.
+fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(s, "%H:%M")
+        .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M:%S"))
+        .ok()
+}
+
+/// Parse+validate `schedule_slots` request entries into the tuple shape
+/// `sessions_repository::replace_slots_tx` takes. `AppError::Validation`
+/// (422) on an unparseable time or `end_time <= start_time` — the per-field
+/// bounds (day_of_week 0-6, string length) are already enforced by
+/// `ValidatedJson` via `CourseScheduleSlotEntry`'s own `Validate` derive
+/// before the service layer ever sees this.
+fn parse_schedule_slots(
+    entries: &[CourseScheduleSlotEntry],
+) -> Result<Vec<CourseSlotRow>, AppError> {
+    entries
+        .iter()
+        .map(|e| {
+            let start = parse_time_of_day(&e.start_time).ok_or_else(|| {
+                AppError::Validation(format!("invalid start_time: {}", e.start_time))
+            })?;
+            let end = parse_time_of_day(&e.end_time).ok_or_else(|| {
+                AppError::Validation(format!("invalid end_time: {}", e.end_time))
+            })?;
+            if end <= start {
+                return Err(AppError::Validation(
+                    "schedule_slots end_time must be after start_time".into(),
+                ));
+            }
+            Ok((e.day_of_week, start, end, e.venue.clone()))
+        })
+        .collect()
+}
+
+async fn slots_response(db: &PgPool, course_id: uuid::Uuid) -> Result<Vec<CourseScheduleSlotResponse>, AppError> {
+    let slots = sessions_repository::find_slots_by_course(db, course_id).await?;
+    Ok(slots.into_iter().map(CourseScheduleSlotResponse::from).collect())
+}
 
 pub async fn list_courses(
     db: &PgPool,
@@ -26,22 +75,25 @@ pub async fn list_courses(
 pub async fn get_course_by_slug_or_id(
     db: &PgPool,
     param: &str,
-) -> Result<CourseResponse, AppError> {
+) -> Result<CourseDetailResponse, AppError> {
     let course = if let Ok(id) = param.parse::<uuid::Uuid>() {
         repository::find_by_id(db, id).await?
     } else {
         repository::find_by_slug(db, param).await?
-    };
+    }
+    .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
-    course
-        .map(CourseResponse::from)
-        .ok_or_else(|| AppError::NotFound("course not found".into()))
+    let schedule_slots = slots_response(db, course.id).await?;
+    Ok(CourseDetailResponse {
+        course: CourseResponse::from(course),
+        schedule_slots,
+    })
 }
 
 pub async fn create_course(
     db: &PgPool,
     req: CreateCourseRequest,
-) -> Result<CourseResponse, AppError> {
+) -> Result<CourseDetailResponse, AppError> {
     let level: CourseLevel = req.level.to_lowercase().parse().map_err(|_| {
         AppError::Validation(
             "invalid course level, must be one of: beginner, intermediate, advanced".into(),
@@ -66,8 +118,18 @@ pub async fn create_course(
 
     let features = req.features.unwrap_or_default();
 
+    // Parse before opening the transaction so a bad time string 422s without
+    // ever touching the DB.
+    let parsed_slots = req
+        .schedule_slots
+        .as_ref()
+        .map(|entries| parse_schedule_slots(entries))
+        .transpose()?;
+
+    let mut tx = db.begin().await?;
+
     let course = repository::create(
-        db,
+        &mut tx,
         &req.name,
         &slug,
         &level,
@@ -85,14 +147,24 @@ pub async fn create_course(
     )
     .await?;
 
-    Ok(CourseResponse::from(course))
+    if let Some(slots) = &parsed_slots {
+        sessions_repository::replace_slots_tx(&mut tx, course.id, slots).await?;
+    }
+
+    tx.commit().await?;
+
+    let schedule_slots = slots_response(db, course.id).await?;
+    Ok(CourseDetailResponse {
+        course: CourseResponse::from(course),
+        schedule_slots,
+    })
 }
 
 pub async fn update_course(
     db: &PgPool,
     id: uuid::Uuid,
     req: UpdateCourseRequest,
-) -> Result<CourseResponse, AppError> {
+) -> Result<CourseDetailResponse, AppError> {
     // Validate level if provided
     let level_str = if let Some(ref level) = req.level {
         let _: CourseLevel = level.parse().map_err(|_| {
@@ -114,8 +186,16 @@ pub async fn update_course(
         }
     }
 
+    let parsed_slots = req
+        .schedule_slots
+        .as_ref()
+        .map(|entries| parse_schedule_slots(entries))
+        .transpose()?;
+
+    let mut tx = db.begin().await?;
+
     let course = repository::update(
-        db,
+        &mut tx,
         id,
         req.name.as_deref(),
         req.slug.as_deref(),
@@ -132,9 +212,18 @@ pub async fn update_course(
         req.schedule_text.as_ref().map(|o| o.as_deref()),
         req.is_highlighted,
     )
-    .await?;
+    .await?
+    .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
-    course
-        .map(CourseResponse::from)
-        .ok_or_else(|| AppError::NotFound("course not found".into()))
+    if let Some(slots) = &parsed_slots {
+        sessions_repository::replace_slots_tx(&mut tx, course.id, slots).await?;
+    }
+
+    tx.commit().await?;
+
+    let schedule_slots = slots_response(db, course.id).await?;
+    Ok(CourseDetailResponse {
+        course: CourseResponse::from(course),
+        schedule_slots,
+    })
 }

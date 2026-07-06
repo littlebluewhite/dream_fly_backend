@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use super::model::{Course, CourseLevel};
@@ -57,9 +57,13 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::E
     .await
 }
 
+/// Takes an already-open transaction (rather than `&PgPool`) so
+/// `courses::service` can insert the course row and, when the request
+/// carries `schedule_slots`, replace the course's weekly slots
+/// (`sessions::repository::replace_slots_tx`) atomically in one commit.
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
-    db: &PgPool,
+    tx: &mut Transaction<'_, Postgres>,
     name: &str,
     slug: &str,
     level: &CourseLevel,
@@ -100,13 +104,14 @@ pub async fn create(
     .bind(category)
     .bind(schedule_text)
     .bind(is_highlighted)
-    .fetch_one(db)
+    .fetch_one(&mut **tx)
     .await
 }
 
+/// Takes an already-open transaction — see [`create`]'s doc comment.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(
-    db: &PgPool,
+    tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
     name: Option<&str>,
     slug: Option<&str>,
@@ -177,5 +182,5 @@ pub async fn update(
           (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
     );
 
-    qb.build_query_as::<Course>().fetch_optional(db).await
+    qb.build_query_as::<Course>().fetch_optional(&mut **tx).await
 }

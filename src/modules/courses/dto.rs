@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::modules::sessions::dto::{CourseScheduleSlotEntry, CourseScheduleSlotResponse};
+
 use super::model::Course;
 
 #[derive(Debug, Serialize)]
@@ -56,6 +58,17 @@ impl From<Course> for CourseResponse {
     }
 }
 
+/// `GET /courses/{id}` (and `POST`/`PATCH`) response — `CourseResponse` plus
+/// `schedule_slots`. Deliberately not used by the list endpoint
+/// (`CourseListResponse` stays `Vec<CourseResponse>`) to avoid an N+1 slots
+/// query per row — see docs/api/integration-contract.md §3.3.
+#[derive(Debug, Serialize)]
+pub struct CourseDetailResponse {
+    #[serde(flatten)]
+    pub course: CourseResponse,
+    pub schedule_slots: Vec<CourseScheduleSlotResponse>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CourseListResponse {
     pub courses: Vec<CourseResponse>,
@@ -92,6 +105,8 @@ pub struct CreateCourseRequest {
     pub schedule_text: Option<String>,
     #[serde(default)]
     pub is_highlighted: bool,
+    #[validate(nested)]
+    pub schedule_slots: Option<Vec<CourseScheduleSlotEntry>>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -117,4 +132,9 @@ pub struct UpdateCourseRequest {
     pub category: Option<Option<String>>,
     pub schedule_text: Option<Option<String>>,
     pub is_highlighted: Option<bool>,
+    /// Not present (`None`) leaves existing slots untouched; `Some(vec)`
+    /// (including an empty vec) replaces the entire set within the same
+    /// transaction as the course row update — see `courses::service`.
+    #[validate(nested)]
+    pub schedule_slots: Option<Vec<CourseScheduleSlotEntry>>,
 }

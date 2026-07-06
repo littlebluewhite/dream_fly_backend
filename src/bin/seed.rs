@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveTime, Utc};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -148,6 +148,13 @@ struct CourseSeed {
     schedule_text: &'static str,
     is_highlighted: bool,
     coach_slug: &'static str,
+    /// Structured weekly slots — `(day_of_week, start_time "HH:MM", end_time
+    /// "HH:MM")`. `day_of_week` is 0=Sunday..6=Saturday (PostgreSQL
+    /// `EXTRACT(DOW)` convention, see migration
+    /// `20260706000001_course_schedule_slots_and_sessions.sql`). Not
+    /// required to enumerate every day in `schedule_text` — just enough for
+    /// dev's weekly schedule view to have real data.
+    slots: &'static [(i16, &'static str, &'static str)],
 }
 
 /// Insert a course (idempotent on `LOWER(slug)`).
@@ -180,6 +187,48 @@ async fn insert_course(db: &PgPool, seed: &CourseSeed, coach_id: Uuid) -> anyhow
     .execute(db)
     .await
     .with_context(|| format!("insert course '{}'", seed.slug))?;
+    Ok(())
+}
+
+/// Fetch a course's id by slug — used after `insert_course` (which doesn't
+/// itself return the id) so its weekly schedule slots can be attached.
+async fn course_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
+    sqlx::query_scalar("SELECT id FROM courses WHERE slug = $1")
+        .bind(slug)
+        .fetch_one(db)
+        .await
+        .with_context(|| format!("fetch id for course '{slug}'"))
+}
+
+/// Insert one weekly schedule slot for a course (idempotent on the
+/// `(course_id, day_of_week, start_time)` unique constraint).
+async fn insert_course_schedule_slot(
+    db: &PgPool,
+    course_id: Uuid,
+    day_of_week: i16,
+    start_time: &str,
+    end_time: &str,
+) -> anyhow::Result<()> {
+    let start = NaiveTime::parse_from_str(start_time, "%H:%M")
+        .with_context(|| format!("parse seed start_time '{start_time}'"))?;
+    let end = NaiveTime::parse_from_str(end_time, "%H:%M")
+        .with_context(|| format!("parse seed end_time '{end_time}'"))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO course_schedule_slots (id, course_id, day_of_week, start_time, end_time, created_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(course_id)
+    .bind(day_of_week)
+    .bind(start)
+    .bind(end)
+    .execute(db)
+    .await
+    .with_context(|| format!("insert course_schedule_slot for course {course_id}"))?;
     Ok(())
 }
 
@@ -470,6 +519,7 @@ async fn main() -> anyhow::Result<()> {
             schedule_text: "週二、四 16:00-17:00",
             is_highlighted: true,
             coach_slug: "wang",
+            slots: &[(2, "16:00", "17:00"), (4, "16:00", "17:00")],
         },
         CourseSeed {
             name: "競技體操進階班",
@@ -486,6 +536,7 @@ async fn main() -> anyhow::Result<()> {
             schedule_text: "週一、三、五 19:00-20:30",
             is_highlighted: false,
             coach_slug: "wang",
+            slots: &[(1, "19:00", "20:30"), (3, "19:00", "20:30")],
         },
         CourseSeed {
             name: "啦啦隊基礎技巧班",
@@ -502,6 +553,7 @@ async fn main() -> anyhow::Result<()> {
             schedule_text: "週二、四 19:00-20:30",
             is_highlighted: true,
             coach_slug: "li",
+            slots: &[(2, "19:00", "20:30"), (4, "19:00", "20:30")],
         },
         CourseSeed {
             name: "啦啦隊競技選手班",
@@ -518,6 +570,7 @@ async fn main() -> anyhow::Result<()> {
             schedule_text: "週三、五 19:00-21:00",
             is_highlighted: false,
             coach_slug: "li",
+            slots: &[(3, "19:00", "21:00"), (5, "19:00", "21:00")],
         },
         CourseSeed {
             name: "跑酷體驗班",
@@ -534,6 +587,7 @@ async fn main() -> anyhow::Result<()> {
             schedule_text: "週六 10:00-11:30",
             is_highlighted: false,
             coach_slug: "zhang",
+            slots: &[(6, "10:00", "11:30")],
         },
         CourseSeed {
             name: "幼兒體能律動班",
@@ -550,6 +604,7 @@ async fn main() -> anyhow::Result<()> {
             schedule_text: "週三、五 10:00-11:00",
             is_highlighted: false,
             coach_slug: "chen",
+            slots: &[(3, "10:00", "11:00"), (5, "10:00", "11:00")],
         },
     ];
 
@@ -560,6 +615,17 @@ async fn main() -> anyhow::Result<()> {
         insert_course(&db, seed, coach_id).await?;
     }
     println!("[courses]  {} courses ready", course_seeds.len());
+
+    // -- course weekly schedule slots -----------------------------------------
+    let mut slot_count = 0usize;
+    for seed in &course_seeds {
+        let course_id = course_id_by_slug(&db, seed.slug).await?;
+        for (day_of_week, start_time, end_time) in seed.slots {
+            insert_course_schedule_slot(&db, course_id, *day_of_week, start_time, end_time).await?;
+            slot_count += 1;
+        }
+    }
+    println!("[courses]  {slot_count} weekly schedule slots ready");
 
     // -- products / plans ----------------------------------------------------
     let product_seeds: [ProductSeed; 5] = [

@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -75,6 +75,37 @@ pub async fn seed_course_with_capacity(
     .execute(db)
     .await
     .expect("insert course");
+    id
+}
+
+/// Insert a course weekly schedule slot directly (bypassing the
+/// `PATCH /courses/{id}` `schedule_slots` upsert), so sessions tests can set
+/// up a course's weekly pattern without going through the courses HTTP/service
+/// layer. `day_of_week` is 0=Sunday..6=Saturday (PostgreSQL `EXTRACT(DOW)`
+/// convention — matches `sessions::repository::materialize_range`). Returns
+/// the slot id.
+pub async fn seed_course_schedule_slot(
+    db: &PgPool,
+    course_id: Uuid,
+    day_of_week: i16,
+    start_time: NaiveTime,
+    end_time: NaiveTime,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO course_schedule_slots (id, course_id, day_of_week, start_time, end_time, venue, created_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(course_id)
+    .bind(day_of_week)
+    .bind(start_time)
+    .bind(end_time)
+    .execute(db)
+    .await
+    .expect("insert course_schedule_slot");
     id
 }
 

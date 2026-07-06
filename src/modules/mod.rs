@@ -13,6 +13,7 @@ pub mod points;
 pub mod posts;
 pub mod products;
 pub mod schedule;
+pub mod sessions;
 pub mod subscriptions;
 pub mod users;
 pub mod venues;

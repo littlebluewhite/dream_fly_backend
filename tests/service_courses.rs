@@ -35,6 +35,7 @@ fn minimal_create(name: &str) -> CreateCourseRequest {
         category: None,
         schedule_text: None,
         is_highlighted: false,
+        schedule_slots: None,
     }
 }
 
@@ -43,10 +44,10 @@ async fn create_course_auto_generates_slug_from_name(db: PgPool) {
     let resp = service::create_course(&db, minimal_create("Intro To Bars"))
         .await
         .expect("create_course");
-    assert_eq!(resp.name, "Intro To Bars");
-    assert_eq!(resp.slug, "intro-to-bars");
-    assert_eq!(resp.level, "beginner");
-    assert!(resp.is_active);
+    assert_eq!(resp.course.name, "Intro To Bars");
+    assert_eq!(resp.course.slug, "intro-to-bars");
+    assert_eq!(resp.course.level, "beginner");
+    assert!(resp.course.is_active);
 }
 
 #[sqlx::test]
@@ -124,15 +125,15 @@ async fn get_by_slug_and_id_return_same_course(db: PgPool) {
         .await
         .unwrap();
 
-    let by_slug = service::get_course_by_slug_or_id(&db, &created.slug)
+    let by_slug = service::get_course_by_slug_or_id(&db, &created.course.slug)
         .await
         .expect("by slug");
-    let by_id = service::get_course_by_slug_or_id(&db, &created.id.to_string())
+    let by_id = service::get_course_by_slug_or_id(&db, &created.course.id.to_string())
         .await
         .expect("by id");
 
-    assert_eq!(by_slug.id, by_id.id);
-    assert_eq!(by_slug.slug, by_id.slug);
+    assert_eq!(by_slug.course.id, by_id.course.id);
+    assert_eq!(by_slug.course.slug, by_id.course.slug);
 }
 
 #[sqlx::test]
@@ -174,7 +175,7 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
     // (that was a subtle bug the original service code guards against).
     let err = service::update_course(
         &db,
-        second.id,
+        second.course.id,
         UpdateCourseRequest {
             name: None,
             slug: Some("taken".into()),
@@ -190,6 +191,7 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
             category: None,
             schedule_text: None,
             is_highlighted: None,
+            schedule_slots: None,
         },
     )
     .await
@@ -199,7 +201,7 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
     // No-op slug update on first must succeed.
     service::update_course(
         &db,
-        first.id,
+        first.course.id,
         UpdateCourseRequest {
             name: Some("First Renamed".into()),
             slug: Some("taken".into()),
@@ -215,6 +217,7 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
             category: None,
             schedule_text: None,
             is_highlighted: None,
+            schedule_slots: None,
         },
     )
     .await
@@ -231,7 +234,7 @@ async fn list_courses_filters_out_inactive(db: PgPool) {
         .unwrap();
 
     sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
-        .bind(hide.id)
+        .bind(hide.course.id)
         .execute(&db)
         .await
         .unwrap();
@@ -240,6 +243,6 @@ async fn list_courses_filters_out_inactive(db: PgPool) {
         .await
         .expect("list");
     let ids: Vec<_> = list.courses.iter().map(|c| c.id).collect();
-    assert!(ids.contains(&keep.id));
-    assert!(!ids.contains(&hide.id));
+    assert!(ids.contains(&keep.course.id));
+    assert!(!ids.contains(&hide.course.id));
 }

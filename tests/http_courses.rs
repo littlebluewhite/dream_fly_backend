@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::fixtures::seed_course;
+use common::fixtures::{seed_course, seed_course_schedule_slot};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -198,4 +198,181 @@ async fn create_course_rejects_invalid_payload(db: PgPool) {
         .await;
     // Validator or JSON deserialization error — either way, rejected.
     assert!(matches!(resp.status_code().as_u16(), 400 | 422));
+}
+
+// ---------------------------------------------------------------------------
+// schedule_slots (Round 3 Task 1) — detail-only exposure, full-replace PATCH
+// semantics, and the "field absent = untouched" contract.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn create_course_with_schedule_slots_returns_detail_with_slots(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/courses")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "name": "Slots Course",
+            "level": "beginner",
+            "duration_minutes": 60,
+            "price_cents": 100000,
+            "max_students": 10,
+            "schedule_slots": [
+                { "day_of_week": 2, "start_time": "16:00", "end_time": "17:00" },
+                { "day_of_week": 4, "start_time": "16:00", "end_time": "17:00", "venue": "Floor Zone" }
+            ]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
+    assert_eq!(slots.len(), 2);
+    assert_eq!(slots[0]["day_of_week"], 2);
+    assert_eq!(slots[0]["start_time"], "16:00:00");
+    assert_eq!(slots[0]["end_time"], "17:00:00");
+    assert!(slots[0]["venue"].is_null());
+    assert_eq!(slots[1]["day_of_week"], 4);
+    assert_eq!(slots[1]["venue"], "Floor Zone");
+    assert!(slots[0]["id"].as_str().is_some());
+}
+
+#[sqlx::test]
+async fn get_course_detail_includes_schedule_slots(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let course_id = seed_course(&app.db, "Detail Slots Course", None).await;
+    seed_course_schedule_slot(
+        &app.db,
+        course_id,
+        6,
+        chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+        chrono::NaiveTime::from_hms_opt(11, 30, 0).unwrap(),
+    )
+    .await;
+
+    let resp = app.get(&format!("/api/v1/courses/{course_id}")).await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0]["day_of_week"], 6);
+    assert_eq!(slots[0]["start_time"], "10:00:00");
+    assert_eq!(slots[0]["end_time"], "11:30:00");
+}
+
+#[sqlx::test]
+async fn list_courses_does_not_include_schedule_slots(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let course_id = seed_course(&app.db, "List No Slots Course", None).await;
+    seed_course_schedule_slot(
+        &app.db,
+        course_id,
+        1,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+    )
+    .await;
+
+    let resp = app.get("/api/v1/courses").await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let course = &body["courses"][0];
+    assert!(
+        course.get("schedule_slots").is_none(),
+        "list endpoint must not include schedule_slots (avoids N+1), got {course:?}"
+    );
+}
+
+#[sqlx::test]
+async fn patch_course_schedule_slots_replaces_entire_set(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Replace Slots Course", None).await;
+    seed_course_schedule_slot(
+        &app.db,
+        course_id,
+        1,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+    )
+    .await;
+
+    let resp = app
+        .patch(&format!("/api/v1/courses/{course_id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "schedule_slots": [
+                { "day_of_week": 5, "start_time": "18:00", "end_time": "19:00" }
+            ]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
+    assert_eq!(slots.len(), 1, "old slot must be gone, not merged with the new one");
+    assert_eq!(slots[0]["day_of_week"], 5);
+    assert_eq!(slots[0]["start_time"], "18:00:00");
+}
+
+#[sqlx::test]
+async fn patch_course_without_schedule_slots_field_leaves_slots_untouched(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Untouched Slots Course", None).await;
+    seed_course_schedule_slot(
+        &app.db,
+        course_id,
+        3,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+    )
+    .await;
+
+    let resp = app
+        .patch(&format!("/api/v1/courses/{course_id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "name": "Renamed, No Slots Field" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
+    assert_eq!(slots.len(), 1, "omitting schedule_slots must leave existing slots untouched");
+    assert_eq!(slots[0]["day_of_week"], 3);
+}
+
+#[sqlx::test]
+async fn patch_course_schedule_slots_invalid_day_of_week_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Invalid Slot Course", None).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/courses/{course_id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "schedule_slots": [
+                { "day_of_week": 9, "start_time": "18:00", "end_time": "19:00" }
+            ]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn patch_course_schedule_slots_end_before_start_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Backwards Slot Course", None).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/courses/{course_id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "schedule_slots": [
+                { "day_of_week": 1, "start_time": "19:00", "end_time": "18:00" }
+            ]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
 }
