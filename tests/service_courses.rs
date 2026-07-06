@@ -96,6 +96,38 @@ async fn create_course_invalid_level_returns_validation(db: PgPool) {
     }
 }
 
+/// Task 7: `course_level` grew from 3 tiers to 5 (`foundation`/`elite`
+/// bracketing the original `beginner`/`intermediate`/`advanced`). Confirms
+/// the new bottom tier round-trips through the enum and the DB cast.
+#[sqlx::test]
+async fn create_course_with_foundation_level_succeeds(db: PgPool) {
+    let resp = service::create_course(
+        &db,
+        CreateCourseRequest {
+            level: "foundation".into(),
+            ..minimal_create("Foundation Tots")
+        },
+    )
+    .await
+    .expect("create_course");
+    assert_eq!(resp.course.level, "foundation");
+}
+
+/// Task 7: same as above for the new top tier.
+#[sqlx::test]
+async fn create_course_with_elite_level_succeeds(db: PgPool) {
+    let resp = service::create_course(
+        &db,
+        CreateCourseRequest {
+            level: "elite".into(),
+            ..minimal_create("Elite Squad")
+        },
+    )
+    .await
+    .expect("create_course");
+    assert_eq!(resp.course.level, "elite");
+}
+
 #[sqlx::test]
 async fn create_course_min_age_greater_than_max_returns_validation(db: PgPool) {
     // Cross-field rule enforced in the service layer (validator macros

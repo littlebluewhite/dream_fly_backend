@@ -283,7 +283,7 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 ```jsonc
 {
   "id": "uuid", "name": "string", "slug": "string",
-  "level": "beginner|intermediate|advanced",
+  "level": "foundation|beginner|intermediate|advanced|elite",
   "description": "string|null", "duration_minutes": "number",
   "price_cents": "number", "max_students": "number",
   "min_age": "number|null", "max_age": "number|null",
@@ -296,6 +296,16 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 ```
 
 `enrolled_count`/`waitlist_count` 為即時計算（分別數 `enrolments.status='active'`、`waitlist_entries.status='waiting'`），非快取值。
+
+`level` 值域（Task 7 起由 3 級擴充為 5 級，`course_level` Postgres enum 由低到高）：
+
+| 值 | 中文對照 |
+| --- | --- |
+| `foundation` | 啟蒙 |
+| `beginner` | 入門 |
+| `intermediate` | 基礎 |
+| `advanced` | 進階 |
+| `elite` | 選手 |
 
 #### `GET /courses/{slugOrId}` — 公開
 `{slugOrId}` 可為 slug 或 UUID（後端先嘗試 parse 成 UUID，失敗則當 slug 查詢，皆大小寫不敏感）。回應（`CourseDetailResponse`）：`CourseResponse` 的所有欄位（同一層，非巢狀）再加一個 `schedule_slots` 陣列：

@@ -5,17 +5,21 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "course_level", rename_all = "lowercase")]
 pub enum CourseLevel {
+    Foundation,
     Beginner,
     Intermediate,
     Advanced,
+    Elite,
 }
 
 impl CourseLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Foundation => "foundation",
             Self::Beginner => "beginner",
             Self::Intermediate => "intermediate",
             Self::Advanced => "advanced",
+            Self::Elite => "elite",
         }
     }
 }
@@ -25,9 +29,11 @@ impl std::str::FromStr for CourseLevel {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "foundation" => Ok(Self::Foundation),
             "beginner" => Ok(Self::Beginner),
             "intermediate" => Ok(Self::Intermediate),
             "advanced" => Ok(Self::Advanced),
+            "elite" => Ok(Self::Elite),
             _ => Err(()),
         }
     }

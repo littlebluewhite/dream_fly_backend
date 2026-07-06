@@ -96,7 +96,7 @@ pub async fn create_course(
 ) -> Result<CourseDetailResponse, AppError> {
     let level: CourseLevel = req.level.to_lowercase().parse().map_err(|_| {
         AppError::Validation(
-            "invalid course level, must be one of: beginner, intermediate, advanced".into(),
+            "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite".into(),
         )
     })?;
 
@@ -169,7 +169,7 @@ pub async fn update_course(
     let level_str = if let Some(ref level) = req.level {
         let _: CourseLevel = level.parse().map_err(|_| {
             AppError::Validation(
-                "invalid course level, must be one of: beginner, intermediate, advanced".into(),
+                "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite".into(),
             )
         })?;
         Some(level.to_lowercase())
