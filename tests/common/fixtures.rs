@@ -542,6 +542,38 @@ pub async fn seed_leave_request(
     id
 }
 
+/// Insert a `messages` row directly (bypassing
+/// `messages::service::send_message`), so tests can control `sender_id`,
+/// `read_at`, and `created_at` precisely — needed for unread-count,
+/// mark-read, and pagination-ordering assertions that would otherwise race
+/// against real wall-clock timestamps. Returns the new row's id.
+pub async fn seed_message(
+    db: &PgPool,
+    conversation_id: Uuid,
+    sender_id: Uuid,
+    body: &str,
+    read_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO messages (id, conversation_id, sender_id, body, created_at, read_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(id)
+    .bind(conversation_id)
+    .bind(sender_id)
+    .bind(body)
+    .bind(created_at)
+    .bind(read_at)
+    .execute(db)
+    .await
+    .expect("insert message");
+    id
+}
+
 /// Small slug helper — lower, replace non-alnum with dashes.
 pub fn slugify(s: &str) -> String {
     s.chars()
