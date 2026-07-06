@@ -304,21 +304,21 @@ pub async fn decide_leave_request(
     })
 }
 
-/// `POST /leave-requests/{id}/makeup` — owner only. Locks the leave request
-/// row for the whole check-then-write sequence so two concurrent calls for
-/// the *same* request serialize (only the first can see `makeup_session_id
-/// IS NULL`); see the task report for why this does *not* also defend
-/// against two *different* leave requests racing for the same target
-/// session's last capacity slot (not required by the task brief/tests).
+/// `POST /leave-requests/{id}/makeup` — owner only. Two row locks make the
+/// check-then-write sequence race-free (controller ruling 2026-07-06):
+/// the leave-request row lock (`find_for_makeup_tx`) serializes two
+/// concurrent calls for the *same* request (only the first can see
+/// `makeup_session_id IS NULL`), and the target-session row lock
+/// (`lock_session_tx`, taken before the seat count) serializes *different*
+/// leave requests racing for the same session's last free seat.
 ///
-/// Capacity formula (task brief, verbatim): a makeup booking is allowed iff
-/// `max_students - active_count - approved_leave_count + makeup_count > 0`,
-/// where `active_count`/`approved_leave_count`/`makeup_count` are all scoped
-/// to the *target* session/course. Flagged in the task report: a naive
-/// physical-occupancy model would add `approved_leave_count` (a leave-taker
-/// frees a seat) and subtract `makeup_count` (a makeup booking fills one) —
-/// the opposite of the brief's literal signs. Implemented exactly as
-/// specified; worth a product-owner double-check.
+/// Seat check — physical seat model (controller ruling 2026-07-06): of the
+/// course's `max_students` seats at the target session, every active
+/// enrolment occupies one, every approved leave *for that session* frees
+/// one, and every makeup already booked into it takes one back:
+/// `max_students - active_count + approved_leave_count - makeup_count > 0`.
+/// Both counts consider only still-active enrolments (see
+/// `repository::find_makeup_capacity_tx`).
 pub async fn book_makeup(
     db: &PgPool,
     server: &ServerConfig,
@@ -355,13 +355,22 @@ pub async fn book_makeup(
         return Err(AppError::Validation("補課場次已開始".into()));
     }
 
+    // Serialize concurrent makeups into the same target session across
+    // *different* leave requests before counting seats — the leave-request
+    // row lock above only defends re-booking of the same request.
+    repository::lock_session_tx(&mut tx, req.session_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
+
     let capacity = repository::find_makeup_capacity_tx(&mut tx, target.course_id, req.session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("課程不存在".into()))?;
 
+    // Physical seat model: leave for the target frees a seat, an existing
+    // makeup into it occupies one (controller ruling 2026-07-06).
     let remaining = capacity.max_students as i64 - capacity.active_count
-        - capacity.approved_leave_count
-        + capacity.makeup_count;
+        + capacity.approved_leave_count
+        - capacity.makeup_count;
     if remaining <= 0 {
         return Err(AppError::Conflict("該場次名額已滿".into()));
     }

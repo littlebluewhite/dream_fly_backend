@@ -724,8 +724,8 @@ async fn makeup_by_non_owner_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn makeup_capacity_full_returns_409(db: PgPool) {
     // max_students = 1 and only the requesting student's own active
-    // enrolment counts toward `active_count` → remaining = 1 - 1 - 0 + 0 = 0,
-    // which fails the formula's strict `> 0` requirement.
+    // enrolment counts toward `active_count` → remaining = 1 - 1 + 0 - 0 = 0,
+    // which fails the seat check's strict `> 0` requirement.
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-makeup-full@example.com", "Password!234").await;
     let course_id = seed_course_with_capacity(&app.db, "Leave Makeup Full Course", None, 1).await;
@@ -743,4 +743,176 @@ async fn makeup_capacity_full_returns_409(db: PgPool) {
         .json(&json!({"session_id": target_session_id}))
         .await;
     assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+}
+
+// ---------------------------------------------------------------------------
+// Makeup capacity — physical seat model (controller ruling 2026-07-06):
+// remaining = max_students - active_count + approved_leave_for_target
+//           - makeups_into_target, counting only still-active enrolments.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn makeup_into_full_class_allowed_when_leave_frees_seats(db: PgPool) {
+    // Controller regression (a): max=10, 10 active enrolments (full class),
+    // 3 of them have APPROVED LEAVE for the target session, 0 makeups →
+    // remaining = 10 - 10 + 3 - 0 = 3 → must ALLOW. (The pre-ruling formula
+    // computed 10 - 10 - 3 + 0 = -3 and wrongly 409'd.)
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-seatmodel-a@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "Seat Model Course A", None, 10).await;
+    let original_session =
+        seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session =
+        seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
+
+    let my_enrolment = seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&app.db, my_enrolment, original_session, "approved").await;
+
+    // Fill the class to exactly max_students = 10 (requester + 9 others);
+    // 3 of the others take approved leave FOR THE TARGET session.
+    for i in 0..9 {
+        let other = common::seed_member(
+            &app.db,
+            &format!("seatmodel-a-{i}@example.com"),
+            "Password!234",
+        )
+        .await;
+        let other_enrolment =
+            seed_enrolment(&app.db, other, course_id, "active", Utc::now()).await;
+        if i < 3 {
+            seed_leave_request(&app.db, other_enrolment, target_session, "approved").await;
+        }
+    }
+
+    let resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": target_session}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn makeup_rejected_when_prior_makeups_fill_remaining_seats(db: PgPool) {
+    // Controller regression (b): max=10, 8 active enrolments, 0 leave for
+    // the target, but 2 makeups already booked into it → remaining =
+    // 10 - 8 + 0 - 2 = 0 → must 409. (The pre-ruling formula computed
+    // 10 - 8 - 0 + 2 = 4 and would have overbooked an 11th seat.)
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-seatmodel-b@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "Seat Model Course B", None, 10).await;
+    let original_session =
+        seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session =
+        seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
+
+    let my_enrolment = seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&app.db, my_enrolment, original_session, "approved").await;
+
+    // 8 active enrolments total (requester + 7 others); 2 of the others
+    // already booked makeups INTO the target session.
+    for i in 0..7 {
+        let other = common::seed_member(
+            &app.db,
+            &format!("seatmodel-b-{i}@example.com"),
+            "Password!234",
+        )
+        .await;
+        let other_enrolment =
+            seed_enrolment(&app.db, other, course_id, "active", Utc::now()).await;
+        if i < 2 {
+            let other_leave =
+                seed_leave_request(&app.db, other_enrolment, original_session, "approved").await;
+            sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
+                .bind(other_leave)
+                .bind(target_session)
+                .execute(&app.db)
+                .await
+                .expect("preset makeup_session_id");
+        }
+    }
+
+    let resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": target_session}))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn makeup_leave_by_cancelled_enrolment_frees_no_ghost_seat(db: PgPool) {
+    // Controller ruling: both seat counts only consider still-ACTIVE
+    // enrolments. A leave-taker who has since cancelled their enrolment
+    // must not free a ghost seat: max=1, requester is the only active
+    // enrolment; a CANCELLED enrolment holds an approved leave for the
+    // target → remaining = 1 - 1 + 0 - 0 = 0 → 409 (counting the cancelled
+    // enrolment's leave would wrongly yield 1 and allow overbooking).
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-ghost-seat@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "Ghost Seat Course", None, 1).await;
+    let original_session =
+        seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session =
+        seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
+
+    let my_enrolment = seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&app.db, my_enrolment, original_session, "approved").await;
+
+    let quitter =
+        common::seed_member(&app.db, "ghost-seat-quitter@example.com", "Password!234").await;
+    let quitter_enrolment =
+        seed_enrolment(&app.db, quitter, course_id, "cancelled", Utc::now()).await;
+    seed_leave_request(&app.db, quitter_enrolment, target_session, "approved").await;
+
+    let resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": target_session}))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn makeup_booked_by_cancelled_enrolment_occupies_no_seat(db: PgPool) {
+    // Symmetric active-only regression: a makeup booked by a since-
+    // cancelled enrolment must not keep occupying a seat: max=2, requester
+    // is the only active enrolment; a CANCELLED enrolment has a makeup
+    // booked into the target → remaining = 2 - 1 + 0 - 0 = 1 → allowed
+    // (counting the cancelled enrolment's makeup would wrongly yield 0
+    // and block a genuinely free seat).
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-freed-seat@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "Freed Seat Course", None, 2).await;
+    let original_session =
+        seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session =
+        seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
+
+    let my_enrolment = seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&app.db, my_enrolment, original_session, "approved").await;
+
+    let quitter =
+        common::seed_member(&app.db, "freed-seat-quitter@example.com", "Password!234").await;
+    let quitter_enrolment =
+        seed_enrolment(&app.db, quitter, course_id, "cancelled", Utc::now()).await;
+    let quitter_leave =
+        seed_leave_request(&app.db, quitter_enrolment, original_session, "approved").await;
+    sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
+        .bind(quitter_leave)
+        .bind(target_session)
+        .execute(&app.db)
+        .await
+        .expect("preset makeup_session_id");
+
+    let resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": target_session}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 }
