@@ -2,6 +2,7 @@ pub mod attendance;
 pub mod auth;
 pub mod bookings;
 pub mod cart;
+pub mod certificates;
 pub mod coaches;
 pub mod contact;
 pub mod coupons;

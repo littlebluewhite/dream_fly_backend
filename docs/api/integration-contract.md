@@ -67,7 +67,7 @@
 - Query 參數：`page`（預設 1）、`per_page`（預設 20，最大 **100**，超過會被 clamp，不會報錯）。
 - 分頁回應形狀一律為：`{ "<items_key>": [...], "total": number, "page": number, "per_page": number }`。
 - **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）、`GET /leave-requests`（admin/coach，見 §3.20）、`GET /conversations/{id}/messages`（見 §3.21）。
-- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）。
+- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）、`GET /report-cards/me`、`GET /certificates/me`（後兩者見 §3.22）。
 
 ### 1.5 金額慣例
 
@@ -167,6 +167,10 @@
 | Messages | GET | `/conversations/{id}/messages` | 需登入（僅參與者） |
 | Messages | POST | `/conversations/{id}/messages` | 需登入（僅參與者） |
 | Messages | PATCH | `/conversations/{id}/read` | 需登入（僅參與者） |
+| Report Cards | POST | `/report-cards` | admin 或該課教練 |
+| Report Cards | GET | `/report-cards/me` | 需登入 |
+| Certificates | POST | `/certificates` | admin 或教練（限自己課程學員） |
+| Certificates | GET | `/certificates/me` | 需登入 |
 | Waitlist | POST | `/waitlist` | 需登入 |
 | Waitlist | GET | `/waitlist/me` | 需登入 |
 | Waitlist | GET | `/waitlist?course_id=` | admin |
@@ -879,6 +883,54 @@ Body：`{ body: "string" }`（長度需 1 到 2000 字，DB CHECK 與 API valida
 無 body。將該對話中「對方寄出、且尚未讀取」的訊息全數標記為已讀（`read_at = now()`）——**只影響對方寄出的訊息，呼叫者自己寄出的訊息不受影響**。回應：`{ "updated": "number" }`（本次標記已讀的訊息數）。
 
 錯誤：404（對話不存在）；403（非參與者）。
+
+---
+
+### 3.22 Report Cards & Certificates（成績單/證書）
+
+`report_cards`/`certificates`：教練發放給學員的期別成績單與證書。**兩者皆為純 metadata，無 PDF/檔案儲存**（裁決 6，任務規格原文）——沒有上傳、下載或任何檔案欄位。
+
+**report_cards**：教練對學員「單一 enrolment」在某期別（`term_label`）的評語/評分。`UNIQUE(enrolment_id, term_label)`——同一筆 enrolment 同一期別僅能建立一次成績單，重複回 409。`rating` 選填，範圍 1–5（DB CHECK 與 API `validator` 皆驗證，0 或 6 皆回 422）。
+
+**certificates**：學員獲頒的證書，`course_id` 選填（可為 `NULL`，不綁定特定課程）。
+
+角色規則：兩端點皆僅 `coach`/`admin` 可呼叫（純 member 一律 403）：
+- `POST /report-cards`：admin 皆可；coach 僅限**自己課程**的 enrolment（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者），否則 403「非本課教練」。
+- `POST /certificates`：admin 皆可；coach 僅限「曾是或現是自己課程學員」的使用者——`user_id` 需在呼叫者任一課程有 enrolment（`active` 或 `cancelled` 皆可，歷史學員也可領證），否則 403「僅能發給自己課程的學員」。此檢查與 request body 的 `course_id` 無關——即使 `course_id` 留空或指向其他課程，只要該學員曾在教練任一課程報名即可核發。
+
+證書發放成功會對該學員寫入一筆 `system` 類型 notification（見 §3.15），文案：「你獲得了新證書：{title}」。
+
+#### `POST /report-cards` — admin 或該課教練
+Body：`{ enrolment_id: "uuid", term_label: "string", comment?: "string", rating?: number }`（`term_label` 1–100 字；`rating` 選填，1–5）。回應（`ReportCardResponse`）：
+
+```jsonc
+{
+  "id": "uuid", "course_id": "uuid", "course_name": "string",
+  "term_label": "string", "comment": "string|null", "rating": "number|null",
+  "created_by_name": "string", "created_at": "ISO8601"
+}
+```
+
+錯誤：404（`enrolment_id` 不存在，訊息「報名紀錄不存在」）；403（coach 並非該 enrolment 所屬課程的教練，訊息「非本課教練」）；409（`(enrolment_id, term_label)` 已存在，訊息「此期別已建立過成績單」）；422（`rating` 不在 1–5、或 `term_label` 長度不符）。
+
+#### `GET /report-cards/me` — 需登入
+回應：`ReportCardResponse[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己（透過其 enrolments）的成績單。
+
+#### `POST /certificates` — admin 或教練（限自己課程學員）
+Body：`{ user_id: "uuid", course_id?: "uuid", title: "string", level?: "string", issued_on: "YYYY-MM-DD", note?: "string" }`（`title` 1–200 字；`level` 選填，至多 100 字）。回應（`CertificateResponse`）：
+
+```jsonc
+{
+  "id": "uuid", "course_id": "uuid|null", "course_name": "string|null",
+  "title": "string", "level": "string|null", "issued_on": "YYYY-MM-DD",
+  "note": "string|null", "created_at": "ISO8601"
+}
+```
+
+錯誤：403（coach 且該學員不具呼叫者任一課程的 enrolment，訊息「僅能發給自己課程的學員」）；422（`title`/`level` 長度不符）。
+
+#### `GET /certificates/me` — 需登入
+回應：`CertificateResponse[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己的證書。
 
 ---
 

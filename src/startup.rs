@@ -97,6 +97,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::enrolments::routes::router())
         .merge(modules::leave::routes::router())
         .merge(modules::messages::routes::router())
+        .merge(modules::certificates::routes::router())
         .merge(modules::sessions::routes::router())
         .merge(modules::waitlist::routes::router())
         .merge(modules::points::routes::router());

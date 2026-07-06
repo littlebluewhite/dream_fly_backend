@@ -120,6 +120,20 @@ fn leave_request_decided_content(
     }
 }
 
+/// Certificate-issued copy (task brief, verbatim Chinese wording). Uses
+/// `NotificationType::System` — same rationale as
+/// `leave_request_decided_content`: the certificates module is new this
+/// round and the brief didn't ask for a dedicated `notification_type` enum
+/// value.
+fn certificate_issued_content(title: &str) -> NotificationContent {
+    NotificationContent {
+        notif_type: NotificationType::System,
+        title: "新證書",
+        message: format!("你獲得了新證書：{title}"),
+        metadata: Some(serde_json::json!({ "certificate_title": title })),
+    }
+}
+
 async fn emit(db: &PgPool, user_id: Uuid, c: NotificationContent) {
     if let Err(e) =
         repository::create_notification(db, user_id, &c.notif_type, c.title, &c.message, c.metadata)
@@ -173,6 +187,10 @@ pub async fn leave_request_decided(
         leave_request_decided_content(approved, course_name, session_date),
     )
     .await
+}
+
+pub async fn certificate_issued(db: &PgPool, user_id: Uuid, title: &str) {
+    emit(db, user_id, certificate_issued_content(title)).await
 }
 
 #[cfg(test)]
@@ -264,6 +282,17 @@ mod tests {
                 "session_date": "2026-07-10",
                 "approved": false,
             }))
+        );
+    }
+
+    #[test]
+    fn test_certificate_issued_content() {
+        let c = certificate_issued_content("體操初級證書");
+        assert_eq!(c.notif_type.as_str(), "system");
+        assert_eq!(c.message, "你獲得了新證書：體操初級證書");
+        assert_eq!(
+            c.metadata,
+            Some(serde_json::json!({ "certificate_title": "體操初級證書" }))
         );
     }
 }
