@@ -411,8 +411,10 @@ async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: P
     // student_x is enrolled in both of this coach's courses -> one distinct
     // entry with two courses.
     let student_x = app.register_member("att-students-x@example.com", "Password!234").await;
-    seed_enrolment(&app.db, student_x.user_id, course_a, "active", Utc::now()).await;
-    seed_enrolment(&app.db, student_x.user_id, course_b, "active", Utc::now()).await;
+    let enrolment_x_a =
+        seed_enrolment(&app.db, student_x.user_id, course_a, "active", Utc::now()).await;
+    let enrolment_x_b =
+        seed_enrolment(&app.db, student_x.user_id, course_b, "active", Utc::now()).await;
 
     // student_y is cancelled in course_a -> must not appear.
     let student_y = app.register_member("att-students-y@example.com", "Password!234").await;
@@ -440,6 +442,23 @@ async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: P
         courses.iter().map(|c| c["course_id"].as_str().unwrap().to_string()).collect();
     assert!(course_ids.contains(&course_a.to_string()));
     assert!(course_ids.contains(&course_b.to_string()));
+
+    let course_entry_a = courses
+        .iter()
+        .find(|c| c["course_id"] == course_a.to_string())
+        .expect("course_a entry present");
+    assert_eq!(
+        course_entry_a["enrolment_id"], enrolment_x_a.to_string(),
+        "course_a entry must carry student_x's enrolment_id for that course"
+    );
+    let course_entry_b = courses
+        .iter()
+        .find(|c| c["course_id"] == course_b.to_string())
+        .expect("course_b entry present");
+    assert_eq!(
+        course_entry_b["enrolment_id"], enrolment_x_b.to_string(),
+        "course_b entry must carry student_x's enrolment_id for that course"
+    );
 }
 
 #[sqlx::test]

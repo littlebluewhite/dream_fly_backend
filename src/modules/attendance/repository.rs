@@ -102,7 +102,8 @@ pub async fn find_my_students(
 ) -> Result<Vec<MyStudentRow>, sqlx::Error> {
     sqlx::query_as::<_, MyStudentRow>(
         "SELECT u.id AS user_id, u.name, u.phone, \
-                jsonb_agg(jsonb_build_object('course_id', c.id, 'course_name', c.name) \
+                jsonb_agg(jsonb_build_object('course_id', c.id, 'course_name', c.name, \
+                                             'enrolment_id', e.id) \
                           ORDER BY c.name) AS courses \
          FROM enrolments e \
          JOIN courses c ON c.id = e.course_id \

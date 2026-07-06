@@ -56,14 +56,18 @@ pub struct RosterRow {
     pub attendance_status: Option<AttendanceStatus>,
 }
 
-/// `{ course_id, course_name }` — one entry in `MyStudentRow.courses`,
-/// decoded straight out of a `jsonb_agg(...)` correlated aggregate (see
-/// `repository::find_my_students`). Mirrors `orders::model::OrderItemBrief`'s
-/// role (aggregate-row payload reused directly as the response field type).
+/// `{ course_id, course_name, enrolment_id }` — one entry in
+/// `MyStudentRow.courses`, decoded straight out of a `jsonb_agg(...)`
+/// correlated aggregate (see `repository::find_my_students`). Mirrors
+/// `orders::model::OrderItemBrief`'s role (aggregate-row payload reused
+/// directly as the response field type). `enrolment_id` is the active
+/// enrolment tying this student to this course — the frontend's "write a
+/// report card" action needs it to call `POST /report-cards`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudentCourseBrief {
     pub course_id: Uuid,
     pub course_name: String,
+    pub enrolment_id: Uuid,
 }
 
 /// One distinct student across a coach's active courses' active enrolments,
