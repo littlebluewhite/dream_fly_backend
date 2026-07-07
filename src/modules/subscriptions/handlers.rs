@@ -28,9 +28,7 @@ pub async fn redeem(
     auth: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<SubscriptionResponse>, AppError> {
-    if !auth.is_admin() && !auth.roles.contains(&"coach".to_string()) {
-        return Err(AppError::Forbidden("insufficient permissions".into()));
-    }
+    auth.require_any_role(&["admin", "coach"])?;
     let id: Uuid = id
         .parse()
         .map_err(|_| AppError::BadRequest("invalid subscription id".into()))?;

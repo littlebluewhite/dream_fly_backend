@@ -56,6 +56,7 @@ pub async fn list_all(
     auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedBookingsResponse>, AppError> {
-    let response = service::list_all(&state.db, &auth, &params).await?;
+    auth.require_role("admin")?;
+    let response = service::list_all(&state.db, &params).await?;
     Ok(Json(response))
 }

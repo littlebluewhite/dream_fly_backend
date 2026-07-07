@@ -66,6 +66,7 @@ pub async fn list_for_course(
     auth: AuthUser,
     params: WaitlistQuery,
 ) -> Result<Json<Vec<WaitlistResponse>>, AppError> {
-    let entries = service::list_for_course(&state.db, &auth, params.course_id).await?;
+    auth.require_role("admin")?;
+    let entries = service::list_for_course(&state.db, params.course_id).await?;
     Ok(Json(entries))
 }

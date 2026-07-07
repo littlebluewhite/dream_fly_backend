@@ -24,7 +24,11 @@ pub async fn list(
     auth: AuthUser,
     Query(params): Query<RewardListQuery>,
 ) -> Result<Json<RewardListResponse>, AppError> {
-    let result = service::list(&state.db, &auth, params.all.unwrap_or(false)).await?;
+    let all = params.all.unwrap_or(false);
+    if all {
+        auth.require_role("admin")?;
+    }
+    let result = service::list(&state.db, all).await?;
     Ok(Json(result))
 }
 

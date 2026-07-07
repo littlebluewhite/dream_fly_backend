@@ -198,11 +198,8 @@ pub async fn my_bookings(
 
 pub async fn list_all(
     db: &PgPool,
-    auth: &AuthUser,
     pagination: &PaginationParams,
 ) -> Result<PaginatedBookingsResponse, AppError> {
-    auth.require_role("admin")?;
-
     let total = repository::count_all(db).await?;
     let bookings = repository::find_all(db, pagination.limit(), pagination.offset()).await?;
 

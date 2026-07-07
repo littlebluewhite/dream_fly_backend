@@ -110,7 +110,7 @@ async fn cancel_booking_happy_path(db: PgPool) {
 #[sqlx::test]
 async fn list_all_bookings_as_member_returns_403(db: PgPool) {
     // GET /bookings (list_all) is an admin-only overview — members must
-    // use /bookings/me instead. The service enforces this, so members get
+    // use /bookings/me instead. The handler enforces this, so members get
     // a 403 even with a valid access token.
     let app = spawn_test_app(db).await;
     let user = app.register_member("la@example.com", "Password!234").await;

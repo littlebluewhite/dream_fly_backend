@@ -89,10 +89,8 @@ pub async fn cancel_waitlist_entry(db: &PgPool, auth: &AuthUser, id: Uuid) -> Re
 /// Waiting entries for a course, oldest first (queue order). Admin only.
 pub async fn list_for_course(
     db: &PgPool,
-    auth: &AuthUser,
     course_id: Uuid,
 ) -> Result<Vec<WaitlistResponse>, AppError> {
-    auth.require_role("admin")?;
     let rows = repository::find_by_course_waiting(db, course_id).await?;
     Ok(rows.into_iter().map(WaitlistResponse::from).collect())
 }

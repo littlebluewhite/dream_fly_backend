@@ -2,7 +2,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
 use crate::modules::points::model::PointReason;
 use crate::modules::points::service as points_service;
@@ -15,9 +14,8 @@ use super::repository::{self, RewardCreate, RewardUpdate};
 
 /// `GET /rewards`. `all=true` requires admin — a member only ever sees the
 /// `is_active` catalog, sorted for display.
-pub async fn list(db: &PgPool, auth: &AuthUser, all: bool) -> Result<RewardListResponse, AppError> {
+pub async fn list(db: &PgPool, all: bool) -> Result<RewardListResponse, AppError> {
     let rewards = if all {
-        auth.require_role("admin")?;
         repository::find_all(db).await?
     } else {
         repository::find_active(db).await?
