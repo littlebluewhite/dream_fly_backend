@@ -2,7 +2,14 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::orders::model::REVENUE_STATUSES;
+
 use super::model::{AdminCoachRow, AdminCourseRow};
+
+/// `attendance_records.status` values shared by [`coach_attendance_in_range`]
+/// and [`member_attendance`] — one spelling of each literal instead of two.
+const PRESENT: &str = "present";
+const ABSENT: &str = "absent";
 
 // ---------------------------------------------------------------------------
 // GET /reports/admin
@@ -34,12 +41,13 @@ pub async fn revenue_trend(
               ) AS m(month_start) \
          LEFT JOIN orders o \
            ON date_trunc('month', o.paid_at AT TIME ZONE $2) = m.month_start \
-          AND o.status IN ('paid', 'processing', 'completed') \
+          AND o.status::text = ANY($3) \
          GROUP BY m.month_start \
          ORDER BY m.month_start",
     )
     .bind(now)
     .bind(tz_name)
+    .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
     .await
 }
@@ -175,8 +183,8 @@ pub async fn coach_attendance_in_range(
     to: NaiveDate,
 ) -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*) FILTER (WHERE ar.status = 'present'), \
-                COUNT(*) FILTER (WHERE ar.status = 'absent') \
+        "SELECT COUNT(*) FILTER (WHERE ar.status = $4::attendance_status), \
+                COUNT(*) FILTER (WHERE ar.status = $5::attendance_status) \
          FROM attendance_records ar \
          JOIN course_sessions cs ON cs.id = ar.session_id \
          JOIN courses c ON c.id = cs.course_id \
@@ -185,6 +193,8 @@ pub async fn coach_attendance_in_range(
     .bind(coach_id)
     .bind(from)
     .bind(to)
+    .bind(PRESENT)
+    .bind(ABSENT)
     .fetch_one(db)
     .await
 }
@@ -199,13 +209,15 @@ pub async fn coach_attendance_in_range(
 /// happened. `leave` rows are never selected into either bucket.
 pub async fn member_attendance(db: &PgPool, user_id: Uuid) -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*) FILTER (WHERE ar.status = 'present'), \
-                COUNT(*) FILTER (WHERE ar.status = 'absent') \
+        "SELECT COUNT(*) FILTER (WHERE ar.status = $2::attendance_status), \
+                COUNT(*) FILTER (WHERE ar.status = $3::attendance_status) \
          FROM attendance_records ar \
          JOIN enrolments e ON e.id = ar.enrolment_id \
          WHERE e.user_id = $1",
     )
     .bind(user_id)
+    .bind(PRESENT)
+    .bind(ABSENT)
     .fetch_one(db)
     .await
 }

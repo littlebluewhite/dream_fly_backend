@@ -61,6 +61,12 @@ impl std::str::FromStr for OrderStatus {
     }
 }
 
+/// 計入營收的訂單狀態(reports 的營收彙總用)。「哪些狀態算營收」的單一
+/// 歸屬點——改這裡,報表跟著變。
+/// [`products::repository::find_sold_counts`] 有語意攣生的「paid-class」狀態集(售出件數用),
+/// 兩者今天恰好同集合但屬不同領域概念——若本常數變動,需刻意決定 products 是否跟進。
+pub const REVENUE_STATUSES: [&str; 3] = ["paid", "processing", "completed"];
+
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct Order {
     pub id: Uuid,

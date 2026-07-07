@@ -53,7 +53,10 @@ pub async fn insert(
 /// `peer_name`, plus `last_message_body` (`LEFT`-truncated to 100 chars) and
 /// `unread_count` as correlated subqueries — one query, no N+1.
 /// `unread_count` counts messages sent by the *peer* (`sender_id <> $1`)
-/// that are still unread, per contract §3.21.
+/// that are still unread, per contract §3.21. Semantic twin of
+/// `reports::repository::unread_message_count`'s predicate — copied, not
+/// shared (no sqlx compile-time check here to catch drift); keep both in
+/// sync.
 pub async fn find_my_conversations(
     db: &PgPool,
     user_id: Uuid,

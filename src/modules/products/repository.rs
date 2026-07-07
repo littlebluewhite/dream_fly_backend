@@ -161,6 +161,10 @@ pub async fn try_decrement_stock_tx(
 /// must pass every id in a single call rather than looping one-at-a-time —
 /// that would reintroduce the N+1 this exists to avoid. A product id absent
 /// from the returned map has zero sold units.
+/// This status list is a semantic twin of [`orders::model::REVENUE_STATUSES`]
+/// (used by reports for revenue aggregation) — currently identical, kept separate
+/// on purpose because "sold units" and "revenue" are distinct domain concepts;
+/// a change to either side must be reconciled deliberately.
 pub async fn find_sold_counts(
     db: &PgPool,
     product_ids: &[Uuid],

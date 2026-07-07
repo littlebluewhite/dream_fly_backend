@@ -95,7 +95,9 @@ pub async fn upsert_attendance_tx(
 
 /// Distinct students across a coach's active courses' active enrolments,
 /// each with a `jsonb_agg`-aggregated `courses` list — one query for the
-/// whole roster, not one per student.
+/// whole roster, not one per student. `WHERE` clause is a semantic twin of
+/// `reports::repository::coach_student_count`'s — copied, not shared (no
+/// sqlx compile-time check here to catch drift); keep both in sync.
 pub async fn find_my_students(
     db: &PgPool,
     coach_id: Uuid,
