@@ -8,6 +8,7 @@ use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event
 use crate::kafka::outbox;
 use crate::modules::cart::model::{CartItemType, CheckoutLine};
 use crate::modules::cart::repository as cart_repo;
+use crate::modules::coupons::model::Coupon;
 use crate::modules::coupons::repository as coupons_repo;
 use crate::modules::enrolments::dto::EnrolmentResponse;
 use crate::modules::enrolments::service as enrolments_service;
@@ -23,16 +24,18 @@ use super::dto::{
     OrderSummary,
 };
 use super::model::{Order, OrderStatus};
+use super::pricing;
 use super::repository;
 
 /// Checkout the user's cart. When an `idempotency_key` is supplied, a second
 /// attempt with the same (user_id, key) returns the original order instead
 /// of creating a duplicate (double-click, network retry, mobile 502 retry).
 ///
-/// Rule order (see task brief): subtotal -> coupon -> points -> total ->
-/// stock decrement -> create order (paid) -> order_items -> artifacts
-/// (enrolments, subscriptions, points ledger) -> clear cart -> idempotency
-/// -> outbox + notify.
+/// Rule order: coupon load -> points-balance lock -> `pricing::price`
+/// (subtotal -> coupon clamp -> points cap -> total -> points earned; see
+/// that module for the arithmetic itself) -> stock decrement -> create
+/// order (paid) -> order_items -> artifacts (enrolments, subscriptions,
+/// points ledger) -> clear cart -> idempotency -> outbox + notify.
 pub async fn checkout(
     db: &PgPool,
     user_id: Uuid,
@@ -68,62 +71,53 @@ pub async fn checkout(
         return Err(AppError::BadRequest("cart is empty".into()));
     }
 
-    // 3. Subtotal, checked arithmetic (existing style).
-    let mut subtotal_cents: i64 = 0;
-    for item in &cart_items {
-        let line = item
-            .price_cents
-            .checked_mul(item.quantity as i64)
-            .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
-        subtotal_cents = subtotal_cents
-            .checked_add(line)
-            .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
-    }
-
-    // 4. Coupon (optional). An unknown/inactive/expired code is rejected
-    //    outright — the caller should not be silently charged full price
-    //    while believing a discount applied. The discount is clamped to the
-    //    subtotal so a coupon larger than the cart can never drive the
-    //    payable amount below zero. This application-level clamp is now the
-    //    *only* upper bound: the `orders` table's CHECK constraint
-    //    (`orders_discount_nonneg`) only enforces `discount_cents >= 0`. The
-    //    old `discount_cents <= total_cents` bound was dropped by migration
-    //    20260704000002_relax_discount_bound.sql because it compared against
-    //    the post-discount total and rejected legitimate 100%-off coupons.
-    let mut discount_cents: i64 = 0;
-    let mut applied_coupon_code: Option<String> = None;
+    // 3. Coupon (optional), loaded and validated here — an unknown/
+    //    inactive/expired code is rejected outright — the caller should not
+    //    be silently charged full price while believing a discount applied.
+    //    Only the load happens in checkout; `pricing::price` turns this
+    //    (already-valid) coupon into the actual discount once the cart's
+    //    subtotal is known.
+    let mut coupon: Option<Coupon> = None;
     if let Some(code) = req
         .coupon_code
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let coupon = coupons_repo::find_valid_by_code_tx(&mut tx, code)
-            .await?
-            .ok_or_else(|| AppError::Validation("invalid coupon".into()))?;
-        discount_cents = coupon.discount_cents.min(subtotal_cents);
-        applied_coupon_code = Some(coupon.code);
+        coupon = Some(
+            coupons_repo::find_valid_by_code_tx(&mut tx, code)
+                .await?
+                .ok_or_else(|| AppError::Validation("invalid coupon".into()))?,
+        );
     }
-    let after_coupon_cents = subtotal_cents - discount_cents;
 
-    // 5. Points redemption (optional). Balance is read with `FOR UPDATE`
+    // 4. Points redemption (optional). Balance is read with `FOR UPDATE`
     //    inside this transaction so a second concurrent checkout by the
     //    same user cannot compute `points_used` against the same
     //    now-stale balance (double spend) — it blocks on this lock until
-    //    we commit or roll back.
-    let mut points_used: i64 = 0;
-    if req.use_points.unwrap_or(false) {
-        let balance = repository::lock_user_points_balance_tx(&mut tx, user_id)
+    //    we commit or roll back. `use_points=false` never takes this lock;
+    //    `pricing::price` gets a 0 balance instead, which is exactly what
+    //    "no redemption" needs.
+    let use_points = req.use_points.unwrap_or(false);
+    let points_balance = if use_points {
+        repository::lock_user_points_balance_tx(&mut tx, user_id)
             .await?
-            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
-        let max_points_by_amount = after_coupon_cents / 100;
-        points_used = balance.min(max_points_by_amount);
-    }
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?
+    } else {
+        0
+    };
 
-    // 6. Total.
-    let total_cents = after_coupon_cents - points_used * 100;
+    // 5. Price the cart — subtotal, coupon clamp, points cap, total, and
+    //    points earned, all in one pure call now that the coupon is loaded
+    //    and the points balance is locked. Accepted behavior note: subtotal
+    //    overflow is now detected inside this call, after the coupon load
+    //    above (it used to run first) — a cart whose subtotal overflows i64
+    //    *and* carries an invalid coupon code now surfaces the coupon's 422
+    //    instead of the overflow error. This needs an astronomical cart to
+    //    reach; see `pricing::price` for the arithmetic itself.
+    let outcome = pricing::price(&cart_items, coupon.as_ref(), points_balance, use_points)?;
 
-    // 7. Stock decrement — product lines only; fail fast on shortage.
+    // 6. Stock decrement — product lines only; fail fast on shortage.
     //    Sorted by product_id (deterministic global lock order) before
     //    touching any row: two concurrent checkouts that share two products
     //    added to their carts in opposite order could otherwise acquire the
@@ -150,7 +144,7 @@ pub async fn checkout(
         }
     }
 
-    // 8. Generate an order number. UUID-v7 suffix (base36-encoded last 32
+    // 7. Generate an order number. UUID-v7 suffix (base36-encoded last 32
     //    bits) gives us an unambiguous, monotonic, unguessable unique
     //    component — no birthday collisions and no modulo bias.
     let order_number = {
@@ -158,25 +152,21 @@ pub async fn checkout(
         format!("DF-{}{:08X}", Utc::now().format("%Y%m%d"), suffix)
     };
 
-    // 9. Earn — 5% of the final total, rounded to the nearest point.
-    let total_nt = total_cents / 100;
-    let points_earned = (total_nt * 5 + 50) / 100;
-
-    // 10. Create the order row FIRST, already `paid` — order_id is needed
+    // 8. Create the order row FIRST, already `paid` — order_id is needed
     //     before enrolments/subscriptions/ledger rows can link to it.
     let order = repository::create_order(
         &mut tx,
         user_id,
         &order_number,
-        total_cents,
-        discount_cents,
-        applied_coupon_code.as_deref(),
-        points_used,
-        points_earned,
+        outcome.total_cents,
+        outcome.discount_cents,
+        outcome.applied_coupon_code.as_deref(),
+        outcome.points_used,
+        outcome.points_earned,
     )
     .await?;
 
-    // 11. order_items from the (locked) cart snapshot — both product and
+    // 9. order_items from the (locked) cart snapshot — both product and
     //     course lines. `ci.name` becomes the order_items snapshot column,
     //     so later reads (OrderSummary/AdminOrderSummary `items`) never need
     //     to join the live product/course catalog.
@@ -194,8 +184,8 @@ pub async fn checkout(
         .collect();
     repository::create_order_items(&mut tx, order.id, &items_data).await?;
 
-    // 12. Artifacts.
-    // 12a. Enrolments — course lines, sorted by course_id (deterministic
+    // 10. Artifacts.
+    // 10a. Enrolments — course lines, sorted by course_id (deterministic
     //      global lock order: `enrol_from_purchase_tx` takes `FOR UPDATE`
     //      on the course row, and two concurrent checkouts sharing two
     //      courses could otherwise lock them in opposite orders and
@@ -217,7 +207,7 @@ pub async fn checkout(
         enrolments_service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order.id).await?;
     }
 
-    // 12b. Subscriptions — product lines whose product_type is
+    // 10b. Subscriptions — product lines whose product_type is
     //      entitlement-eligible. `grant_from_purchase_tx` itself returns
     //      `Ok(None)` for non-eligible types, so every product line is
     //      simply offered to it. It does not itself validate quantity >= 1;
@@ -245,33 +235,33 @@ pub async fn checkout(
         .await?;
     }
 
-    // 12c. Points ledger — redeem (negative) then earn (positive), each
+    // 10c. Points ledger — redeem (negative) then earn (positive), each
     //      skipped when zero (`apply_delta_tx` rejects a zero delta).
-    if points_used > 0 {
+    if outcome.points_used > 0 {
         points_service::apply_delta_tx(
             &mut tx,
             user_id,
-            -points_used,
+            -outcome.points_used,
             PointReason::CheckoutRedeem,
             Some(order.id),
         )
         .await?;
     }
-    if points_earned > 0 {
+    if outcome.points_earned > 0 {
         points_service::apply_delta_tx(
             &mut tx,
             user_id,
-            points_earned,
+            outcome.points_earned,
             PointReason::CheckoutEarn,
             Some(order.id),
         )
         .await?;
     }
 
-    // 13. Clear the cart within the same transaction.
+    // 11. Clear the cart within the same transaction.
     cart_repo::clear_cart_tx(&mut tx, user_id).await?;
 
-    // 14. Record the idempotency key inside the same tx so a concurrent
+    // 12. Record the idempotency key inside the same tx so a concurrent
     //     retry sees either nothing (and races for the lock) or the
     //     committed row.
     if let Some(key) = &idempotency_key {
@@ -297,7 +287,7 @@ pub async fn checkout(
         }
     }
 
-    // 15. Queue the order_created event into the outbox — persisted
+    // 13. Queue the order_created event into the outbox — persisted
     //     atomically with the order itself. The background dispatcher (see
     //     `kafka::outbox::start_dispatcher`) publishes it to Kafka with
     //     at-least-once semantics.
@@ -322,12 +312,12 @@ pub async fn checkout(
 
     tx.commit().await?;
 
-    // 16. Inline notification — the user expects order confirmation
+    // 14. Inline notification — the user expects order confirmation
     //     regardless of whether Kafka is enabled, and even if the
     //     dispatcher hasn't drained the event yet.
     notify::order_placed(db, order.user_id, order.id, &order.order_number).await;
 
-    // 17. Assemble the response (items + artifacts, looked up by order_id).
+    // 15. Assemble the response (items + artifacts, looked up by order_id).
     assemble_response(db, order).await
 }
 

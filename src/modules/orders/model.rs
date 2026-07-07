@@ -145,3 +145,47 @@ pub struct OrderSummaryRow {
     pub created_at: DateTime<Utc>,
     pub items: sqlx::types::Json<Vec<OrderItemBrief>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_transition_pending_to_paid_is_legal() {
+        assert!(OrderStatus::Pending.can_transition_to(&OrderStatus::Paid));
+    }
+
+    #[test]
+    fn can_transition_pending_to_processing_is_illegal() {
+        // Pending only opens onto Paid/Cancelled — Processing must be
+        // reached via Paid first.
+        assert!(!OrderStatus::Pending.can_transition_to(&OrderStatus::Processing));
+    }
+
+    #[test]
+    fn can_transition_completed_to_paid_is_illegal() {
+        // Completed only opens onto Refunded (plus the same-state case
+        // below) — it can never revert to an earlier status.
+        assert!(!OrderStatus::Completed.can_transition_to(&OrderStatus::Paid));
+    }
+
+    #[test]
+    fn can_transition_same_state_is_legal_for_every_status() {
+        // Idempotent no-op: a retried webhook/admin action re-applying the
+        // current status must not 422 — covers every variant, not just one.
+        for status in [
+            OrderStatus::Pending,
+            OrderStatus::Paid,
+            OrderStatus::Processing,
+            OrderStatus::Completed,
+            OrderStatus::Cancelled,
+            OrderStatus::Refunded,
+        ] {
+            let same = status.clone();
+            assert!(
+                status.can_transition_to(&same),
+                "{status:?} -> itself should be legal"
+            );
+        }
+    }
+}

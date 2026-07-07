@@ -74,3 +74,8 @@ pub struct CheckoutLine {
     pub price_cents: i64,
     pub name: String,
 }
+
+/// 行小計的溢位安全乘法——pricing 與 CartResponse 共用,溢位文案各自保留。
+pub fn checked_line_subtotal(price_cents: i64, quantity: i32) -> Option<i64> {
+    price_cents.checked_mul(quantity as i64)
+}
