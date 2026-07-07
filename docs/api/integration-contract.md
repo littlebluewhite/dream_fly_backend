@@ -113,6 +113,8 @@
 | Auth | POST | `/auth/password/reset` | 公開 |
 | Users | GET | `/users/me` | 需登入 |
 | Users | PATCH | `/users/me` | 需登入 |
+| Users | GET | `/users?page=&per_page=` | admin |
+| Users | GET | `/users/{id}` | admin |
 | Users | POST | `/users` | admin |
 | Users | PATCH | `/users/{id}` | admin |
 | Courses | GET | `/courses` | 公開 |
@@ -584,7 +586,7 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 ```jsonc
 {
   "id": "uuid", "course_id": "uuid", "course_name": "string",
-  "course_level": "beginner|intermediate|advanced",
+  "course_level": "foundation|beginner|intermediate|advanced|elite",
   "schedule_text": "string|null", "status": "active|cancelled",
   "enrolled_at": "ISO8601",
   "attended": "number", "total": "number"
