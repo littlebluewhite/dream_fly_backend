@@ -82,6 +82,10 @@ pub async fn product_name(db: &PgPool, product_id: Uuid) -> Result<String, sqlx:
 /// wasn't redeemable (not found, not active, no sessions left, or expired);
 /// `service::redeem` re-reads the row to distinguish 404 from the specific
 /// 409 reason.
+///
+/// Rust-side twin: `model::derive_status` encodes this same expiry/session-quota
+/// predicate for read-time status; `tests/service_subscriptions.rs` guards
+/// the two staying in sync.
 pub async fn redeem_one_session(db: &PgPool, id: Uuid) -> Result<Option<Subscription>, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         "UPDATE subscriptions SET remaining_sessions = remaining_sessions - 1 \

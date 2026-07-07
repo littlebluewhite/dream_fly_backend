@@ -73,6 +73,10 @@ impl SubscriptionWithProduct {
 /// - otherwise, expired by date (`expires_at` in the past) or by session
 ///   quota (`remaining_sessions == 0`) → `"expired"`.
 /// - otherwise → `"active"`.
+///
+/// SQL-side twin: [`super::repository::redeem_one_session`]'s `WHERE` clause
+/// encodes this same expiry/session-quota predicate for the atomic redeem
+/// path; `tests/service_subscriptions.rs` guards the two staying in sync.
 fn derive_status(
     status: SubscriptionStatus,
     expires_at: Option<DateTime<Utc>>,

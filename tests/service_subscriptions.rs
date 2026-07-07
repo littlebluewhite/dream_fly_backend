@@ -10,6 +10,10 @@
 //! - `redeem`: successful decrement, zero-remaining conflict, expired-by-date
 //!   conflict, no-session-quota conflict (exact message), cancelled conflict,
 //!   and not-found.
+//! - Dual-language consistency guard: `Subscription::derived_status` (Rust)
+//!   vs `repository::redeem_one_session`'s `WHERE` clause (SQL) must agree on
+//!   the same row across expired-by-date / expired-by-sessions / active /
+//!   null-`expires_at` boundary cases.
 
 mod common;
 
@@ -22,6 +26,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::orders::repository as orders_repo;
 use dream_fly_backend::modules::products::repository as products_repo;
 use dream_fly_backend::modules::subscriptions::model::{Subscription, SubscriptionStatus};
+use dream_fly_backend::modules::subscriptions::repository as subscriptions_repo;
 use dream_fly_backend::modules::subscriptions::service;
 
 /// `subscriptions.order_id` is a real FK into `orders`, so grant tests need
@@ -422,4 +427,167 @@ async fn concurrent_redeems_each_report_their_own_decrement(db: PgPool) {
             .await
             .expect("fetch remaining");
     assert_eq!(final_remaining, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Dual-language consistency guard.
+//
+// `Subscription::derived_status` (Rust) and `redeem_one_session`'s `WHERE`
+// clause (SQL) are two independent implementations of the same "is this
+// subscription usable" rule, and nothing checks them against each other at
+// compile time. Each case below seeds one row, asks both sides about that
+// exact row, and asserts they agree — not just that each side lands on some
+// expected value in isolation. Per R13, `expires_at` is always clearly past
+// or clearly future (never "now"): Rust's `Utc::now()` and SQL's `NOW()`
+// sample the clock at different instants, so a boundary pinned at "now"
+// would be flaky.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn status_vs_redeem_agree_when_expired_by_date(db: PgPool) {
+    let user_id = common::seed_member(&db, "guard-a@example.com", "Password!234").await;
+    let product_id =
+        seed_entitlement_product(&db, "ticket-guard-a", "ticket", 5_000, None, Some(10)).await;
+    let sub_id = seed_subscription(
+        &db,
+        user_id,
+        product_id,
+        "active",
+        // Minimum R13-compliant margin (1 day) maximizes grace-period drift
+        // detection: since drift is detected only when G > margin, smaller margin
+        // catches more drifts. ≤1-day grace periods are undetectable under R13.
+        Some(Utc::now() - Duration::days(1)),
+        Some(3),
+        Some(3),
+        5_000,
+        Utc::now(),
+    )
+    .await;
+
+    let row = subscriptions_repo::find_by_id(&db, sub_id)
+        .await
+        .expect("query subscription")
+        .expect("subscription exists");
+    let rust_says_usable = row.derived_status() == "active";
+
+    let redeemed = subscriptions_repo::redeem_one_session(&db, sub_id)
+        .await
+        .expect("redeem query");
+    let sql_redeem_succeeded = redeemed.is_some();
+
+    assert_eq!(
+        rust_says_usable, sql_redeem_succeeded,
+        "Rust 端與 SQL 端對同一訂閱列的判定分歧"
+    );
+}
+
+#[sqlx::test]
+async fn status_vs_redeem_agree_when_expired_by_sessions(db: PgPool) {
+    let user_id = common::seed_member(&db, "guard-b@example.com", "Password!234").await;
+    let product_id =
+        seed_entitlement_product(&db, "ticket-guard-b", "ticket", 5_000, None, Some(10)).await;
+    let sub_id = seed_subscription(
+        &db,
+        user_id,
+        product_id,
+        "active",
+        Some(Utc::now() + Duration::days(30)),
+        Some(3),
+        Some(0),
+        5_000,
+        Utc::now(),
+    )
+    .await;
+
+    let row = subscriptions_repo::find_by_id(&db, sub_id)
+        .await
+        .expect("query subscription")
+        .expect("subscription exists");
+    let rust_says_usable = row.derived_status() == "active";
+
+    let redeemed = subscriptions_repo::redeem_one_session(&db, sub_id)
+        .await
+        .expect("redeem query");
+    let sql_redeem_succeeded = redeemed.is_some();
+
+    assert_eq!(
+        rust_says_usable, sql_redeem_succeeded,
+        "Rust 端與 SQL 端對同一訂閱列的判定分歧"
+    );
+}
+
+#[sqlx::test]
+async fn status_vs_redeem_agree_when_active(db: PgPool) {
+    let user_id = common::seed_member(&db, "guard-c@example.com", "Password!234").await;
+    let product_id =
+        seed_entitlement_product(&db, "ticket-guard-c", "ticket", 5_000, None, Some(10)).await;
+    let sub_id = seed_subscription(
+        &db,
+        user_id,
+        product_id,
+        "active",
+        Some(Utc::now() + Duration::days(30)),
+        Some(3),
+        Some(3),
+        5_000,
+        Utc::now(),
+    )
+    .await;
+
+    let row = subscriptions_repo::find_by_id(&db, sub_id)
+        .await
+        .expect("query subscription")
+        .expect("subscription exists");
+    let rust_says_usable = row.derived_status() == "active";
+
+    let redeemed = subscriptions_repo::redeem_one_session(&db, sub_id)
+        .await
+        .expect("redeem query");
+    let sql_redeem_succeeded = redeemed.is_some();
+
+    assert_eq!(
+        rust_says_usable, sql_redeem_succeeded,
+        "Rust 端與 SQL 端對同一訂閱列的判定分歧"
+    );
+    let after = redeemed.expect("an active, unexpired row with sessions left must redeem");
+    assert_eq!(
+        after.remaining_sessions,
+        Some(2),
+        "redeem must decrement remaining_sessions by exactly 1"
+    );
+}
+
+#[sqlx::test]
+async fn status_vs_redeem_agree_when_expires_at_null(db: PgPool) {
+    // R13: model.rs's NULL-`expires_at` ("unlimited") semantics gets its own
+    // boundary row, same as the explicit past/future cases above.
+    let user_id = common::seed_member(&db, "guard-d@example.com", "Password!234").await;
+    let product_id =
+        seed_entitlement_product(&db, "ticket-guard-d", "ticket", 5_000, None, Some(10)).await;
+    let sub_id = seed_subscription(
+        &db, user_id, product_id, "active", None, Some(3), Some(3), 5_000, Utc::now(),
+    )
+    .await;
+
+    let row = subscriptions_repo::find_by_id(&db, sub_id)
+        .await
+        .expect("query subscription")
+        .expect("subscription exists");
+    let rust_says_usable = row.derived_status() == "active";
+
+    let redeemed = subscriptions_repo::redeem_one_session(&db, sub_id)
+        .await
+        .expect("redeem query");
+    let sql_redeem_succeeded = redeemed.is_some();
+
+    assert_eq!(
+        rust_says_usable, sql_redeem_succeeded,
+        "Rust 端與 SQL 端對同一訂閱列的判定分歧"
+    );
+    let after = redeemed.expect("a NULL-expires_at row with sessions left must redeem");
+    assert_eq!(
+        after.remaining_sessions,
+        Some(2),
+        "redeem must decrement remaining_sessions by exactly 1"
+    );
 }
