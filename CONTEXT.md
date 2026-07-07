@@ -23,3 +23,7 @@ _Avoid_: notification, message
 
 **營收狀態集(Revenue Statuses)**:
 `orders::model::REVENUE_STATUSES`;與 products 的「paid-class」是刻意分離的攣生概念。
+
+**場次狀態(Session Status)**:
+`sessions::model::SessionStatus::derive`;依 `studio_clock::has_started`/`has_ended`([start, end) 閉開)即時推導的三態(`upcoming`/`ongoing`/`done`),讀取時計算、不落地儲存,`course_sessions` 表仍無 status 欄。
+_Avoid_: state, live/done

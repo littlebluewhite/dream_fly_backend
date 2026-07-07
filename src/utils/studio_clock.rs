@@ -54,6 +54,14 @@ pub fn has_started(tz: Tz, now: DateTime<Utc>, date: NaiveDate, time: NaiveTime)
     to_utc(tz, date, time).map(|utc| utc <= now)
 }
 
+/// Whether a studio-local (date, time) is at or before `now`. `None` on a
+/// DST-ambiguous/nonexistent local time (see `to_utc`). Symmetric with
+/// [`has_started`] — same formula, applied to an end instant instead of a
+/// start instant.
+pub fn has_ended(tz: Tz, now: DateTime<Utc>, date: NaiveDate, time: NaiveTime) -> Option<bool> {
+    to_utc(tz, date, time).map(|utc| utc <= now)
+}
+
 /// Parse an `HH:MM` or `HH:MM:SS` time-of-day string. Accepting both formats
 /// makes the API lenient to callers that send whatever their UI produces
 /// (HTML `<input type="time">` for example sometimes emits seconds), without
@@ -178,6 +186,59 @@ mod tests {
         // 23:30 UTC on the 5th = 07:30 Taipei on the 6th — a session dated
         // the 6th at 07:00 Taipei-local HAS already started.
         assert_eq!(has_started(taipei(), now, d(2026, 7, 6), t(7, 0)), Some(true));
+    }
+
+    // --- has_ended (mirrors has_started) ---
+
+    #[test]
+    fn has_ended_false_when_now_is_before_end() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 8, 0, 0).unwrap();
+        assert_eq!(
+            has_ended(chrono_tz::UTC, now, d(2026, 7, 5), t(9, 0)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn has_ended_true_when_now_is_at_or_after_end() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 9, 0, 0).unwrap();
+        assert_eq!(
+            has_ended(chrono_tz::UTC, now, d(2026, 7, 5), t(9, 0)),
+            Some(true)
+        );
+
+        let later = Utc.with_ymd_and_hms(2026, 7, 5, 9, 30, 0).unwrap();
+        assert_eq!(
+            has_ended(chrono_tz::UTC, later, d(2026, 7, 5), t(9, 0)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn has_ended_none_on_new_york_dst_ambiguous_time() {
+        // Nonexistent local time (spring forward) — mirrors
+        // to_utc_none_on_nonexistent_spring_forward_time.
+        let now = Utc.with_ymd_and_hms(2026, 3, 8, 12, 0, 0).unwrap();
+        assert_eq!(has_ended(new_york(), now, d(2026, 3, 8), t(2, 30)), None);
+
+        // Ambiguous local time (fall back) — mirrors
+        // to_utc_none_on_ambiguous_fall_back_time.
+        let now2 = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+        assert_eq!(has_ended(new_york(), now2, d(2026, 11, 1), t(1, 30)), None);
+    }
+
+    #[test]
+    fn has_ended_uses_studio_local_wall_clock_not_utc_date() {
+        // 23:30 UTC on the 5th = 07:30 Taipei on the 6th (UTC+8). A session
+        // dated the 6th and ending at 08:00 Taipei-local has NOT ended yet
+        // at that instant, even though the UTC calendar date is still the
+        // 5th.
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 23, 30, 0).unwrap();
+        assert_eq!(has_ended(taipei(), now, d(2026, 7, 6), t(8, 0)), Some(false));
+
+        // 23:30 UTC on the 5th = 07:30 Taipei on the 6th — a session dated
+        // the 6th and ending at 07:00 Taipei-local HAS already ended.
+        assert_eq!(has_ended(taipei(), now, d(2026, 7, 6), t(7, 0)), Some(true));
     }
 
     // --- to_utc DST edges (Taipei has no DST; use America/New_York) ---

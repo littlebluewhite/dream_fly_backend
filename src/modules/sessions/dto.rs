@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::model::{CourseScheduleSlot, CourseSession, MyScheduleRow, TodaySessionRow};
+use super::model::{CourseScheduleSlot, CourseSession, MyScheduleRow, SessionStatus, TodaySessionRow};
 
 // ---------------------------------------------------------------------------
 // course_schedule_slots — request (courses' Create/UpdateCourseRequest embed
@@ -66,16 +66,18 @@ pub struct CourseSessionResponse {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
+    pub status: String,
 }
 
-impl From<CourseSession> for CourseSessionResponse {
-    fn from(s: CourseSession) -> Self {
+impl CourseSessionResponse {
+    pub fn from_session(s: CourseSession, status: SessionStatus) -> Self {
         Self {
             id: s.id,
             course_id: s.course_id,
             session_date: s.session_date,
             start_time: s.start_time,
             end_time: s.end_time,
+            status: status.as_str().to_string(),
         }
     }
 }
@@ -97,10 +99,11 @@ pub struct TodaySessionResponse {
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
     pub enrolled_count: i64,
+    pub status: String,
 }
 
-impl From<TodaySessionRow> for TodaySessionResponse {
-    fn from(r: TodaySessionRow) -> Self {
+impl TodaySessionResponse {
+    pub fn from_row(r: TodaySessionRow, status: SessionStatus) -> Self {
         Self {
             id: r.id,
             course_id: r.course_id,
@@ -108,6 +111,7 @@ impl From<TodaySessionRow> for TodaySessionResponse {
             start_time: r.start_time,
             end_time: r.end_time,
             enrolled_count: r.enrolled_count,
+            status: status.as_str().to_string(),
         }
     }
 }
