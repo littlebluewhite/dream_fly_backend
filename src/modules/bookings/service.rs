@@ -113,11 +113,7 @@ pub async fn cancel_booking(
         .ok_or_else(|| AppError::NotFound("booking not found".into()))?;
 
     // 2. Ownership or admin
-    if booking.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden(
-            "you can only cancel your own bookings".into(),
-        ));
-    }
+    auth.owns_or_admin(booking.user_id, "you can only cancel your own bookings")?;
 
     // 3. State machine: only pending/confirmed bookings can be cancelled.
     //    Cancelling a Completed / NoShow booking would decrement the slot

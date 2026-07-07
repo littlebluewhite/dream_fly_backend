@@ -83,6 +83,18 @@ impl AuthUser {
     pub fn is_admin(&self) -> bool {
         self.roles.iter().any(|r| r == "admin")
     }
+
+    /// 資源所有權授權原語:呼叫者是 `owner_id` 本人或 admin 才放行,否則回傳
+    /// `Err(AppError::Forbidden(forbidden_msg))`。文案由呼叫端傳入,讓各站點
+    /// 收斂到同一判斷邏輯的同時仍保留各自逐字的錯誤訊息(先例見
+    /// `coaches::service::require_course_coach`)。
+    pub fn owns_or_admin(&self, owner_id: Uuid, forbidden_msg: &str) -> Result<(), AppError> {
+        if self.user_id == owner_id || self.is_admin() {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden(forbidden_msg.into()))
+        }
+    }
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -189,5 +201,49 @@ impl FromRequestParts<AppState> for AuthUser {
             email: claims.email,
             roles,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auth(user_id: Uuid, roles: &[&str]) -> AuthUser {
+        AuthUser {
+            user_id,
+            email: "test@example.com".into(),
+            roles: roles.iter().map(|r| (*r).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn owner_non_admin_is_ok() {
+        let id = Uuid::now_v7();
+        let a = auth(id, &["member"]);
+        assert!(a.owns_or_admin(id, "nope").is_ok());
+    }
+
+    #[test]
+    fn non_owner_admin_is_ok() {
+        let owner_id = Uuid::now_v7();
+        let a = auth(Uuid::now_v7(), &["admin"]);
+        assert!(a.owns_or_admin(owner_id, "nope").is_ok());
+    }
+
+    #[test]
+    fn neither_owner_nor_admin_is_forbidden_with_message() {
+        let owner_id = Uuid::now_v7();
+        let a = auth(Uuid::now_v7(), &["member"]);
+        let err = a
+            .owns_or_admin(owner_id, "you shall not pass")
+            .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(ref m) if m == "you shall not pass"));
+    }
+
+    #[test]
+    fn owner_and_admin_is_ok() {
+        let id = Uuid::now_v7();
+        let a = auth(id, &["admin"]);
+        assert!(a.owns_or_admin(id, "nope").is_ok());
     }
 }

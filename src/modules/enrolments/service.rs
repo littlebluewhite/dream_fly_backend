@@ -65,11 +65,7 @@ pub async fn cancel_enrolment(
         .await?
         .ok_or_else(|| AppError::NotFound("enrolment not found".into()))?;
 
-    if enrolment.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden(
-            "you can only cancel your own enrolments".into(),
-        ));
-    }
+    auth.owns_or_admin(enrolment.user_id, "you can only cancel your own enrolments")?;
 
     let updated = repository::cancel_if_active_tx(&mut tx, id)
         .await?

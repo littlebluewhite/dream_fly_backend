@@ -71,11 +71,7 @@ pub async fn cancel_waitlist_entry(db: &PgPool, auth: &AuthUser, id: Uuid) -> Re
         .await?
         .ok_or_else(|| AppError::NotFound("waitlist entry not found".into()))?;
 
-    if entry.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden(
-            "you can only cancel your own waitlist entries".into(),
-        ));
-    }
+    auth.owns_or_admin(entry.user_id, "you can only cancel your own waitlist entries")?;
 
     repository::cancel_if_waiting_tx(&mut tx, id)
         .await?

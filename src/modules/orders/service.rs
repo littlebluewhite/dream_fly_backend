@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
 use crate::kafka::outbox;
@@ -352,19 +353,14 @@ async fn assemble_response(db: &PgPool, order: Order) -> Result<OrderResponse, A
 pub async fn get_order(
     db: &PgPool,
     order_id: Uuid,
-    user_id: Uuid,
-    is_admin: bool,
+    auth: &AuthUser,
 ) -> Result<OrderResponse, AppError> {
     let order = repository::find_by_id(db, order_id)
         .await?
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
 
     // Check ownership or admin
-    if order.user_id != user_id && !is_admin {
-        return Err(AppError::Forbidden(
-            "not authorized to view this order".into(),
-        ));
-    }
+    auth.owns_or_admin(order.user_id, "not authorized to view this order")?;
 
     assemble_response(db, order).await
 }
