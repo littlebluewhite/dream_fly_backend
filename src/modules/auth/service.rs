@@ -20,6 +20,8 @@ use super::dto::{
     OtpSendRequest, OtpVerifyRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
     UserResponse,
 };
+use super::otp;
+use super::rate_limit;
 use super::repository;
 
 // Helper: build AuthResponse from a user. The refresh token is hashed with
@@ -138,11 +140,6 @@ pub async fn register(
     Ok(response)
 }
 
-/// Max failed login attempts per email before temporary lockout.
-const LOGIN_MAX_ATTEMPTS: i64 = 10;
-/// Lockout window after hitting the threshold (seconds).
-const LOGIN_LOCKOUT_TTL: i64 = 900; // 15 minutes
-
 pub async fn login(
     db: &PgPool,
     redis: &mut redis::aio::ConnectionManager,
@@ -155,8 +152,8 @@ pub async fn login(
     //    thousands of IPs would sail past the per-IP rate limit, so we
     //    additionally throttle on the target account regardless of source.
     let fail_key = format!("login_fail:{email}");
-    let failures: i64 = redis.get(&fail_key).await.unwrap_or(0);
-    if failures >= LOGIN_MAX_ATTEMPTS {
+    let failures = rate_limit::read_count(redis, &fail_key).await;
+    if failures >= rate_limit::LOGIN_MAX_ATTEMPTS {
         // Same error code as bad credentials to avoid confirming the lockout
         // to an attacker. A defender inspecting logs will see the counter.
         tracing::warn!(%email, failures, "login blocked: lockout threshold reached");
@@ -171,7 +168,7 @@ pub async fn login(
     let user = match user_opt {
         Some(u) => u,
         None => {
-            bump_login_failure(redis, &fail_key).await;
+            rate_limit::bump_login_failure(redis, &fail_key).await;
             return Err(AppError::Unauthorized);
         }
     };
@@ -179,7 +176,7 @@ pub async fn login(
     let hash = match user.password_hash.as_deref() {
         Some(h) => h,
         None => {
-            bump_login_failure(redis, &fail_key).await;
+            rate_limit::bump_login_failure(redis, &fail_key).await;
             return Err(AppError::Unauthorized);
         }
     };
@@ -188,7 +185,7 @@ pub async fn login(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("password verify error: {e}")))?;
     if !valid {
-        bump_login_failure(redis, &fail_key).await;
+        rate_limit::bump_login_failure(redis, &fail_key).await;
         return Err(AppError::Unauthorized);
     }
 
@@ -200,28 +197,11 @@ pub async fn login(
     }
 
     // 3. Success — clear the failure counter and log last_login.
-    let _: Result<(), _> = redis.del::<_, ()>(&fail_key).await;
+    rate_limit::clear_count(redis, &fail_key).await;
 
     repository::update_last_login(db, user.id).await?;
 
     build_auth_response(db, config, &user).await
-}
-
-/// Atomic INCR + EXPIRE for the failed-login counter. Best-effort: Redis
-/// outages must not prevent authentication entirely.
-async fn bump_login_failure(redis: &mut redis::aio::ConnectionManager, key: &str) {
-    let script = r#"
-        local current = redis.call('INCR', KEYS[1])
-        if current == 1 then
-            redis.call('EXPIRE', KEYS[1], ARGV[1])
-        end
-        return current
-    "#;
-    let _: Result<i64, _> = redis::Script::new(script)
-        .key(key)
-        .arg(LOGIN_LOCKOUT_TTL)
-        .invoke_async(redis)
-        .await;
 }
 
 #[derive(serde::Deserialize)]
@@ -474,66 +454,13 @@ pub async fn logout(db: &PgPool, config: &AuthConfig, req: RefreshRequest) -> Re
     Ok(())
 }
 
-/// Maximum OTP requests a single authenticated user may trigger per hour.
-const OTP_REQUESTS_PER_HOUR: i64 = 3;
-/// Maximum failed verification attempts before the OTP is invalidated.
-const OTP_MAX_ATTEMPTS: i64 = 5;
-/// OTP lifetime in seconds.
-const OTP_TTL_SECONDS: i64 = 300;
-/// OTP rate-limit window in seconds.
-const OTP_RATE_LIMIT_TTL: i64 = 3600;
-
 pub async fn send_otp(
     redis: &mut redis::aio::ConnectionManager,
     sms_client: &dyn SmsSender,
     auth_user_id: Uuid,
     req: OtpSendRequest,
 ) -> Result<MessageResponse, AppError> {
-    use rand::RngExt;
-
-    // 1. Per-user rate limit — costs money if unbounded.
-    let rate_key = format!("otp_rate:{}", auth_user_id);
-    let count: i64 = redis.incr(&rate_key, 1).await?;
-    if count == 1 {
-        let _: () = redis.expire(&rate_key, OTP_RATE_LIMIT_TTL).await?;
-    }
-    if count > OTP_REQUESTS_PER_HOUR {
-        return Err(AppError::BadRequest(
-            "too many verification requests, try again later".into(),
-        ));
-    }
-
-    // 2. Generate 6-digit random code
-    let code: u32 = rand::rng().random_range(100000..=999999);
-    let code_str = format!("{:06}", code);
-
-    // 3. Store in Redis under a user-scoped key so a user cannot verify a
-    //    phone they did not initiate. Store {phone,code} as a JSON payload.
-    let payload = serde_json::json!({
-        "phone": req.phone,
-        "code": code_str,
-    })
-    .to_string();
-
-    let otp_key = format!("otp:{}", auth_user_id);
-    redis::cmd("SET")
-        .arg(&otp_key)
-        .arg(&payload)
-        .arg("EX")
-        .arg(OTP_TTL_SECONDS)
-        .query_async::<()>(redis)
-        .await?;
-
-    // Reset attempt counter whenever a fresh OTP is issued.
-    let attempts_key = format!("otp_attempts:{}", auth_user_id);
-    let _: () = redis.del(&attempts_key).await?;
-
-    // 4. Send SMS
-    sms_client.send_otp(&req.phone, &code_str).await?;
-
-    Ok(MessageResponse {
-        message: "verification code sent".into(),
-    })
+    otp::send_otp(redis, sms_client, auth_user_id, req).await
 }
 
 pub async fn verify_otp(
@@ -542,60 +469,15 @@ pub async fn verify_otp(
     auth_user_id: Uuid,
     req: OtpVerifyRequest,
 ) -> Result<MessageResponse, AppError> {
-    use subtle::ConstantTimeEq;
+    otp::verify_otp(redis, auth_user_id, &req).await?;
 
-    // 1. Bump the per-user attempt counter first — fail-closed on brute force.
-    let attempts_key = format!("otp_attempts:{}", auth_user_id);
-    let attempts: i64 = redis.incr(&attempts_key, 1).await?;
-    if attempts == 1 {
-        let _: () = redis.expire(&attempts_key, OTP_TTL_SECONDS).await?;
-    }
-    if attempts > OTP_MAX_ATTEMPTS {
-        // Invalidate the live OTP on too many attempts.
-        let otp_key = format!("otp:{}", auth_user_id);
-        let _: () = redis.del(&otp_key).await?;
-        return Err(AppError::BadRequest(
-            "too many attempts, request a new code".into(),
-        ));
-    }
-
-    // 2. Load the OTP payload keyed by the authenticated user.
-    let otp_key = format!("otp:{}", auth_user_id);
-    let stored: Option<String> = redis.get(&otp_key).await?;
-    let stored = stored.ok_or_else(|| AppError::BadRequest("verification code expired".into()))?;
-
-    let payload: serde_json::Value = serde_json::from_str(&stored)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("otp payload corrupted: {e}")))?;
-
-    let stored_phone = payload["phone"].as_str().unwrap_or_default();
-    let stored_code = payload["code"].as_str().unwrap_or_default();
-
-    // 3. The phone being verified must match the phone the OTP was issued to.
-    if stored_phone != req.phone {
-        return Err(AppError::BadRequest("invalid verification code".into()));
-    }
-
-    // 4. Constant-time code comparison.
-    let codes_equal: bool = stored_code.as_bytes().ct_eq(req.code.as_bytes()).into();
-    if !codes_equal {
-        return Err(AppError::BadRequest("invalid verification code".into()));
-    }
-
-    // 5. Success — delete OTP and attempt counter.
-    let _: () = redis.del(&otp_key).await?;
-    let _: () = redis.del(&attempts_key).await?;
-
-    // 6. Update phone_verified
+    // Update phone_verified now that the code has been confirmed.
     repository::update_phone_verified(db, auth_user_id, &req.phone).await?;
 
     Ok(MessageResponse {
         message: "phone verified successfully".into(),
     })
 }
-
-/// Lifetime of a password-reset token (seconds). Must match the text in
-/// `send_password_reset` email body.
-const PASSWORD_RESET_TTL_SECONDS: i64 = 900; // 15 minutes
 
 pub async fn forgot_password(
     db: &PgPool,
@@ -619,21 +501,7 @@ pub async fn forgot_password(
     // 2. Per-account request rate limit so the password-reset email is not
     //    weaponized as an email-flooding vector against a known victim.
     let forgot_rate_key = format!("forgot_rate:{email_lower}");
-    let count: i64 = {
-        let script = r#"
-            local current = redis.call('INCR', KEYS[1])
-            if current == 1 then
-                redis.call('EXPIRE', KEYS[1], ARGV[1])
-            end
-            return current
-        "#;
-        redis::Script::new(script)
-            .key(&forgot_rate_key)
-            .arg(3600i64)
-            .invoke_async::<i64>(redis)
-            .await
-            .unwrap_or(0)
-    };
+    let count = rate_limit::bump_count_best_effort(redis, &forgot_rate_key, 3600i64).await;
     if count > 3 {
         // Swallow silently — do NOT leak to the attacker that they tripped
         // a per-account limit. Same response shape as the success branch.
@@ -664,7 +532,7 @@ pub async fn forgot_password(
         .arg(&key)
         .arg(user.id.to_string())
         .arg("EX")
-        .arg(PASSWORD_RESET_TTL_SECONDS)
+        .arg(rate_limit::PASSWORD_RESET_TTL_SECONDS)
         .query_async::<()>(redis)
         .await?;
 
@@ -674,7 +542,7 @@ pub async fn forgot_password(
         .arg(&index_key)
         .arg(&token)
         .arg("EX")
-        .arg(PASSWORD_RESET_TTL_SECONDS)
+        .arg(rate_limit::PASSWORD_RESET_TTL_SECONDS)
         .query_async::<()>(redis)
         .await?;
 
