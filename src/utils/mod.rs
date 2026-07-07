@@ -4,5 +4,6 @@ pub mod jwt;
 pub mod password;
 pub mod slug;
 pub mod sms;
+pub mod studio_clock;
 pub mod url_validation;
 pub mod validation;

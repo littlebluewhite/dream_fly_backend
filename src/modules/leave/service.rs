@@ -1,5 +1,4 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -11,6 +10,7 @@ use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::repository as coaches_repository;
 use crate::modules::notifications::service as notify;
+use crate::utils::studio_clock;
 
 use super::dto::{
     AdminLeaveRequestResponse, CreateLeaveRequestRequest, LeaveRequestListResponse,
@@ -19,45 +19,12 @@ use super::dto::{
 use super::model::LeaveStatus;
 use super::repository;
 
-/// Resolve the studio timezone. Mirrors `sessions::service::studio_tz` /
-/// `bookings::service::studio_tz` (each module keeps its own tiny copy —
-/// established convention in this codebase rather than a shared helper).
-/// Startup validation (`AppConfig::load`) already rejects invalid timezone
-/// names, so the UTC fallback only fires if a future refactor bypasses that.
-fn studio_tz(server: &ServerConfig) -> Tz {
-    server.studio_timezone.parse::<Tz>().unwrap_or(chrono_tz::UTC)
-}
-
-/// Whether a session's (date, start_time) — interpreted as studio-local
-/// wall-clock time, per contract §3.18 裁決 2/裁決 4 — is at or before `now`.
-/// Mirrors `bookings::service::create_booking`'s slot-start check: convert
-/// the naive local instant to UTC via the studio tz (erroring on an
-/// ambiguous DST-transition instant, which won't occur in the test harness's
-/// UTC-pinned config) rather than converting `now` to naive local, so the
-/// comparison is unambiguous regardless of `tz`. `now` is a parameter
-/// (rather than calling `Utc::now()` internally) so this is unit-testable
-/// with fixed instants — mirrors `sessions::service::studio_date_at`.
-fn session_has_started(
-    tz: Tz,
-    now: DateTime<Utc>,
-    date: NaiveDate,
-    time: NaiveTime,
-) -> Result<bool, AppError> {
-    let local = NaiveDateTime::new(date, time);
-    match tz.from_local_datetime(&local).single() {
-        Some(dt) => Ok(dt.with_timezone(&Utc) <= now),
-        None => Err(AppError::BadRequest(
-            "session time falls on an ambiguous local time".into(),
-        )),
-    }
-}
-
 /// Shared coach-ownership gate for the list/decide endpoints: an admin
 /// always passes; a coach passes only if the course's `coach_id` matches
 /// their own `coaches.id`. Mirrors
 /// `attendance::service::authorize_session_coach` (copied rather than
-/// shared — each module keeps its own small copy, same convention as
-/// `studio_tz` above).
+/// shared — each module keeps its own small copy, unlike the timezone
+/// helpers now centralized in `crate::utils::studio_clock`).
 async fn authorize_course_coach(
     db: &PgPool,
     auth: &AuthUser,
@@ -101,12 +68,14 @@ pub async fn create_leave_request(
         .await?
         .ok_or_else(|| AppError::NotFound("未報名此課程".into()))?;
 
-    if session_has_started(
-        studio_tz(server),
+    if studio_clock::has_started(
+        studio_clock::studio_tz(server),
         Utc::now(),
         session.session_date,
         session.start_time,
-    )? {
+    )
+    .ok_or_else(|| AppError::BadRequest("session time falls on an ambiguous local time".into()))?
+    {
         return Err(AppError::Validation("場次已開始，無法請假".into()));
     }
 
@@ -326,7 +295,7 @@ pub async fn book_makeup(
     id: Uuid,
     req: MakeupRequest,
 ) -> Result<LeaveRequestResponse, AppError> {
-    let tz = studio_tz(server);
+    let tz = studio_clock::studio_tz(server);
     let mut tx = db.begin().await?;
 
     let leave = repository::find_for_makeup_tx(&mut tx, id)
@@ -351,7 +320,11 @@ pub async fn book_makeup(
         return Err(AppError::Validation("補課場次須為同一課程".into()));
     }
 
-    if session_has_started(tz, Utc::now(), target.session_date, target.start_time)? {
+    if studio_clock::has_started(tz, Utc::now(), target.session_date, target.start_time)
+        .ok_or_else(|| {
+            AppError::BadRequest("session time falls on an ambiguous local time".into())
+        })?
+    {
         return Err(AppError::Validation("補課場次已開始".into()));
     }
 
@@ -396,46 +369,4 @@ pub async fn book_makeup(
         decided_at: updated.decided_at,
         created_at: updated.created_at,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
-    }
-
-    fn t(h: u32, m: u32) -> NaiveTime {
-        NaiveTime::from_hms_opt(h, m, 0).unwrap()
-    }
-
-    #[test]
-    fn session_has_started_false_when_now_is_before_start() {
-        let now = Utc.with_ymd_and_hms(2026, 7, 5, 8, 0, 0).unwrap();
-        assert!(!session_has_started(chrono_tz::UTC, now, d(2026, 7, 5), t(9, 0)).unwrap());
-    }
-
-    #[test]
-    fn session_has_started_true_when_now_is_at_or_after_start() {
-        let now = Utc.with_ymd_and_hms(2026, 7, 5, 9, 0, 0).unwrap();
-        assert!(session_has_started(chrono_tz::UTC, now, d(2026, 7, 5), t(9, 0)).unwrap());
-
-        let later = Utc.with_ymd_and_hms(2026, 7, 5, 9, 30, 0).unwrap();
-        assert!(session_has_started(chrono_tz::UTC, later, d(2026, 7, 5), t(9, 0)).unwrap());
-    }
-
-    #[test]
-    fn session_has_started_uses_studio_local_wall_clock_not_utc_date() {
-        // 23:30 UTC on the 5th = 07:30 Taipei on the 6th (UTC+8). A session
-        // dated the 6th at 08:00 Taipei-local has NOT started yet at that
-        // instant, even though the UTC calendar date is still the 5th.
-        let taipei = "Asia/Taipei".parse::<Tz>().unwrap();
-        let now = Utc.with_ymd_and_hms(2026, 7, 5, 23, 30, 0).unwrap();
-        assert!(!session_has_started(taipei, now, d(2026, 7, 6), t(8, 0)).unwrap());
-
-        // 23:30 UTC on the 5th = 07:30 Taipei on the 6th — a session dated
-        // the 6th at 07:00 Taipei-local HAS already started.
-        assert!(session_has_started(taipei, now, d(2026, 7, 6), t(7, 0)).unwrap());
-    }
 }

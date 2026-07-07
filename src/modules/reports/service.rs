@@ -1,5 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, Utc};
-use chrono_tz::Tz;
+use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -8,6 +7,7 @@ use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::coaches::repository as coaches_repository;
 use crate::modules::sessions::repository as sessions_repository;
+use crate::utils::studio_clock;
 
 use super::dto::{
     AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection, AdminReportResponse,
@@ -39,18 +39,6 @@ fn safe_ratio(numerator: i64, denominator: i64) -> Option<f64> {
     } else {
         Some(numerator as f64 / denominator as f64)
     }
-}
-
-/// Mirrors `sessions::service::studio_tz` (copied, not shared — the
-/// established per-module convention in this codebase for these small
-/// timezone helpers; see e.g. `leave::service`'s own copy).
-fn studio_tz(server: &ServerConfig) -> Tz {
-    server.studio_timezone.parse::<Tz>().unwrap_or(chrono_tz::UTC)
-}
-
-/// Mirrors `sessions::service::studio_date_at`.
-fn studio_date_at(tz: Tz, now: DateTime<Utc>) -> NaiveDate {
-    now.with_timezone(&tz).date_naive()
 }
 
 /// `GET /reports/admin`. Role gating (`admin` only) happens in the
@@ -133,7 +121,7 @@ pub async fn coach_report(
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
-    let today = studio_date_at(studio_tz(server), Utc::now());
+    let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
     sessions_repository::materialize_range(db, &course_ids, today, today).await?;
 
@@ -162,7 +150,7 @@ pub async fn member_report(
     server: &ServerConfig,
     user_id: Uuid,
 ) -> Result<MemberReportResponse, AppError> {
-    let today = studio_date_at(studio_tz(server), Utc::now());
+    let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
 
     let (present, absent) = repository::member_attendance(db, user_id).await?;
     let points_balance = repository::points_balance(db, user_id).await?;

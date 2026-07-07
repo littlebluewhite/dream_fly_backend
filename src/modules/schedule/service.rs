@@ -1,9 +1,9 @@
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono::{NaiveDate, Utc};
 use sqlx::PgPool;
 
 use crate::config::ServerConfig;
 use crate::error::AppError;
+use crate::utils::studio_clock;
 
 use super::dto::{
     AvailabilityQuery, CreateSlotsRequest, DaySchedule, ScheduleQuery, TimeSlotResponse,
@@ -13,27 +13,6 @@ use super::repository;
 /// Max slot capacity — a sanity cap so a typo doesn't create a 2-billion-seat
 /// slot. If a real-world use case needs more, raise this.
 const MAX_SLOT_CAPACITY: i32 = 10_000;
-
-fn studio_tz(server: &ServerConfig) -> Tz {
-    // Startup validation (`AppConfig::load`) already rejects invalid
-    // timezones, so by the time this runs we know the parse succeeds.
-    // The `unwrap_or` is a belt-and-braces fallback that only fires if a
-    // future refactor bypasses the startup check.
-    server
-        .studio_timezone
-        .parse::<Tz>()
-        .unwrap_or(chrono_tz::UTC)
-}
-
-/// Parse an `HH:MM` or `HH:MM:SS` time-of-day string. Accepting both formats
-/// makes the API lenient to callers that send whatever their UI produces
-/// (HTML `<input type="time">` for example sometimes emits seconds), without
-/// forcing clients to strip trailing `:00`.
-fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
-    NaiveTime::parse_from_str(s, "%H:%M")
-        .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M:%S"))
-        .ok()
-}
 
 pub async fn get_monthly_schedule(
     db: &PgPool,
@@ -84,7 +63,7 @@ pub async fn create_slots(
     server: &ServerConfig,
     req: CreateSlotsRequest,
 ) -> Result<Vec<TimeSlotResponse>, AppError> {
-    let tz = studio_tz(server);
+    let tz = studio_clock::studio_tz(server);
     let now_utc = Utc::now();
 
     let mut parsed_slots = Vec::with_capacity(req.slots.len());
@@ -92,10 +71,10 @@ pub async fn create_slots(
     for entry in &req.slots {
         let date = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d")
             .map_err(|_| AppError::BadRequest(format!("invalid date format: {}", entry.date)))?;
-        let start_time = parse_time_of_day(&entry.start_time).ok_or_else(|| {
+        let start_time = studio_clock::parse_time_of_day(&entry.start_time).ok_or_else(|| {
             AppError::BadRequest(format!("invalid start_time format: {}", entry.start_time))
         })?;
-        let end_time = parse_time_of_day(&entry.end_time).ok_or_else(|| {
+        let end_time = studio_clock::parse_time_of_day(&entry.end_time).ok_or_else(|| {
             AppError::BadRequest(format!("invalid end_time format: {}", entry.end_time))
         })?;
 
@@ -111,14 +90,9 @@ pub async fn create_slots(
         // Reject past slots. Interpret the naive (date, start_time) in the
         // configured studio timezone and refuse anything not strictly in
         // the future.
-        let local = NaiveDateTime::new(date, start_time);
-        let slot_utc = tz
-            .from_local_datetime(&local)
-            .single()
-            .ok_or_else(|| {
-                AppError::BadRequest("start_time falls on an ambiguous local time".into())
-            })?
-            .with_timezone(&Utc);
+        let slot_utc = studio_clock::to_utc(tz, date, start_time).ok_or_else(|| {
+            AppError::BadRequest("start_time falls on an ambiguous local time".into())
+        })?;
         if slot_utc <= now_utc {
             return Err(AppError::BadRequest(
                 "cannot create a slot in the past".into(),

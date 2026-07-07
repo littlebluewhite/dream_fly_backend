@@ -1,5 +1,4 @@
-use chrono::{NaiveDateTime, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -11,21 +10,10 @@ use crate::kafka::events::{BookingCancelledPayload, BookingCreatedPayload, event
 use crate::kafka::outbox;
 use crate::modules::notifications::service as notify;
 use crate::modules::schedule;
+use crate::utils::studio_clock;
 
 use super::dto::{BookingResponse, CreateBookingRequest, PaginatedBookingsResponse};
 use super::repository;
-
-/// Resolve the studio timezone. Falls back to UTC with a warning so a
-/// misconfigured deploy still runs, just without correct local-time rules.
-fn studio_tz(server: &ServerConfig) -> Tz {
-    server.studio_timezone.parse::<Tz>().unwrap_or_else(|_| {
-        tracing::warn!(
-            tz = %server.studio_timezone,
-            "invalid studio_timezone; falling back to UTC"
-        );
-        chrono_tz::UTC
-    })
-}
 
 pub async fn create_booking(
     db: &PgPool,
@@ -33,7 +21,7 @@ pub async fn create_booking(
     user_id: Uuid,
     req: CreateBookingRequest,
 ) -> Result<BookingResponse, AppError> {
-    let tz = studio_tz(server);
+    let tz = studio_clock::studio_tz(server);
 
     // Everything happens inside one transaction so capacity and duplicate
     // checks share a consistent snapshot.
@@ -50,17 +38,11 @@ pub async fn create_booking(
     // Reject bookings for slots that have already started. We interpret the
     // naïve (date, start_time) in the studio's local tz, convert to UTC,
     // and compare to Utc::now.
-    let slot_local = NaiveDateTime::new(slot.date, slot.start_time);
-    let slot_utc = match tz.from_local_datetime(&slot_local).single() {
-        Some(dt) => dt.with_timezone(&Utc),
-        None => {
-            // Ambiguous or non-existent local time (DST transitions). Treat
-            // it as invalid rather than picking one arbitrarily.
-            return Err(AppError::BadRequest(
-                "time slot falls on an ambiguous local time".into(),
-            ));
-        }
-    };
+    let slot_utc = studio_clock::to_utc(tz, slot.date, slot.start_time).ok_or_else(|| {
+        // Ambiguous or non-existent local time (DST transitions). Treat
+        // it as invalid rather than picking one arbitrarily.
+        AppError::BadRequest("time slot falls on an ambiguous local time".into())
+    })?;
 
     if slot_utc <= Utc::now() {
         return Err(AppError::BadRequest(
@@ -120,7 +102,7 @@ pub async fn cancel_booking(
     auth: &AuthUser,
     booking_id: Uuid,
 ) -> Result<BookingResponse, AppError> {
-    let tz = studio_tz(server);
+    let tz = studio_clock::studio_tz(server);
 
     // 1. Open the tx first so the ownership check, status check, 24-hour
     //    check, and conditional UPDATE all see a consistent snapshot.
@@ -154,14 +136,9 @@ pub async fn cancel_booking(
             .await?
             .ok_or_else(|| AppError::NotFound("time slot not found".into()))?;
 
-        let slot_local = NaiveDateTime::new(slot.date, slot.start_time);
-        let slot_utc = tz
-            .from_local_datetime(&slot_local)
-            .single()
-            .ok_or_else(|| {
-                AppError::BadRequest("time slot falls on an ambiguous local time".into())
-            })?
-            .with_timezone(&Utc);
+        let slot_utc = studio_clock::to_utc(tz, slot.date, slot.start_time).ok_or_else(|| {
+            AppError::BadRequest("time slot falls on an ambiguous local time".into())
+        })?;
 
         let hours_until = (slot_utc - Utc::now()).num_hours();
         if hours_until < 24 {

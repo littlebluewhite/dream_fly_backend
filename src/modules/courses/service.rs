@@ -1,4 +1,3 @@
-use chrono::NaiveTime;
 use sqlx::PgPool;
 
 use crate::error::AppError;
@@ -6,6 +5,7 @@ use crate::extractors::pagination::PaginationParams;
 use crate::modules::sessions::dto::{CourseScheduleSlotEntry, CourseScheduleSlotResponse};
 use crate::modules::sessions::repository::{self as sessions_repository, CourseSlotRow};
 use crate::utils::slug::slugify;
+use crate::utils::studio_clock;
 
 use super::dto::{
     CourseDetailResponse, CourseListResponse, CourseResponse, CreateCourseRequest,
@@ -13,16 +13,6 @@ use super::dto::{
 };
 use super::model::CourseLevel;
 use super::repository;
-
-/// Parse an `HH:MM` or `HH:MM:SS` time-of-day string. Mirrors
-/// `schedule::service::parse_time_of_day` / `coaches::repository`'s inline
-/// equivalent — kept as its own small copy rather than a shared cross-module
-/// helper, consistent with how those two already duplicate it independently.
-fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
-    NaiveTime::parse_from_str(s, "%H:%M")
-        .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M:%S"))
-        .ok()
-}
 
 /// Parse+validate `schedule_slots` request entries into the tuple shape
 /// `sessions_repository::replace_slots_tx` takes. `AppError::Validation`
@@ -36,10 +26,10 @@ fn parse_schedule_slots(
     entries
         .iter()
         .map(|e| {
-            let start = parse_time_of_day(&e.start_time).ok_or_else(|| {
+            let start = studio_clock::parse_time_of_day(&e.start_time).ok_or_else(|| {
                 AppError::Validation(format!("invalid start_time: {}", e.start_time))
             })?;
-            let end = parse_time_of_day(&e.end_time).ok_or_else(|| {
+            let end = studio_clock::parse_time_of_day(&e.end_time).ok_or_else(|| {
                 AppError::Validation(format!("invalid end_time: {}", e.end_time))
             })?;
             if end <= start {
