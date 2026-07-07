@@ -42,7 +42,7 @@ pub struct RewardListResponse {
 }
 
 /// Query params for `GET /rewards`. `all=true` additionally requires admin
-/// (checked in `service::list`) — a plain member always gets the
+/// (checked in `handlers::list`) — a plain member always gets the
 /// `is_active`-only catalog regardless of this flag.
 #[derive(Debug, Deserialize)]
 pub struct RewardListQuery {

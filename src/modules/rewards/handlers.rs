@@ -17,7 +17,7 @@ use super::dto::{
 use super::service;
 
 /// `GET /rewards?all=` — member sees only `is_active`; `all=true` additionally
-/// requires admin (see `service::list`).
+/// requires admin, enforced here before calling the service.
 #[tracing::instrument(skip_all)]
 pub async fn list(
     State(state): State<AppState>,
