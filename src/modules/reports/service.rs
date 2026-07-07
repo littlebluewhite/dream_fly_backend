@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::modules::coaches::repository as coaches_repository;
+use crate::modules::coaches::service as coaches_service;
 use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::studio_clock;
 
@@ -117,7 +117,7 @@ pub async fn coach_report(
     server: &ServerConfig,
     auth: &AuthUser,
 ) -> Result<CoachReportResponse, AppError> {
-    let coach = coaches_repository::find_by_user_id(db, auth.user_id)
+    let coach = coaches_service::resolve(db, auth)
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 

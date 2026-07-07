@@ -5,39 +5,11 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::modules::coaches::repository as coaches_repository;
+use crate::modules::coaches::service as coaches_service;
 
 use super::dto::{AttendanceRecordEntry, MyStudentResponse, RosterEntryResponse};
 use super::model::AttendanceStatus;
 use super::repository;
-
-/// Shared coach-ownership gate for both the roster read and the bulk
-/// upsert: an admin always passes; a coach passes only if the session's
-/// course's `coach_id` matches their own `coaches.id`. A caller with the
-/// `coach` role but no `coaches` row (data anomaly) is treated as *not* the
-/// owner — 403 — unlike `sessions::today`'s "degrade to empty list", because
-/// this gates access to one specific resource rather than scoping a list.
-async fn authorize_session_coach(
-    db: &PgPool,
-    auth: &AuthUser,
-    course_coach_id: Option<Uuid>,
-) -> Result<(), AppError> {
-    if auth.is_admin() {
-        return Ok(());
-    }
-
-    let is_owner = match (coaches_repository::find_by_user_id(db, auth.user_id).await?, course_coach_id)
-    {
-        (Some(coach), Some(course_coach_id)) => coach.id == course_coach_id,
-        _ => false,
-    };
-
-    if is_owner {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("not the coach for this course".into()))
-    }
-}
 
 /// `GET /sessions/{id}/roster`. 404 if the session doesn't exist; 403 if the
 /// caller is neither admin nor that course's coach.
@@ -49,7 +21,13 @@ pub async fn get_roster(
     let session_course = repository::find_session_course(db, session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("session not found".into()))?;
-    authorize_session_coach(db, auth, session_course.coach_id).await?;
+    coaches_service::require_course_coach(
+        db,
+        auth,
+        session_course.coach_id,
+        "not the coach for this course",
+    )
+    .await?;
 
     let rows = repository::find_roster(db, session_course.course_id, session_id).await?;
     Ok(rows.into_iter().map(RosterEntryResponse::from).collect())
@@ -69,7 +47,13 @@ pub async fn bulk_upsert_attendance(
     let session_course = repository::find_session_course(db, session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("session not found".into()))?;
-    authorize_session_coach(db, auth, session_course.coach_id).await?;
+    coaches_service::require_course_coach(
+        db,
+        auth,
+        session_course.coach_id,
+        "not the coach for this course",
+    )
+    .await?;
 
     let mut parsed: Vec<(Uuid, AttendanceStatus)> = Vec::with_capacity(records.len());
     for r in &records {
@@ -110,7 +94,7 @@ pub async fn bulk_upsert_attendance(
 /// the `coach` role but no `coaches` row — mirrors `sessions::today_sessions`'s
 /// convention for that same data anomaly.
 pub async fn my_students(db: &PgPool, auth: &AuthUser) -> Result<Vec<MyStudentResponse>, AppError> {
-    let students = match coaches_repository::find_by_user_id(db, auth.user_id).await? {
+    let students = match coaches_service::resolve(db, auth).await? {
         Some(coach) => repository::find_my_students(db, coach.id).await?,
         None => Vec::new(),
     };

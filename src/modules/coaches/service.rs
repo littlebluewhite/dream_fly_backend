@@ -65,6 +65,40 @@ async fn require_coach_access(
     Ok(coach)
 }
 
+/// 呼叫者的教練身分:依 auth.user_id 查 coaches 列。None = 呼叫者沒有教練
+/// profile。三態政策(403 gate / 範圍列表空集合 / 儀表板 404)由呼叫端決定,
+/// 本函式只回答「這個使用者是哪個教練」。
+pub async fn resolve(
+    db: &PgPool,
+    auth: &AuthUser,
+) -> Result<Option<super::model::Coach>, AppError> {
+    Ok(repository::find_by_user_id(db, auth.user_id).await?)
+}
+
+/// 課程教練所有權 gate:admin 直接放行;否則呼叫者必須是 course_coach_id 指到
+/// 的那個教練,不是則 403(文案由呼叫端傳入,參數化以保各站點 byte-identical)。
+pub async fn require_course_coach(
+    db: &PgPool,
+    auth: &AuthUser,
+    course_coach_id: Option<Uuid>,
+    forbidden_msg: &str,
+) -> Result<(), AppError> {
+    if auth.is_admin() {
+        return Ok(());
+    }
+
+    let is_owner = match (resolve(db, auth).await?, course_coach_id) {
+        (Some(coach), Some(course_coach_id)) => coach.id == course_coach_id,
+        _ => false,
+    };
+
+    if is_owner {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(forbidden_msg.into()))
+    }
+}
+
 pub async fn list_active(db: &PgPool) -> Result<Vec<CoachResponse>, AppError> {
     let coaches = repository::find_all_active(db).await?;
     Ok(coaches.into_iter().map(coach_to_response).collect())

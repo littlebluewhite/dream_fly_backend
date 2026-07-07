@@ -8,7 +8,7 @@ use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
 use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::attendance::repository as attendance_repository;
-use crate::modules::coaches::repository as coaches_repository;
+use crate::modules::coaches::service as coaches_service;
 use crate::modules::notifications::service as notify;
 use crate::utils::studio_clock;
 
@@ -18,36 +18,6 @@ use super::dto::{
 };
 use super::model::LeaveStatus;
 use super::repository;
-
-/// Shared coach-ownership gate for the list/decide endpoints: an admin
-/// always passes; a coach passes only if the course's `coach_id` matches
-/// their own `coaches.id`. Mirrors
-/// `attendance::service::authorize_session_coach` (copied rather than
-/// shared — each module keeps its own small copy, unlike the timezone
-/// helpers now centralized in `crate::utils::studio_clock`).
-async fn authorize_course_coach(
-    db: &PgPool,
-    auth: &AuthUser,
-    course_coach_id: Option<Uuid>,
-) -> Result<(), AppError> {
-    if auth.is_admin() {
-        return Ok(());
-    }
-
-    let is_owner = match (
-        coaches_repository::find_by_user_id(db, auth.user_id).await?,
-        course_coach_id,
-    ) {
-        (Some(coach), Some(course_coach_id)) => coach.id == course_coach_id,
-        _ => false,
-    };
-
-    if is_owner {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("非本課教練".into()))
-    }
-}
 
 /// `POST /leave-requests`. Resolves the caller's active enrolment from
 /// `session_id`'s course (404 `未報名此課程` if none), rejects sessions that
@@ -161,7 +131,7 @@ pub async fn list_leave_requests(
     let coach_scope: Option<Uuid> = if auth.is_admin() {
         None
     } else {
-        match coaches_repository::find_by_user_id(db, auth.user_id).await? {
+        match coaches_service::resolve(db, auth).await? {
             Some(coach) => Some(coach.id),
             None => {
                 return Ok(LeaveRequestListResponse {
@@ -222,7 +192,7 @@ pub async fn decide_leave_request(
         .await?
         .ok_or_else(|| AppError::NotFound("請假申請不存在".into()))?;
 
-    authorize_course_coach(db, auth, ctx.coach_id).await?;
+    coaches_service::require_course_coach(db, auth, ctx.coach_id, "非本課教練").await?;
 
     if ctx.status != LeaveStatus::Pending {
         return Err(AppError::Conflict("僅待審核假單可審核".into()));

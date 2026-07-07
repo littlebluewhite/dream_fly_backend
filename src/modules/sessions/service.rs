@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::modules::coaches::repository as coaches_repository;
+use crate::modules::coaches::service as coaches_service;
 use crate::modules::courses::repository as courses_repository;
 use crate::utils::studio_clock;
 
@@ -81,7 +81,7 @@ pub async fn today_sessions(
     let course_ids = if auth.is_admin() {
         repository::find_all_course_ids(db).await?
     } else {
-        match coaches_repository::find_by_user_id(db, auth.user_id).await? {
+        match coaches_service::resolve(db, auth).await? {
             Some(coach) => repository::find_course_ids_by_coach(db, coach.id).await?,
             None => Vec::new(),
         }

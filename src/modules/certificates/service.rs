@@ -3,41 +3,13 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::modules::coaches::repository as coaches_repository;
+use crate::modules::coaches::service as coaches_service;
 use crate::modules::notifications::service as notify;
 
 use super::dto::{
     CertificateResponse, CreateCertificateRequest, CreateReportCardRequest, ReportCardResponse,
 };
 use super::repository;
-
-/// Shared coach-ownership gate for `POST /report-cards`: an admin always
-/// passes; a coach passes only if the enrolment's course belongs to them.
-/// Mirrors `leave::service::authorize_course_coach` (copied rather than
-/// shared — established per-module convention in this codebase).
-async fn authorize_course_coach(
-    db: &PgPool,
-    auth: &AuthUser,
-    course_coach_id: Option<Uuid>,
-) -> Result<(), AppError> {
-    if auth.is_admin() {
-        return Ok(());
-    }
-
-    let is_owner = match (
-        coaches_repository::find_by_user_id(db, auth.user_id).await?,
-        course_coach_id,
-    ) {
-        (Some(coach), Some(course_coach_id)) => coach.id == course_coach_id,
-        _ => false,
-    };
-
-    if is_owner {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden("非本課教練".into()))
-    }
-}
 
 /// `POST /report-cards` — coach (own course's enrolment only) or admin.
 /// Duplicate `(enrolment_id, term_label)` trips the DB UNIQUE constraint,
@@ -51,7 +23,7 @@ pub async fn create_report_card(
         .await?
         .ok_or_else(|| AppError::NotFound("報名紀錄不存在".into()))?;
 
-    authorize_course_coach(db, auth, ctx.coach_id).await?;
+    coaches_service::require_course_coach(db, auth, ctx.coach_id, "非本課教練").await?;
 
     match repository::insert_report_card(
         db,
@@ -99,7 +71,7 @@ pub async fn create_certificate(
     req: CreateCertificateRequest,
 ) -> Result<CertificateResponse, AppError> {
     if !auth.is_admin() {
-        let coach = coaches_repository::find_by_user_id(db, auth.user_id)
+        let coach = coaches_service::resolve(db, auth)
             .await?
             .ok_or_else(|| AppError::Forbidden("僅能發給自己課程的學員".into()))?;
 
