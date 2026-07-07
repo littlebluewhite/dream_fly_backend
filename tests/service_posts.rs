@@ -234,7 +234,7 @@ async fn list_published_paginates_and_excludes_drafts(db: PgPool) {
     .expect("list");
 
     assert_eq!(page.posts.len(), 3);
-    assert_eq!(page.total, 3);
+    assert_eq!(page.meta.total, 3);
     for p in &page.posts {
         assert_eq!(p.status, "published");
     }

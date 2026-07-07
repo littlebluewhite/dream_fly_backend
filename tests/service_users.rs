@@ -141,9 +141,9 @@ async fn list_users_pagination_returns_expected_slice(db: PgPool) {
     .await
     .expect("page 1");
     assert_eq!(page_1.users.len(), 2);
-    assert_eq!(page_1.total, 5);
-    assert_eq!(page_1.page, 1);
-    assert_eq!(page_1.per_page, 2);
+    assert_eq!(page_1.meta.total, 5);
+    assert_eq!(page_1.meta.page, 1);
+    assert_eq!(page_1.meta.per_page, 2);
 
     let page_2 = service::list_users(
         &db,
@@ -172,7 +172,7 @@ async fn list_users_pagination_returns_expected_slice(db: PgPool) {
     .await
     .expect("page 3");
     assert_eq!(page_3.users.len(), 1);
-    assert_eq!(page_3.total, 5);
+    assert_eq!(page_3.meta.total, 5);
 }
 
 #[sqlx::test]
@@ -189,5 +189,5 @@ async fn list_users_clamps_per_page_to_100(db: PgPool) {
     .await
     .expect("list");
 
-    assert_eq!(resp.per_page, 100, "per_page should clamp to 100");
+    assert_eq!(resp.meta.per_page, 100, "per_page should clamp to 100");
 }

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::{AdminLeaveRequestRow, MyLeaveRequestRow};
 
 // ---------------------------------------------------------------------------
@@ -110,9 +112,8 @@ impl From<AdminLeaveRequestRow> for AdminLeaveRequestResponse {
 #[derive(Debug, Serialize)]
 pub struct LeaveRequestListResponse {
     pub leave_requests: Vec<AdminLeaveRequestResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 // ---------------------------------------------------------------------------

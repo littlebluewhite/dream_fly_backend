@@ -251,5 +251,5 @@ async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
     .await
     .expect("get_my_points");
 
-    assert_eq!(resp.per_page, 100, "per_page should clamp to 100");
+    assert_eq!(resp.meta.per_page, 100, "per_page should clamp to 100");
 }

@@ -4,6 +4,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::model::Post;
+use crate::extractors::pagination::PageMeta;
 use crate::utils::url_validation::validate_stored_url;
 
 /// List view — excludes content for efficiency
@@ -77,9 +78,8 @@ impl From<Post> for PostDetailResponse {
 #[derive(Debug, Serialize)]
 pub struct PostListResponse {
     pub posts: Vec<PostResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 #[derive(Debug, Deserialize, Validate)]

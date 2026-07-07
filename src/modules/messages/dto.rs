@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::{Conversation, ConversationSummaryRow, Message};
 
 // ---------------------------------------------------------------------------
@@ -90,9 +92,8 @@ impl From<Message> for MessageResponse {
 #[derive(Debug, Serialize)]
 pub struct MessageListResponse {
     pub messages: Vec<MessageResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 // ---------------------------------------------------------------------------

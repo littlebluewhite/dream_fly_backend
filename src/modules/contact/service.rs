@@ -33,8 +33,6 @@ pub async fn list_inquiries(
 
     Ok(InquiryListResponse {
         inquiries: inquiries.into_iter().map(InquiryResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }

@@ -45,8 +45,6 @@ pub async fn list_coupons(
 
     Ok(CouponListResponse {
         coupons: coupons.into_iter().map(CouponResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }

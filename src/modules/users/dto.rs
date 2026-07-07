@@ -4,6 +4,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::model::User;
+use crate::extractors::pagination::PageMeta;
 use crate::utils::url_validation::validate_stored_url;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -82,7 +83,6 @@ impl From<User> for UserResponse {
 #[derive(Debug, Serialize)]
 pub struct UserListResponse {
     pub users: Vec<UserResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }

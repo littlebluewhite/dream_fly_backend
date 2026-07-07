@@ -133,9 +133,9 @@ async fn list_coupons_paginates_and_returns_total(db: PgPool) {
     .await
     .expect("page 1");
     assert_eq!(page_1.coupons.len(), 2);
-    assert_eq!(page_1.total, 5);
-    assert_eq!(page_1.page, 1);
-    assert_eq!(page_1.per_page, 2);
+    assert_eq!(page_1.meta.total, 5);
+    assert_eq!(page_1.meta.page, 1);
+    assert_eq!(page_1.meta.per_page, 2);
 
     let page_3 = service::list_coupons(
         &db,
@@ -160,7 +160,7 @@ async fn list_coupons_clamps_per_page(db: PgPool) {
     )
     .await
     .expect("list");
-    assert_eq!(resp.per_page, 100);
+    assert_eq!(resp.meta.per_page, 100);
 }
 
 #[sqlx::test]

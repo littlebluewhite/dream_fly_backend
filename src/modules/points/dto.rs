@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::PointLedgerEntry;
 
 #[derive(Debug, Serialize)]
@@ -31,7 +33,6 @@ impl From<PointLedgerEntry> for LedgerEntryResponse {
 pub struct PointsMeResponse {
     pub balance: i64,
     pub ledger: Vec<LedgerEntryResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }

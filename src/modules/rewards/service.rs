@@ -103,9 +103,7 @@ pub async fn my_redemptions(
 
     Ok(RedemptionListResponse {
         redemptions: redemptions.into_iter().map(RedemptionResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }
 

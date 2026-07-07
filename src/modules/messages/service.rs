@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::extractors::pagination::PaginationParams;
+use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::modules::permissions::repository as permissions_repository;
 
 use super::dto::{
@@ -132,9 +132,11 @@ pub async fn list_messages(
 
     Ok(MessageListResponse {
         messages: rows.into_iter().map(MessageResponse::from).collect(),
-        total,
-        page: pagination.page.max(1),
-        per_page: limit,
+        meta: PageMeta {
+            total,
+            page: pagination.page.max(1),
+            per_page: limit,
+        },
     })
 }
 

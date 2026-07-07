@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::pagination::PaginationParams;
+use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
 use crate::kafka::outbox;
 use crate::modules::cart::model::{CartItemType, CheckoutLine};
@@ -395,9 +395,11 @@ pub async fn my_orders(
 
     Ok(OrderListResponse {
         orders: summaries,
-        total,
-        page: page.max(1),
-        per_page: limit,
+        meta: PageMeta {
+            total,
+            page: page.max(1),
+            per_page: limit,
+        },
     })
 }
 
@@ -412,9 +414,7 @@ pub async fn list_all_orders(
 
     Ok(AdminOrderListResponse {
         orders: rows.into_iter().map(AdminOrderSummary::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }
 

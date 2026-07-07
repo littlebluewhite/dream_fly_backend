@@ -2,6 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::extractors::pagination::PageMeta;
 use crate::utils::slug::slugify;
 
 use super::dto::{
@@ -47,9 +48,11 @@ pub async fn list(
                 ProductResponse::from_product(p, sold)
             })
             .collect(),
-        total,
-        page: page.max(1),
-        per_page,
+        meta: PageMeta {
+            total,
+            page: page.max(1),
+            per_page,
+        },
     })
 }
 

@@ -19,9 +19,7 @@ pub async fn list_published(
     let posts = repository::find_published(db, pagination.limit(), pagination.offset()).await?;
     Ok(PostListResponse {
         posts: posts.into_iter().map(PostResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }
 

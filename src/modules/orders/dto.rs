@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
 use crate::modules::enrolments::dto::EnrolmentResponse;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
 
@@ -94,9 +95,8 @@ impl OrderResponse {
 #[derive(Debug, Serialize)]
 pub struct OrderListResponse {
     pub orders: Vec<OrderSummary>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 #[derive(Debug, Serialize)]
@@ -169,7 +169,6 @@ impl From<AdminOrderRow> for AdminOrderSummary {
 #[derive(Debug, Serialize)]
 pub struct AdminOrderListResponse {
     pub orders: Vec<AdminOrderSummary>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }

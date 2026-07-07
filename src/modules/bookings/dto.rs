@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::Booking;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -38,7 +40,6 @@ impl From<Booking> for BookingResponse {
 #[derive(Debug, Serialize)]
 pub struct PaginatedBookingsResponse {
     pub bookings: Vec<BookingResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }

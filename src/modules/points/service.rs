@@ -66,8 +66,6 @@ pub async fn get_my_points(
     Ok(PointsMeResponse {
         balance,
         ledger: entries.into_iter().map(LedgerEntryResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }

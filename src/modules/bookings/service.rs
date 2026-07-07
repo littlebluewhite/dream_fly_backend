@@ -190,9 +190,7 @@ pub async fn my_bookings(
 
     Ok(PaginatedBookingsResponse {
         bookings: bookings.into_iter().map(BookingResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }
 
@@ -205,8 +203,6 @@ pub async fn list_all(
 
     Ok(PaginatedBookingsResponse {
         bookings: bookings.into_iter().map(BookingResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }

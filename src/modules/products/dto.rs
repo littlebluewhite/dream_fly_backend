@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::Product;
 
 #[derive(Debug, Serialize)]
@@ -134,7 +136,6 @@ pub struct ProductQuery {
 #[derive(Debug, Serialize)]
 pub struct ProductListResponse {
     pub products: Vec<ProductResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }

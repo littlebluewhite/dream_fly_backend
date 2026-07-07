@@ -3,6 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::{RedemptionWithReward, Reward};
 
 #[derive(Debug, Serialize)]
@@ -79,9 +81,8 @@ impl From<RedemptionWithReward> for RedemptionResponse {
 #[derive(Debug, Serialize)]
 pub struct RedemptionListResponse {
     pub redemptions: Vec<RedemptionResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 #[derive(Debug, Deserialize, Validate)]

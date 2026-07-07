@@ -124,12 +124,12 @@ async fn list_products_filters_inactive_and_by_type(db: PgPool) {
         "inactive product must not appear in list"
     );
     assert_eq!(
-        all_active.total as usize,
+        all_active.meta.total as usize,
         all_ids.len(),
         "total must match the number of rows returned when results fit on one page",
     );
-    assert_eq!(all_active.page, 1);
-    assert_eq!(all_active.per_page, 100);
+    assert_eq!(all_active.meta.page, 1);
+    assert_eq!(all_active.meta.per_page, 100);
 
     let only_tickets = service::list(&db, Some("ticket"), 1, 100).await.unwrap();
     assert!(only_tickets.products.iter().any(|p| p.id == pass.id));

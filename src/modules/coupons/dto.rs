@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
+
 use super::model::Coupon;
 
 #[derive(Debug, Serialize)]
@@ -39,9 +41,8 @@ pub struct CouponValidateResponse {
 #[derive(Debug, Serialize)]
 pub struct CouponListResponse {
     pub coupons: Vec<CouponResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 #[derive(Debug, Deserialize, Validate)]

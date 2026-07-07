@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::extractors::pagination::PaginationParams;
+use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::service as coaches_service;
@@ -136,9 +136,11 @@ pub async fn list_leave_requests(
             None => {
                 return Ok(LeaveRequestListResponse {
                     leave_requests: Vec::new(),
-                    total: 0,
-                    page,
-                    per_page: limit,
+                    meta: PageMeta {
+                        total: 0,
+                        page,
+                        per_page: limit,
+                    },
                 });
             }
         }
@@ -158,9 +160,11 @@ pub async fn list_leave_requests(
 
     Ok(LeaveRequestListResponse {
         leave_requests: rows.into_iter().map(AdminLeaveRequestResponse::from).collect(),
-        total,
-        page,
-        per_page: limit,
+        meta: PageMeta {
+            total,
+            page,
+            per_page: limit,
+        },
     })
 }
 

@@ -74,9 +74,7 @@ pub async fn list_users(
 
     Ok(UserListResponse {
         users,
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }
 

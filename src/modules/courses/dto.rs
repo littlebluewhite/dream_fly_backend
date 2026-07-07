@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::extractors::pagination::PageMeta;
 use crate::modules::sessions::dto::{CourseScheduleSlotEntry, CourseScheduleSlotResponse};
 
 use super::model::Course;
@@ -72,9 +73,8 @@ pub struct CourseDetailResponse {
 #[derive(Debug, Serialize)]
 pub struct CourseListResponse {
     pub courses: Vec<CourseResponse>,
-    pub total: i64,
-    pub page: u32,
-    pub per_page: u32,
+    #[serde(flatten)]
+    pub meta: PageMeta,
 }
 
 #[derive(Debug, Deserialize, Validate)]

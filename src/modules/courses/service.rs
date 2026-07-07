@@ -56,9 +56,7 @@ pub async fn list_courses(
         repository::find_all_active(db, pagination.limit(), pagination.offset()).await?;
     Ok(CourseListResponse {
         courses: courses.into_iter().map(CourseResponse::from).collect(),
-        total,
-        page: pagination.page,
-        per_page: pagination.limit(),
+        meta: pagination.meta(total),
     })
 }
 

@@ -244,9 +244,9 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
     .expect("my_redemptions");
 
     assert_eq!(page.redemptions.len(), 2);
-    assert_eq!(page.total, 3);
-    assert_eq!(page.page, 1);
-    assert_eq!(page.per_page, 2);
+    assert_eq!(page.meta.total, 3);
+    assert_eq!(page.meta.page, 1);
+    assert_eq!(page.meta.per_page, 2);
     assert_eq!(page.redemptions[0].reward_name, "History Reward");
     assert_eq!(page.redemptions[0].points_spent, 15);
 }
