@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 
-use super::dto::{EnrolmentResponse, MyEnrolmentResponse};
+use super::dto::{AttendanceEntryResponse, EnrolmentResponse, MyEnrolmentResponse};
 use super::model::Enrolment;
 use super::repository;
 
@@ -78,4 +78,26 @@ pub async fn cancel_enrolment(
     tx.commit().await?;
 
     Ok(EnrolmentResponse::from(updated))
+}
+
+/// `GET /enrolments/{id}/attendance`. Owner or admin (mirrors
+/// `cancel_enrolment`'s owner-or-admin convention); everyone else gets the
+/// *same* 404 as a nonexistent id — unlike `cancel_enrolment`'s 403, this
+/// endpoint deliberately masks existence so a non-owner can't probe which
+/// enrolment ids are real.
+pub async fn get_attendance(
+    db: &PgPool,
+    auth: &AuthUser,
+    id: Uuid,
+) -> Result<Vec<AttendanceEntryResponse>, AppError> {
+    let owner_id = repository::find_owner(db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("enrolment not found".into()))?;
+
+    if owner_id != auth.user_id && !auth.is_admin() {
+        return Err(AppError::NotFound("enrolment not found".into()));
+    }
+
+    let rows = repository::find_attendance_timeline(db, id).await?;
+    Ok(rows.into_iter().map(AttendanceEntryResponse::from).collect())
 }

@@ -1,7 +1,8 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::courses::model::CourseLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
@@ -72,4 +73,17 @@ pub struct MyEnrolmentRow {
     /// Count of this enrolment's `attendance_records` total (i.e. how many
     /// sessions have been marked for it so far, regardless of status).
     pub total: i64,
+}
+
+/// One row of `GET /enrolments/{id}/attendance` — a single marked session
+/// for one enrolment, JOINed with `course_sessions` for the date/time
+/// fields. Reuses `attendance::model::AttendanceStatus` directly rather than
+/// redefining the enum (same closed set, same `sqlx::Type` mapping).
+#[derive(Debug, sqlx::FromRow)]
+pub struct EnrolmentAttendanceRow {
+    pub session_date: NaiveDate,
+    pub start_time: NaiveTime,
+    pub end_time: NaiveTime,
+    pub status: AttendanceStatus,
+    pub marked_at: DateTime<Utc>,
 }

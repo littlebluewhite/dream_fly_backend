@@ -1,7 +1,7 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::model::{Enrolment, EnrolmentWithCourse, MyEnrolmentRow};
+use super::model::{Enrolment, EnrolmentAttendanceRow, EnrolmentWithCourse, MyEnrolmentRow};
 
 /// Lock the course row for update and return its capacity (`max_students`).
 /// Used by `enrol_from_purchase_tx` so the capacity check and the
@@ -125,6 +125,38 @@ pub async fn find_by_user_with_course(
          ORDER BY e.enrolled_at DESC",
     )
     .bind(user_id)
+    .fetch_all(db)
+    .await
+}
+
+/// This enrolment's owning user id, or `None` if the enrolment doesn't
+/// exist. Used by `service::get_attendance`'s ownership gate — kept as a
+/// single scalar column (not the full `Enrolment` row) since that's all the
+/// 404-masking check needs.
+pub async fn find_owner(db: &PgPool, id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM enrolments WHERE id = $1")
+        .bind(id)
+        .fetch_optional(db)
+        .await
+}
+
+/// This enrolment's marked sessions — `attendance_records` JOINed with
+/// `course_sessions` for the date/time fields, oldest session first.
+/// Sessions with no `attendance_records` row (unmarked) don't appear, since
+/// the join is driven from `attendance_records`. Served by
+/// `idx_attendance_records_enrolment` (no new index needed).
+pub async fn find_attendance_timeline(
+    db: &PgPool,
+    enrolment_id: Uuid,
+) -> Result<Vec<EnrolmentAttendanceRow>, sqlx::Error> {
+    sqlx::query_as::<_, EnrolmentAttendanceRow>(
+        "SELECT cs.session_date, cs.start_time, cs.end_time, ar.status, ar.marked_at \
+         FROM attendance_records ar \
+         JOIN course_sessions cs ON cs.id = ar.session_id \
+         WHERE ar.enrolment_id = $1 \
+         ORDER BY cs.session_date ASC, cs.start_time ASC",
+    )
+    .bind(enrolment_id)
     .fetch_all(db)
     .await
 }

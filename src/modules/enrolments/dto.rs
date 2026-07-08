@@ -1,8 +1,8 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::model::{EnrolmentWithCourse, MyEnrolmentRow};
+use super::model::{EnrolmentAttendanceRow, EnrolmentWithCourse, MyEnrolmentRow};
 
 #[derive(Debug, Serialize)]
 pub struct EnrolmentResponse {
@@ -56,6 +56,30 @@ impl From<MyEnrolmentRow> for MyEnrolmentResponse {
             enrolled_at: e.enrolled_at,
             attended: e.attended,
             total: e.total,
+        }
+    }
+}
+
+/// `GET /enrolments/{id}/attendance` response entry — this enrolment's
+/// per-session attendance timeline, oldest to newest (contract §3.12; see
+/// also §3.19 Attendance for the `status` enum's meaning).
+#[derive(Debug, Serialize)]
+pub struct AttendanceEntryResponse {
+    pub session_date: NaiveDate,
+    pub start_time: NaiveTime,
+    pub end_time: NaiveTime,
+    pub status: String,
+    pub marked_at: DateTime<Utc>,
+}
+
+impl From<EnrolmentAttendanceRow> for AttendanceEntryResponse {
+    fn from(r: EnrolmentAttendanceRow) -> Self {
+        Self {
+            session_date: r.session_date,
+            start_time: r.start_time,
+            end_time: r.end_time,
+            status: r.status.as_str().to_string(),
+            marked_at: r.marked_at,
         }
     }
 }

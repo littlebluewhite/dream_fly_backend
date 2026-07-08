@@ -11,4 +11,5 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/enrolments/me", get(handlers::me))
         .route("/enrolments/{id}/cancel", patch(handlers::cancel))
+        .route("/enrolments/{id}/attendance", get(handlers::attendance))
 }

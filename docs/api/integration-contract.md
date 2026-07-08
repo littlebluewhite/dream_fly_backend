@@ -160,6 +160,7 @@
 | Subscriptions | POST | `/subscriptions/{id}/redeem` | admin 或 coach |
 | Enrolments | GET | `/enrolments/me` | 需登入 |
 | Enrolments | PATCH | `/enrolments/{id}/cancel` | 需登入（本人或 admin） |
+| Enrolments | GET | `/enrolments/{id}/attendance` | 需登入（本人或 admin） |
 | Sessions | GET | `/courses/{id}/sessions?from=&to=` | 需登入 |
 | Sessions | GET | `/sessions/today` | admin 或 coach |
 | Sessions | GET | `/schedule/me` | 需登入 |
@@ -628,6 +629,20 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 
 #### `PATCH /enrolments/{id}/cancel` — 需登入（本人或 admin）
 無 body。回應：更新後的 `EnrolmentResponse`（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。
+
+#### `GET /enrolments/{id}/attendance` — 需登入（本人或 admin）
+這筆報名的逐堂出勤紀錄：`attendance_records` JOIN `course_sessions`，只回**已點名**的場次(未點名場次不出現)，依 `session_date`(次要鍵 `start_time`)**舊到新**排序。回應（`AttendanceEntryResponse[]`，純陣列）：
+
+```jsonc
+[
+  { "session_date": "YYYY-MM-DD", "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
+    "status": "present|absent|leave", "marked_at": "ISO8601" }
+]
+```
+
+`status` 為 §3.19 Attendance 的 `attendance_status` enum 原樣輸出。無任何點名紀錄的 enrolment 回 `200` 空陣列(不是 404)。
+
+**Ownership gate**：非本人呼叫一律 **404**(與 `PATCH /enrolments/{id}/cancel` 的 403 不同——本端點刻意用 404 遮蔽存在性，不讓非本人用來探測某 enrolment id 是否存在)；enrolment id 不存在同樣回 404，兩種情況回應完全相同。admin 例外比照本模組 `cancel` 的「本人或 admin」慣例，可查看任意 enrolment。
 
 ---
 
