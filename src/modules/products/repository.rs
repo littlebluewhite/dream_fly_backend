@@ -106,29 +106,14 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Product>, sqlx::
     .await
 }
 
-/// Transactional counterpart of [`find_by_id`], consumed by the checkout
-/// flow (Task 9) to fetch the full `Product` row for subscription-eligible
-/// cart lines inside the checkout transaction (`grant_from_purchase_tx`
-/// needs the whole row, not just price/quantity).
-pub async fn find_by_id_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    id: Uuid,
-) -> Result<Option<Product>, sqlx::Error> {
-    sqlx::query_as::<_, Product>(
-        "SELECT id, name, slug, product_type, description, price_cents, \
-         original_price_cents, features, is_highlighted, badge, stock, \
-         valid_days, session_count, is_active, created_at, updated_at \
-         FROM products WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut **tx)
-    .await
-}
-
 /// Attempts to decrement `stock` by `quantity` atomically.
 ///
 /// Returns:
-/// - `Ok(Some(remaining))` on success (None-stock products leave stock NULL untouched)
+/// - `Ok(Some(product))` on success — the full row post-decrement, via
+///   `RETURNING *` (None-stock products leave `stock` NULL untouched).
+///   This row is already locked by this UPDATE for the rest of the caller's
+///   transaction, so `service::reserve_stock_tx` hands it straight back
+///   instead of re-reading it.
 /// - `Ok(None)` if the product has finite stock and it is insufficient
 /// - `Err(...)` on database error
 ///
@@ -138,20 +123,18 @@ pub async fn try_decrement_stock_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     product_id: Uuid,
     quantity: i32,
-) -> Result<Option<Option<i32>>, sqlx::Error> {
-    let row: Option<(Option<i32>,)> = sqlx::query_as::<_, (Option<i32>,)>(
+) -> Result<Option<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
         "UPDATE products \
          SET stock = CASE WHEN stock IS NULL THEN NULL ELSE stock - $2 END \
          WHERE id = $1 \
            AND (stock IS NULL OR stock >= $2) \
-         RETURNING stock",
+         RETURNING *",
     )
     .bind(product_id)
     .bind(quantity)
     .fetch_optional(&mut **tx)
-    .await?;
-
-    Ok(row.map(|(s,)| s))
+    .await
 }
 
 /// Sum of `order_items.quantity` per product across "paid-class" orders

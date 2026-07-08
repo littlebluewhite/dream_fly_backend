@@ -1,4 +1,6 @@
-use sqlx::PgPool;
+use std::collections::HashMap;
+
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -145,4 +147,50 @@ pub async fn update(
     .ok_or_else(|| AppError::NotFound("product not found".into()))?;
 
     to_response(db, product).await
+}
+
+/// Reserve stock for a batch of product lines inside the caller's
+/// transaction — checkout's step 6. `lines` is `(product_id, quantity,
+/// name)` tuples rather than `cart::model::CheckoutLine` so this module
+/// doesn't have to import back into `cart`; the `HashMap` return follows
+/// the same idiom as `repository::find_sold_counts` in this module.
+///
+/// Sorts `lines` by `product_id` before touching any row (deterministic
+/// global lock order: two concurrent reservations that share two products
+/// added in opposite cart order could otherwise acquire the per-row UPDATE
+/// locks in opposite orders and deadlock) — that sort is this function's
+/// job now, not the caller's.
+///
+/// Each line is then decremented in that sorted order via
+/// `try_decrement_stock_tx`. The first line (post-sort) whose stock is
+/// insufficient fails the whole reservation with
+/// `AppError::Conflict("insufficient stock for product {name}")` — when
+/// more than one line is short, this is whichever has the smallest
+/// `product_id`, not necessarily the first element of the input slice.
+/// Nothing is rolled back here; on error the caller's transaction is left
+/// for the caller to roll back (or simply not commit), same contract as
+/// every other `_tx` function in this codebase.
+///
+/// On success, returns every reserved row keyed by `product_id`. Each row
+/// comes straight from `try_decrement_stock_tx`'s `RETURNING *` — already
+/// locked by this UPDATE, in this transaction — so a caller that needs the
+/// row afterward (checkout's subscription-grant step) reads it out of this
+/// map instead of re-reading it from the database. An empty `lines` is a
+/// no-op that returns an empty map without touching the database.
+pub async fn reserve_stock_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    lines: &[(Uuid, i32, &str)],
+) -> Result<HashMap<Uuid, Product>, AppError> {
+    let mut sorted = lines.to_vec();
+    sorted.sort_by_key(|(product_id, _, _)| *product_id);
+
+    let mut reserved = HashMap::with_capacity(sorted.len());
+    for (product_id, quantity, name) in sorted {
+        let product = repository::try_decrement_stock_tx(tx, product_id, quantity)
+            .await?
+            .ok_or_else(|| AppError::Conflict(format!("insufficient stock for product {name}")))?;
+        reserved.insert(product_id, product);
+    }
+
+    Ok(reserved)
 }
