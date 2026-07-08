@@ -102,7 +102,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::waitlist::routes::router())
         .merge(modules::points::routes::router())
         .merge(modules::rewards::routes::router())
-        .merge(modules::reports::routes::router());
+        .merge(modules::reports::routes::router())
+        .merge(modules::settings::routes::router());
 
     // Basic security headers. The API is JSON-only so CSP isn't critical, but
     // sniffing/referrer leaks and clickjacking protection are cheap to add.

@@ -206,6 +206,8 @@
 | Reports | GET | `/reports/admin` | admin |
 | Reports | GET | `/reports/coach` | coach |
 | Reports | GET | `/reports/me` | 需登入 |
+| Settings | GET | `/settings` | admin |
+| Settings | PUT | `/settings` | admin |
 
 ---
 
@@ -1182,6 +1184,27 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?,
 **Member**（`member/api.ts` 的 `getReports()`／`REPORTS`）：
 - `getReports()` 整體（`courses`/`reports`/`certs`）是「成績單」（term report + 教練評語 + 技巧評分）功能，與本任務的 `/reports/me` 是完全不同 domain，無對應資料源，維持既有 P2 mock，不受本任務影響。
 - 語意上真正對應 `/reports/me` 的其實是首頁 `STATS`（`Stat[]`：報名課程數/本月出席率/會員點數，目前 `getDashboard()` 也還沒串接，仍為 mock）；未來若要串接，`active_enrolments`/`attendance_rate`/`points_balance` 對應到那三張卡，`attended_total`/`upcoming_sessions_7d` 則是 `STATS` 目前沒有的新欄位。
+
+---
+
+### 3.25 Settings（系統設定，全域 key-value）
+
+Admin 桌面「系統設定」頁與 mobile-admin 設定畫面的後端存放層（Round 4 Task B6）。裁決：**最簡 key-value 全域表**，不做細粒度 schema——`key` 為自由字串，不受後端 enum 約束；`value` 為任意合法 JSON（`serde` 自然保證，不逐欄驗證）。「登入裝置清單」**不在本任務範圍**（需 session 管理，另案處理）。
+
+**裁決**：
+1. `PUT /settings` 為**部分更新**：僅 upsert body 帶的 key，未帶的 key 維持原值不動；同一交易內完成（`INSERT ... ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`，逐 key 執行後一次 commit）。
+2. `settings` 為空物件（`{}`）時視為 **no-op**（200，不寫入任何資料），不是 400——「只 upsert 送來的 key」的自然推論是零 key 送來就零寫入，故不另加特判。
+3. 兩端點回應形狀相同：扁平 `{ "settings": { "<key>": <value>, ... } }`（非陣列包裝）；空表回 `{ "settings": {} }`，不是 500。`PUT` 回應為**更新後全量**（整張表的目前狀態），不是只回傳有變動的 key。
+4. 本輪前端會用到的慣例 key（**僅文件性列舉，後端不驗證其形狀，也不限制其他 key 名稱**）：
+   - `studio_profile`：場館基本資料物件，例如 `{ name, phone, address, default_ratio, max_class_size }`（場館名稱/電話/地址/預設師生比/每班人數上限）。
+   - `notification_flags`：通知開關布林物件，例如 `{ email, sms, lowAtt, autoWait }`。
+   - `security`：安全性設定布林物件，例如 `{ twoFA }`。
+
+#### `GET /settings` — admin
+回應（`SettingsResponse`）：`{ "settings": { "<key>": <value>, ... } }`。空表回 `{ "settings": {} }`。
+
+#### `PUT /settings` — admin
+Body（`UpdateSettingsRequest`）：`{ "settings": { "<key>": <value>, ... } }`。逐 key upsert（新 key 建立、既有 key 覆寫且 `updated_at` 更新為當下時間），`value` 可為任意合法 JSON（含巢狀物件/陣列），原樣存取。空 `settings` 物件視為 no-op（200，回傳目前全量狀態，不寫入、`updated_at` 不變）。回應同 `GET /settings`。
 
 ---
 

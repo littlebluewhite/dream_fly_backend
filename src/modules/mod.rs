@@ -20,6 +20,7 @@ pub mod reports;
 pub mod rewards;
 pub mod schedule;
 pub mod sessions;
+pub mod settings;
 pub mod subscriptions;
 pub mod users;
 pub mod venues;
