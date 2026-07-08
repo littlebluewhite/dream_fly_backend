@@ -53,10 +53,9 @@ pub async fn insert(
 /// `peer_name`, plus `last_message_body` (`LEFT`-truncated to 100 chars) and
 /// `unread_count` as correlated subqueries — one query, no N+1.
 /// `unread_count` counts messages sent by the *peer* (`sender_id <> $1`)
-/// that are still unread, per contract §3.21. Semantic twin of
-/// `reports::repository::unread_message_count`'s predicate — copied, not
-/// shared (no sqlx compile-time check here to catch drift); keep both in
-/// sync.
+/// that are still unread, per contract §3.21 — the same predicate as
+/// [`count_unread_for_user`]'s grand-total `WHERE`, both owned by this
+/// module (see that function's doc for why).
 pub async fn find_my_conversations(
     db: &PgPool,
     user_id: Uuid,
@@ -80,6 +79,23 @@ pub async fn find_my_conversations(
     )
     .bind(user_id)
     .fetch_all(db)
+    .await
+}
+
+/// Total unread messages across every conversation `user_id` participates
+/// in, on either side. This module owns the unread predicate — both
+/// spellings of it, [`find_my_conversations`]'s per-conversation
+/// `unread_count` subquery and this grand-total `WHERE`, live here in one
+/// file. Current caller: `reports::service::coach_report`.
+pub async fn count_unread_for_user(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM messages m \
+         JOIN conversations c ON c.id = m.conversation_id \
+         WHERE (c.member_id = $1 OR c.coach_id = $1) \
+           AND m.sender_id <> $1 AND m.read_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(db)
     .await
 }
 

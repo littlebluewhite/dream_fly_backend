@@ -2,14 +2,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::orders::model::REVENUE_STATUSES;
 
 use super::model::{AdminCoachRow, AdminCourseRow};
-
-/// `attendance_records.status` values shared by [`coach_attendance_in_range`]
-/// and [`member_attendance`] — one spelling of each literal instead of two.
-const PRESENT: &str = "present";
-const ABSENT: &str = "absent";
 
 // ---------------------------------------------------------------------------
 // GET /reports/admin
@@ -140,39 +136,6 @@ pub async fn coach_today_and_pending(
     .await
 }
 
-/// Total unread messages across every conversation `user_id` participates
-/// in, on either side — mirrors `messages::repository::
-/// find_my_conversations`'s per-conversation `unread_count` correlated
-/// subquery, aggregated here to one grand total instead of one row per
-/// conversation.
-pub async fn unread_message_count(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM messages m \
-         JOIN conversations c ON c.id = m.conversation_id \
-         WHERE (c.member_id = $1 OR c.coach_id = $1) \
-           AND m.sender_id <> $1 AND m.read_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_one(db)
-    .await
-}
-
-/// Distinct students across `coach_id`'s *active* courses' *active*
-/// enrolments. Mirrors `attendance::repository::find_my_students`'s WHERE
-/// clause (copied, not shared — that module's own comment documents this
-/// as the established convention) but as a bare count, without the
-/// `jsonb_agg` course list `find_my_students` builds for its own response.
-pub async fn coach_student_count(db: &PgPool, coach_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT e.user_id) FROM enrolments e \
-         JOIN courses c ON c.id = e.course_id \
-         WHERE c.coach_id = $1 AND c.is_active = true AND e.status = 'active'",
-    )
-    .bind(coach_id)
-    .fetch_one(db)
-    .await
-}
-
 /// `(present_count, absent_count)` across `coach_id`'s courses' sessions in
 /// `[from, to]`. `leave` rows are never selected into either bucket — the
 /// brief's "leave 不入分母" rule.
@@ -193,8 +156,8 @@ pub async fn coach_attendance_in_range(
     .bind(coach_id)
     .bind(from)
     .bind(to)
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
@@ -216,8 +179,8 @@ pub async fn member_attendance(db: &PgPool, user_id: Uuid) -> Result<(i64, i64),
          WHERE e.user_id = $1",
     )
     .bind(user_id)
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
