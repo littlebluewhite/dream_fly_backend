@@ -60,6 +60,53 @@ pub async fn create_venue(
     .await
 }
 
+/// Partial (PATCH-style) update — every argument optional; `category_id`/
+/// `description`/`image_url` are `Option<Option<T>>` so callers can
+/// distinguish "don't touch" (`None`) from "set to NULL" (`Some(None)`)
+/// from "set to value" (`Some(Some(v))`). Template: `courses::repository::update`.
+/// Returns `Ok(None)` if `id` doesn't match any row (caller maps to 404).
+#[allow(clippy::too_many_arguments)]
+pub async fn update(
+    db: &PgPool,
+    id: Uuid,
+    name: Option<&str>,
+    slug: Option<&str>,
+    category_id: Option<Option<Uuid>>,
+    description: Option<Option<&str>>,
+    features: Option<&[String]>,
+    image_url: Option<Option<&str>>,
+    is_active: Option<bool>,
+) -> Result<Option<Venue>, sqlx::Error> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE venues SET updated_at = now()");
+
+    if let Some(v) = name {
+        qb.push(", name = ").push_bind(v);
+    }
+    if let Some(v) = slug {
+        qb.push(", slug = ").push_bind(v);
+    }
+    if let Some(v) = category_id {
+        qb.push(", category_id = ").push_bind(v);
+    }
+    if let Some(v) = description {
+        qb.push(", description = ").push_bind(v);
+    }
+    if let Some(v) = features {
+        qb.push(", features = ").push_bind(v);
+    }
+    if let Some(v) = image_url {
+        qb.push(", image_url = ").push_bind(v);
+    }
+    if let Some(v) = is_active {
+        qb.push(", is_active = ").push_bind(v);
+    }
+
+    qb.push(" WHERE id = ").push_bind(id);
+    qb.push(" RETURNING *");
+
+    qb.build_query_as::<Venue>().fetch_optional(db).await
+}
+
 pub async fn find_all_categories(db: &PgPool) -> Result<Vec<VenueCategory>, sqlx::Error> {
     sqlx::query_as::<_, VenueCategory>(
         "SELECT id, name, slug, icon, display_order, created_at \

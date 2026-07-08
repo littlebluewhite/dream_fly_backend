@@ -2,13 +2,14 @@ use axum::{
     Json,
     extract::{Path, State},
 };
+use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{CreateVenueRequest, VenueResponse};
+use super::dto::{CreateVenueRequest, UpdateVenueRequest, VenueResponse};
 use super::service;
 
 #[tracing::instrument(skip_all)]
@@ -36,5 +37,17 @@ pub async fn create(
 ) -> Result<Json<VenueResponse>, AppError> {
     auth.require_role("admin")?;
     let venue = service::create_venue(&state.db, &req).await?;
+    Ok(Json(venue))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    ValidatedJson(req): ValidatedJson<UpdateVenueRequest>,
+) -> Result<Json<VenueResponse>, AppError> {
+    auth.require_role("admin")?;
+    let venue = service::update_venue(&state.db, id, &req).await?;
     Ok(Json(venue))
 }

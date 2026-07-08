@@ -7,5 +7,8 @@ use super::handlers;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/venues", get(handlers::list).post(handlers::create))
-        .route("/venues/{slug}", get(handlers::get_by_slug))
+        .route(
+            "/venues/{slug}",
+            get(handlers::get_by_slug).patch(handlers::update),
+        )
 }

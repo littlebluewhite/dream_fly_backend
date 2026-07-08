@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -46,4 +46,43 @@ pub struct CreateVenueRequest {
     pub features: Vec<String>,
     #[validate(custom(function = "validate_stored_url"))]
     pub image_url: Option<String>,
+}
+
+/// Plain `Option<Option<T>>` cannot distinguish "key absent" from "key
+/// present with JSON `null`" — serde's built-in `Option<T>` deserialize
+/// collapses a `null` straight to the *outer* `None`, so a bare
+/// `Option<Option<T>>` field could never actually clear a nullable column
+/// back to `NULL` via PATCH. Paired with `#[serde(default)]`, this makes the
+/// present-with-`null` case reach the *inner* `Option`, producing
+/// `Some(None)` (clear) instead of `None` (don't touch) — mirrors
+/// `rewards::dto::deserialize_some`.
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// Partial update payload for `PATCH /venues/{id}`. Every field optional;
+/// `category_id`/`description`/`image_url` use `Option<Option<T>>` (paired
+/// with `deserialize_some`) so callers can distinguish "don't touch"
+/// (`None`), "set to NULL" (`Some(None)`), and "set to value"
+/// (`Some(Some(v))`). No `#[validate]` on those three fields (validator
+/// can't express nested `Option` cleanly; the DB schema is the backstop —
+/// mirrors `products::dto::UpdateProductRequest`).
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateVenueRequest {
+    #[validate(length(min = 1, max = 100))]
+    pub name: Option<String>,
+    #[validate(length(max = 200))]
+    pub slug: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub category_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub description: Option<Option<String>>,
+    pub features: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub image_url: Option<Option<String>>,
+    pub is_active: Option<bool>,
 }

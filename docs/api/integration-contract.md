@@ -131,6 +131,7 @@
 | Venues | GET | `/venues` | 公開 |
 | Venues | GET | `/venues/{slug}` | 公開 |
 | Venues | POST | `/venues` | admin |
+| Venues | PATCH | `/venues/{id}` | admin |
 | Schedule | GET | `/schedule?year=&month=` | 公開 |
 | Schedule | GET | `/schedule/availability?date=` | 公開 |
 | Schedule | POST | `/schedule/slots` | 需登入（實務為 admin，見備註） |
@@ -382,6 +383,10 @@ Body（clock-in）：`{ note? }`（≤500 字）。回應（`ClockRecordResponse
 
 #### `POST /venues` — admin
 Body：`{ name, slug?, category_id?, description?, features?, image_url? }`。回應：`VenueResponse`。
+
+#### `PATCH /venues/{id}` — admin
+Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, description?, features?, image_url?, is_active? }`。`category_id`/`description`/`image_url` 可明確傳 `null` 清空（清為 `NULL`），欄位不帶則維持原值不動。空 body（所有欄位皆未提供）視為 no-op，僅刷新 `updated_at`——同 `PATCH /courses/{id}` 的既有行為。回應：`VenueResponse`。
+錯誤：409（`slug` 與其他場館衝突，訊息含衝突的 slug 值）；404（查無此場館）。
 
 ---
 
