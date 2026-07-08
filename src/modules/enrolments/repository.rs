@@ -3,34 +3,6 @@ use uuid::Uuid;
 
 use super::model::{Enrolment, EnrolmentWithCourse, MyEnrolmentRow};
 
-/// Lock the course row for update and return its capacity (`max_students`).
-/// Used by `enrol_from_purchase_tx` so the capacity check and the
-/// subsequent insert serialize against concurrent enrolments for the same
-/// course. Returns `None` if the course doesn't exist.
-pub async fn lock_course_capacity_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    course_id: Uuid,
-) -> Result<Option<i32>, sqlx::Error> {
-    sqlx::query_scalar::<_, i32>("SELECT max_students FROM courses WHERE id = $1 FOR UPDATE")
-        .bind(course_id)
-        .fetch_optional(&mut **tx)
-        .await
-}
-
-/// Count of active enrolments for a course. Read after the course row lock
-/// above so it reflects a consistent snapshot for the capacity check.
-pub async fn count_active_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    course_id: Uuid,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM enrolments WHERE course_id = $1 AND status = 'active'",
-    )
-    .bind(course_id)
-    .fetch_one(&mut **tx)
-    .await
-}
-
 /// Pre-check for a friendly duplicate-enrolment message. The partial unique
 /// index `uniq_enrolments_active` is the race-proof authoritative guard —
 /// this SELECT just avoids the round-trip-to-error path in the common

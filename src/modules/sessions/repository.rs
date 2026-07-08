@@ -173,6 +173,7 @@ pub async fn find_today_by_course_ids(
         return Ok(Vec::new());
     }
 
+    // enrolled_count: display-only inline copy of the seat COUNT predicate — owner: `courses::seats` (see its module doc).
     sqlx::query_as::<_, TodaySessionRow>(
         "SELECT cs.id, cs.course_id, c.name AS course_name, cs.start_time, cs.end_time, \
          (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = cs.course_id AND e.status = 'active') AS enrolled_count \

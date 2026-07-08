@@ -60,9 +60,10 @@ pub struct Course {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Computed via a correlated subquery against `enrolments` (not a table
-    /// column) — see `COURSE_COLUMNS` in `repository.rs`.
+    /// column) — inlined at each query site in `repository.rs`; the COUNT
+    /// predicate's owner is `courses::seats` (see that module's doc).
     pub enrolled_count: i64,
     /// Computed via a correlated subquery against `waitlist_entries` (not a
-    /// table column) — see `COURSE_COLUMNS` in `repository.rs`.
+    /// table column) — inlined at each query site in `repository.rs`.
     pub waitlist_count: i64,
 }

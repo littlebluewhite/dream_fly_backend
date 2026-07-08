@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use super::model::{
     AdminLeaveRequestRow, LeaveDecisionContext, LeaveRequest, LeaveRequestForMakeup,
-    LeaveRequestOwnerRow, LeaveStatus, MakeupCapacity, MyLeaveRequestRow, SessionContext,
+    LeaveRequestOwnerRow, LeaveStatus, MyLeaveRequestRow, SessionContext,
 };
 
 /// `course_sessions` JOINed with its course's `name`/`coach_id`/
@@ -274,53 +274,6 @@ pub async fn find_for_makeup_tx(
          FOR UPDATE OF lr",
     )
     .bind(id)
-    .fetch_optional(&mut **tx)
-    .await
-}
-
-/// Lock the target session row (`FOR UPDATE`) before the seat count in
-/// `service::book_makeup`, serializing concurrent makeup bookings into the
-/// same session across *different* leave requests — the leave-request row
-/// lock ([`find_for_makeup_tx`]) alone only serializes re-booking of the
-/// same request (controller ruling 2026-07-06). Returns `None` if the
-/// session doesn't exist.
-pub async fn lock_session_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    session_id: Uuid,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM course_sessions WHERE id = $1 FOR UPDATE")
-        .bind(session_id)
-        .fetch_optional(&mut **tx)
-        .await
-}
-
-/// Seat-count inputs for the makeup capacity check (see
-/// `service::book_makeup`) — one query combining the course's
-/// `max_students` with three correlated counts, mirroring
-/// `courses::repository`'s correlated-subquery style. Both leave/makeup
-/// counts only consider rows whose enrolment is still `active` (controller
-/// ruling 2026-07-06): a leave-taker who has since cancelled their
-/// enrolment must not free a ghost seat, and a makeup booker who cancelled
-/// must not keep occupying one.
-pub async fn find_makeup_capacity_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    course_id: Uuid,
-    target_session_id: Uuid,
-) -> Result<Option<MakeupCapacity>, sqlx::Error> {
-    sqlx::query_as::<_, MakeupCapacity>(
-        "SELECT c.max_students, \
-                (SELECT COUNT(*) FROM enrolments \
-                  WHERE course_id = c.id AND status = 'active') AS active_count, \
-                (SELECT COUNT(*) FROM leave_requests lr \
-                  JOIN enrolments e ON e.id = lr.enrolment_id AND e.status = 'active' \
-                  WHERE lr.session_id = $2 AND lr.status = 'approved'::leave_status) AS approved_leave_count, \
-                (SELECT COUNT(*) FROM leave_requests lr \
-                  JOIN enrolments e ON e.id = lr.enrolment_id AND e.status = 'active' \
-                  WHERE lr.makeup_session_id = $2) AS makeup_count \
-         FROM courses c WHERE c.id = $1",
-    )
-    .bind(course_id)
-    .bind(target_session_id)
     .fetch_optional(&mut **tx)
     .await
 }

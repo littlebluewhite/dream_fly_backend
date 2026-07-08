@@ -1,3 +1,12 @@
+//! Course reads/writes. The `enrolled_count` correlated subquery repeated in
+//! every SELECT below is a **display-only inline copy** of the seat COUNT
+//! predicate (`enrolments.status = 'active'`), whose owner is
+//! `courses::seats` — change the predicate there first, then keep these
+//! copies in sync. The copies stay inline deliberately: routing display
+//! counts through `seats` would turn one-query lists into N+1, and a shared
+//! SQL const would need `format!` assembly, losing plain string SQL's
+//! grep-ability (deletion-test ruling; see `seats.rs`'s module doc).
+
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 

@@ -3,20 +3,6 @@ use uuid::Uuid;
 
 use super::model::{WaitlistEntry, WaitlistEntryWithCourse};
 
-/// Count of active enrolments for a course. Copied (not imported) from
-/// `enrolments::repository::count_active_tx`'s SQL shape per the plan, so
-/// the waitlist module doesn't take on a dependency on the enrolments
-/// module. Plain (non-transactional) read — see `service::join_waitlist`
-/// for why no `FOR UPDATE` lock is taken here.
-pub async fn count_active_enrolments(db: &PgPool, course_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM enrolments WHERE course_id = $1 AND status = 'active'",
-    )
-    .bind(course_id)
-    .fetch_one(db)
-    .await
-}
-
 /// Pre-check for a friendly duplicate-waitlist message. The partial unique
 /// index `uniq_waitlist_waiting` is the race-proof authoritative guard —
 /// this SELECT just avoids the round-trip-to-error path in the common
