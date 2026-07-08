@@ -2,11 +2,13 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
+use crate::extractors::auth::{AuthUser, invalidate_role_cache};
+use crate::modules::auth::repository as auth_repository;
+use crate::modules::users::repository as users_repository;
 
 use super::dto::{
     ClockRecordResponse, CoachDetailResponse, CoachResponse, CoachScheduleResponse,
-    ScheduleEntry,
+    CreateCoachRequest, ScheduleEntry, UpdateCoachRequest,
 };
 use super::repository;
 
@@ -115,6 +117,103 @@ pub async fn get_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailResponse, Ap
         coach: coach_to_response(coach),
         schedules: schedules.into_iter().map(schedule_to_response).collect(),
     })
+}
+
+/// `POST /coaches` (admin, checked by the handler). Binds an existing user
+/// (created via `POST /users`) to a new coach profile and assigns them the
+/// `coach` role, both inside one transaction so a role-assignment failure
+/// can never leave an orphaned coach row (mirrors `users::service::create_user`
+/// assigning `member` in the same transaction as the user insert).
+///
+/// After commit, invalidates the target user's Redis role cache
+/// (`user_roles:{id}`, 15 min TTL) the same way
+/// `permissions::service::assign_role_to_user` does, so the user's very next
+/// request sees the `coach` role instead of a request within the TTL window
+/// still evaluating against a pre-existing cached role set.
+pub async fn create_coach(
+    db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
+    req: &CreateCoachRequest,
+) -> Result<CoachResponse, AppError> {
+    users_repository::find_by_id(db, req.user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    let is_active = req.is_active.unwrap_or(true);
+    let display_order = req.display_order.unwrap_or(0);
+
+    let mut tx = db.begin().await?;
+
+    let coach = repository::insert_tx(
+        &mut tx,
+        req.user_id,
+        &req.title,
+        req.bio.as_deref(),
+        req.experience.as_deref(),
+        &req.specialties,
+        &req.certifications,
+        is_active,
+        display_order,
+        req.slug.as_deref(),
+        req.photo_url.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.constraint() == Some("coaches_user_id_key") {
+                return AppError::Conflict("user is already a coach".into());
+            }
+            if db_err.constraint() == Some("coaches_slug_key") {
+                let slug = req.slug.as_deref().unwrap_or_default();
+                return AppError::Conflict(format!("coach slug '{}' already exists", slug));
+            }
+        }
+        AppError::Database(e)
+    })?;
+
+    auth_repository::assign_role_tx(&mut tx, req.user_id, "coach").await?;
+
+    tx.commit().await?;
+
+    invalidate_role_cache(redis, req.user_id).await;
+
+    Ok(coach_to_response(coach))
+}
+
+/// `PATCH /coaches/{id}` (admin, checked by the handler). Coach-owned fields
+/// only — the coach's name lives on `users` and is edited via the existing
+/// `PATCH /users/{id}`.
+pub async fn update_coach(
+    db: &PgPool,
+    id: Uuid,
+    req: &UpdateCoachRequest,
+) -> Result<CoachResponse, AppError> {
+    let coach = repository::update(
+        db,
+        id,
+        req.title.as_deref(),
+        req.bio.as_ref().map(|o| o.as_deref()),
+        req.experience.as_ref().map(|o| o.as_deref()),
+        req.specialties.as_deref(),
+        req.certifications.as_deref(),
+        req.is_active,
+        req.display_order,
+        req.slug.as_ref().map(|o| o.as_deref()),
+        req.photo_url.as_ref().map(|o| o.as_deref()),
+    )
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.constraint() == Some("coaches_slug_key") {
+                let slug = req.slug.clone().flatten().unwrap_or_default();
+                return AppError::Conflict(format!("coach slug '{}' already exists", slug));
+            }
+        }
+        AppError::Database(e)
+    })?
+    .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
+
+    Ok(coach_to_response(coach))
 }
 
 pub async fn get_schedules(

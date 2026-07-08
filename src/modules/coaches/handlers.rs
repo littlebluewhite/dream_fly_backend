@@ -12,7 +12,7 @@ use crate::utils::validation::ValidatedJson;
 
 use super::dto::{
     ClockNoteRequest, ClockRecordResponse, CoachDetailResponse, CoachResponse,
-    CoachScheduleResponse, UpdateScheduleRequest,
+    CoachScheduleResponse, CreateCoachRequest, UpdateCoachRequest, UpdateScheduleRequest,
 };
 use super::service;
 
@@ -31,6 +31,30 @@ pub async fn get_by_id(
 ) -> Result<Json<CoachDetailResponse>, AppError> {
     let detail = service::get_detail(&state.db, id).await?;
     Ok(Json(detail))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn create(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    ValidatedJson(req): ValidatedJson<CreateCoachRequest>,
+) -> Result<Json<CoachResponse>, AppError> {
+    auth.require_role("admin")?;
+    let mut redis = state.redis.clone();
+    let coach = service::create_coach(&state.db, &mut redis, &req).await?;
+    Ok(Json(coach))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    ValidatedJson(req): ValidatedJson<UpdateCoachRequest>,
+) -> Result<Json<CoachResponse>, AppError> {
+    auth.require_role("admin")?;
+    let coach = service::update_coach(&state.db, id, &req).await?;
+    Ok(Json(coach))
 }
 
 #[tracing::instrument(skip_all)]

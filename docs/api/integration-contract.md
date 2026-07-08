@@ -123,6 +123,8 @@
 | Courses | PATCH | `/courses/{id}` | admin |
 | Coaches | GET | `/coaches` | 公開 |
 | Coaches | GET | `/coaches/{id}` | 公開 |
+| Coaches | POST | `/coaches` | admin |
+| Coaches | PATCH | `/coaches/{id}` | admin |
 | Coaches | GET | `/coaches/{id}/schedule` | 公開 |
 | Coaches | PUT | `/coaches/{id}/schedule` | 需登入（本人或 admin，見備註） |
 | Coaches | POST | `/coaches/{id}/clock-in` | 需登入 |
@@ -358,6 +360,20 @@ Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。**`sche
 
 #### `GET /coaches/{id}` — 公開
 `{id}` 為教練的 UUID（非使用者 id，也非 slug）。回應（`CoachDetailResponse`）：`{ "coach": CoachResponse, "schedules": CoachScheduleResponse[] }`。
+
+#### `POST /coaches` — admin
+將既有使用者（先用 `POST /users` 建帳號）綁定為教練。Body：`{ user_id, title, bio?, experience?, specialties?, certifications?, display_order?, slug?, photo_url?, is_active? }`。`user_id`/`title` 必填（`title` 對應 `coaches.title`，NOT NULL 無 DEFAULT）；其餘欄位省略時採 DB 預設（`specialties`/`certifications` 預設空陣列、`is_active` 預設 `true`、`display_order` 預設 `0`、`slug`/`photo_url` 維持 `NULL`）。姓名不在此——那是 `users.name`。
+
+Service 內同一交易完成兩件事：新增 coaches 列 + 指派該 user `coach` 角色；成功後會清除該 user 的 Redis 角色快取（`user_roles:{id}`），下一次請求即可看到新角色，不必等 15 分鐘 TTL 到期。
+
+回應：`CoachResponse`（與 `GET /coaches` 同型）。
+錯誤：404（`user_id` 查無此使用者）；409（該 user 已是教練，或 `slug` 與其他教練衝突）。
+
+#### `PATCH /coaches/{id}` — admin
+只動教練自身欄位：`{ title?, bio?, experience?, specialties?, certifications?, is_active?, display_order?, slug?, photo_url? }`。姓名不在此——走既有 `PATCH /users/{id}`。`bio`/`experience`/`slug`/`photo_url` 可明確傳 `null` 清空，欄位不帶則維持原值不動；空 body 視為 no-op，僅刷新 `updated_at`——同 `PATCH /venues/{id}` 的既有行為。
+
+回應：`CoachResponse`。
+錯誤：404（查無此教練）；409（`slug` 與其他教練衝突）。
 
 #### `GET /coaches/{id}/schedule` — 公開
 回應：`CoachScheduleResponse[]`：`{ id, day_of_week (0-6), start_time ("HH:MM:SS"), end_time, is_available }`。

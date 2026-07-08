@@ -4,6 +4,8 @@ mod common;
 
 use common::fixtures::seed_coach;
 use common::http::spawn_test_app;
+use dream_fly_backend::extractors::auth::role_cache_key;
+use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -292,6 +294,301 @@ async fn clock_in_on_nonexistent_coach_returns_404(db: PgPool) {
         .post(&format!("/api/v1/coaches/{}/clock-in", Uuid::now_v7()))
         .authorization_bearer(&user.access_token)
         .json(&json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+// ---------------------------------------------------------------------------
+// POST /coaches + PATCH /coaches/{id} (Round 4 Task B2)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn create_coach_without_auth_returns_401(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("bind-noauth@example.com", "Password!234").await;
+
+    let resp = app
+        .post("/api/v1/coaches")
+        .json(&json!({ "user_id": user.user_id, "title": "Coach" }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[sqlx::test]
+async fn create_coach_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("bind-target@example.com", "Password!234").await;
+    let member = app.register_member("bind-mem@example.com", "Password!234").await;
+
+    let resp = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&member.access_token)
+        .json(&json!({ "user_id": target.user_id, "title": "Coach" }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn create_coach_as_admin_succeeds_and_assigns_coach_role(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let target = app.register_member("bind-ok@example.com", "Password!234").await;
+
+    let resp = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "user_id": target.user_id,
+            "title": "資深體操教練",
+            "bio": "10年經驗",
+            "specialties": ["gymnastics", "trampoline"],
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["user_id"].as_str().unwrap(), target.user_id.to_string());
+    // `register_member` always names the user "Test Member" — proves the
+    // insert's correlated subquery actually joins `users.name`, not just a
+    // coincidental match.
+    assert_eq!(body["name"], "Test Member");
+    assert_eq!(body["title"], "資深體操教練");
+    assert_eq!(body["bio"], "10年經驗");
+    assert_eq!(body["specialties"], json!(["gymnastics", "trampoline"]));
+    // Defaults for everything the request omitted.
+    assert_eq!(body["is_active"], true);
+    assert_eq!(body["display_order"], 0);
+    assert_eq!(body["certifications"], json!([]));
+    assert!(body["slug"].is_null());
+    assert!(body["photo_url"].is_null());
+
+    // coaches row exists for the target user.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coaches WHERE user_id = $1")
+        .bind(target.user_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    // The target user now has the `coach` role.
+    let has_role: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id \
+         WHERE ur.user_id = $1 AND r.name = 'coach')",
+    )
+    .bind(target.user_id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert!(has_role, "target user must have the coach role assigned");
+}
+
+#[sqlx::test]
+async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
+    // The target user's role set may already be cached (e.g. they logged in
+    // as a plain member earlier). Binding them to a coach profile must
+    // invalidate that cache so their very next request sees the new role
+    // instead of waiting out the 15-minute TTL.
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let target = app.register_member("bind-cache@example.com", "Password!234").await;
+
+    let mut redis = app.redis_conn().await;
+    let cache_key = role_cache_key(target.user_id);
+    let _: () = redis
+        .set_ex(&cache_key, "member", 900)
+        .await
+        .expect("seed stale cache");
+
+    let resp = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({ "user_id": target.user_id, "title": "Coach" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let exists: bool = redis.exists(&cache_key).await.expect("exists check");
+    assert!(
+        !exists,
+        "role cache must be invalidated after coach role assignment"
+    );
+}
+
+#[sqlx::test]
+async fn create_coach_duplicate_user_id_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let target = app.register_member("bind-dup@example.com", "Password!234").await;
+
+    let first = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({ "user_id": target.user_id, "title": "Coach" }))
+        .await;
+    assert_eq!(first.status_code(), 200, "body={}", first.text());
+
+    let second = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({ "user_id": target.user_id, "title": "Another Title" }))
+        .await;
+    assert_eq!(second.status_code(), 409, "body={}", second.text());
+}
+
+#[sqlx::test]
+async fn create_coach_nonexistent_user_id_returns_404(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({ "user_id": Uuid::now_v7(), "title": "Ghost Coach" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[sqlx::test]
+async fn create_coach_duplicate_slug_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let user_a = app.register_member("bind-slug-a@example.com", "Password!234").await;
+    let user_b = app.register_member("bind-slug-b@example.com", "Password!234").await;
+
+    let first = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({ "user_id": user_a.user_id, "title": "Coach A", "slug": "star-coach" }))
+        .await;
+    assert_eq!(first.status_code(), 200, "body={}", first.text());
+
+    let second = app
+        .post("/api/v1/coaches")
+        .authorization_bearer(&token)
+        .json(&json!({ "user_id": user_b.user_id, "title": "Coach B", "slug": "star-coach" }))
+        .await;
+    assert_eq!(second.status_code(), 409, "body={}", second.text());
+}
+
+#[sqlx::test]
+async fn update_coach_without_auth_returns_401(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("patch-noauth@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coaches/{coach_id}"))
+        .json(&json!({ "title": "New Title" }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[sqlx::test]
+async fn update_coach_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("patch-owner@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
+    let member = app.register_member("patch-mem@example.com", "Password!234").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coaches/{coach_id}"))
+        .authorization_bearer(&member.access_token)
+        .json(&json!({ "title": "New Title" }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn update_coach_as_admin_partial_update_only_title_changes(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let user = app.register_member("patch-ok@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, user.user_id, "Original Title").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coaches/{coach_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "title": "Updated Title" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["title"], "Updated Title");
+    // Proves the update's correlated subquery still joins `users.name`
+    // correctly (same trick as the insert path).
+    assert_eq!(body["name"], "Test Member");
+    // `seed_coach` hardcodes these — the crux of the "partial update"
+    // contract is that omitted fields are untouched, not reset.
+    assert_eq!(body["bio"], "Test bio");
+    assert_eq!(body["experience"], "5 years");
+    assert_eq!(body["specialties"], json!(["gymnastics"]));
+    assert_eq!(body["is_active"], true);
+}
+
+#[sqlx::test]
+async fn update_coach_clears_photo_url_to_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let user = app.register_member("patch-clear@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
+    sqlx::query("UPDATE coaches SET photo_url = 'https://cdn.example.com/old.jpg' WHERE id = $1")
+        .bind(coach_id)
+        .execute(&app.db)
+        .await
+        .expect("seed photo_url");
+
+    let resp = app
+        .patch(&format!("/api/v1/coaches/{coach_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "photo_url": null }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["photo_url"].is_null());
+    // `title` wasn't in the patch body, so it must remain untouched — proves
+    // the explicit-null path is distinct from "field absent".
+    assert_eq!(body["title"], "Coach");
+
+    let db_value: Option<String> =
+        sqlx::query_scalar("SELECT photo_url FROM coaches WHERE id = $1")
+            .bind(coach_id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert!(
+        db_value.is_none(),
+        "photo_url must be NULL in the DB, not just absent from JSON"
+    );
+}
+
+#[sqlx::test]
+async fn update_coach_duplicate_slug_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let user_a = app.register_member("patch-slug-a@example.com", "Password!234").await;
+    let user_b = app.register_member("patch-slug-b@example.com", "Password!234").await;
+    let coach_a = seed_coach(&app.db, user_a.user_id, "Coach A").await;
+    let coach_b = seed_coach(&app.db, user_b.user_id, "Coach B").await;
+    sqlx::query("UPDATE coaches SET slug = 'taken-slug' WHERE id = $1")
+        .bind(coach_a)
+        .execute(&app.db)
+        .await
+        .expect("seed slug");
+
+    let resp = app
+        .patch(&format!("/api/v1/coaches/{coach_b}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "slug": "taken-slug" }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn update_coach_unknown_id_returns_404(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coaches/{}", Uuid::now_v7()))
+        .authorization_bearer(&token)
+        .json(&json!({ "title": "Ghost" }))
         .await;
     assert_eq!(resp.status_code(), 404);
 }
