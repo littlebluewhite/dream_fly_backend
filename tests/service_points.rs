@@ -330,9 +330,11 @@ async fn concurrent_try_spend_same_user_exactly_one_succeeds(db: PgPool) {
 
     let conflict_count = [&res_a, &res_b]
         .iter()
-        .filter(|r| matches!(r, Err(AppError::Conflict(_))))
+        .filter(|r| {
+            matches!(r, Err(AppError::Conflict(msg)) if msg == "點數不足")
+        })
         .count();
-    assert_eq!(conflict_count, 1, "the other must fail with Conflict");
+    assert_eq!(conflict_count, 1, "the other must fail with Conflict(\"點數不足\")");
 
     let balance = points_repo::find_balance(&db, user_id)
         .await

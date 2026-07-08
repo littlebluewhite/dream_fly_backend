@@ -2,10 +2,10 @@
 //!
 //! ## Subscribed topics
 //!
-//! Subscribes to all 6 topics the rest of the service publishes to:
-//! [`topics::AUDIT_LOG`] plus the 5 domain topics (orders created /
-//! status-changed, bookings created / cancelled, users registered). Every
-//! subscribed topic is routed through the same [`handle_audit_event`]
+//! Subscribes to the 5 domain topics the rest of the service publishes to
+//! (orders created / status-changed, bookings created / cancelled, users registered)
+//! plus [`topics::AUDIT_LOG`] (reserved for hand-authored audit events; none published today).
+//! Every subscribed topic is routed through the same [`handle_audit_event`]
 //! handler — there is no per-topic branch beyond the resource mapping
 //! described below.
 //!
@@ -21,13 +21,13 @@
 //! ## Resource mapping
 //!
 //! The 5 domain payloads don't carry a `data.resource` field the way
-//! hand-authored audit events do, so without a mapping step every domain
+//! hand-authored audit events do (none published today), so without a mapping step every domain
 //! event would collapse onto the generic `"audit"` fallback. [`domain_resource`]
 //! maps `event_type` to the `(resource, id_field)` pair used to populate
 //! `audit_log.resource` / `resource_id`. Anything it doesn't recognize
 //! returns `None`, and the caller falls back to reading `data.resource`
-//! directly (defaulting to `"audit"`) — the pre-existing `AUDIT_LOG`-topic
-//! behavior, unchanged.
+//! directly (defaulting to `"audit"`) — the reserved `AUDIT_LOG`-topic
+//! behavior, ready for future hand-authored events.
 //!
 //! ## Idempotency key
 //!
