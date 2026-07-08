@@ -12,6 +12,25 @@ pub async fn find_balance(db: &PgPool, user_id: Uuid) -> Result<Option<i64>, sql
         .await
 }
 
+/// Lock the user's row and read their current points balance inside the
+/// caller's transaction, so a second concurrent spend for the same user can
+/// never compute against the same stale balance (double spend). The lock is
+/// held until the caller's transaction commits or rolls back — a concurrent
+/// spend for the same user blocks here until then, and re-reads the
+/// now-updated balance afterward. Moved here from
+/// `orders::repository::lock_user_points_balance_tx` (Task 4, C2) — the
+/// same lock is now shared by `orders::service::checkout` (lock-only) and
+/// `rewards::service::redeem` (lock-then-spend via `try_spend_tx`).
+pub async fn lock_balance_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT points_balance FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await
+}
+
 /// This user's ledger entries, newest first, paginated.
 pub async fn find_ledger_by_user(
     db: &PgPool,

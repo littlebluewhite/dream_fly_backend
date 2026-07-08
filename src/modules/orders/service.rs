@@ -101,9 +101,7 @@ pub async fn checkout(
     //    "no redemption" needs.
     let use_points = req.use_points.unwrap_or(false);
     let points_balance = if use_points {
-        repository::lock_user_points_balance_tx(&mut tx, user_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("user not found".into()))?
+        points_service::lock_balance_tx(&mut tx, user_id).await?
     } else {
         0
     };

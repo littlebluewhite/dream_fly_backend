@@ -87,21 +87,6 @@ pub async fn decrement_stock_tx(tx: &mut Transaction<'_, Postgres>, id: Uuid) ->
     Ok(())
 }
 
-/// Lock the user's row and read their current points balance inside the
-/// redeem transaction — mirrors `orders::repository::lock_user_points_balance_tx`
-/// (same "local to the module that needs it" idiom; a second concurrent
-/// redeem/checkout for the same user blocks here until this transaction
-/// commits or rolls back).
-pub async fn lock_user_points_balance_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
-) -> Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>("SELECT points_balance FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user_id)
-        .fetch_optional(&mut **tx)
-        .await
-}
-
 pub async fn insert_redemption_tx(
     tx: &mut Transaction<'_, Postgres>,
     reward_id: Uuid,

@@ -27,10 +27,10 @@ pub async fn list(db: &PgPool, all: bool) -> Result<RewardListResponse, AppError
 }
 
 /// 兌換：單一交易內 — 鎖品項（`FOR UPDATE`）→ 檢查 is_active（404）→ 檢查
-/// stock（NULL 略過；0 → 409）→ 鎖並檢查 `users.points_balance`（不足 → 409）→
-/// ledger 插入 + balance 同步（複用 `points::service::apply_delta_tx`，裁決
-/// 7 — 點數唯一真相 = point_ledger + users.points_balance，此處不得另建一套
-/// 機制）→ stock -1（非 NULL 才執行）→ 插入 redemption 紀錄。
+/// stock（NULL 略過；0 → 409）→ 鎖 + 比較 + 扣點一體（複用
+/// `points::service::try_spend_tx`，裁決 7 — 點數唯一真相 = point_ledger +
+/// users.points_balance，此處不得另建一套機制；不足 → 409「點數不足」）→
+/// stock -1（非 NULL 才執行）→ 插入 redemption 紀錄。
 pub async fn redeem(db: &PgPool, user_id: Uuid, reward_id: Uuid) -> Result<RedeemResponse, AppError> {
     let mut tx = db.begin().await?;
 
@@ -48,27 +48,18 @@ pub async fn redeem(db: &PgPool, user_id: Uuid, reward_id: Uuid) -> Result<Redee
         }
     }
 
-    // Lock + read the caller's balance inside this transaction — a second
-    // concurrent redeem/checkout for the same user blocks on this row lock
-    // until we commit or roll back (mirrors
-    // `orders::repository::lock_user_points_balance_tx`'s double-spend
-    // guard).
-    let balance = repository::lock_user_points_balance_tx(&mut tx, user_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
-
-    if balance < reward.points_cost as i64 {
-        return Err(AppError::Conflict("點數不足".into()));
-    }
-
-    // The one true points mechanism (裁決 7): ledger insert + `users.points_balance`
-    // sync, via the same helper `orders::service::checkout` uses. Cannot
-    // fail here — we already proved `balance >= points_cost` above under
-    // the same row lock this call re-touches.
-    let balance_after = points_service::apply_delta_tx(
+    // The one true points mechanism (裁決 7): lock the balance, compare
+    // against `points_cost`, and spend it atomically — ledger insert +
+    // `users.points_balance` sync, via the same points-module seam
+    // `orders::service::checkout` uses (there it only locks; here it also
+    // spends). Mirrors `orders::service::checkout`'s double-spend guard: a
+    // second concurrent redeem/checkout for the same user blocks on this
+    // row lock until we commit or roll back. Insufficient balance surfaces
+    // as `AppError::Conflict("點數不足")` from `try_spend_tx` itself.
+    let balance_after = points_service::try_spend_tx(
         &mut tx,
         user_id,
-        -(reward.points_cost as i64),
+        reward.points_cost as i64,
         PointReason::Redeem,
         None,
     )

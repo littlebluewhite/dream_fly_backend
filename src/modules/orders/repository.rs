@@ -242,26 +242,6 @@ pub async fn insert_idempotency_tx(
 }
 
 // ---------------------------------------------------------------------------
-// Points balance lock (checkout-only helper)
-// ---------------------------------------------------------------------------
-
-/// Lock the user's row and read their current points balance inside the
-/// checkout transaction, so a second concurrent checkout for the same user
-/// can never compute `points_used` against the same stale balance (double
-/// spend). The lock is held until the caller's transaction commits or rolls
-/// back — a concurrent checkout for the same user blocks here until then,
-/// and re-reads the now-updated balance afterward.
-pub async fn lock_user_points_balance_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-) -> Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>("SELECT points_balance FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user_id)
-        .fetch_optional(&mut **tx)
-        .await
-}
-
-// ---------------------------------------------------------------------------
 // Artifacts by order_id — checkout response assembly + idempotent replay
 // ---------------------------------------------------------------------------
 //
