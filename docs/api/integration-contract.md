@@ -202,6 +202,7 @@
 | Posts | DELETE | `/posts/{id}` | admin |
 | Contact | POST | `/contact` | 公開 |
 | Contact | GET | `/contact/inquiries` | admin |
+| Contact | PATCH | `/contact/inquiries/{id}` | admin |
 | Reports | GET | `/reports/admin` | admin |
 | Reports | GET | `/reports/coach` | coach |
 | Reports | GET | `/reports/me` | 需登入 |
@@ -741,10 +742,14 @@ Body（皆選填）：`{ title?, slug?, content?, excerpt?, category?, status?, 
 ### 3.17 Contact（聯絡表單）
 
 #### `POST /contact` — 公開
-Body：`{ name, email, phone?, subject, message }`。回應（`InquiryResponse`）：`{ id, name, email, phone, subject, message, status: "new", assigned_to: null, created_at, updated_at }`。
+Body：`{ name, email, phone?, subject, message, inquiry_type?, metadata? }`。`inquiry_type` 選填，預設 `"general"`，僅接受 `"general"`／`"trial"`（應用層驗證，非 DB CHECK/enum）；非法值 422。`metadata` 選填 JSONB 物件，後端不逐欄驗證、原樣存取——`trial`（試上預約）慣例欄位：`category`／`student_age`／`preferred_day`／`preferred_slot`／`parent_name`／`parent_phone`／`student_name`／`note`（僅文件性列舉，非後端 schema）。回應（`InquiryResponse`）：`{ id, name, email, phone, subject, message, status: "new", assigned_to: null, inquiry_type, metadata, created_at, updated_at }`。既有呼叫端不帶 `inquiry_type`/`metadata` 時行為不變。
 
 #### `GET /contact/inquiries?page=&per_page=` — admin
 回應（`InquiryListResponse`）：`{ "inquiries": [InquiryResponse], "total", "page", "per_page" }`。
+
+#### `PATCH /contact/inquiries/{id}` — admin
+Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRequest`）：`{ status?, assigned_to? }`。`status` 僅接受 `new`／`in_progress`／`resolved`／`closed`（`InquiryStatus` 既有值域），非法值 422。`assigned_to` 可明確傳 `null` 清空指派（清為 `NULL`），欄位不帶則維持原值不動。回應：`InquiryResponse`（見上）。
+錯誤：404（查無此 inquiry）。
 
 ---
 

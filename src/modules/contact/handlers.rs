@@ -1,7 +1,8 @@
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
 };
+use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
@@ -9,7 +10,9 @@ use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{CreateInquiryRequest, InquiryListResponse, InquiryResponse};
+use super::dto::{
+    CreateInquiryRequest, InquiryListResponse, InquiryResponse, UpdateInquiryRequest,
+};
 use super::service;
 
 /// Submit a contact inquiry (public, no auth required)
@@ -32,4 +35,18 @@ pub async fn list(
     auth.require_role("admin")?;
     let result = service::list_inquiries(&state.db, &params).await?;
     Ok(Json(result))
+}
+
+/// Admin follow-up on a contact inquiry: `PATCH /contact/inquiries/{id}`
+/// (Round 4 Task B5).
+#[tracing::instrument(skip_all)]
+pub async fn update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    ValidatedJson(req): ValidatedJson<UpdateInquiryRequest>,
+) -> Result<Json<InquiryResponse>, AppError> {
+    auth.require_role("admin")?;
+    let inquiry = service::update_inquiry(&state.db, id, &req).await?;
+    Ok(Json(inquiry))
 }

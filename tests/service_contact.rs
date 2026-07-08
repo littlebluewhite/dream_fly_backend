@@ -20,6 +20,8 @@ fn req(subject: &str) -> CreateInquiryRequest {
         phone: Some("0912345678".into()),
         subject: subject.into(),
         message: "Please help me with this thing.".into(),
+        inquiry_type: "general".into(),
+        metadata: None,
     }
 }
 
