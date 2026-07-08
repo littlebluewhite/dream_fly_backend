@@ -35,6 +35,7 @@ pub async fn update_me(
         req.name.as_deref(),
         req.phone.as_deref(),
         req.avatar_url.as_deref(),
+        req.preferences.as_ref(),
     )
     .await?;
 

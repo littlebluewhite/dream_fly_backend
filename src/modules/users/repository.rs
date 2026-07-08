@@ -102,11 +102,17 @@ pub async fn update_profile(
     name: Option<&str>,
     phone: Option<&str>,
     avatar_url: Option<&str>,
+    preferences: Option<&serde_json::Value>,
 ) -> Result<User, sqlx::Error> {
     // When the user changes their phone number, `phone_verified` must be
     // reset so they go through OTP verification again. This prevents a
     // malicious user from overwriting their verified phone to anything they
     // want via /users/me.
+    //
+    // `preferences` follows the same COALESCE convention as the other
+    // columns here: `NULL` (not provided) leaves the stored JSONB value
+    // untouched; a provided value replaces the whole column (no deep merge
+    // — see docs/api/integration-contract.md §3.2).
     sqlx::query_as::<_, User>(
         r#"
         UPDATE users
@@ -117,6 +123,7 @@ pub async fn update_profile(
                 ELSE phone_verified
             END,
             avatar_url = COALESCE($4, avatar_url),
+            preferences = COALESCE($5, preferences),
             updated_at = NOW()
         WHERE id = $1
         RETURNING *
@@ -126,6 +133,7 @@ pub async fn update_profile(
     .bind(name)
     .bind(phone)
     .bind(avatar_url)
+    .bind(preferences)
     .fetch_one(db)
     .await
 }

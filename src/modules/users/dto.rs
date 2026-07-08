@@ -15,6 +15,12 @@ pub struct UpdateProfileRequest {
     pub phone: Option<String>,
     #[validate(custom(function = "validate_stored_url"))]
     pub avatar_url: Option<String>,
+    /// Round 4 Task B7 — member preference bag (mobile settings toggles:
+    /// `class_reminder`/`coach_msg`/`promo`/`dark`, see
+    /// docs/api/integration-contract.md §3.2). Whole-object overwrite when
+    /// present (no deep merge, no per-key validation — a generic bag);
+    /// omitted (`None`) leaves the stored value untouched.
+    pub preferences: Option<serde_json::Value>,
 }
 
 /// `POST /users` (admin) — creates a member account. Mirrors
@@ -60,6 +66,13 @@ pub struct UserResponse {
     pub created_at: DateTime<Utc>,
     pub roles: Vec<String>,
     pub points_balance: i64,
+    /// Round 4 Task B7. `UserResponse` is the one response type the users
+    /// module uses for both the self-service profile (`GET`/`PATCH
+    /// /users/me`) and admin-facing views (`GET /users`, `GET /users/{id}`,
+    /// `POST /users`, `PATCH /users/{id}`) — there is no separate admin-view
+    /// DTO to exclude this from, so it appears in all of them. Only
+    /// `PATCH /users/me` can write it.
+    pub preferences: Option<serde_json::Value>,
 }
 
 impl From<User> for UserResponse {
@@ -76,6 +89,7 @@ impl From<User> for UserResponse {
             created_at: user.created_at,
             roles: Vec::new(),
             points_balance: user.points_balance,
+            preferences: user.preferences,
         }
     }
 }

@@ -489,3 +489,98 @@ async fn admin_update_user_as_member_returns_403(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 403);
 }
+
+// ---------------------------------------------------------------------
+// Task B7: `users.preferences` JSONB (mobile settings toggles)
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_me_sets_preferences_and_get_me_returns_it(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("prefs@example.com", "Password!234").await;
+
+    let patch_resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "preferences": { "class_reminder": true, "dark": false } }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+    let patch_body: serde_json::Value = patch_resp.json();
+    assert_eq!(
+        patch_body["preferences"],
+        json!({ "class_reminder": true, "dark": false })
+    );
+
+    let get_resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(get_resp.status_code(), 200, "body={}", get_resp.text());
+    let get_body: serde_json::Value = get_resp.json();
+    assert_eq!(
+        get_body["preferences"],
+        json!({ "class_reminder": true, "dark": false })
+    );
+}
+
+/// Regression: a `PATCH /users/me` body that omits `preferences` entirely
+/// must leave the previously-stored value untouched (same COALESCE
+/// semantics as `name`/`phone`/`avatar_url`).
+#[sqlx::test]
+async fn update_me_without_preferences_field_leaves_existing_value_unchanged(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("prefs-keep@example.com", "Password!234").await;
+
+    app.patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "preferences": { "promo": true } }))
+        .await;
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "name": "Renamed, No Prefs In Body" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["name"], "Renamed, No Prefs In Body");
+    assert_eq!(body["preferences"], json!({ "promo": true }));
+}
+
+/// Contract: `preferences` is a **whole-object overwrite**, not a deep
+/// merge — sending a new object must drop keys from the old one.
+#[sqlx::test]
+async fn update_me_preferences_full_overwrite_drops_old_keys(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("prefs-overwrite@example.com", "Password!234").await;
+
+    app.patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "preferences": { "class_reminder": true, "coach_msg": true } }))
+        .await;
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "preferences": { "dark": true } }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    // Only the new object survives — no merge with `class_reminder`/`coach_msg`.
+    assert_eq!(body["preferences"], json!({ "dark": true }));
+}
+
+/// A user who has never touched `preferences` must see `null`, not a 500.
+#[sqlx::test]
+async fn me_returns_null_preferences_when_never_set(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("prefs-unset@example.com", "Password!234").await;
+
+    let resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["preferences"].is_null());
+}

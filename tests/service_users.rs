@@ -10,6 +10,7 @@
 
 mod common;
 
+use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -29,6 +30,10 @@ async fn get_me_returns_seeded_profile(db: PgPool) {
     assert_eq!(resp.name, "Test Member");
     assert!(resp.is_active);
     assert!(!resp.phone_verified);
+    // Task B7: a user who never touched `preferences` must read back `None`,
+    // not an error — `seed_member`'s raw INSERT doesn't mention the column,
+    // so this relies on the migration leaving it NULL by default.
+    assert!(resp.preferences.is_none());
 }
 
 /// Task 18: `UserResponse` gained `points_balance` (frontend admin members page
@@ -72,6 +77,7 @@ async fn update_me_partial_patch_preserves_other_fields(db: PgPool) {
             name: Some("Renamed User".into()),
             phone: None,
             avatar_url: None,
+            preferences: None,
         },
     )
     .await
@@ -90,6 +96,7 @@ async fn update_me_partial_patch_preserves_other_fields(db: PgPool) {
             name: None,
             phone: Some("0912345678".into()),
             avatar_url: None,
+            preferences: None,
         },
     )
     .await
@@ -112,6 +119,7 @@ async fn update_me_can_set_avatar_to_https_url(db: PgPool) {
             name: None,
             phone: None,
             avatar_url: Some("https://cdn.example.com/a.png".into()),
+            preferences: None,
         },
     )
     .await
@@ -121,6 +129,66 @@ async fn update_me_can_set_avatar_to_https_url(db: PgPool) {
         resp.avatar_url.as_deref(),
         Some("https://cdn.example.com/a.png")
     );
+}
+
+/// Task B7: `preferences` follows the same COALESCE-based partial-update
+/// convention as `name`/`phone`/`avatar_url` above — `None` means "leave
+/// untouched", `Some(value)` means "replace the whole JSON value" (no deep
+/// merge with whatever was there before).
+#[sqlx::test]
+async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
+    let user_id = common::seed_member(&db, "prefs-service@example.com", "hunter22-secret").await;
+
+    let resp = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: Some(json!({ "class_reminder": true, "coach_msg": true })),
+        },
+    )
+    .await
+    .expect("update_me with preferences");
+    assert_eq!(
+        resp.preferences,
+        Some(json!({ "class_reminder": true, "coach_msg": true }))
+    );
+
+    // Omitting `preferences` (None) must leave the stored value untouched.
+    let resp2 = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: Some("Prefs Owner".into()),
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+        },
+    )
+    .await
+    .expect("update_me without preferences");
+    assert_eq!(resp2.name, "Prefs Owner");
+    assert_eq!(
+        resp2.preferences,
+        Some(json!({ "class_reminder": true, "coach_msg": true }))
+    );
+
+    // Sending a new object fully replaces the old one — no residual keys.
+    let resp3 = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: Some(json!({ "dark": true })),
+        },
+    )
+    .await
+    .expect("update_me overwrite preferences");
+    assert_eq!(resp3.preferences, Some(json!({ "dark": true })));
 }
 
 #[sqlx::test]

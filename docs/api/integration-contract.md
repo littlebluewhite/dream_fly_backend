@@ -263,12 +263,17 @@ Body：`{ token, new_password }`（new_password 8-128 字）。回應：`{ "mess
   "phone": "string|null", "phone_verified": "boolean",
   "avatar_url": "string|null", "is_active": "boolean",
   "last_login": "ISO8601|null", "created_at": "ISO8601",
-  "roles": ["member"], "points_balance": "number"
+  "roles": ["member"], "points_balance": "number",
+  "preferences": "object|null"
 }
 ```
 
 #### `PATCH /users/me` — 需登入
-Body（皆為選填）：`{ name?, phone?, avatar_url? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查）。回應：`UserResponse`。
+Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查；`preferences` 可為任意合法 JSON 物件，**整包覆寫**——帶了就整個取代舊值，不做深合併，也不逐 key 驗證；不帶則維持原值不動）。未設定過的使用者，`preferences` 為 `null`。回應：`UserResponse`。
+
+本輪前端慣例 key（**僅文件性列舉，後端不驗證其形狀，也不限制其他 key 名稱**）：`class_reminder`/`coach_msg`/`promo`/`dark`，皆為布林值，對應 mobile 設定畫面的班別提醒／教練訊息／促銷通知／深色模式四個開關。
+
+`UserResponse` 是 users 模組唯一的回應型別——`GET /users`、`GET /users/{id}`、`POST /users`、`PATCH /users/{id}`（見下，皆為 admin 視角）回應也是同一型別，因此同樣帶出 `preferences`；但這些 admin 端點沒有可寫入 `preferences` 的欄位，仍須由使用者本人透過 `PATCH /users/me` 設定。
 
 #### `GET /users?page=&per_page=` — admin
 回應（`UserListResponse`）：`{ "users": [UserResponse], "total", "page", "per_page" }`。Task 18 起前端 admin 學員管理頁消費此端點（`points_balance` 映射為學員點數）。

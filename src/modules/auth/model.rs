@@ -24,6 +24,10 @@ pub struct User {
     /// via `SELECT *` / `RETURNING *`, so adding this field here is safe
     /// (verified by grep — Task 18).
     pub points_balance: i64,
+    /// Added by Round 4 Task B7 (`users.preferences JSONB`, nullable, no
+    /// default). Free-form member preference bag (mobile settings toggles)
+    /// — `NULL` until the user's first `PATCH /users/me` that includes it.
+    pub preferences: Option<serde_json::Value>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
