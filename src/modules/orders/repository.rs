@@ -275,7 +275,8 @@ pub async fn find_subscriptions_by_order(
 ) -> Result<Vec<SubscriptionWithProduct>, sqlx::Error> {
     sqlx::query_as::<_, SubscriptionWithProduct>(
         "SELECT s.id, s.product_id, p.name AS product_name, s.status, s.started_at, \
-                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents \
+                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents, \
+                subscription_derived_status(s.status, s.expires_at, s.remaining_sessions) AS derived_status \
          FROM subscriptions s \
          JOIN products p ON p.id = s.product_id \
          WHERE s.order_id = $1 \
