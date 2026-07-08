@@ -17,10 +17,13 @@ use std::sync::Arc;
 
 use common::add_course_to_cart;
 use common::fixtures::{
-    seed_course_with_capacity, seed_enrolment, seed_entitlement_product, set_points_balance,
+    seed_course_with_capacity, seed_coupon, seed_enrolment, seed_entitlement_product,
+    set_points_balance,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
+use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::service;
 
@@ -323,6 +326,45 @@ async fn checkout_with_invalid_coupon_returns_validation_error(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(order_count, 0, "no order should be created on invalid coupon");
+}
+
+/// Round 4 Task B3: `PATCH /coupons/{id}` setting `is_active: false` is the
+/// primary "retire this code" path (vs. hard `DELETE`), and it must actually
+/// be honored by checkout, not just by `GET /coupons/{code}/validate`.
+#[sqlx::test]
+async fn checkout_with_deactivated_coupon_returns_validation_error(db: PgPool) {
+    let user = common::seed_member(&db, "deactivated-coupon-buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "deactivated-coupon-prod", 1500, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let coupon_id = seed_coupon(&db, "WASACTIVE", 500, true, None).await;
+    coupons_service::update_coupon(
+        &db,
+        coupon_id,
+        UpdateCouponRequest {
+            discount_cents: None,
+            is_active: Some(false),
+            expires_at: None,
+        },
+    )
+    .await
+    .expect("deactivate coupon");
+
+    let req = CheckoutRequest {
+        coupon_code: Some("WASACTIVE".to_string()),
+        use_points: None,
+    };
+    let err = service::checkout(&db, user, None, req)
+        .await
+        .expect_err("deactivated coupon should fail checkout");
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+
+    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(order_count, 0, "no order should be created on deactivated coupon");
 }
 
 #[sqlx::test]

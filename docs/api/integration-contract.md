@@ -148,6 +148,8 @@
 | Cart | DELETE | `/cart` | 需登入 |
 | Coupons | GET | `/coupons` | admin |
 | Coupons | POST | `/coupons` | admin |
+| Coupons | PATCH | `/coupons/{id}` | admin |
+| Coupons | DELETE | `/coupons/{id}` | admin |
 | Coupons | GET | `/coupons/{code}/validate` | 需登入 |
 | Orders | POST | `/orders` | 需登入 |
 | Orders | GET | `/orders/me` | 需登入 |
@@ -508,8 +510,16 @@ Body：`{ item_type: "product"|"course", item_id: "uuid", quantity? }`（quantit
 
 #### `POST /coupons` — admin
 Body（`CreateCouponRequest`）：`{ code, discount_cents, expires_at? }`（code 1-50 字；discount_cents 須 `>= 1`）。回應：`CouponResponse`（見上）。
-`code` 儲存前會正規化（trim + 轉大寫），回應與後續比對皆用正規化後的值，故大小寫、前後空白視為同一張優惠碼；沒有 update/delete 端點。
+`code` 儲存前會正規化（trim + 轉大寫），回應與後續比對皆用正規化後的值，故大小寫、前後空白視為同一張優惠碼；`code` 建立後不可修改（見下方 `PATCH /coupons/{id}`）。
 錯誤：409（`"coupon code already exists"` — 正規化後的 code 重複）。
+
+#### `PATCH /coupons/{id}` — admin
+Body（皆選填，`UpdateCouponRequest`）：`{ discount_cents?, is_active?, expires_at? }`。**`code` 不可改**——它是對外發放的識別，不在 PATCH body 中。`expires_at` 可明確傳 `null` 清成永久有效（清為 `NULL`），欄位不帶則維持原值不動。回應：`CouponResponse`（見上）。
+錯誤：404（查無此 coupon）。
+
+#### `DELETE /coupons/{id}` — admin
+硬刪除。**語意設計**：停用（`PATCH` 設 `is_active: false`）為主要路徑，DELETE 留給誤建且尚未被使用的 code。`orders` 只存 `coupon_code` 字串快照、無 FK 關聯到 coupons 表，故刪除 coupon 不影響任何歷史訂單。回應：204 No Content。
+錯誤：404（查無此 coupon）。
 
 #### `GET /coupons/{code}/validate` — 需登入（任何已登入使用者，無角色限制）
 回應（`CouponValidateResponse`，**故意只有兩個欄位**）：`{ "code": "string", "discount_cents": "number" }`。

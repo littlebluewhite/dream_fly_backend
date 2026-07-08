@@ -2,11 +2,12 @@
 
 mod common;
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use common::fixtures::seed_coupon;
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 #[sqlx::test]
 async fn validate_without_auth_returns_401(db: PgPool) {
@@ -208,4 +209,172 @@ async fn list_coupons_as_admin_paginates(db: PgPool) {
     assert_eq!(body["total"], 3);
     assert_eq!(body["page"], 1);
     assert_eq!(body["per_page"], 2);
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /coupons/{id} (Round 4 Task B3)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_coupon_without_auth_returns_401(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let id = seed_coupon(&app.db, "UPDNOAUTH", 500, true, None).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coupons/{id}"))
+        .json(&json!({ "discount_cents": 999 }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[sqlx::test]
+async fn update_coupon_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let id = seed_coupon(&app.db, "UPDMEMBER", 500, true, None).await;
+    let user = app
+        .register_member("coup-upd-mem@example.com", "Password!234")
+        .await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coupons/{id}"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "discount_cents": 999 }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn update_coupon_as_admin_changes_discount_cents(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, token) = app.seed_admin().await;
+    let id = seed_coupon(&app.db, "UPDDISC", 500, true, None).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coupons/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "discount_cents": 1234 }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["discount_cents"], 1234);
+    // Untouched fields keep their seeded values — this is the crux of the
+    // "partial update" contract: omitted fields are left alone, not reset.
+    assert_eq!(body["code"], "UPDDISC");
+    assert_eq!(body["is_active"], true);
+    assert!(body["expires_at"].is_null());
+}
+
+#[sqlx::test]
+async fn update_coupon_clears_expires_at_to_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, token) = app.seed_admin().await;
+    let id = seed_coupon(
+        &app.db,
+        "UPDEXPIRE",
+        500,
+        true,
+        Some(Utc::now() + Duration::days(7)),
+    )
+    .await;
+
+    let resp = app
+        .patch(&format!("/api/v1/coupons/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "expires_at": null }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["expires_at"].is_null());
+    // discount_cents wasn't in the patch body, so it must remain untouched —
+    // proves the explicit-null path is distinct from "field absent".
+    assert_eq!(body["discount_cents"], 500);
+
+    let db_value: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT expires_at FROM coupons WHERE id = $1")
+            .bind(id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert!(
+        db_value.is_none(),
+        "expires_at must be NULL in the DB, not just absent from JSON"
+    );
+}
+
+#[sqlx::test]
+async fn update_coupon_unknown_id_returns_404(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, token) = app.seed_admin().await;
+    let missing_id = Uuid::now_v7();
+
+    let resp = app
+        .patch(&format!("/api/v1/coupons/{missing_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "discount_cents": 100 }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /coupons/{id} (Round 4 Task B3)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn delete_coupon_without_auth_returns_401(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let id = seed_coupon(&app.db, "DELNOAUTH", 500, true, None).await;
+
+    let resp = app.delete(&format!("/api/v1/coupons/{id}")).await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[sqlx::test]
+async fn delete_coupon_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let id = seed_coupon(&app.db, "DELMEMBER", 500, true, None).await;
+    let user = app
+        .register_member("coup-del-mem@example.com", "Password!234")
+        .await;
+
+    let resp = app
+        .delete(&format!("/api/v1/coupons/{id}"))
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+
+#[sqlx::test]
+async fn delete_coupon_as_admin_removes_from_list_and_404s_on_second_delete(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, token) = app.seed_admin().await;
+    let id = seed_coupon(&app.db, "DELFLOW", 500, true, None).await;
+
+    let resp = app
+        .delete(&format!("/api/v1/coupons/{id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(resp.status_code(), 204);
+
+    let list_resp = app
+        .get("/api/v1/coupons")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(list_resp.status_code(), 200);
+    let list_body: serde_json::Value = list_resp.json();
+    let codes: Vec<&str> = list_body["coupons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["code"].as_str().unwrap())
+        .collect();
+    assert!(
+        !codes.contains(&"DELFLOW"),
+        "deleted coupon must not appear in the list anymore"
+    );
+
+    let second_delete = app
+        .delete(&format!("/api/v1/coupons/{id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(second_delete.status_code(), 404);
 }
