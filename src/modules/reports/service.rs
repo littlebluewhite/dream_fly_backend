@@ -11,8 +11,9 @@ use crate::utils::studio_clock;
 
 use super::dto::{
     ActivityItem, ActivityResponse, AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection,
-    AdminReportResponse, AdminRevenueSection, CoachReportResponse, MemberReportResponse,
-    RevenueMonthPoint,
+    AdminReportResponse, AdminRevenueSection, CategorySplitEntry, CoachReportResponse,
+    IncomeSourceEntry, IncomeSourceMonthEntry, KpisSection, MemberReportResponse, MonthPair,
+    PaymentSplitEntry, RateMonthPair, RevenueMonthPoint,
 };
 use super::model::ActivityRow;
 use super::repository;
@@ -20,6 +21,16 @@ use super::repository;
 /// Trailing window for the coach dashboard's rolling attendance rate
 /// (`attendance_rate_30d`), per the task brief.
 const COACH_ATTENDANCE_WINDOW_DAYS: i64 = 30;
+
+/// Months covered by `income_sources_12m` — the same trailing window as
+/// `revenue.trend`'s hardcoded 12 (see `repository::revenue_trend`).
+const INCOME_SOURCE_MONTHS: i32 = 12;
+
+/// The one source of `repository::income_by_source` that is *not* an order
+/// line (bookings, not `order_items`) — `category_split` is defined over
+/// order-line 毛額 only, so this source is filtered out of it (and out of
+/// its ratio denominator) while still appearing in `revenue_breakdown`.
+const VENUE_RENTAL_SOURCE: &str = "venue_rental";
 
 /// Forward window for a member's "upcoming sessions" count. Mirrors
 /// `sessions::service`'s `DEFAULT_RANGE_DAYS` "`to = from + N` days" math
@@ -32,9 +43,10 @@ const MEMBER_UPCOMING_WINDOW_DAYS: i64 = 7;
 /// Guards against emitting `NaN`/`Infinity` (which `serde_json` cannot
 /// represent as valid JSON) and, more importantly, expresses "undefined"
 /// explicitly rather than relying on that library-specific NaN/Infinity
-/// serialization behavior. Shared by `fill_rate` (enrolled/max_students)
-/// and both attendance-rate calculations (present/(present+absent)) — all
-/// three are "count over count, zero-safe" in the same shape.
+/// serialization behavior. Shared by `fill_rate` (enrolled/max_students),
+/// every attendance-rate calculation (present/(present+absent)), and
+/// `category_split`'s gross-over-total ratios — all are "count over count,
+/// zero-safe" in the same shape.
 fn safe_ratio(numerator: i64, denominator: i64) -> Option<f64> {
     if denominator == 0 {
         None
@@ -56,7 +68,10 @@ pub async fn admin_report(
     let trend_rows = repository::revenue_trend(db, now, tz_name).await?;
     let (total, new_this_month, active) = repository::member_stats(db, now, tz_name).await?;
     let course_rows = repository::course_reports(db).await?;
-    let coach_rows = repository::coach_reports(db).await?;
+    let coach_rows = repository::coach_reports(db, now, tz_name).await?;
+    let kpi = repository::kpis(db, now, tz_name).await?;
+    let income_rows = repository::income_by_source(db, now, tz_name, INCOME_SOURCE_MONTHS).await?;
+    let payment_rows = repository::payment_split(db, now, tz_name).await?;
 
     let trend: Vec<RevenueMonthPoint> = trend_rows
         .into_iter()
@@ -94,11 +109,86 @@ pub async fn admin_report(
             name: r.name,
             course_count: r.course_count,
             student_count: r.student_count,
+            revenue_cents_12m: r.revenue_cents_12m,
         })
+        .collect();
+
+    let kpis = KpisSection {
+        new_members: MonthPair {
+            this_month: kpi.new_members_this,
+            last_month: kpi.new_members_last,
+        },
+        new_enrolments: MonthPair {
+            this_month: kpi.new_enrolments_this,
+            last_month: kpi.new_enrolments_last,
+        },
+        paid_orders_count: MonthPair {
+            this_month: kpi.paid_orders_this,
+            last_month: kpi.paid_orders_last,
+        },
+        attendance_rate: RateMonthPair {
+            this_month: safe_ratio(kpi.present_this, kpi.present_this + kpi.absent_this),
+            last_month: safe_ratio(kpi.present_last, kpi.present_last + kpi.absent_last),
+        },
+    };
+
+    // `income_by_source` zero-fills every (month, source) cell, so the
+    // current studio month's rows are always exactly the 6 sources —
+    // `revenue_breakdown` is that slice, `income_sources_12m` the whole
+    // series, and `category_split` the order-line subset of the slice with
+    // ratios over the order-line total (venue rental is not an order line
+    // — see `dto::CategorySplitEntry`).
+    let current_month_key =
+        now.with_timezone(&studio_clock::studio_tz(server)).format("%Y-%m").to_string();
+    let revenue_breakdown: Vec<IncomeSourceEntry> = income_rows
+        .iter()
+        .filter(|r| r.month == current_month_key)
+        .map(|r| IncomeSourceEntry {
+            source: r.source.clone(),
+            gross_cents: r.gross_cents,
+            orders_count: r.orders_count,
+            units: r.units,
+        })
+        .collect();
+
+    let order_line_total: i64 = revenue_breakdown
+        .iter()
+        .filter(|r| r.source != VENUE_RENTAL_SOURCE)
+        .map(|r| r.gross_cents)
+        .sum();
+    let category_split: Vec<CategorySplitEntry> = revenue_breakdown
+        .iter()
+        .filter(|r| r.source != VENUE_RENTAL_SOURCE)
+        .map(|r| CategorySplitEntry {
+            source: r.source.clone(),
+            gross_cents: r.gross_cents,
+            ratio: safe_ratio(r.gross_cents, order_line_total),
+        })
+        .collect();
+
+    let income_sources_12m: Vec<IncomeSourceMonthEntry> = income_rows
+        .into_iter()
+        .map(|r| IncomeSourceMonthEntry {
+            month: r.month,
+            source: r.source,
+            gross_cents: r.gross_cents,
+            orders_count: r.orders_count,
+            units: r.units,
+        })
+        .collect();
+
+    let payment_split: Vec<PaymentSplitEntry> = payment_rows
+        .into_iter()
+        .map(|(method, count)| PaymentSplitEntry { method, count })
         .collect();
 
     Ok(AdminReportResponse {
         revenue: AdminRevenueSection { this_month_cents, last_month_cents, trend },
+        kpis,
+        revenue_breakdown,
+        income_sources_12m,
+        category_split,
+        payment_split,
         members: AdminMembersSection { total, new_this_month, active },
         courses,
         coaches,

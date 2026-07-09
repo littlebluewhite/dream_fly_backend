@@ -362,6 +362,125 @@ pub async fn seed_order_with_item(
     order_id
 }
 
+/// One line of a [`seed_order_with_items`] order — either a product line
+/// (quantity × unit price) or a course line (always quantity 1, mirroring
+/// the `cart_items_course_qty` CHECK the real checkout flow inherits).
+pub enum SeedOrderLine {
+    Product { product_id: Uuid, quantity: i32, unit_price_cents: i64 },
+    Course { course_id: Uuid, unit_price_cents: i64 },
+}
+
+/// Insert an order with any mix of product/course line items and full
+/// control over the revenue-report dimensions (`status`, `payment_method`,
+/// `paid_at`) — the Round 4 Phase 4 reports tests need to place orders in
+/// exact studio-month buckets and payment-method groups, which the older
+/// single-product-line `seed_order_with_item` (hardcoded `paid_at = NULL`,
+/// no `payment_method`) cannot do. `total_cents` is the pre-discount sum of
+/// line subtotals (`discount_cents = 0`), matching the reports' gross line
+/// income 口徑. `created_at` is pinned to `paid_at` when present so the two
+/// timestamps never straddle a month boundary. Returns the order id.
+pub async fn seed_order_with_items(
+    db: &PgPool,
+    user_id: Uuid,
+    status: &str,
+    payment_method: Option<&str>,
+    paid_at: Option<DateTime<Utc>>,
+    lines: &[SeedOrderLine],
+) -> Uuid {
+    let order_id = Uuid::now_v7();
+    // Full UUID, not a truncated prefix — see `seed_order_with_item`.
+    let order_number = format!("TEST-{order_id}");
+    let total_cents: i64 = lines
+        .iter()
+        .map(|l| match l {
+            SeedOrderLine::Product { quantity, unit_price_cents, .. } => {
+                unit_price_cents * *quantity as i64
+            }
+            SeedOrderLine::Course { unit_price_cents, .. } => *unit_price_cents,
+        })
+        .sum();
+    let created_at = paid_at.unwrap_or_else(Utc::now);
+
+    sqlx::query(
+        r#"
+        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, payment_method, paid_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::order_status, $5, 0, $6, $7, $8, $8)
+        "#,
+    )
+    .bind(order_id)
+    .bind(user_id)
+    .bind(&order_number)
+    .bind(status)
+    .bind(total_cents)
+    .bind(payment_method)
+    .bind(paid_at)
+    .bind(created_at)
+    .execute(db)
+    .await
+    .expect("insert order");
+
+    for line in lines {
+        let (item_type, product_id, course_id, quantity, unit_price_cents) = match line {
+            SeedOrderLine::Product { product_id, quantity, unit_price_cents } => {
+                ("product", Some(*product_id), None, *quantity, *unit_price_cents)
+            }
+            SeedOrderLine::Course { course_id, unit_price_cents } => {
+                ("course", None, Some(*course_id), 1, *unit_price_cents)
+            }
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, name, created_at)
+            VALUES ($1, $2, $3::cart_item_type, $4, $5, $6, $7, 'Test Line', $8)
+            "#,
+        )
+        .bind(Uuid::now_v7())
+        .bind(order_id)
+        .bind(item_type)
+        .bind(product_id)
+        .bind(course_id)
+        .bind(quantity)
+        .bind(unit_price_cents)
+        .bind(created_at)
+        .execute(db)
+        .await
+        .expect("insert order_item");
+    }
+
+    order_id
+}
+
+/// Insert a booking row directly (bypassing `bookings::service::create`,
+/// which always starts bookings `confirmed` at the slot's current price) so
+/// venue-rental report tests can set an exact `status` — including
+/// `cancelled`/`no_show`, which must NOT count as venue income — and an
+/// exact `price_cents` snapshot independent of the slot's live price.
+/// Returns the booking id.
+pub async fn seed_booking(
+    db: &PgPool,
+    user_id: Uuid,
+    time_slot_id: Uuid,
+    status: &str,
+    price_cents: i64,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO bookings (id, user_id, time_slot_id, status, price_cents, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::booking_status, $5, NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(time_slot_id)
+    .bind(status)
+    .bind(price_cents)
+    .execute(db)
+    .await
+    .expect("insert booking");
+    id
+}
+
 /// Insert a product with entitlement config (`product_type` + `valid_days` +
 /// `session_count`). Compatible extension of `seed_product` (defined in
 /// `tests/common/mod.rs`), which is hardcoded to `merchandise` and has no

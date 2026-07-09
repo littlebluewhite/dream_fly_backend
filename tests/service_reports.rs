@@ -29,11 +29,11 @@ use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::reports::service;
 
 use common::fixtures::{
-    seed_coach, seed_course, seed_course_schedule_slot, seed_course_session,
-    seed_course_with_capacity, seed_enrolment, seed_message, seed_waitlist_entry,
-    set_points_balance,
+    SeedOrderLine, seed_booking, seed_coach, seed_course, seed_course_schedule_slot,
+    seed_course_session, seed_course_with_capacity, seed_enrolment, seed_entitlement_product,
+    seed_message, seed_order_with_items, seed_waitlist_entry, set_points_balance,
 };
-use common::{seed_member, test_server_config};
+use common::{seed_member, seed_product, seed_time_slot_on, test_server_config};
 
 fn auth_for(user_id: Uuid, roles: &[&str]) -> AuthUser {
     AuthUser {
@@ -169,6 +169,48 @@ async fn admin_report_empty_db_is_all_zero(db: PgPool) {
     assert_eq!(report.members.active, 0);
     assert!(report.courses.is_empty());
     assert!(report.coaches.is_empty());
+
+    // Round 4 Phase 4 金流 sections: zero-filled, never a 500.
+    assert_eq!(report.kpis.new_members.this_month, 0);
+    assert_eq!(report.kpis.new_members.last_month, 0);
+    assert_eq!(report.kpis.new_enrolments.this_month, 0);
+    assert_eq!(report.kpis.new_enrolments.last_month, 0);
+    assert_eq!(report.kpis.paid_orders_count.this_month, 0);
+    assert_eq!(report.kpis.paid_orders_count.last_month, 0);
+    assert_eq!(report.kpis.attendance_rate.this_month, None, "no-data month must be null");
+    assert_eq!(report.kpis.attendance_rate.last_month, None);
+
+    // Always all 6 sources for the current month, in canonical order.
+    let breakdown_sources: Vec<&str> =
+        report.revenue_breakdown.iter().map(|r| r.source.as_str()).collect();
+    assert_eq!(
+        breakdown_sources,
+        ["course", "ticket", "membership", "course_package", "merchandise", "venue_rental"]
+    );
+    assert!(report.revenue_breakdown.iter().all(|r| r.gross_cents == 0));
+    assert!(report.revenue_breakdown.iter().all(|r| r.orders_count == 0 && r.units == 0));
+
+    // 12 months × 6 sources, zero-filled like `revenue.trend`, oldest first.
+    assert_eq!(report.income_sources_12m.len(), 12 * 6);
+    assert!(report.income_sources_12m.iter().all(|r| r.gross_cents == 0));
+    assert_eq!(
+        report.income_sources_12m.first().unwrap().month,
+        report.revenue.trend.first().unwrap().month,
+        "12m income series must start at the same oldest month as revenue.trend"
+    );
+    assert_eq!(
+        report.income_sources_12m.last().unwrap().month,
+        report.revenue.trend.last().unwrap().month
+    );
+
+    // Order-line sources only (no venue_rental) — ratio undefined on a
+    // zero-gross month, not 0/NaN.
+    let split_sources: Vec<&str> =
+        report.category_split.iter().map(|r| r.source.as_str()).collect();
+    assert_eq!(split_sources, ["course", "ticket", "membership", "course_package", "merchandise"]);
+    assert!(report.category_split.iter().all(|r| r.gross_cents == 0 && r.ratio.is_none()));
+
+    assert!(report.payment_split.is_empty());
 }
 
 #[sqlx::test]
@@ -310,6 +352,384 @@ async fn admin_report_coach_course_and_student_count_scoped_per_coach(db: PgPool
     let row_b = report.coaches.iter().find(|c| c.coach_id == coach_b).unwrap();
     assert_eq!(row_b.course_count, 1);
     assert_eq!(row_b.student_count, 1);
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin — Round 4 Phase 4 金流 sections
+// ---------------------------------------------------------------------------
+
+/// Backdate a user's `created_at` so incidental fixture users don't leak
+/// into the KPI "new members this/last month" buckets.
+async fn backdate_user(db: &PgPool, user_id: Uuid, created_at: DateTime<Utc>) {
+    sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(created_at)
+        .execute(db)
+        .await
+        .expect("backdate user");
+}
+
+#[sqlx::test]
+async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
+    let now = Utc::now();
+    let last_month = months_ago(now, 1);
+    let three_months_ago = months_ago(now, 3);
+
+    // Helper users whose creation must not pollute the new-member KPI.
+    let student = seed_member(&db, "kpi-student@example.com", "Password!234").await;
+    let buyer = seed_member(&db, "kpi-buyer@example.com", "Password!234").await;
+    backdate_user(&db, student, three_months_ago).await;
+    backdate_user(&db, buyer, three_months_ago).await;
+
+    // new_members: 1 this month, 1 last month.
+    let _member_this = seed_member(&db, "kpi-new-this@example.com", "Password!234").await;
+    let member_last = seed_member(&db, "kpi-new-last@example.com", "Password!234").await;
+    backdate_user(&db, member_last, last_month).await;
+
+    // new_enrolments: 1 this month, 1 last month; a cancelled one this
+    // month must not count.
+    let course_a = seed_course(&db, "KPI Course A", None).await;
+    let course_b = seed_course(&db, "KPI Course B", None).await;
+    let course_c = seed_course(&db, "KPI Course C", None).await;
+    let enrolment_a = seed_enrolment(&db, student, course_a, "active", now).await;
+    let enrolment_b = seed_enrolment(&db, student, course_b, "cancelled", now).await;
+    let enrolment_c = seed_enrolment(&db, student, course_c, "active", last_month).await;
+
+    // paid_orders_count: refunded/pending never count, even with the same
+    // month's `paid_at`.
+    seed_order(&db, buyer, "paid", 1_000, Some(now)).await;
+    seed_order(&db, buyer, "completed", 2_000, Some(last_month)).await;
+    seed_order(&db, buyer, "refunded", 3_000, Some(now)).await;
+    seed_order(&db, buyer, "pending", 4_000, None).await;
+
+    // attendance_rate this month: 1 present / (1 present + 1 absent) = 0.5,
+    // leave in neither numerator nor denominator; last month has no records
+    // at all -> null, not 0. Sessions pinned to the 1st of this month so
+    // "today near a month boundary" can't skew the bucket.
+    let first_of_this_month = months_ago(now, 0).date_naive();
+    let s1 = seed_course_session(&db, course_a, first_of_this_month, t(9, 0), t(10, 0)).await;
+    let s2 = seed_course_session(&db, course_b, first_of_this_month, t(9, 0), t(10, 0)).await;
+    let s3 = seed_course_session(&db, course_c, first_of_this_month, t(9, 0), t(10, 0)).await;
+    seed_attendance(&db, s1, enrolment_a, "present", student).await;
+    seed_attendance(&db, s2, enrolment_b, "absent", student).await;
+    seed_attendance(&db, s3, enrolment_c, "leave", student).await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    assert_eq!(report.kpis.new_members.this_month, 1);
+    assert_eq!(report.kpis.new_members.last_month, 1);
+    assert_eq!(report.kpis.new_enrolments.this_month, 1, "cancelled enrolment must not count");
+    assert_eq!(report.kpis.new_enrolments.last_month, 1);
+    assert_eq!(report.kpis.paid_orders_count.this_month, 1);
+    assert_eq!(report.kpis.paid_orders_count.last_month, 1);
+    assert_eq!(report.kpis.attendance_rate.this_month, Some(0.5));
+    assert_eq!(report.kpis.attendance_rate.last_month, None, "no-data month must be null");
+}
+
+#[sqlx::test]
+async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
+    let now = Utc::now();
+    let buyer = seed_member(&db, "breakdown-buyer@example.com", "Password!234").await;
+    let course_id = seed_course(&db, "Breakdown Course", None).await;
+    let merch_id = seed_product(&db, "breakdown-merch", 5_000, Some(10)).await;
+
+    let excluded_lines = [
+        SeedOrderLine::Course { course_id, unit_price_cents: 50_000 },
+        SeedOrderLine::Product { product_id: merch_id, quantity: 2, unit_price_cents: 5_000 },
+    ];
+    // `refunded` keeps its real `paid_at` — exclusion must come from the
+    // status filter, not from `paid_at IS NULL`.
+    seed_order_with_items(&db, buyer, "refunded", None, Some(now), &excluded_lines).await;
+    seed_order_with_items(&db, buyer, "pending", None, None, &excluded_lines).await;
+
+    seed_order_with_items(
+        &db,
+        buyer,
+        "paid",
+        None,
+        Some(now),
+        &[SeedOrderLine::Course { course_id, unit_price_cents: 10_000 }],
+    )
+    .await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    let course_row =
+        report.revenue_breakdown.iter().find(|r| r.source == "course").expect("course row");
+    assert_eq!(course_row.gross_cents, 10_000, "only the paid order's course line counts");
+    assert_eq!(course_row.orders_count, 1);
+    assert_eq!(course_row.units, 1);
+
+    let merch_row =
+        report.revenue_breakdown.iter().find(|r| r.source == "merchandise").expect("merch row");
+    assert_eq!(merch_row.gross_cents, 0, "refunded/pending product lines must not count");
+    assert_eq!(merch_row.orders_count, 0);
+}
+
+#[sqlx::test]
+async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: PgPool) {
+    let now = Utc::now();
+    let buyer = seed_member(&db, "split-buyer@example.com", "Password!234").await;
+    let course_id = seed_course(&db, "Split Course", None).await;
+    let ticket_id =
+        seed_entitlement_product(&db, "split-ticket", "ticket", 10_000, Some(30), Some(10)).await;
+    let merch_id = seed_product(&db, "split-merch", 5_000, Some(10)).await;
+
+    // Gross this month: ticket 20_000 + merchandise 5_000 + course 25_000
+    // = 50_000. A single order carrying all three lines proves per-line
+    // (not per-order) bucketing.
+    seed_order_with_items(
+        &db,
+        buyer,
+        "paid",
+        None,
+        Some(now),
+        &[
+            SeedOrderLine::Product { product_id: ticket_id, quantity: 2, unit_price_cents: 10_000 },
+            SeedOrderLine::Product { product_id: merch_id, quantity: 1, unit_price_cents: 5_000 },
+            SeedOrderLine::Course { course_id, unit_price_cents: 25_000 },
+        ],
+    )
+    .await;
+
+    // A venue booking this month must show up in revenue_breakdown but stay
+    // out of category_split (order-line 毛額 only) and its ratios.
+    let slot_id = seed_time_slot_on(&db, 10, months_ago(now, 0).date_naive()).await;
+    seed_booking(&db, buyer, slot_id, "confirmed", 100_000).await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    let find = |source: &str| {
+        report.category_split.iter().find(|r| r.source == source).expect("split row")
+    };
+    assert_eq!(find("ticket").gross_cents, 20_000, "ticket bucket only product_type=ticket");
+    assert_eq!(find("ticket").ratio, Some(0.4));
+    assert_eq!(find("merchandise").gross_cents, 5_000);
+    assert_eq!(find("merchandise").ratio, Some(0.1));
+    assert_eq!(find("course").gross_cents, 25_000);
+    assert_eq!(find("course").ratio, Some(0.5));
+    assert_eq!(find("membership").gross_cents, 0);
+    assert_eq!(find("membership").ratio, Some(0.0));
+    assert!(
+        report.category_split.iter().all(|r| r.source != "venue_rental"),
+        "venue rental is not an order-line category"
+    );
+
+    let venue_row = report
+        .revenue_breakdown
+        .iter()
+        .find(|r| r.source == "venue_rental")
+        .expect("venue row");
+    assert_eq!(venue_row.gross_cents, 100_000, "…but it does appear in revenue_breakdown");
+}
+
+#[sqlx::test]
+async fn admin_report_venue_rental_counts_only_confirmed_completed(db: PgPool) {
+    let now = Utc::now();
+    let this_month_date = months_ago(now, 0).date_naive();
+    let last_month_date = months_ago(now, 1).date_naive();
+
+    // One user per booking — `uq_bookings_user_slot_active` forbids one
+    // user holding two non-cancelled bookings on the same slot.
+    let u1 = seed_member(&db, "venue-1@example.com", "Password!234").await;
+    let u2 = seed_member(&db, "venue-2@example.com", "Password!234").await;
+    let u3 = seed_member(&db, "venue-3@example.com", "Password!234").await;
+    let u4 = seed_member(&db, "venue-4@example.com", "Password!234").await;
+    let u5 = seed_member(&db, "venue-5@example.com", "Password!234").await;
+
+    let slot_this = seed_time_slot_on(&db, 10, this_month_date).await;
+    let slot_last = seed_time_slot_on(&db, 10, last_month_date).await;
+
+    seed_booking(&db, u1, slot_this, "confirmed", 5_000).await;
+    seed_booking(&db, u2, slot_this, "completed", 3_000).await;
+    seed_booking(&db, u3, slot_this, "cancelled", 99_999).await;
+    seed_booking(&db, u4, slot_this, "no_show", 99_999).await;
+    seed_booking(&db, u5, slot_this, "pending", 99_999).await;
+    // Booked *now*, but the slot's use date is last month — 歸屬 slot 使用日.
+    seed_booking(&db, u1, slot_last, "confirmed", 7_000).await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    let venue_row = report
+        .revenue_breakdown
+        .iter()
+        .find(|r| r.source == "venue_rental")
+        .expect("venue row");
+    assert_eq!(venue_row.gross_cents, 8_000, "confirmed+completed only, this month only");
+    assert_eq!(venue_row.orders_count, 2);
+    assert_eq!(venue_row.units, 2);
+
+    let last_month_key = last_month_date.format("%Y-%m").to_string();
+    let venue_last = report
+        .income_sources_12m
+        .iter()
+        .find(|r| r.source == "venue_rental" && r.month == last_month_key)
+        .expect("last month venue row");
+    assert_eq!(
+        venue_last.gross_cents, 7_000,
+        "booking made today for a last-month slot lands in the slot's month"
+    );
+}
+
+#[sqlx::test]
+async fn admin_report_income_sources_12m_buckets_by_paid_month(db: PgPool) {
+    let now = Utc::now();
+    let buyer = seed_member(&db, "sources-12m@example.com", "Password!234").await;
+    let course_id = seed_course(&db, "Sources 12m Course", None).await;
+
+    let line = [SeedOrderLine::Course { course_id, unit_price_cents: 1_000 }];
+    seed_order_with_items(&db, buyer, "paid", None, Some(now), &line).await;
+    seed_order_with_items(&db, buyer, "paid", None, Some(months_ago(now, 1)), &line).await;
+    // 12 months back = outside the 12-slot window (current + 11 previous).
+    seed_order_with_items(&db, buyer, "paid", None, Some(months_ago(now, 12)), &line).await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    let course_by_month: Vec<(&str, i64)> = report
+        .income_sources_12m
+        .iter()
+        .filter(|r| r.source == "course")
+        .map(|r| (r.month.as_str(), r.gross_cents))
+        .collect();
+    assert_eq!(course_by_month.len(), 12);
+
+    let this_key = now.format("%Y-%m").to_string();
+    let last_key = months_ago(now, 1).format("%Y-%m").to_string();
+    for (month, gross) in &course_by_month {
+        let expected = if *month == this_key || *month == last_key { 1_000 } else { 0 };
+        assert_eq!(*gross, expected, "month {month}");
+    }
+    assert_eq!(
+        course_by_month.iter().map(|(_, g)| g).sum::<i64>(),
+        2_000,
+        "the 12-months-ago order must have fallen off the window"
+    );
+}
+
+#[sqlx::test]
+async fn admin_report_payment_split_null_method_is_unknown(db: PgPool) {
+    let now = Utc::now();
+    let buyer = seed_member(&db, "paysplit-buyer@example.com", "Password!234").await;
+
+    // payment_split counts orders, not lines — no items needed.
+    seed_order_with_items(&db, buyer, "paid", Some("credit_card"), Some(now), &[]).await;
+    seed_order_with_items(&db, buyer, "completed", Some("credit_card"), Some(now), &[]).await;
+    seed_order_with_items(&db, buyer, "processing", Some("line_pay"), Some(now), &[]).await;
+    seed_order_with_items(&db, buyer, "paid", None, Some(now), &[]).await;
+    // Excluded: wrong status / wrong month.
+    seed_order_with_items(&db, buyer, "refunded", Some("credit_card"), Some(now), &[]).await;
+    seed_order_with_items(&db, buyer, "paid", Some("line_pay"), Some(months_ago(now, 1)), &[])
+        .await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    assert_eq!(report.payment_split.len(), 3, "got {:?}", report.payment_split);
+    let count_of = |method: &str| {
+        report
+            .payment_split
+            .iter()
+            .find(|r| r.method == method)
+            .map(|r| r.count)
+            .unwrap_or_else(|| panic!("missing method {method}"))
+    };
+    assert_eq!(count_of("credit_card"), 2);
+    assert_eq!(count_of("line_pay"), 1);
+    assert_eq!(count_of("unknown"), 1, "NULL payment_method surfaces as the literal 'unknown' key");
+}
+
+#[sqlx::test]
+async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
+    let now = Utc::now();
+    let buyer = seed_member(&db, "coachrev-buyer@example.com", "Password!234").await;
+    let coach_a_user = seed_member(&db, "coachrev-a@example.com", "Password!234").await;
+    let coach_b_user = seed_member(&db, "coachrev-b@example.com", "Password!234").await;
+    let coach_a = seed_coach(&db, coach_a_user, "Coach Rev A").await;
+    let coach_b = seed_coach(&db, coach_b_user, "Coach Rev B").await;
+
+    let course_a = seed_course(&db, "Coach Rev Course A", Some(coach_a)).await;
+    let course_b = seed_course(&db, "Coach Rev Course B", Some(coach_b)).await;
+    let course_orphan = seed_course(&db, "Coach Rev Orphan Course", None).await;
+    let ticket_id =
+        seed_entitlement_product(&db, "coachrev-ticket", "ticket", 20_000, Some(30), Some(10))
+            .await;
+
+    // Mixed order: the course line goes to coach A, the ticket line goes to
+    // no coach at all.
+    seed_order_with_items(
+        &db,
+        buyer,
+        "paid",
+        None,
+        Some(now),
+        &[
+            SeedOrderLine::Course { course_id: course_a, unit_price_cents: 50_000 },
+            SeedOrderLine::Product { product_id: ticket_id, quantity: 1, unit_price_cents: 20_000 },
+        ],
+    )
+    .await;
+    // Oldest in-window month (11 months back) still counts for coach B…
+    seed_order_with_items(
+        &db,
+        buyer,
+        "paid",
+        None,
+        Some(months_ago(now, 11)),
+        &[SeedOrderLine::Course { course_id: course_b, unit_price_cents: 30_000 }],
+    )
+    .await;
+    // …but 12 months back is outside the window, and refunded never counts.
+    seed_order_with_items(
+        &db,
+        buyer,
+        "paid",
+        None,
+        Some(months_ago(now, 12)),
+        &[SeedOrderLine::Course { course_id: course_a, unit_price_cents: 99_999 }],
+    )
+    .await;
+    seed_order_with_items(
+        &db,
+        buyer,
+        "refunded",
+        None,
+        Some(now),
+        &[SeedOrderLine::Course { course_id: course_a, unit_price_cents: 88_888 }],
+    )
+    .await;
+    // A coachless course's line is attributed to nobody (and must not 500).
+    seed_order_with_items(
+        &db,
+        buyer,
+        "paid",
+        None,
+        Some(now),
+        &[SeedOrderLine::Course { course_id: course_orphan, unit_price_cents: 7_777 }],
+    )
+    .await;
+
+    let report = service::admin_report(&db, &test_server_config())
+        .await
+        .expect("admin_report");
+
+    let row_a = report.coaches.iter().find(|c| c.coach_id == coach_a).expect("coach A row");
+    assert_eq!(
+        row_a.revenue_cents_12m, 50_000,
+        "course line only — the same order's ticket line must not attribute to the coach"
+    );
+    let row_b = report.coaches.iter().find(|c| c.coach_id == coach_b).expect("coach B row");
+    assert_eq!(row_b.revenue_cents_12m, 30_000, "11 months back is still inside the window");
 }
 
 // ---------------------------------------------------------------------------

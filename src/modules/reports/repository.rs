@@ -4,12 +4,20 @@ use uuid::Uuid;
 
 use crate::modules::orders::model::REVENUE_STATUSES;
 
-use super::model::{ActivityRow, AdminCoachRow, AdminCourseRow};
+use super::model::{ActivityRow, AdminCoachRow, AdminCourseRow, IncomeSourceRow, KpiRow};
 
-/// `attendance_records.status` values shared by [`coach_attendance_in_range`]
-/// and [`member_attendance`] — one spelling of each literal instead of two.
+/// `attendance_records.status` values shared by [`coach_attendance_in_range`],
+/// [`member_attendance`] and [`kpis`] — one spelling of each literal instead
+/// of three.
 const PRESENT: &str = "present";
 const ABSENT: &str = "absent";
+
+/// 場租計收的 booking 狀態(Round 4 Phase 4 口徑):**場租計收 = status ∈
+/// confirmed/completed 的 bookings 之 `price_cents` 快照,歸屬 slot 使用日
+/// (非下訂日)**。`pending`/`cancelled`/`no_show` 一律不入 — the venue-rental
+/// twin of `orders::model::REVENUE_STATUSES`, kept separate because
+/// `booking_status` is its own state machine, not the order one.
+const VENUE_REVENUE_STATUSES: [&str; 2] = ["confirmed", "completed"];
 
 // ---------------------------------------------------------------------------
 // GET /reports/admin
@@ -76,6 +84,197 @@ pub async fn member_stats(
     .await
 }
 
+/// The admin report's KPI counts — one SELECT of scalar subqueries over a
+/// single-row `anchor` CTE holding the current studio-local month start, so
+/// "this month"/"last month" are computed once and every subquery agrees on
+/// the boundary (`AT TIME ZONE` + `date_trunc`, same convention as
+/// [`revenue_trend`]).
+///
+/// Pairs (this/last studio month):
+/// - `new_members` — `users.created_at` (no role filter, matching
+///   [`member_stats`]'s `new_this_month`);
+/// - `new_enrolments` — `enrolments.created_at`, `cancelled` excluded;
+/// - `paid_orders` — `orders` in `REVENUE_STATUSES`, bucketed by `paid_at`
+///   (the month the money moved — same anchor as [`revenue_trend`];
+///   排除 pending/refunded 於一切金額聚合);
+/// - `present`/`absent` — `attendance_records` bucketed by the session's
+///   `session_date` (already a studio-local date per contract §3.18), for
+///   the service's `attendance_rate` = present/(present+absent),`leave`
+///   不入分母;無資料月 → null (via `service::safe_ratio`).
+pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiRow, sqlx::Error> {
+    sqlx::query_as::<_, KpiRow>(
+        "WITH anchor AS ( \
+           SELECT date_trunc('month', $1::timestamptz AT TIME ZONE $2) AS this_m \
+         ) \
+         SELECT \
+           (SELECT COUNT(*) FROM users u \
+             WHERE date_trunc('month', u.created_at AT TIME ZONE $2) = a.this_m) \
+             AS new_members_this, \
+           (SELECT COUNT(*) FROM users u \
+             WHERE date_trunc('month', u.created_at AT TIME ZONE $2) \
+                 = a.this_m - interval '1 month') AS new_members_last, \
+           (SELECT COUNT(*) FROM enrolments e \
+             WHERE e.status <> 'cancelled' \
+               AND date_trunc('month', e.created_at AT TIME ZONE $2) = a.this_m) \
+             AS new_enrolments_this, \
+           (SELECT COUNT(*) FROM enrolments e \
+             WHERE e.status <> 'cancelled' \
+               AND date_trunc('month', e.created_at AT TIME ZONE $2) \
+                 = a.this_m - interval '1 month') AS new_enrolments_last, \
+           (SELECT COUNT(*) FROM orders o \
+             WHERE o.status::text = ANY($3) \
+               AND date_trunc('month', o.paid_at AT TIME ZONE $2) = a.this_m) \
+             AS paid_orders_this, \
+           (SELECT COUNT(*) FROM orders o \
+             WHERE o.status::text = ANY($3) \
+               AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
+                 = a.this_m - interval '1 month') AS paid_orders_last, \
+           (SELECT COUNT(*) FROM attendance_records ar \
+             JOIN course_sessions cs ON cs.id = ar.session_id \
+             WHERE ar.status = $4::attendance_status \
+               AND date_trunc('month', cs.session_date::timestamp) = a.this_m) \
+             AS present_this, \
+           (SELECT COUNT(*) FROM attendance_records ar \
+             JOIN course_sessions cs ON cs.id = ar.session_id \
+             WHERE ar.status = $5::attendance_status \
+               AND date_trunc('month', cs.session_date::timestamp) = a.this_m) \
+             AS absent_this, \
+           (SELECT COUNT(*) FROM attendance_records ar \
+             JOIN course_sessions cs ON cs.id = ar.session_id \
+             WHERE ar.status = $4::attendance_status \
+               AND date_trunc('month', cs.session_date::timestamp) \
+                 = a.this_m - interval '1 month') AS present_last, \
+           (SELECT COUNT(*) FROM attendance_records ar \
+             JOIN course_sessions cs ON cs.id = ar.session_id \
+             WHERE ar.status = $5::attendance_status \
+               AND date_trunc('month', cs.session_date::timestamp) \
+                 = a.this_m - interval '1 month') AS absent_last \
+         FROM anchor a",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .bind(&REVENUE_STATUSES[..])
+    .bind(PRESENT)
+    .bind(ABSENT)
+    .fetch_one(db)
+    .await
+}
+
+/// Per-(month, source) gross income for the trailing `months` studio-local
+/// months (oldest first) — the shared aggregation behind both
+/// `revenue_breakdown` (current-month rows) and `income_sources_12m`.
+///
+/// 口徑 (Round 4 Phase 4):
+/// - **breakdown/income line 金額 = 折扣前毛額**(`order_items` 的 line 小計
+///   `unit_price_cents * quantity`),order 層 `discount` **不攤分**;「實收」
+///   由既有 revenue section(`orders.total_cents`)表達,兩者口徑差異在此。
+/// - source 值域:`course`(item_type = course 的 line)/ `ticket` /
+///   `membership` / `course_package` / `merchandise`(product line 按
+///   `products.product_type`)+ **venue_rental**(bookings 快照價,見
+///   [`VENUE_REVENUE_STATUSES`],歸屬 **slot 使用日**(非下訂日)——
+///   `time_slots.date` is already a studio-local date per contract §3.18,
+///   so it needs no `AT TIME ZONE` shift)。
+/// - order lines 歸屬 `paid_at` 的 studio 月份;**排除 pending/refunded 於
+///   一切金額聚合**(status ∈ `REVENUE_STATUSES` — a refunded order keeps
+///   its `paid_at`, so this must be a status filter)。
+///
+/// The `generate_series` × fixed-`VALUES` source list CROSS JOIN zero-fills
+/// every (month, source) cell — like [`revenue_trend`], no bucket can
+/// "disappear" for lack of rows, so consumers always see `months × 6` rows
+/// in (month asc, canonical source order). `orders_count` counts distinct
+/// orders (bookings for the venue arm); `units` sums line quantities (one
+/// booking = 1). The belt-and-suspenders `paid_at IS NOT NULL` mirrors
+/// [`recent_activity`].
+pub async fn income_by_source(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+    months: i32,
+) -> Result<Vec<IncomeSourceRow>, sqlx::Error> {
+    sqlx::query_as::<_, IncomeSourceRow>(
+        "WITH months AS ( \
+           SELECT generate_series( \
+                    date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                      - ($3 - 1) * interval '1 month', \
+                    date_trunc('month', $1::timestamptz AT TIME ZONE $2), \
+                    interval '1 month' \
+                  ) AS month_start \
+         ), \
+         sources(source, ord) AS ( \
+           VALUES ('course', 1), ('ticket', 2), ('membership', 3), \
+                  ('course_package', 4), ('merchandise', 5), ('venue_rental', 6) \
+         ), \
+         line_income AS ( \
+           SELECT date_trunc('month', o.paid_at AT TIME ZONE $2) AS month_start, \
+                  CASE WHEN oi.item_type = 'course' THEN 'course' \
+                       ELSE p.product_type::text END AS source, \
+                  (oi.unit_price_cents * oi.quantity)::bigint AS gross_cents, \
+                  o.id AS revenue_event_id, \
+                  oi.quantity::bigint AS units \
+             FROM order_items oi \
+             JOIN orders o ON o.id = oi.order_id \
+             LEFT JOIN products p ON p.id = oi.product_id \
+            WHERE o.status::text = ANY($4) AND o.paid_at IS NOT NULL \
+           UNION ALL \
+           SELECT date_trunc('month', ts.date::timestamp) AS month_start, \
+                  'venue_rental' AS source, \
+                  b.price_cents AS gross_cents, \
+                  b.id AS revenue_event_id, \
+                  1::bigint AS units \
+             FROM bookings b \
+             JOIN time_slots ts ON ts.id = b.time_slot_id \
+            WHERE b.status::text = ANY($5) \
+         ) \
+         SELECT to_char(m.month_start, 'YYYY-MM') AS month, \
+                s.source, \
+                COALESCE(SUM(li.gross_cents), 0)::bigint AS gross_cents, \
+                COUNT(DISTINCT li.revenue_event_id)::bigint AS orders_count, \
+                COALESCE(SUM(li.units), 0)::bigint AS units \
+           FROM months m \
+          CROSS JOIN sources s \
+           LEFT JOIN line_income li \
+             ON li.month_start = m.month_start AND li.source = s.source \
+          GROUP BY m.month_start, s.source, s.ord \
+          ORDER BY m.month_start, s.ord",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .bind(months)
+    .bind(&REVENUE_STATUSES[..])
+    .bind(&VENUE_REVENUE_STATUSES[..])
+    .fetch_all(db)
+    .await
+}
+
+/// `(payment_method, order count)` for the current studio month — 口徑
+/// (Round 4 Phase 4): **本月(studio 時區)`REVENUE_STATUSES` 訂單筆數占比;
+/// `payment_method` NULL → `\"unknown\"` 鍵原樣輸出(前端顯示「其他」)**。
+/// Counts whole orders (not lines, not amounts), bucketed by `paid_at` like
+/// every other money aggregate; the ratio itself is the frontend's division
+/// (環比 delta 同樣前端算). Methods with zero orders simply don't appear —
+/// the value domain is application-level (`orders::model::PAYMENT_METHODS`),
+/// not a DB enum, so there is no fixed list to zero-fill against.
+pub async fn payment_split(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT COALESCE(o.payment_method, 'unknown') AS method, COUNT(*)::bigint AS orders \
+         FROM orders o \
+         WHERE o.status::text = ANY($3) \
+           AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
+             = date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+         GROUP BY 1 \
+         ORDER BY orders DESC, method",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .bind(&REVENUE_STATUSES[..])
+    .fetch_all(db)
+    .await
+}
+
 /// Every course with its live `enrolled`/`waitlist_count` (correlated
 /// subqueries — same pattern as `courses::model::Course.enrolled_count`),
 /// so `fill_rate` can be derived in `service` without a second query.
@@ -94,20 +293,49 @@ pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Er
     .await
 }
 
-/// Every coach with their `course_count`/`student_count` (correlated
-/// subqueries, one query, no N+1).
-pub async fn coach_reports(db: &PgPool) -> Result<Vec<AdminCoachRow>, sqlx::Error> {
+/// Every coach with their `course_count`/`student_count`/
+/// `revenue_cents_12m` (correlated subqueries, one query, no N+1).
+///
+/// `revenue_cents_12m` 口徑 (Round 4 Phase 4): **coach 營收歸因 = course 類
+/// order line 毛額歸 `courses.coach_id`;票券/裝備/場租不歸因**。Gross =
+/// 折扣前 line 小計 (`unit_price_cents * quantity`, order 層 discount
+/// 不攤分), orders in `REVENUE_STATUSES` only (排除 pending/refunded),
+/// attributed to `paid_at`'s studio month across the same trailing
+/// 12-month window as [`revenue_trend`] (current month + 11 before it).
+/// The join on `oi.course_id` *is* the course-line filter — the
+/// `order_items_one_target` CHECK guarantees only `item_type = 'course'`
+/// lines have a non-NULL `course_id`.
+pub async fn coach_reports(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<Vec<AdminCoachRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminCoachRow>(
         "SELECT co.id AS coach_id, u.name, \
                 (SELECT COUNT(*) FROM courses c \
                   WHERE c.coach_id = co.id) AS course_count, \
                 (SELECT COUNT(DISTINCT e.user_id) FROM enrolments e \
                    JOIN courses c ON c.id = e.course_id \
-                  WHERE c.coach_id = co.id AND e.status = 'active') AS student_count \
+                  WHERE c.coach_id = co.id AND e.status = 'active') AS student_count, \
+                (SELECT COALESCE(SUM(oi.unit_price_cents * oi.quantity), 0) \
+                   FROM order_items oi \
+                   JOIN orders o ON o.id = oi.order_id \
+                   JOIN courses c ON c.id = oi.course_id \
+                  WHERE c.coach_id = co.id \
+                    AND o.status::text = ANY($3) \
+                    AND o.paid_at IS NOT NULL \
+                    AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
+                        BETWEEN date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                                  - interval '11 months' \
+                            AND date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                )::bigint AS revenue_cents_12m \
          FROM coaches co \
          JOIN users u ON u.id = co.user_id \
          ORDER BY u.name, co.id",
     )
+    .bind(now)
+    .bind(tz_name)
+    .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
     .await
 }

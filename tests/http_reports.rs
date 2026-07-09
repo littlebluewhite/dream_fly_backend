@@ -50,6 +50,16 @@ async fn admin_report_as_admin_returns_200_with_shape(db: PgPool) {
     assert!(body["members"]["active"].is_number());
     assert!(body["courses"].as_array().is_some());
     assert!(body["coaches"].as_array().is_some());
+
+    // Round 4 Phase 4 金流 sections — zero-filled on an empty DB, never 500.
+    assert!(body["kpis"]["new_members"]["this_month"].is_number());
+    assert!(body["kpis"]["new_enrolments"]["last_month"].is_number());
+    assert!(body["kpis"]["paid_orders_count"]["this_month"].is_number());
+    assert!(body["kpis"]["attendance_rate"]["this_month"].is_null(), "no-data month is null");
+    assert_eq!(body["revenue_breakdown"].as_array().expect("breakdown array").len(), 6);
+    assert_eq!(body["income_sources_12m"].as_array().expect("12m array").len(), 72);
+    assert_eq!(body["category_split"].as_array().expect("split array").len(), 5);
+    assert_eq!(body["payment_split"].as_array().expect("payment array").len(), 0);
 }
 
 // ---------------------------------------------------------------------------
