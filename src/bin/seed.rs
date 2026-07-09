@@ -703,6 +703,19 @@ struct TimeSlotSeed {
 /// `(venue_id, date, start_time)` — the table's only guard is the GIST
 /// anti-overlap EXCLUDE, which bare ON CONFLICT DO NOTHING also covers as a
 /// belt) and return its id either way.
+///
+/// A slot inserted as future/unbooked on one run can cross into the past by
+/// a later run, so the caller recomputes `seed.booked`/`seed.status` as
+/// occupied — but the existence check below short-circuits before that
+/// recomputation ever reaches the row. When this run wants a booking on it
+/// (`seed.booked > 0`), sync the existing row with one idempotent UPDATE
+/// guarded by `booked = 0`: that guard only ever matches a slot no real user
+/// has booked yet (this seed never computes `booked = 0` once a booking is
+/// due, so the guard can't misfire on its own writes), which is exactly what
+/// keeps `insert_booking_if_absent` below from attaching a completed/no_show
+/// booking to a row still reading booked=0/available — the invariant
+/// `schedule::repository::increment_booked_tx` keeps atomic on the real
+/// booking path.
 async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uuid> {
     let existing: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM time_slots WHERE venue_id = $1 AND date = $2 AND start_time = $3",
@@ -714,6 +727,20 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     .await
     .context("check existing time_slot")?;
     if let Some(id) = existing {
+        if seed.booked > 0 {
+            sqlx::query(
+                "UPDATE time_slots SET booked = $2, status = $3::slot_status, updated_at = NOW() \
+                 WHERE id = $1 AND booked = 0",
+            )
+            .bind(id)
+            .bind(seed.booked)
+            .bind(seed.status)
+            .execute(db)
+            .await
+            .with_context(|| {
+                format!("sync existing time_slot {} {}", seed.date, seed.start_time)
+            })?;
+        }
         return Ok(id);
     }
 
