@@ -215,6 +215,7 @@ async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: Some("DREAMFLY100".to_string()),
         use_points: None,
+        payment_method: None,
     };
     let resp = service::checkout(&db, user, None, req).await.expect("checkout");
 
@@ -240,6 +241,7 @@ async fn checkout_coupon_over_half_subtotal_succeeds(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: Some("BIG100".to_string()),
         use_points: None,
+        payment_method: None,
     };
     let resp = service::checkout(&db, user, None, req).await.expect("checkout");
 
@@ -258,6 +260,7 @@ async fn checkout_coupon_at_or_above_subtotal_clamps_to_free_order(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: Some("MEGA".to_string()),
         use_points: None,
+        payment_method: None,
     };
     let resp = service::checkout(&db, user, None, req).await.expect("checkout");
 
@@ -289,6 +292,7 @@ async fn checkout_coupon_plus_points_can_reach_zero_total(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: Some("COMBO100".to_string()),
         use_points: Some(true),
+        payment_method: None,
     };
     let resp = service::checkout(&db, user, None, req).await.expect("checkout");
 
@@ -314,6 +318,7 @@ async fn checkout_with_invalid_coupon_returns_validation_error(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: Some("NOSUCHCODE".to_string()),
         use_points: None,
+        payment_method: None,
     };
     let err = service::checkout(&db, user, None, req)
         .await
@@ -353,6 +358,7 @@ async fn checkout_with_deactivated_coupon_returns_validation_error(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: Some("WASACTIVE".to_string()),
         use_points: None,
+        payment_method: None,
     };
     let err = service::checkout(&db, user, None, req)
         .await
@@ -378,6 +384,7 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: None,
         use_points: Some(true),
+        payment_method: None,
     };
     let resp = service::checkout(&db, user, None, req).await.expect("checkout");
 
@@ -404,6 +411,7 @@ async fn checkout_use_points_zero_balance_uses_none(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: None,
         use_points: Some(true),
+        payment_method: None,
     };
     let resp = service::checkout(&db, user, None, req).await.expect("checkout");
 
@@ -439,6 +447,7 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     let req = CheckoutRequest {
         coupon_code: None,
         use_points: Some(true),
+        payment_method: None,
     };
 
     let err = service::checkout(&db, user, None, req)

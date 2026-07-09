@@ -20,11 +20,12 @@ pub async fn create_order(
     coupon_code: Option<&str>,
     points_used: i64,
     points_earned: i64,
+    payment_method: &str,
 ) -> Result<Order, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, \
-         coupon_code, points_used, points_earned, paid_at, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, 'paid'::order_status, $3, $4, $5, $6, $7, NOW(), \
+         coupon_code, points_used, points_earned, payment_method, paid_at, created_at, updated_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'paid'::order_status, $3, $4, $5, $6, $7, $8, NOW(), \
          NOW(), NOW()) \
          RETURNING *",
     )
@@ -35,6 +36,7 @@ pub async fn create_order(
     .bind(coupon_code)
     .bind(points_used)
     .bind(points_earned)
+    .bind(payment_method)
     .fetch_one(&mut **tx)
     .await
 }
@@ -94,7 +96,7 @@ pub async fn create_order_items(
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Order>, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "SELECT id, user_id, order_number, status, total_cents, discount_cents, \
-         coupon_code, points_used, points_earned, paid_at, created_at, updated_at \
+         coupon_code, points_used, points_earned, payment_method, paid_at, created_at, updated_at \
          FROM orders WHERE id = $1",
     )
     .bind(id)
@@ -108,7 +110,7 @@ pub async fn find_by_id_tx(
 ) -> Result<Option<Order>, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "SELECT id, user_id, order_number, status, total_cents, discount_cents, \
-         coupon_code, points_used, points_earned, paid_at, created_at, updated_at \
+         coupon_code, points_used, points_earned, payment_method, paid_at, created_at, updated_at \
          FROM orders WHERE id = $1 \
          FOR UPDATE",
     )

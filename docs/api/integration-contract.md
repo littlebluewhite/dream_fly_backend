@@ -95,6 +95,7 @@
 - 沒有「付款中」「等待付款」的中介狀態，也沒有 webhook 回呼流程。
 - 若購物車包含課程或方案（membership/ticket）商品，對應的報名（enrolment）與訂閱（subscription）會在**同一個交易**內立即建立完成（見 §3.10）。
 - 後續狀態流轉（`paid → processing → completed / refunded / cancelled`）僅能由 admin 透過 `PATCH /orders/{id}/status` 手動觸發，代表出貨、完成、退款等後續營運操作，與「付款」本身無關。
+- `payment_method`（Round 4 Task P4-B1，報表基礎欄位）記錄本筆訂單的付款方式，值域：`credit_card`（預設）/ `line_pay` / `atm` / `jkopay` / `cash`；純應用層值域，非 DB enum。`POST /orders` 不帶此欄時預設 `credit_card`；帶入值域外的字串回 422。此欄位新增前建立的歷史訂單為 `null`。
 
 ---
 
@@ -545,11 +546,12 @@ Header（建議）：`Idempotency-Key: <前端產生的唯一字串>`（見 §1.
 Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body**）：
 
 ```jsonc
-{ "coupon_code": "string?", "use_points": "boolean?" }
+{ "coupon_code": "string?", "use_points": "boolean?", "payment_method": "string?" }
 ```
 
 - `coupon_code` 不帶或空字串 = 不套用折扣。無效碼會整筆拒絕（400 `"invalid coupon"`），不會靜默略過。
 - `use_points: true` 時，會自動用掉「折扣後金額換算可扣的最大點數」（`min(目前餘額, 折扣後金額NT$)`），前端無法指定扣多少點——要嘛全扣（到可扣上限）要嘛不扣。
+- `payment_method` 不帶時預設 `credit_card`；值域見 §1.8。不在值域內的字串回 422，整筆結帳不會建立（購物車保留）。
 - 結帳對象為**當下購物車全部內容**，成功後購物車會被清空。購物車為空時回 400 `"cart is empty"`。
 
 回應（`OrderResponse`）：
@@ -559,7 +561,8 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
   "id": "uuid", "order_number": "string", "status": "paid",
   "total_cents": "number", "discount_cents": "number",
   "coupon_code": "string|null", "points_used": "number",
-  "points_earned": "number", "paid_at": "ISO8601", "created_at": "ISO8601",
+  "points_earned": "number", "payment_method": "string|null",
+  "paid_at": "ISO8601", "created_at": "ISO8601",
   "items": [
     { "id": "uuid", "item_type": "product|course", "product_id": "uuid|null",
       "course_id": "uuid|null", "quantity": "number", "unit_price_cents": "number" }
@@ -571,7 +574,9 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 
 `enrolments`/`subscriptions` 只包含**這筆訂單**產生的項目（用 `order_id` 反查），不是使用者的全部報名/訂閱清單——那些請另外呼叫 `/enrolments/me` / `/subscriptions/me`。
 
-錯誤：400（購物車為空、無效優惠碼）；409（商品庫存不足、課程已滿或重複報名 — 整筆結帳一起回滾，不會部分成功）。
+`payment_method` 為 `null` 僅出現在此欄位新增（Round 4 Task P4-B1）前建立的歷史訂單。
+
+錯誤：400（購物車為空、無效優惠碼）；422（付款方式不在值域內）；409（商品庫存不足、課程已滿或重複報名 — 整筆結帳一起回滾，不會部分成功）。
 
 #### `GET /orders/me?page=&per_page=` — 需登入
 回應（`OrderListResponse`）：`{ "orders": [OrderSummary], "total", "page", "per_page" }`。

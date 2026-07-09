@@ -17,6 +17,11 @@ use super::model::{AdminOrderRow, Order, OrderItem, OrderItemBrief, OrderSummary
 pub struct CheckoutRequest {
     pub coupon_code: Option<String>,
     pub use_points: Option<bool>,
+    /// Optional — defaults to `credit_card` in `service::checkout` when
+    /// omitted (back-compat: existing callers/tests that never send this
+    /// field must keep working). A value outside
+    /// `orders::model::PAYMENT_METHODS` is a 422.
+    pub payment_method: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +34,8 @@ pub struct OrderResponse {
     pub coupon_code: Option<String>,
     pub points_used: i64,
     pub points_earned: i64,
+    /// Nullable — orders created before Round 4 Task P4-B1 have `NULL`.
+    pub payment_method: Option<String>,
     pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub items: Vec<OrderItemResponse>,
@@ -80,6 +87,7 @@ impl OrderResponse {
             coupon_code: order.coupon_code,
             points_used: order.points_used,
             points_earned: order.points_earned,
+            payment_method: order.payment_method,
             paid_at: order.paid_at,
             created_at: order.created_at,
             items: items

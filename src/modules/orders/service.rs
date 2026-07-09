@@ -23,7 +23,7 @@ use super::dto::{
     AdminOrderListResponse, AdminOrderSummary, CheckoutRequest, OrderListResponse, OrderResponse,
     OrderSummary,
 };
-use super::model::{Order, OrderStatus};
+use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
 use super::repository;
 
@@ -55,6 +55,17 @@ pub async fn checkout(
                 })?;
             return assemble_response(db, order).await;
         }
+    }
+
+    // Resolve + validate `payment_method` before opening the transaction —
+    // optional, defaults to `credit_card` for back-compat (existing callers
+    // that never send this field must keep working); anything outside
+    // `PAYMENT_METHODS` is a 422, raised before any DB work begins.
+    let payment_method = req.payment_method.as_deref().unwrap_or("credit_card");
+    if !PAYMENT_METHODS.contains(&payment_method) {
+        return Err(AppError::Validation(format!(
+            "invalid payment method: {payment_method}"
+        )));
     }
 
     // All reads and writes happen inside the transaction so the cart snapshot,
@@ -163,6 +174,7 @@ pub async fn checkout(
         outcome.applied_coupon_code.as_deref(),
         outcome.points_used,
         outcome.points_earned,
+        payment_method,
     )
     .await?;
 

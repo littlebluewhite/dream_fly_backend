@@ -46,6 +46,7 @@ async fn seed_order(
         None,
         0,
         0,
+        "credit_card",
     )
     .await
     .expect("seed order")

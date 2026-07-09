@@ -67,6 +67,12 @@ impl std::str::FromStr for OrderStatus {
 /// 兩者今天恰好同集合但屬不同領域概念——若本常數變動,需刻意決定 products 是否跟進。
 pub const REVENUE_STATUSES: [&str; 3] = ["paid", "processing", "completed"];
 
+/// 付款方式值域(應用層,非 DB enum——`orders.payment_method` 只是
+/// `VARCHAR(30)`,Round 4 Task P4-B1)。`service::checkout` 缺省時預設
+/// `credit_card`(向後相容既有不帶此欄的呼叫者);不在此集合內的值回 422。
+/// Round 4 Phase 4 報表依此欄分組付款方式。
+pub const PAYMENT_METHODS: [&str; 5] = ["credit_card", "line_pay", "atm", "jkopay", "cash"];
+
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct Order {
     pub id: Uuid,
@@ -78,6 +84,10 @@ pub struct Order {
     pub coupon_code: Option<String>,
     pub points_used: i64,
     pub points_earned: i64,
+    /// Nullable — orders created before this column existed have `NULL`.
+    /// Every order created by `service::checkout` from here on always has
+    /// a value (defaulted to `credit_card` when the request omits it).
+    pub payment_method: Option<String>,
     pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

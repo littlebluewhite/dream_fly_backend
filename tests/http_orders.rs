@@ -75,6 +75,84 @@ async fn checkout_happy_path_creates_order_and_clears_cart(db: PgPool) {
     );
 }
 
+/// Task P4-B1: `payment_method` omitted entirely defaults to `credit_card`
+/// (back-compat — existing checkout callers that never send this field
+/// must keep working).
+#[sqlx::test]
+async fn checkout_without_payment_method_defaults_to_credit_card(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("o7@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let resp = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["payment_method"], "credit_card");
+}
+
+/// A valid, explicitly-supplied `payment_method` is persisted and echoed
+/// back on the order.
+#[sqlx::test]
+async fn checkout_with_valid_payment_method_persists_it(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("o8@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let resp = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "payment_method": "line_pay" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["payment_method"], "line_pay");
+}
+
+/// A `payment_method` outside the supported value domain is rejected before
+/// any order is created — 422, and cart items must survive untouched.
+#[sqlx::test]
+async fn checkout_with_invalid_payment_method_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("o9@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let resp = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "payment_method": "bitcoin" }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+
+    // Rejected checkout must not clear the cart or create an order.
+    let cart = app
+        .get("/api/v1/cart")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(
+        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        1,
+        "cart must survive a rejected checkout"
+    );
+}
+
 #[sqlx::test]
 async fn my_orders_returns_only_mine(db: PgPool) {
     let app = spawn_test_app(db).await;

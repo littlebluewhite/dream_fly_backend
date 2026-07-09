@@ -40,6 +40,7 @@ async fn seed_order(
         None,
         0,
         0,
+        "credit_card",
     )
     .await
     .expect("seed order")
@@ -239,6 +240,7 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
             None,
             0,
             0,
+            "credit_card",
         )
         .await
         .expect("seed order")
