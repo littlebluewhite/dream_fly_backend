@@ -39,6 +39,13 @@ pub struct Booking {
     pub time_slot_id: Uuid,
     pub status: BookingStatus,
     pub note: Option<String>,
+    /// Round 4 Task P4-B2 (`bookings.price_cents`, migration
+    /// `20260708000006`). Snapshot of `time_slots.price_cents` at the
+    /// moment this booking was created — a later price change on the slot
+    /// must NOT retroactively change this value, and cancelling a booking
+    /// must NOT clear/zero it either (report aggregation filters by
+    /// `status`, not by this column).
+    pub price_cents: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

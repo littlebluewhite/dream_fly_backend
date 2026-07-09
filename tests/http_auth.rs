@@ -38,6 +38,26 @@ async fn register_creates_user_and_returns_tokens(db: PgPool) {
     assert_eq!(body["user"]["roles"], json!(["member"]));
 }
 
+/// Task P4-B2 regression: `birth_date` is deliberately NOT a field on
+/// `RegisterRequest` (kept out to minimize signup friction — see
+/// `users::dto::CreateUserRequest`/`UpdateProfileRequest` instead). A plain
+/// register body with no `birth_date` key must keep working unchanged.
+#[sqlx::test]
+async fn register_without_birth_date_still_succeeds(db: PgPool) {
+    let app = spawn_test_app(db).await;
+
+    let resp = app
+        .post("/api/v1/auth/register")
+        .json(&json!({
+            "email": "nobday-register@example.com",
+            "name": "No Birthday",
+            "password": "Password!234",
+        }))
+        .await;
+
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+}
+
 #[sqlx::test]
 async fn register_duplicate_email_returns_conflict(db: PgPool) {
     let app = spawn_test_app(db).await;

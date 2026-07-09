@@ -38,6 +38,7 @@ fn future_slot(days: i64, start: &str, end: &str, capacity: i32) -> SlotEntry {
         venue_id: None,
         course_id: None,
         capacity,
+        price_cents: None,
     }
 }
 
@@ -156,6 +157,25 @@ async fn get_monthly_schedule_returns_seeded_slot(db: PgPool) {
     // Must contain exactly one day with one slot.
     let total: usize = resp.iter().map(|d| d.slots.len()).sum();
     assert_eq!(total, 1);
+}
+
+// ---------------------------------------------------------------------
+// Task P4-B2: `time_slots.price_cents` (venue-rental price snapshot source)
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn create_slots_persists_price_cents_and_defaults_to_zero(db: PgPool) {
+    let mut priced = future_slot(2, "09:00", "10:00", 10);
+    priced.price_cents = Some(50_000);
+    let unpriced = future_slot(2, "10:00", "11:00", 8);
+
+    let req = CreateSlotsRequest {
+        slots: vec![priced, unpriced],
+    };
+    let resp = service::create_slots(&db, &utc_server(), req).await.unwrap();
+    assert_eq!(resp[0].price_cents, 50_000);
+    // Omitted `price_cents` must default to 0, not fail to deserialize.
+    assert_eq!(resp[1].price_cents, 0);
 }
 
 #[sqlx::test]

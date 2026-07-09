@@ -8,7 +8,10 @@ use crate::modules::auth::repository as auth_repository;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
 
-use super::dto::{CreateUserRequest, UpdateProfileRequest, UpdateUserRequest, UserListResponse, UserResponse};
+use super::dto::{
+    birth_date_range_error, CreateUserRequest, UpdateProfileRequest, UpdateUserRequest,
+    UserListResponse, UserResponse,
+};
 use super::repository;
 
 pub async fn get_me(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppError> {
@@ -29,6 +32,17 @@ pub async fn update_me(
     user_id: Uuid,
     req: UpdateProfileRequest,
 ) -> Result<UserResponse, AppError> {
+    // `birth_date`'s double-option can't be range-checked via `#[validate]`
+    // (validator can't express nested `Option` cleanly — see
+    // `dto::UpdateProfileRequest`'s doc comment), so it's checked here
+    // instead. Only the "set to a date" branch is checked — clearing to
+    // NULL (`Some(None)`) is always allowed.
+    if let Some(Some(date)) = req.birth_date {
+        if let Some(msg) = birth_date_range_error(date) {
+            return Err(AppError::Validation(msg.to_string()));
+        }
+    }
+
     let user = repository::update_profile(
         db,
         user_id,
@@ -36,6 +50,7 @@ pub async fn update_me(
         req.phone.as_deref(),
         req.avatar_url.as_deref(),
         req.preferences.as_ref(),
+        req.birth_date,
     )
     .await?;
 
@@ -107,8 +122,15 @@ pub async fn create_user(db: &PgPool, req: CreateUserRequest) -> Result<UserResp
 
     let mut tx = db.begin().await?;
 
-    let user = match repository::create_user_tx(&mut tx, &email, &req.name, req.phone.as_deref(), &hashed)
-        .await
+    let user = match repository::create_user_tx(
+        &mut tx,
+        &email,
+        &req.name,
+        req.phone.as_deref(),
+        &hashed,
+        req.birth_date,
+    )
+    .await
     {
         Ok(u) => u,
         Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {

@@ -21,6 +21,8 @@ pub struct BookingResponse {
     pub time_slot_id: Uuid,
     pub status: String,
     pub note: Option<String>,
+    /// Round 4 Task P4-B2 — price snapshot captured at booking time (§1.5).
+    pub price_cents: i64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -32,6 +34,7 @@ impl From<Booking> for BookingResponse {
             time_slot_id: b.time_slot_id,
             status: b.status.as_str().to_string(),
             note: b.note,
+            price_cents: b.price_cents,
             created_at: b.created_at,
         }
     }

@@ -100,6 +100,37 @@ async fn update_me_rejects_short_name(db: PgPool) {
     assert_eq!(resp.status_code(), 422);
 }
 
+/// Guards `users::repository::update_profile`'s phone_verified-reset logic
+/// through the self-service path — the admin equivalent
+/// (`admin_update_user_phone_change_resets_phone_verified` below) already
+/// covered `admin_update`, but nothing previously pinned this behavior for
+/// `/users/me` itself. Added alongside Task P4-B2, which rewrote
+/// `update_profile`'s SQL from a fixed COALESCE statement to a dynamic
+/// `QueryBuilder` (to support `birth_date`'s double-option clearing) — this
+/// proves that rewrite didn't change the pre-existing reset behavior.
+#[sqlx::test]
+async fn update_me_phone_change_resets_phone_verified(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("verifyme@example.com", "Password!234").await;
+
+    sqlx::query("UPDATE users SET phone = $2, phone_verified = true WHERE id = $1")
+        .bind(user.user_id)
+        .bind("0911111111")
+        .execute(&app.db)
+        .await
+        .expect("seed verified phone");
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "phone": "0922222222" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["phone"], "0922222222");
+    assert_eq!(body["phone_verified"], false);
+}
+
 #[sqlx::test]
 async fn list_users_as_admin_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
@@ -583,4 +614,184 @@ async fn me_returns_null_preferences_when_never_set(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert!(body["preferences"].is_null());
+}
+
+// ---------------------------------------------------------------------
+// Task P4-B2: `users.birth_date`
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_me_sets_birth_date_and_get_me_returns_it(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("bday@example.com", "Password!234").await;
+
+    let patch_resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "birth_date": "1995-05-20" }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+    assert_eq!(
+        patch_resp.json::<serde_json::Value>()["birth_date"],
+        "1995-05-20"
+    );
+
+    let get_resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(get_resp.status_code(), 200, "body={}", get_resp.text());
+    assert_eq!(
+        get_resp.json::<serde_json::Value>()["birth_date"],
+        "1995-05-20"
+    );
+}
+
+#[sqlx::test]
+async fn update_me_rejects_future_birth_date(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("futurebday@example.com", "Password!234").await;
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "birth_date": "2999-01-01" }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn update_me_rejects_birth_date_before_1900(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("oldbday@example.com", "Password!234").await;
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "birth_date": "1850-01-01" }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+/// Double-option clear: sending an explicit JSON `null` resets the column,
+/// as opposed to omitting the key entirely (which leaves it untouched).
+#[sqlx::test]
+async fn update_me_clears_birth_date_with_explicit_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("clearbday@example.com", "Password!234").await;
+
+    app.patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "birth_date": "2000-01-01" }))
+        .await;
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "birth_date": null }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    assert!(resp.json::<serde_json::Value>()["birth_date"].is_null());
+
+    // Persisted, not just reflected in this one response.
+    let get_resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert!(get_resp.json::<serde_json::Value>()["birth_date"].is_null());
+}
+
+/// Omitting `birth_date` entirely (as every other PATCH test in this file
+/// does) must leave a previously-set value untouched — same COALESCE-style
+/// semantics as `name`/`phone`/`avatar_url`.
+#[sqlx::test]
+async fn update_me_without_birth_date_field_leaves_existing_value_unchanged(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("keepbday@example.com", "Password!234").await;
+
+    app.patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "birth_date": "1988-08-08" }))
+        .await;
+
+    let resp = app
+        .patch("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "name": "Renamed, No Birthday In Body" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["name"], "Renamed, No Birthday In Body");
+    assert_eq!(body["birth_date"], "1988-08-08");
+}
+
+#[sqlx::test]
+async fn me_returns_null_birth_date_when_never_set(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("nobday@example.com", "Password!234").await;
+
+    let resp = app
+        .get("/api/v1/users/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    assert!(resp.json::<serde_json::Value>()["birth_date"].is_null());
+}
+
+/// Task P4-B2: admin account creation (`POST /users`) accepts the same
+/// optional `birth_date`, with the same range validation.
+#[sqlx::test]
+async fn admin_create_user_with_birth_date_persists_it(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "withbday@example.com",
+            "name": "With Birthday",
+            "password": "Password!234",
+            "birth_date": "1988-03-03",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["birth_date"], "1988-03-03");
+}
+
+#[sqlx::test]
+async fn admin_create_user_without_birth_date_leaves_it_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "nobdaycreate@example.com",
+            "name": "No Birthday Create",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    assert!(resp.json::<serde_json::Value>()["birth_date"].is_null());
+}
+
+#[sqlx::test]
+async fn admin_create_user_rejects_future_birth_date(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "futurecreate@example.com",
+            "name": "Future Create",
+            "password": "Password!234",
+            "birth_date": "2999-01-01",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
 }

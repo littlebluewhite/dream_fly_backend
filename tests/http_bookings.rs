@@ -35,6 +35,29 @@ async fn create_booking_happy_path(db: PgPool) {
     assert_eq!(body["user_id"].as_str().unwrap(), user.user_id.to_string());
 }
 
+/// Task P4-B2: the booking response carries the slot's price snapshot.
+#[sqlx::test]
+async fn create_booking_response_includes_price_cents(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("price@example.com", "Password!234").await;
+    let slot = seed_time_slot_full(&app.db, None, None, 5).await;
+    sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
+        .bind(slot)
+        .bind(30_000_i64)
+        .execute(&app.db)
+        .await
+        .expect("bump slot price");
+
+    let resp = app
+        .post("/api/v1/bookings")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "time_slot_id": slot }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["price_cents"], 30000);
+}
+
 #[sqlx::test]
 async fn create_booking_duplicate_returns_conflict(db: PgPool) {
     let app = spawn_test_app(db).await;

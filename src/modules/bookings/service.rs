@@ -58,6 +58,7 @@ pub async fn create_booking(
         user_id,
         req.time_slot_id,
         req.note.as_deref(),
+        slot.price_cents,
     )
     .await
     {

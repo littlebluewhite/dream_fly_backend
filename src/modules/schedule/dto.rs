@@ -27,6 +27,8 @@ pub struct TimeSlotResponse {
     pub capacity: i32,
     pub booked: i32,
     pub status: String,
+    /// Round 4 Task P4-B2 — venue-rental price for this slot (§1.5).
+    pub price_cents: i64,
 }
 
 impl From<TimeSlot> for TimeSlotResponse {
@@ -41,6 +43,7 @@ impl From<TimeSlot> for TimeSlotResponse {
             capacity: ts.capacity,
             booked: ts.booked,
             status: ts.status.as_str().to_string(),
+            price_cents: ts.price_cents,
         }
     }
 }
@@ -70,4 +73,9 @@ pub struct SlotEntry {
     pub course_id: Option<Uuid>,
     #[validate(range(min = 1, max = 10000))]
     pub capacity: i32,
+    /// Round 4 Task P4-B2 — venue-rental price for this slot. Optional;
+    /// omitted defaults to `0` (resolved in `service::create_slots`), same
+    /// sanity cap as `products::dto::CreateProductRequest.price_cents`.
+    #[validate(range(min = 0, max = 100_000_000))]
+    pub price_cents: Option<i64>,
 }

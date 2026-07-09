@@ -99,7 +99,15 @@ pub async fn create_slots(
             ));
         }
 
-        parsed_slots.push((date, start_time, end_time, entry.venue_id, entry.course_id, entry.capacity));
+        parsed_slots.push((
+            date,
+            start_time,
+            end_time,
+            entry.venue_id,
+            entry.course_id,
+            entry.capacity,
+            entry.price_cents.unwrap_or(0),
+        ));
     }
 
     // `bulk_create` already wraps the UNNEST insert in its own transaction,

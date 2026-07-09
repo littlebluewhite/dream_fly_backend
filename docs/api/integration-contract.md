@@ -73,6 +73,7 @@
 
 - 所有金額欄位（`*_cents`）皆為**新台幣 × 100 的整數**（例：`price_cents: 35000` = NT$350）。前端顯示時需除以 100。
 - 折扣（`discount_cents`）在結帳時會被 clamp 到「不超過 subtotal」，永遠 `>= 0`。
+- **場租計價**（Round 4 Task P4-B2）：`time_slots.price_cents` 是該時段的場租定價，admin 透過 `POST /schedule/slots`（見 §3.6）建立時段時可選填，省略預設 `0`。`POST /bookings` 建立預約時，會把當下 slot 的 `price_cents` **複製（快照）**進 `bookings.price_cents`——之後 slot 改價不會回溯影響已建立的 booking；取消預約（`PATCH /bookings/{id}/cancel`）也不會清除或歸零這個快照值。此快照供未來場租營收報表使用，報表僅計入 `confirmed`/`completed` 狀態，由聚合邏輯負責過濾（非本欄位語意）。
 
 ### 1.6 點數慣例
 
@@ -266,16 +267,16 @@ Body：`{ token, new_password }`（new_password 8-128 字）。回應：`{ "mess
   "avatar_url": "string|null", "is_active": "boolean",
   "last_login": "ISO8601|null", "created_at": "ISO8601",
   "roles": ["member"], "points_balance": "number",
-  "preferences": "object|null"
+  "preferences": "object|null", "birth_date": "YYYY-MM-DD|null"
 }
 ```
 
 #### `PATCH /users/me` — 需登入
-Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查；`preferences` 可為任意合法 JSON 物件，**整包覆寫**——帶了就整個取代舊值，不做深合併，也不逐 key 驗證；不帶則維持原值不動）。未設定過的使用者，`preferences` 為 `null`。回應：`UserResponse`。
+Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查；`preferences` 可為任意合法 JSON 物件，**整包覆寫**——帶了就整個取代舊值，不做深合併，也不逐 key 驗證；不帶則維持原值不動；`birth_date` 為 `YYYY-MM-DD` 字串，範圍 **`1900-01-01` 至今天（含）**，超出範圍回 422——未來日期與早於 1900 年皆同一錯誤類型；帶 JSON `null` 會清空為 `NULL`，不帶此欄則維持原值不動）。未設定過的使用者，`preferences`／`birth_date` 皆為 `null`。回應：`UserResponse`。
 
 本輪前端慣例 key（**僅文件性列舉，後端不驗證其形狀，也不限制其他 key 名稱**）：`class_reminder`/`coach_msg`/`promo`/`dark`，皆為布林值，對應 mobile 設定畫面的班別提醒／教練訊息／促銷通知／深色模式四個開關。
 
-`UserResponse` 是 users 模組唯一的回應型別——`GET /users`、`GET /users/{id}`、`POST /users`、`PATCH /users/{id}`（見下，皆為 admin 視角）回應也是同一型別，因此同樣帶出 `preferences`；但這些 admin 端點沒有可寫入 `preferences` 的欄位，仍須由使用者本人透過 `PATCH /users/me` 設定。
+`UserResponse` 是 users 模組唯一的回應型別——`GET /users`、`GET /users/{id}`、`POST /users`、`PATCH /users/{id}`（見下，皆為 admin 視角）回應也是同一型別，因此同樣帶出 `preferences`／`birth_date`；但這些 admin 端點中只有 `POST /users`（見下）能寫入 `birth_date`，`preferences` 則仍須由使用者本人透過 `PATCH /users/me` 設定。
 
 #### `GET /users?page=&per_page=` — admin
 回應（`UserListResponse`）：`{ "users": [UserResponse], "total", "page", "per_page" }`。Task 18 起前端 admin 學員管理頁消費此端點（`points_balance` 映射為學員點數）。
@@ -284,11 +285,13 @@ Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences? }`（name 2
 回應：單筆 `UserResponse`。404 若查無。
 
 #### `POST /users` — admin
-Body（`CreateUserRequest`）：`{ email, name, phone?, password }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字）。建立流程比照 `POST /auth/register`：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色。回應：`UserResponse`（見上）。
-錯誤：409（email 已存在，訊息 `"Email 已被使用"`——與 `/auth/register` 刻意通用化的 409 訊息不同，因為呼叫者是 admin，不受帳號枚舉考量限制）；422（password < 8 字）。
+Body（`CreateUserRequest`）：`{ email, name, phone?, password, birth_date? }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字；`birth_date` 為 `YYYY-MM-DD` 字串，選填，範圍同 `PATCH /users/me`：`1900-01-01` 至今天）。建立流程比照 `POST /auth/register`：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色。回應：`UserResponse`（見上）。
+錯誤：409（email 已存在，訊息 `"Email 已被使用"`——與 `/auth/register` 刻意通用化的 409 訊息不同，因為呼叫者是 admin，不受帳號枚舉考量限制）；422（password < 8 字；`birth_date` 超出範圍）。
+
+**`POST /auth/register`（自助註冊）刻意不收 `birth_date`**——維持較低的註冊摩擦；自助註冊帳號的 `birth_date` 起始值為 `null`，會員本人可日後透過 `PATCH /users/me` 補填。
 
 #### `PATCH /users/{id}` — admin
-Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phone 8-20 字；phone 異動會重置 `phone_verified = false`，與 `PATCH /users/me` 同一規則）。**不可改 `email`／`roles`／`password`**——這三者不是本端點的欄位，body 中帶了也會被忽略（v1 範圍外）。回應：`UserResponse`。
+Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phone 8-20 字；phone 異動會重置 `phone_verified = false`，與 `PATCH /users/me` 同一規則）。**不可改 `email`／`roles`／`password`／`birth_date`**——這幾者不是本端點的欄位，body 中帶了也會被忽略（v1 範圍外；`birth_date` 只能透過使用者本人的 `PATCH /users/me` 或建立當下的 `POST /users` 設定）。回應：`UserResponse`。
 錯誤：422（`name`/`phone`/`is_active` 皆未提供，訊息 `"至少提供一個欄位"`）；404（查無此使用者）。
 備註：`is_active` 有變動時，後端會立即清除該使用者的 Redis 快取（角色 + `is_active`），停用在下一次請求即生效，不必等待 `AuthUser` extractor 的 60 秒快取 TTL。
 
@@ -424,13 +427,21 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, descri
 #### `GET /schedule?year=&month=` — 公開
 回應：`DaySchedule[]`（每日一筆）：`{ date: "YYYY-MM-DD", slots: TimeSlotResponse[] }`。
 
-`TimeSlotResponse`：`{ id, date, start_time, end_time, venue_id, course_id, capacity, booked, status: "available"|"limited"|"full"|"closed" }`。
+`TimeSlotResponse`：`{ id, date, start_time, end_time, venue_id, course_id, capacity, booked, status: "available"|"limited"|"full"|"closed", price_cents }`。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。
 
 #### `GET /schedule/availability?date=YYYY-MM-DD` — 公開
 回應：`TimeSlotResponse[]`（純陣列，當日所有時段）。
 
 #### `POST /schedule/slots` — 需登入
-Body：`{ slots: [{ date, start_time, end_time, venue_id?, course_id?, capacity }] }`。回應：建立後的時段列表。
+Body：`{ slots: [{ date, start_time, end_time, venue_id?, course_id?, capacity, price_cents? }] }`。`price_cents` 選填，省略預設 `0`（§1.5）。回應：建立後的時段列表（`TimeSlotResponse[]`）。
+
+#### Bookings（場租預約）— `price_cents` 快照語意
+
+本文件目前未收錄 `/bookings/*`（`POST /bookings`、`GET /bookings/me`、`PATCH /bookings/{id}/cancel`、`GET /bookings` admin）端點的完整請求/回應形狀——這是既有缺口，不在本任務（P4-B2）範圍內修補。以下僅記錄 Task P4-B2 新增的 `price_cents` 相關語意：
+
+- `POST /bookings` 建立預約時，會把當下 `time_slot_id` 對應 slot 的 `price_cents` **複製（快照）**進新建立的 `bookings.price_cents`——之後該 slot 被改價，既有 booking 的 `price_cents` 不受影響。
+- `PATCH /bookings/{id}/cancel` 取消預約**不會**清除或歸零 `price_cents`；`BookingResponse` 回應中的 `price_cents` 在取消前後維持不變。
+- 詳見 §1.5 金額慣例。
 
 ---
 

@@ -98,3 +98,29 @@ async fn create_slots_as_admin_succeeds(db: PgPool) {
     assert_eq!(body.as_array().unwrap().len(), 1);
 }
 
+/// Task P4-B2: admin can specify a venue-rental `price_cents` when creating
+/// a slot; omitting it (covered by `create_slots_as_admin_succeeds` above)
+/// defaults to `0`.
+#[sqlx::test]
+async fn create_slots_as_admin_with_price_cents_persists_it(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/schedule/slots")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "slots": [{
+                "date": "2030-01-01",
+                "start_time": "09:00",
+                "end_time": "10:00",
+                "capacity": 10,
+                "price_cents": 50000,
+            }]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body[0]["price_cents"], 50000);
+}
+

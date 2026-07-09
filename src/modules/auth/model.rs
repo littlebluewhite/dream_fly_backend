@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use uuid::Uuid;
 
 /// Internal user row. Intentionally NOT `Serialize` — it carries
@@ -28,6 +28,15 @@ pub struct User {
     /// default). Free-form member preference bag (mobile settings toggles)
     /// — `NULL` until the user's first `PATCH /users/me` that includes it.
     pub preferences: Option<serde_json::Value>,
+    /// Added by Round 4 Task P4-B1 migration (`users.birth_date DATE`,
+    /// nullable, no default); write path wired up in Task P4-B2
+    /// (`users::dto::CreateUserRequest`/`UpdateProfileRequest`). Every
+    /// `query_as::<_, User>` call in this codebase selects via `SELECT *` /
+    /// `RETURNING *`, so adding this field here is safe (verified by grep,
+    /// same as `points_balance` above). `POST /auth/register` deliberately
+    /// never writes this column — it stays `NULL` for self-registered
+    /// accounts until they set it via `PATCH /users/me`.
+    pub birth_date: Option<NaiveDate>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

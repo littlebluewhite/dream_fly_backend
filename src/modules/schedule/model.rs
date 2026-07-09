@@ -33,6 +33,10 @@ pub struct TimeSlot {
     pub capacity: i32,
     pub booked: i32,
     pub status: SlotStatus,
+    /// Round 4 Task P4-B2 (`time_slots.price_cents`, migration
+    /// `20260708000006`). Venue-rental price for this slot; `bookings`
+    /// snapshots this value at booking time (see `bookings::model::Booking`).
+    pub price_cents: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -4,9 +4,9 @@ use uuid::Uuid;
 
 use super::model::TimeSlot;
 
-/// `(date, start_time, end_time, venue_id, course_id, capacity)` — input row
-/// for [`bulk_create`]. Aliased to keep the signature readable.
-pub type SlotRow = (NaiveDate, NaiveTime, NaiveTime, Option<Uuid>, Option<Uuid>, i32);
+/// `(date, start_time, end_time, venue_id, course_id, capacity, price_cents)`
+/// — input row for [`bulk_create`]. Aliased to keep the signature readable.
+pub type SlotRow = (NaiveDate, NaiveTime, NaiveTime, Option<Uuid>, Option<Uuid>, i32, i64);
 
 pub async fn find_by_month(
     db: &PgPool,
@@ -31,8 +31,8 @@ pub async fn find_by_month(
         .ok_or_else(|| sqlx::Error::Protocol("invalid year/month".into()))?;
 
     sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, booked, \
-         status, created_at, updated_at \
+        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
+         booked, status, created_at, updated_at \
          FROM time_slots \
          WHERE date >= $1 AND date <= $2 \
          ORDER BY date, start_time",
@@ -48,8 +48,8 @@ pub async fn find_by_date(
     date: NaiveDate,
 ) -> Result<Vec<TimeSlot>, sqlx::Error> {
     sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, booked, \
-         status, created_at, updated_at \
+        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
+         booked, status, created_at, updated_at \
          FROM time_slots \
          WHERE date = $1 \
          ORDER BY start_time",
@@ -64,8 +64,8 @@ pub async fn find_by_id(
     id: Uuid,
 ) -> Result<Option<TimeSlot>, sqlx::Error> {
     sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, booked, \
-         status, created_at, updated_at \
+        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
+         booked, status, created_at, updated_at \
          FROM time_slots \
          WHERE id = $1",
     )
@@ -81,8 +81,8 @@ pub async fn find_by_id_tx(
     id: Uuid,
 ) -> Result<Option<TimeSlot>, sqlx::Error> {
     sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, booked, \
-         status, created_at, updated_at \
+        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
+         booked, status, created_at, updated_at \
          FROM time_slots \
          WHERE id = $1 \
          FOR SHARE",
@@ -114,8 +114,9 @@ pub async fn bulk_create_tx(
     let mut venue_ids: Vec<Option<Uuid>> = Vec::with_capacity(slots.len());
     let mut course_ids: Vec<Option<Uuid>> = Vec::with_capacity(slots.len());
     let mut capacities: Vec<i32> = Vec::with_capacity(slots.len());
+    let mut price_cents_vec: Vec<i64> = Vec::with_capacity(slots.len());
 
-    for (date, start_time, end_time, venue_id, course_id, capacity) in slots {
+    for (date, start_time, end_time, venue_id, course_id, capacity, price_cents) in slots {
         ids.push(Uuid::now_v7());
         dates.push(*date);
         start_times.push(*start_time);
@@ -123,16 +124,17 @@ pub async fn bulk_create_tx(
         venue_ids.push(*venue_id);
         course_ids.push(*course_id);
         capacities.push(*capacity);
+        price_cents_vec.push(*price_cents);
     }
 
     sqlx::query_as::<_, TimeSlot>(
-        "INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, booked, status, created_at, updated_at) \
-         SELECT * FROM UNNEST($1::uuid[], $2::date[], $3::time[], $4::time[], $5::uuid[], $6::uuid[], $7::int[], \
-         ARRAY_FILL(0, ARRAY[$8::int])::int[], \
-         ARRAY_FILL('available'::slot_status, ARRAY[$8::int])::slot_status[], \
-         ARRAY_FILL(now(), ARRAY[$8::int])::timestamptz[], \
-         ARRAY_FILL(now(), ARRAY[$8::int])::timestamptz[]) \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, booked, status, created_at, updated_at",
+        "INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, status, created_at, updated_at) \
+         SELECT * FROM UNNEST($1::uuid[], $2::date[], $3::time[], $4::time[], $5::uuid[], $6::uuid[], $7::int[], $8::bigint[], \
+         ARRAY_FILL(0, ARRAY[$9::int])::int[], \
+         ARRAY_FILL('available'::slot_status, ARRAY[$9::int])::slot_status[], \
+         ARRAY_FILL(now(), ARRAY[$9::int])::timestamptz[], \
+         ARRAY_FILL(now(), ARRAY[$9::int])::timestamptz[]) \
+         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, status, created_at, updated_at",
     )
     .bind(&ids)
     .bind(&dates)
@@ -141,6 +143,7 @@ pub async fn bulk_create_tx(
     .bind(&venue_ids)
     .bind(&course_ids)
     .bind(&capacities)
+    .bind(&price_cents_vec)
     .bind(slots.len() as i32)
     .fetch_all(&mut **tx)
     .await
@@ -160,7 +163,7 @@ pub async fn increment_booked_tx(
          END, \
          updated_at = now() \
          WHERE id = $1 AND booked < capacity \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, booked, status, created_at, updated_at",
+         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, status, created_at, updated_at",
     )
     .bind(slot_id)
     .fetch_optional(&mut **tx)
@@ -180,7 +183,7 @@ pub async fn decrement_booked_tx(
          END, \
          updated_at = now() \
          WHERE id = $1 AND booked > 0 \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, booked, status, created_at, updated_at",
+         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, status, created_at, updated_at",
     )
     .bind(slot_id)
     .fetch_optional(&mut **tx)

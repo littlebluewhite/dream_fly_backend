@@ -1,11 +1,57 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 use super::model::User;
 use crate::extractors::pagination::PageMeta;
 use crate::utils::url_validation::validate_stored_url;
+
+/// Plain `Option<Option<T>>` cannot distinguish "key absent" from "key
+/// present with JSON `null`" — serde's built-in `Option<T>` deserialize
+/// collapses a `null` straight to the *outer* `None`, so a bare
+/// `Option<Option<T>>` field could never actually clear a nullable column
+/// back to `NULL` via PATCH. Paired with `#[serde(default)]`, this makes the
+/// present-with-`null` case reach the *inner* `Option`, producing
+/// `Some(None)` (clear) instead of `None` (don't touch) — mirrors
+/// `venues::dto::deserialize_some` / `coaches::dto::deserialize_some`.
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
+/// Earliest/latest `birth_date` accepted by both `CreateUserRequest` and
+/// `UpdateProfileRequest` — Round 4 Task P4-B2. Returns `Some(message)` when
+/// `date` falls outside `[1900-01-01, today]`; `None` when it's in range.
+/// Shared so the two call sites (a validator-crate custom function below for
+/// the plain-`Option` create path, and a manual check in
+/// `service::update_me` for the double-option patch path — `validator` can't
+/// express nested `Option` cleanly, same limitation noted on
+/// `venues::dto::UpdateVenueRequest`'s double-option fields) can't drift.
+pub(crate) fn birth_date_range_error(date: NaiveDate) -> Option<&'static str> {
+    let min = NaiveDate::from_ymd_opt(1900, 1, 1).expect("1900-01-01 is a valid date");
+    if date < min {
+        return Some("birth_date must not be before 1900-01-01");
+    }
+    if date > Utc::now().date_naive() {
+        return Some("birth_date cannot be in the future");
+    }
+    None
+}
+
+fn validate_birth_date(date: &NaiveDate) -> Result<(), ValidationError> {
+    match birth_date_range_error(*date) {
+        Some(msg) => {
+            let mut err = ValidationError::new("birth_date_out_of_range");
+            err.message = Some(msg.into());
+            Err(err)
+        }
+        None => Ok(()),
+    }
+}
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateProfileRequest {
@@ -21,6 +67,17 @@ pub struct UpdateProfileRequest {
     /// present (no deep merge, no per-key validation — a generic bag);
     /// omitted (`None`) leaves the stored value untouched.
     pub preferences: Option<serde_json::Value>,
+    /// Round 4 Task P4-B2 — member-editable birth date (feeds a future
+    /// age-bracket report). `Option<Option<NaiveDate>>` double-option
+    /// (paired with `deserialize_some`) distinguishes "don't touch"
+    /// (`None`), "clear to NULL" (`Some(None)`), and "set to date"
+    /// (`Some(Some(d))`) — mirrors `venues::dto::UpdateVenueRequest`. No
+    /// `#[validate]` here (validator can't express nested `Option`
+    /// cleanly); range-checked in `service::update_me` instead, only on the
+    /// `Some(Some(_))` branch — clearing to NULL is always allowed and
+    /// never range-checked.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub birth_date: Option<Option<NaiveDate>>,
 }
 
 /// `POST /users` (admin) — creates a member account. Mirrors
@@ -37,6 +94,13 @@ pub struct CreateUserRequest {
     pub phone: Option<String>,
     #[validate(length(min = 8, max = 128))]
     pub password: String,
+    /// Round 4 Task P4-B2 — optional at admin-creation time. Deliberately
+    /// NOT on `auth::dto::RegisterRequest`: self-registration keeps this
+    /// field out entirely to minimize signup friction (see
+    /// docs/api/integration-contract.md §3.2). Range-validated 1900-01-01
+    /// to today via `validate_birth_date`.
+    #[validate(custom(function = "validate_birth_date"))]
+    pub birth_date: Option<NaiveDate>,
 }
 
 /// `PATCH /users/{id}` (admin) — partial update of a member's own-profile
@@ -73,6 +137,10 @@ pub struct UserResponse {
     /// DTO to exclude this from, so it appears in all of them. Only
     /// `PATCH /users/me` can write it.
     pub preferences: Option<serde_json::Value>,
+    /// Round 4 Task P4-B2. `null` until set via `PATCH /users/me` or
+    /// `POST /users` (admin) — self-registered accounts start out `null`
+    /// since `POST /auth/register` never writes this column.
+    pub birth_date: Option<NaiveDate>,
 }
 
 impl From<User> for UserResponse {
@@ -90,6 +158,7 @@ impl From<User> for UserResponse {
             roles: Vec::new(),
             points_balance: user.points_balance,
             preferences: user.preferences,
+            birth_date: user.birth_date,
         }
     }
 }

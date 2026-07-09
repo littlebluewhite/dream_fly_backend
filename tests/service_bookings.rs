@@ -221,6 +221,95 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     assert_eq!(common::slot_booked(&db, slot).await, 1);
 }
 
+// ---------------------------------------------------------------------
+// Task P4-B2: `bookings.price_cents` (venue-rental price snapshot)
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) {
+    let server = common::test_server_config();
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let slot = common::seed_time_slot(&db, 5).await;
+
+    // `seed_time_slot` relies on the column default (0) — bump it to a
+    // known non-zero price before booking so the snapshot assertion below
+    // isn't trivially true.
+    sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
+        .bind(slot)
+        .bind(50_000_i64)
+        .execute(&db)
+        .await
+        .expect("bump slot price");
+
+    let booking = service::create_booking(
+        &db,
+        &server,
+        user,
+        CreateBookingRequest {
+            time_slot_id: slot,
+            note: None,
+        },
+    )
+    .await
+    .expect("create booking");
+
+    assert_eq!(booking.price_cents, 50_000);
+
+    // Reprice the slot *after* booking — the existing booking's snapshot
+    // must NOT change (price_cents is captured at booking time, not read
+    // live off the slot on every fetch).
+    sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
+        .bind(slot)
+        .bind(99_999_i64)
+        .execute(&db)
+        .await
+        .expect("reprice slot");
+
+    let reloaded = dream_fly_backend::modules::bookings::repository::find_by_id(&db, booking.id)
+        .await
+        .expect("find booking")
+        .expect("booking exists");
+    assert_eq!(
+        reloaded.price_cents, 50_000,
+        "booking price must stay snapshotted after the slot is repriced"
+    );
+}
+
+#[sqlx::test]
+async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
+    let server = common::test_server_config();
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let slot = common::seed_time_slot(&db, 5).await;
+    sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
+        .bind(slot)
+        .bind(12_345_i64)
+        .execute(&db)
+        .await
+        .expect("bump slot price");
+    let auth = member_auth(user);
+
+    let booking = service::create_booking(
+        &db,
+        &server,
+        user,
+        CreateBookingRequest {
+            time_slot_id: slot,
+            note: None,
+        },
+    )
+    .await
+    .expect("create booking");
+    assert_eq!(booking.price_cents, 12_345);
+
+    let cancelled = service::cancel_booking(&db, &server, &auth, booking.id)
+        .await
+        .expect("cancel booking");
+    assert_eq!(
+        cancelled.price_cents, 12_345,
+        "cancel must not touch price_cents — reports filter by status, not by zeroing this out"
+    );
+}
+
 #[sqlx::test]
 async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
     // Capacity 1, two users racing. Only one should succeed and

@@ -10,6 +10,7 @@
 
 mod common;
 
+use chrono::{Duration, NaiveDate, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -78,6 +79,7 @@ async fn update_me_partial_patch_preserves_other_fields(db: PgPool) {
             phone: None,
             avatar_url: None,
             preferences: None,
+            birth_date: None,
         },
     )
     .await
@@ -97,6 +99,7 @@ async fn update_me_partial_patch_preserves_other_fields(db: PgPool) {
             phone: Some("0912345678".into()),
             avatar_url: None,
             preferences: None,
+            birth_date: None,
         },
     )
     .await
@@ -120,6 +123,7 @@ async fn update_me_can_set_avatar_to_https_url(db: PgPool) {
             phone: None,
             avatar_url: Some("https://cdn.example.com/a.png".into()),
             preferences: None,
+            birth_date: None,
         },
     )
     .await
@@ -147,6 +151,7 @@ async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
             phone: None,
             avatar_url: None,
             preferences: Some(json!({ "class_reminder": true, "coach_msg": true })),
+            birth_date: None,
         },
     )
     .await
@@ -165,6 +170,7 @@ async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
             phone: None,
             avatar_url: None,
             preferences: None,
+            birth_date: None,
         },
     )
     .await
@@ -184,11 +190,133 @@ async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
             phone: None,
             avatar_url: None,
             preferences: Some(json!({ "dark": true })),
+            birth_date: None,
         },
     )
     .await
     .expect("update_me overwrite preferences");
     assert_eq!(resp3.preferences, Some(json!({ "dark": true })));
+}
+
+// ---------------------------------------------------------------------
+// Task P4-B2: `users.birth_date` (member-editable, double-option clear)
+// ---------------------------------------------------------------------
+
+/// Mirrors `update_me_preferences_overwrite_and_absence_semantics` above:
+/// `None` = don't touch, `Some(Some(date))` = set, `Some(None)` = clear to
+/// NULL. `birth_date` additionally needs the clear case exercised since
+/// (unlike `preferences`) it's a genuinely nullable column members can reset.
+#[sqlx::test]
+async fn update_me_birth_date_set_absence_and_clear_semantics(db: PgPool) {
+    let user_id = common::seed_member(&db, "birthday@example.com", "hunter22-secret").await;
+    let date = NaiveDate::from_ymd_opt(1990, 6, 15).unwrap();
+
+    // Absence (`None`) on a never-touched column leaves it NULL.
+    let resp0 = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+            birth_date: None,
+        },
+    )
+    .await
+    .expect("update_me no-op");
+    assert!(resp0.birth_date.is_none());
+
+    // Set.
+    let resp1 = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+            birth_date: Some(Some(date)),
+        },
+    )
+    .await
+    .expect("update_me set birth_date");
+    assert_eq!(resp1.birth_date, Some(date));
+
+    // Absence again must leave the just-set value untouched.
+    let resp2 = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: Some("Birthday Owner".into()),
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+            birth_date: None,
+        },
+    )
+    .await
+    .expect("update_me unrelated field");
+    assert_eq!(resp2.name, "Birthday Owner");
+    assert_eq!(resp2.birth_date, Some(date));
+
+    // Clear to NULL.
+    let resp3 = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+            birth_date: Some(None),
+        },
+    )
+    .await
+    .expect("update_me clear birth_date");
+    assert!(resp3.birth_date.is_none());
+}
+
+#[sqlx::test]
+async fn update_me_rejects_future_birth_date(db: PgPool) {
+    let user_id = common::seed_member(&db, "future-bday@example.com", "hunter22-secret").await;
+    let tomorrow = Utc::now().date_naive() + Duration::days(1);
+
+    let err = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+            birth_date: Some(Some(tomorrow)),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+}
+
+#[sqlx::test]
+async fn update_me_rejects_birth_date_before_1900(db: PgPool) {
+    let user_id = common::seed_member(&db, "ancient-bday@example.com", "hunter22-secret").await;
+    let too_old = NaiveDate::from_ymd_opt(1899, 12, 31).unwrap();
+
+    let err = service::update_me(
+        &db,
+        user_id,
+        UpdateProfileRequest {
+            name: None,
+            phone: None,
+            avatar_url: None,
+            preferences: None,
+            birth_date: Some(Some(too_old)),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 }
 
 #[sqlx::test]

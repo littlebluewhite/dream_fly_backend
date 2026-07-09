@@ -3,27 +3,33 @@ use uuid::Uuid;
 
 use super::model::{Booking, BookingStatus};
 
+/// `price_cents` is the slot's price *at booking time* — the caller reads
+/// it off the `TimeSlot` row it already fetched (see
+/// `bookings::service::create_booking`) and passes it straight through so
+/// it's captured as an immutable snapshot on the booking row itself.
 pub async fn create_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     time_slot_id: Uuid,
     note: Option<&str>,
+    price_cents: i64,
 ) -> Result<Booking, sqlx::Error> {
     sqlx::query_as::<_, Booking>(
-        "INSERT INTO bookings (id, user_id, time_slot_id, status, note, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, 'confirmed'::booking_status, $3, now(), now()) \
-         RETURNING id, user_id, time_slot_id, status, note, created_at, updated_at",
+        "INSERT INTO bookings (id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'confirmed'::booking_status, $3, $4, now(), now()) \
+         RETURNING id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at",
     )
     .bind(user_id)
     .bind(time_slot_id)
     .bind(note)
+    .bind(price_cents)
     .fetch_one(&mut **tx)
     .await
 }
 
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Booking>, sqlx::Error> {
     sqlx::query_as::<_, Booking>(
-        "SELECT id, user_id, time_slot_id, status, note, created_at, updated_at \
+        "SELECT id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at \
          FROM bookings WHERE id = $1",
     )
     .bind(id)
@@ -38,7 +44,7 @@ pub async fn find_by_id_tx(
     id: Uuid,
 ) -> Result<Option<Booking>, sqlx::Error> {
     sqlx::query_as::<_, Booking>(
-        "SELECT id, user_id, time_slot_id, status, note, created_at, updated_at \
+        "SELECT id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at \
          FROM bookings WHERE id = $1 \
          FOR UPDATE",
     )
@@ -54,7 +60,7 @@ pub async fn find_by_user(
     offset: u32,
 ) -> Result<Vec<Booking>, sqlx::Error> {
     sqlx::query_as::<_, Booking>(
-        "SELECT id, user_id, time_slot_id, status, note, created_at, updated_at \
+        "SELECT id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at \
          FROM bookings WHERE user_id = $1 \
          ORDER BY created_at DESC \
          LIMIT $2 OFFSET $3",
@@ -72,7 +78,7 @@ pub async fn find_all(
     offset: u32,
 ) -> Result<Vec<Booking>, sqlx::Error> {
     sqlx::query_as::<_, Booking>(
-        "SELECT id, user_id, time_slot_id, status, note, created_at, updated_at \
+        "SELECT id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at \
          FROM bookings \
          ORDER BY created_at DESC \
          LIMIT $1 OFFSET $2",
@@ -106,7 +112,7 @@ pub async fn update_status_tx(
     sqlx::query_as::<_, Booking>(
         "UPDATE bookings SET status = $2::booking_status, updated_at = NOW() \
          WHERE id = $1 \
-         RETURNING id, user_id, time_slot_id, status, note, created_at, updated_at",
+         RETURNING id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at",
     )
     .bind(id)
     .bind(status.as_str())
@@ -125,7 +131,7 @@ pub async fn cancel_if_active_tx(
         "UPDATE bookings \
          SET status = 'cancelled'::booking_status, updated_at = NOW() \
          WHERE id = $1 AND status <> 'cancelled'::booking_status \
-         RETURNING id, user_id, time_slot_id, status, note, created_at, updated_at",
+         RETURNING id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
