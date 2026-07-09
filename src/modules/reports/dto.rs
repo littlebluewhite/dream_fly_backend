@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -81,4 +82,23 @@ pub struct MemberReportResponse {
     pub points_balance: i64,
     pub active_enrolments: i64,
     pub upcoming_sessions_7d: i64,
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin/activity
+// ---------------------------------------------------------------------------
+
+/// One entry of `GET /reports/admin/activity`'s `items` — `label` is a
+/// backend-composed, Traditional Chinese human-readable string (see
+/// `service::activity_label`); `kind` lets the frontend pick an icon.
+#[derive(Debug, Serialize)]
+pub struct ActivityItem {
+    pub kind: String,
+    pub label: String,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityResponse {
+    pub items: Vec<ActivityItem>,
 }

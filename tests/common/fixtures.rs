@@ -109,6 +109,37 @@ pub async fn seed_course_schedule_slot(
     id
 }
 
+/// Same as [`seed_course_schedule_slot`] but with a caller-supplied `venue`
+/// (that fixture hardcodes `NULL`). Additive variant for `GET /sessions/
+/// today`'s `venue` field tests (Round 4 Task B8), which need a slot that
+/// actually resolves to a non-null venue.
+pub async fn seed_course_schedule_slot_with_venue(
+    db: &PgPool,
+    course_id: Uuid,
+    day_of_week: i16,
+    start_time: NaiveTime,
+    end_time: NaiveTime,
+    venue: &str,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO course_schedule_slots (id, course_id, day_of_week, start_time, end_time, venue, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(course_id)
+    .bind(day_of_week)
+    .bind(start_time)
+    .bind(end_time)
+    .bind(venue)
+    .execute(db)
+    .await
+    .expect("insert course_schedule_slot with venue");
+    id
+}
+
 /// Insert a `course_sessions` row directly (bypassing
 /// `sessions::repository::materialize_range`), so attendance tests get a
 /// concrete session id without first setting up a weekly schedule slot.

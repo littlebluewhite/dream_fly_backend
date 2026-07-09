@@ -1,8 +1,9 @@
 //! Integration tests for `reports::service` — the `/reports/admin`,
-//! `/reports/coach`, `/reports/me` aggregation endpoints.
+//! `/reports/coach`, `/reports/me`, `/reports/admin/activity` aggregation
+//! endpoints.
 //!
 //! Covered paths (task brief's Tests section):
-//! - every endpoint on an empty DB returns all-zero/all-null, not a 500
+//! - every endpoint on an empty DB returns all-zero/all-null/empty, not a 500
 //! - admin revenue counts only the "paid family" (paid/processing/
 //!   completed) and never a refunded order, even one with a real `paid_at`
 //! - fill_rate's divide-by-zero guard (pure unit test — see
@@ -13,6 +14,9 @@
 //!   for both the coach and member endpoints
 //! - a coach's report only reflects their own domain (courses/students/
 //!   sessions), never another coach's
+//! - `admin_activity` (Round 4 Task B8): all four `kind`s surface, results
+//!   are sorted `occurred_at` descending, and the merge caps at 20 even with
+//!   more candidate rows available
 
 mod common;
 
@@ -88,6 +92,35 @@ async fn seed_order(
     .execute(db)
     .await
     .expect("insert order");
+    id
+}
+
+/// Insert a `contact_inquiries` row directly (no shared fixture exists for
+/// this table), so the activity tests can control `created_at`/
+/// `inquiry_type`/`subject`/`name` precisely. Mirrors `seed_order`'s
+/// "local, leaner-than-a-shared-fixture" pattern above.
+async fn seed_inquiry(
+    db: &PgPool,
+    name: &str,
+    subject: &str,
+    inquiry_type: &str,
+    created_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO contact_inquiries \
+         (id, name, email, subject, message, status, inquiry_type, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, 'Test message', 'new'::inquiry_status, $5, $6, $6)",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(format!("{id}@example.com"))
+    .bind(subject)
+    .bind(inquiry_type)
+    .bind(created_at)
+    .execute(db)
+    .await
+    .expect("insert contact_inquiry");
     id
 }
 
@@ -566,4 +599,106 @@ async fn member_report_upcoming_sessions_7d_materializes_and_respects_window(db:
     .await
     .unwrap();
     assert!(!far_session_exists, "a date 10 days out must not be materialized by the 7-day window");
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin/activity
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn admin_activity_empty_db_returns_empty_items(db: PgPool) {
+    let report = service::admin_activity(&db).await.expect("admin_activity");
+    assert!(report.items.is_empty());
+}
+
+#[sqlx::test]
+async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
+    let now = Utc::now();
+
+    // A brand-new user (kind=user) — oldest of the four headline events.
+    let new_user_id = seed_member(&db, "activity-newuser@example.com", "Password!234").await;
+    sqlx::query("UPDATE users SET created_at = $2, name = $3 WHERE id = $1")
+        .bind(new_user_id)
+        .bind(now - Duration::minutes(40))
+        .bind("Activity New User")
+        .execute(&db)
+        .await
+        .expect("backdate new user");
+
+    // A buyer + paid order (kind=order).
+    let buyer_id = seed_member(&db, "activity-buyer@example.com", "Password!234").await;
+    seed_order(&db, buyer_id, "paid", 50_000, Some(now - Duration::minutes(30))).await;
+
+    // A course + enrolment (kind=enrolment).
+    let course_id = seed_course(&db, "Activity Feed Course", None).await;
+    let student_id = seed_member(&db, "activity-student@example.com", "Password!234").await;
+    seed_enrolment(&db, student_id, course_id, "active", now - Duration::minutes(20)).await;
+
+    // A contact inquiry (kind=inquiry) — newest of the four.
+    seed_inquiry(&db, "Activity Asker", "課程諮詢", "general", now - Duration::minutes(10)).await;
+
+    let report = service::admin_activity(&db).await.expect("admin_activity");
+
+    let kinds: Vec<&str> = report.items.iter().map(|i| i.kind.as_str()).collect();
+    for expected in ["user", "order", "enrolment", "inquiry"] {
+        assert!(kinds.contains(&expected), "missing kind {expected} in {kinds:?}");
+    }
+
+    // The whole merged+sorted list (including the buyer/student's own
+    // incidental `user` rows) must be non-increasing by `occurred_at`.
+    for pair in report.items.windows(2) {
+        assert!(
+            pair[0].occurred_at >= pair[1].occurred_at,
+            "items must be sorted occurred_at desc, got {:?}",
+            report.items.iter().map(|i| (&i.kind, i.occurred_at)).collect::<Vec<_>>()
+        );
+    }
+
+    let user_item = report
+        .items
+        .iter()
+        .find(|i| i.label == "新會員註冊:Activity New User")
+        .expect("headline user activity present");
+    let order_item = report.items.iter().find(|i| i.kind == "order").expect("order activity present");
+    let enrolment_item =
+        report.items.iter().find(|i| i.kind == "enrolment").expect("enrolment activity present");
+    let inquiry_item =
+        report.items.iter().find(|i| i.kind == "inquiry").expect("inquiry activity present");
+
+    assert!(order_item.label.starts_with("訂單 RPT-"), "got label={}", order_item.label);
+    assert!(order_item.label.contains("已付款:NT$500"), "got label={}", order_item.label);
+    assert_eq!(enrolment_item.label, "新報名:Activity Feed Course");
+    assert_eq!(inquiry_item.label, "新洽詢(general):課程諮詢");
+
+    // The four headline events' relative order must reflect their
+    // `occurred_at` offsets (-10m newest .. -40m oldest).
+    assert!(inquiry_item.occurred_at > enrolment_item.occurred_at, "inquiry should be newer than enrolment");
+    assert!(enrolment_item.occurred_at > order_item.occurred_at, "enrolment should be newer than order");
+    assert!(order_item.occurred_at > user_item.occurred_at, "order should be newer than the headline user");
+}
+
+#[sqlx::test]
+async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
+    let now = Utc::now();
+    for i in 0..25i64 {
+        let user_id = seed_member(&db, &format!("activity-cap-{i}@example.com"), "Password!234").await;
+        sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(now - Duration::minutes(i))
+            .execute(&db)
+            .await
+            .expect("backdate cap-test user");
+    }
+
+    let report = service::admin_activity(&db).await.expect("admin_activity");
+    assert_eq!(report.items.len(), 20, "must cap at 20 even with 25 candidate rows");
+
+    // The 20 most recent (offsets 0..19 minutes ago) must all be present;
+    // the 5 oldest (20..24 minutes ago) must have been dropped.
+    let cutoff = now - Duration::minutes(19);
+    assert!(
+        report.items.iter().all(|i| i.occurred_at >= cutoff),
+        "oldest rows must have been dropped by the 20-cap, got {:?}",
+        report.items.iter().map(|i| i.occurred_at).collect::<Vec<_>>()
+    );
 }

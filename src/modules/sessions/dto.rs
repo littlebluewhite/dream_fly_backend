@@ -89,14 +89,22 @@ impl From<CourseSession> for CourseSessionResponse {
 /// id to record attendance against, and this task is documented as its
 /// foundation, so omitting it would just force an extra round-trip. Flagged
 /// in the task report as a deliberate, low-risk addition.
+///
+/// Round 4 Task B8 added `coach_name`/`venue` (additive — shared by both the
+/// coach and admin branches of `GET /sessions/today`, see `sessions::
+/// service::today_sessions`). Both are nullable: `coach_name` when the
+/// course has no assigned coach, `venue` when no `course_schedule_slots` row
+/// matches the session's derived `(course_id, day_of_week, start_time)`.
 #[derive(Debug, Serialize)]
 pub struct TodaySessionResponse {
     pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
+    pub coach_name: Option<String>,
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
     pub enrolled_count: i64,
+    pub venue: Option<String>,
 }
 
 impl From<TodaySessionRow> for TodaySessionResponse {
@@ -105,9 +113,11 @@ impl From<TodaySessionRow> for TodaySessionResponse {
             id: r.id,
             course_id: r.course_id,
             course_name: r.course_name,
+            coach_name: r.coach_name,
             start_time: r.start_time,
             end_time: r.end_time,
             enrolled_count: r.enrolled_count,
+            venue: r.venue,
         }
     }
 }

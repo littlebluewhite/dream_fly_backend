@@ -1,5 +1,6 @@
 //! HTTP integration tests for the reports module's endpoints:
-//! `GET /reports/admin`, `GET /reports/coach`, `GET /reports/me`.
+//! `GET /reports/admin`, `GET /reports/coach`, `GET /reports/me`,
+//! `GET /reports/admin/activity`.
 
 mod common;
 
@@ -164,4 +165,41 @@ async fn member_report_as_coach_role_also_returns_200(db: PgPool) {
         .authorization_bearer(&token)
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin/activity
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn admin_activity_without_auth_returns_401(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let resp = app.get("/api/v1/reports/admin/activity").await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[sqlx::test]
+async fn admin_activity_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("reports-activity-member@example.com", "Password!234").await;
+
+    let resp = app
+        .get("/api/v1/reports/admin/activity")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 403, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn admin_activity_as_admin_returns_200_with_shape(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .get("/api/v1/reports/admin/activity")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["items"].as_array().is_some());
 }

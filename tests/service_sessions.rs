@@ -21,7 +21,10 @@ use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{repository as sessions_repository, service};
 
-use common::fixtures::{seed_coach, seed_course, seed_course_schedule_slot, seed_enrolment};
+use common::fixtures::{
+    seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
+    seed_course_session, seed_enrolment,
+};
 
 fn auth_for(user_id: Uuid, roles: &[&str]) -> AuthUser {
     AuthUser {
@@ -240,6 +243,76 @@ async fn today_sessions_coach_role_without_coach_row_returns_empty(db: PgPool) {
         .await
         .expect("today sessions");
     assert!(sessions.is_empty());
+}
+
+#[sqlx::test]
+async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPool) {
+    let coach_user = common::seed_member(&db, "coach-name-today@example.com", "hunter22-secret").await;
+    sqlx::query("UPDATE users SET name = $2 WHERE id = $1")
+        .bind(coach_user)
+        .bind("Today Coach Display Name")
+        .execute(&db)
+        .await
+        .expect("rename coach user");
+    let coach_id = seed_coach(&db, coach_user, "Today Coach Title").await;
+    let with_coach = seed_course(&db, "Course With Coach Today", Some(coach_id)).await;
+    let without_coach = seed_course(&db, "Course Without Coach Today", None).await;
+
+    let today = Utc::now().date_naive();
+    let dow = dow_of(today);
+    seed_course_schedule_slot(&db, with_coach, dow, t(9, 0), t(10, 0)).await;
+    seed_course_schedule_slot(&db, without_coach, dow, t(11, 0), t(12, 0)).await;
+
+    let admin_id = common::seed_member(&db, "coach-name-admin@example.com", "hunter22-secret").await;
+    let auth = auth_for(admin_id, &["admin"]);
+    let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
+        .await
+        .expect("today sessions");
+
+    let with_row = sessions.iter().find(|s| s.course_id == with_coach).expect("with_coach session");
+    assert_eq!(with_row.coach_name.as_deref(), Some("Today Coach Display Name"));
+
+    let without_row =
+        sessions.iter().find(|s| s.course_id == without_coach).expect("without_coach session");
+    assert_eq!(without_row.coach_name, None, "course has no coach_id -> null");
+}
+
+#[sqlx::test]
+async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
+    let course_id = seed_course(&db, "Venue Match Course Today", None).await;
+    let today = Utc::now().date_naive();
+    let dow = dow_of(today);
+    seed_course_schedule_slot_with_venue(&db, course_id, dow, t(9, 0), t(10, 0), "Main Hall").await;
+
+    let admin_id = common::seed_member(&db, "venue-match-admin@example.com", "hunter22-secret").await;
+    let auth = auth_for(admin_id, &["admin"]);
+    let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
+        .await
+        .expect("today sessions");
+
+    let row = sessions.iter().find(|s| s.course_id == course_id).expect("session present");
+    assert_eq!(row.venue.as_deref(), Some("Main Hall"));
+}
+
+#[sqlx::test]
+async fn today_sessions_venue_is_null_when_no_matching_slot(db: PgPool) {
+    // A materialized session with no corresponding `course_schedule_slots`
+    // row at all — covers both stated causes in the brief ("slot 改過/無
+    // slot"): whether the slot was edited away or never existed, the LEFT
+    // JOIN finds nothing either way, so this single setup exercises the
+    // exact same code path as a since-changed slot.
+    let course_id = seed_course(&db, "Venue No Match Course Today", None).await;
+    let today = Utc::now().date_naive();
+    seed_course_session(&db, course_id, today, t(9, 0), t(10, 0)).await;
+
+    let admin_id = common::seed_member(&db, "venue-no-match-admin@example.com", "hunter22-secret").await;
+    let auth = auth_for(admin_id, &["admin"]);
+    let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
+        .await
+        .expect("today sessions");
+
+    let row = sessions.iter().find(|s| s.course_id == course_id).expect("session present");
+    assert_eq!(row.venue, None);
 }
 
 #[sqlx::test]

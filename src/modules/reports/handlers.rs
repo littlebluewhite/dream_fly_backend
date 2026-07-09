@@ -4,7 +4,7 @@ use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 
-use super::dto::{AdminReportResponse, CoachReportResponse, MemberReportResponse};
+use super::dto::{ActivityResponse, AdminReportResponse, CoachReportResponse, MemberReportResponse};
 use super::service;
 
 /// `GET /reports/admin` — admin only.
@@ -36,5 +36,16 @@ pub async fn member_report(
     auth: AuthUser,
 ) -> Result<Json<MemberReportResponse>, AppError> {
     let report = service::member_report(&state.db, &state.config.server, auth.user_id).await?;
+    Ok(Json(report))
+}
+
+/// `GET /reports/admin/activity` — admin only.
+#[tracing::instrument(skip_all)]
+pub async fn admin_activity(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<ActivityResponse>, AppError> {
+    auth.require_role("admin")?;
+    let report = service::admin_activity(&state.db).await?;
     Ok(Json(report))
 }

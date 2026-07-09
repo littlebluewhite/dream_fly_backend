@@ -204,6 +204,7 @@
 | Contact | GET | `/contact/inquiries` | admin |
 | Contact | PATCH | `/contact/inquiries/{id}` | admin |
 | Reports | GET | `/reports/admin` | admin |
+| Reports | GET | `/reports/admin/activity` | admin |
 | Reports | GET | `/reports/coach` | coach |
 | Reports | GET | `/reports/me` | 需登入 |
 | Settings | GET | `/settings` | admin |
@@ -782,17 +783,18 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 ```
 
 #### `GET /sessions/today` — admin 或 coach
-教練：先物化、再只回「自己課程」（`courses.coach_id` 對應呼叫者的 `coaches.id`）今日場次；若呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列（資料異常），回空陣列而非錯誤。admin：物化並回**全部課程**今日場次。回應（`TodaySessionResponse[]`，純陣列，依 `start_time` 排序）：
+教練：先物化、再只回「自己課程」（`courses.coach_id` 對應呼叫者的 `coaches.id`）今日場次；若呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列（資料異常），回空陣列而非錯誤。admin：物化並回**全部課程**今日場次。回應（`TodaySessionResponse[]`，純陣列，依 `start_time` 排序，教練與 admin 兩分支共用同一回應型）：
 
 ```jsonc
 [
   { "id": "uuid", "course_id": "uuid", "course_name": "string",
+    "coach_name": "string|null",
     "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
-    "enrolled_count": "number" }
+    "enrolled_count": "number", "venue": "string|null" }
 ]
 ```
 
-`enrolled_count` 為即時計算（該課程 `enrolments.status='active'` 筆數）。
+`enrolled_count` 為即時計算（該課程 `enrolments.status='active'` 筆數）。`coach_name`（Round 4 Task B8 新增）為 `null` 表示該課程尚未指定教練，語意同 `GET /schedule/me` 的 `coach_name`。`venue`（同批新增）由該場次的日期反推 `day_of_week` + `start_time`，回頭 JOIN `course_schedule_slots`（`course_schedule_slots_unique (course_id, day_of_week, start_time)` 為可逆鍵）取得；找不到對應 slot（slot 已被修改或刪除）時為 `null`。
 
 #### `GET /schedule/me` — 需登入
 回呼叫者「active enrolments 對應課程」的週模式（**不物化，直接讀 `course_schedule_slots`**——與上面兩個端點不同，這裡回的是週模式本身，不是實際日期場次）。回應（`MyScheduleEntryResponse[]`，純陣列，依 `day_of_week, start_time` 排序）：
@@ -1090,6 +1092,7 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?,
 3. `attendance_rate`（member）與 `attendance_rate_30d`（coach）定義相同：`present / (present + absent)`；`leave` 不計入分子、也不計入分母；無出勤資料時回 `null`（不是 `0`）。
 4. `fill_rate`（admin `courses[]`）定義為 `enrolled / max_students`。`max_students` 現有 `CHECK (max_students > 0)` 保證恆為正，但計算仍防禦性地在分母為 `0` 時回 `null`，不產生除以零（`NaN`/`Infinity` 無法序列化為合法 JSON）。
 5. `GET /reports/coach` 用 `require_role("coach")`——**單一角色檢查，無 admin 例外**（與部分教練資源端點如 `GET /sessions/today` 的「admin 或 coach」不同：admin 若未同時掛 `coach` 角色，呼叫本端點一律 403）。呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列 → **404**（訊息「coach not found」，比照 `coaches` 模組本身查無資料列時的既有慣例）——這點與 `GET /sessions/today`／`GET /coaches/me/students` 遇到同一資料異常時「降級回空陣列」不同：本端點回傳單一物件而非列表，沒有自然的「空」值可用，零值/null 會與「有效教練但剛好沒有學員」混淆，故改用 404 明確表達「找不到教練身分」。
+6. `GET /reports/admin/activity`（Round 4 Task B8 新增，見下）是本節唯一的例外：回應為 `{ "items": [...] }` 陣列包裝，不是單一物件；僅 admin（不是 admin/coach/member 三選一）。
 
 #### `GET /reports/admin` — admin
 
@@ -1162,6 +1165,27 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?,
 - `upcoming_sessions_7d`：呼叫者 active enrolments 對應課程，物化後落在上述 8 天區間內的場次數。
 
 空庫（呼叫者無任何報名/出勤紀錄）：`attended_total`/`active_enrolments`/`upcoming_sessions_7d` 皆 `0`，`attendance_rate` 為 `null`，`points_balance` 為使用者當前餘額（通常 `0`）——不會是 500。
+
+#### `GET /reports/admin/activity` — admin
+
+Admin 桌面「最新動態」面板的資料源（Round 4 Task B8）。UNION 四來源，各自取最近 20 筆再合併依 `occurred_at` 倒序取 20：新註冊會員（`users.created_at`）、新付款訂單（`orders`，見下方裁決）、新報名（`enrolments.created_at`）、新洽詢（`contact_inquiries.created_at`，含 §3.17 的 `inquiry_type`）。
+
+```jsonc
+{
+  "items": [
+    { "kind": "user|order|enrolment|inquiry", "label": "string", "occurred_at": "ISO8601" }
+  ]
+}
+```
+
+- `label` 由後端組成的繁體中文人讀字串，四種 `kind` 各自的模板：
+  - `user`：「新會員註冊:{name}」
+  - `order`：「訂單 {order_number} 已付款:NT${金額}」——金額為 `total_cents / 100`（整數元，無小數）；這是本端點唯一嵌入金額的欄位，回應形狀沒有另外的數值欄位可放格式化前的 cents。
+  - `enrolment`：「新報名:{course_name}」
+  - `inquiry`：「新洽詢({inquiry_type}):{subject 或 name}」（`subject` 為空字串時退回 `name`，但目前寫入路徑保證 `subject` 恆非空）
+- `kind` 供前端配對應圖示，不做其他語意保證。
+- 「已付款」訂單採 `status IN ('paid','processing','completed')`（`orders::model::REVENUE_STATUSES`，與 `GET /reports/admin` 的 `revenue` 計算同一組狀態），而非單看 `paid_at IS NOT NULL`——已退款訂單雖仍保有原始 `paid_at`（見 §1.8），但已離開「已付」狀態家族，不應再被當成一筆新的付款動態呈現。
+- 空庫（四張表皆無資料）：`items` 為 `[]`，不是 500。
 
 #### mock 有但契約無（無對應資料源，前端可視情況移除或維持既有 P2 標記）
 

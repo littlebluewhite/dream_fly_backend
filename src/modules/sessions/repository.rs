@@ -164,6 +164,12 @@ pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec
         .await
 }
 
+/// `coach_name` JOINs the same way as `find_my_weekly_schedule` (courses ->
+/// coaches -> users, LEFT so a coachless course still yields a row).
+/// `venue` rejoins `course_schedule_slots` on the session's derived
+/// `(course_id, day_of_week, start_time)` — the reversible key
+/// `course_schedule_slots_unique` guarantees at most one match, so this
+/// LEFT JOIN can never fan out a session into more than one row.
 pub async fn find_today_by_course_ids(
     db: &PgPool,
     course_ids: &[Uuid],
@@ -174,10 +180,18 @@ pub async fn find_today_by_course_ids(
     }
 
     sqlx::query_as::<_, TodaySessionRow>(
-        "SELECT cs.id, cs.course_id, c.name AS course_name, cs.start_time, cs.end_time, \
-         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = cs.course_id AND e.status = 'active') AS enrolled_count \
+        "SELECT cs.id, cs.course_id, c.name AS course_name, u.name AS coach_name, \
+         cs.start_time, cs.end_time, \
+         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = cs.course_id AND e.status = 'active') AS enrolled_count, \
+         s.venue AS venue \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
+         LEFT JOIN coaches co ON co.id = c.coach_id \
+         LEFT JOIN users u ON u.id = co.user_id \
+         LEFT JOIN course_schedule_slots s \
+           ON s.course_id = cs.course_id \
+          AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
+          AND s.start_time = cs.start_time \
          WHERE cs.session_date = $1 AND cs.course_id = ANY($2::uuid[]) \
          ORDER BY cs.start_time",
     )

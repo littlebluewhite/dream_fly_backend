@@ -4,7 +4,10 @@
 mod common;
 
 use chrono::{Datelike, Duration, NaiveTime, Utc};
-use common::fixtures::{seed_coach, seed_course, seed_course_schedule_slot, seed_enrolment};
+use common::fixtures::{
+    seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
+    seed_enrolment,
+};
 use common::http::spawn_test_app;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -192,6 +195,58 @@ async fn today_as_admin_returns_all_courses(db: PgPool) {
         .collect();
     assert!(ids.contains(&course_a.to_string()));
     assert!(ids.contains(&course_b.to_string()));
+}
+
+#[sqlx::test]
+async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
+    // Round 4 Task B8: admin's `GET /sessions/today` gains `coach_name`
+    // (nullable — present when the course has a coach, null otherwise) and
+    // `venue` (nullable — resolved back through `course_schedule_slots`,
+    // null when the slot has no venue set).
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let (coach_user_id, _coach_token) =
+        app.seed_user_with_roles("sess-today-admin-coach@example.com", &["coach"]).await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "Today Admin Coach").await;
+
+    let course_with_coach = seed_course(&app.db, "HTTP Today Coach Venue Course", Some(coach_id)).await;
+    let course_without_coach = seed_course(&app.db, "HTTP Today No Coach No Venue Course", None).await;
+
+    let today = Utc::now().date_naive();
+    let dow = dow_of(today);
+    seed_course_schedule_slot_with_venue(
+        &app.db,
+        course_with_coach,
+        dow,
+        t(9, 0),
+        t(10, 0),
+        "Studio A",
+    )
+    .await;
+    seed_course_schedule_slot(&app.db, course_without_coach, dow, t(14, 0), t(15, 0)).await;
+
+    let resp = app
+        .get("/api/v1/sessions/today")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let arr = body.as_array().expect("plain array");
+
+    let entry_with = arr
+        .iter()
+        .find(|s| s["course_id"] == course_with_coach.to_string())
+        .expect("course_with_coach session present");
+    assert_eq!(entry_with["coach_name"], "Seeded User");
+    assert_eq!(entry_with["venue"], "Studio A");
+
+    let entry_without = arr
+        .iter()
+        .find(|s| s["course_id"] == course_without_coach.to_string())
+        .expect("course_without_coach session present");
+    assert!(entry_without["coach_name"].is_null(), "course has no coach -> null");
+    assert!(entry_without["venue"].is_null(), "slot has no venue -> null");
 }
 
 // ---------------------------------------------------------------------------

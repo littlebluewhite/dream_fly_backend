@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::modules::orders::model::REVENUE_STATUSES;
 
-use super::model::{AdminCoachRow, AdminCourseRow};
+use super::model::{ActivityRow, AdminCoachRow, AdminCourseRow};
 
 /// `attendance_records.status` values shared by [`coach_attendance_in_range`]
 /// and [`member_attendance`] — one spelling of each literal instead of two.
@@ -265,5 +265,70 @@ pub async fn upcoming_session_count(
     .bind(from)
     .bind(to)
     .fetch_one(db)
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin/activity
+// ---------------------------------------------------------------------------
+
+/// Recent operational events across four sources — new user signups, paid
+/// orders, new enrolments, and new contact inquiries — merged and sorted by
+/// `occurred_at` descending, capped at 20. Each branch is independently
+/// `ORDER BY ... DESC LIMIT 20` *before* the outer UNION ALL sorts and caps
+/// again to 20 total, so no branch ever needs a full table scan regardless
+/// of how large `users`/`orders`/`enrolments`/`contact_inquiries` grow — and
+/// since the final result only ever has 20 slots, no branch could
+/// contribute more than 20 rows to it anyway, so per-branch LIMIT 20 never
+/// drops a row that should have made the final cut.
+///
+/// Orders count as "paid" via `status::text = ANY($1)` against
+/// `REVENUE_STATUSES` (the same status set `revenue_trend` uses for the
+/// admin report's revenue section) rather than `paid_at IS NOT NULL` alone
+/// — a refunded/cancelled order keeps its original `paid_at` (see
+/// `orders::repository::update_status_and_paid_at_tx`) but has left the
+/// paid family, and surfacing it as a fresh "已付款" event would misrepresent
+/// its current state. The extra `paid_at IS NOT NULL` guard is
+/// belt-and-suspenders: every row reaching `status = ANY($1)` is guaranteed
+/// one by the order status machine, but this keeps decoding into a non-
+/// `Option<DateTime<Utc>>` `occurred_at` column provably safe at the SQL
+/// level too, not just by app-level invariant.
+///
+/// The contact-inquiry branch's `detail` falls back to `name` when
+/// `subject` is empty (`COALESCE(NULLIF(subject, ''), name)`) per the task
+/// brief's "{subject 或 name}" wording, even though `subject` is currently
+/// `NOT NULL` and application-validated non-empty on every write path — a
+/// defensive fallback for stored data the validation layer didn't produce.
+pub async fn recent_activity(db: &PgPool) -> Result<Vec<ActivityRow>, sqlx::Error> {
+    sqlx::query_as::<_, ActivityRow>(
+        "SELECT * FROM ( \
+           (SELECT 'user' AS kind, name AS detail, NULL::bigint AS amount_cents, \
+                   NULL::text AS inquiry_type, created_at AS occurred_at \
+            FROM users \
+            ORDER BY created_at DESC LIMIT 20) \
+           UNION ALL \
+           (SELECT 'order' AS kind, order_number AS detail, total_cents AS amount_cents, \
+                   NULL::text AS inquiry_type, paid_at AS occurred_at \
+            FROM orders \
+            WHERE status::text = ANY($1) AND paid_at IS NOT NULL \
+            ORDER BY paid_at DESC LIMIT 20) \
+           UNION ALL \
+           (SELECT 'enrolment' AS kind, c.name AS detail, NULL::bigint AS amount_cents, \
+                   NULL::text AS inquiry_type, e.created_at AS occurred_at \
+            FROM enrolments e \
+            JOIN courses c ON c.id = e.course_id \
+            ORDER BY e.created_at DESC LIMIT 20) \
+           UNION ALL \
+           (SELECT 'inquiry' AS kind, COALESCE(NULLIF(subject, ''), name) AS detail, \
+                   NULL::bigint AS amount_cents, inquiry_type::text AS inquiry_type, \
+                   created_at AS occurred_at \
+            FROM contact_inquiries \
+            ORDER BY created_at DESC LIMIT 20) \
+         ) merged \
+         ORDER BY occurred_at DESC \
+         LIMIT 20",
+    )
+    .bind(&REVENUE_STATUSES[..])
+    .fetch_all(db)
     .await
 }

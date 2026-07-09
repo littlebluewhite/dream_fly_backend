@@ -10,9 +10,11 @@ use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::studio_clock;
 
 use super::dto::{
-    AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection, AdminReportResponse,
-    AdminRevenueSection, CoachReportResponse, MemberReportResponse, RevenueMonthPoint,
+    ActivityItem, ActivityResponse, AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection,
+    AdminReportResponse, AdminRevenueSection, CoachReportResponse, MemberReportResponse,
+    RevenueMonthPoint,
 };
+use super::model::ActivityRow;
 use super::repository;
 
 /// Trailing window for the coach dashboard's rolling attendance rate
@@ -169,6 +171,45 @@ pub async fn member_report(
         active_enrolments,
         upcoming_sessions_7d,
     })
+}
+
+/// `GET /reports/admin/activity`. Role gating (`admin` only) happens in the
+/// handler. Merges the 20 most recent rows from four operational-event
+/// sources (see `repository::recent_activity`) and formats each into a
+/// backend-composed label string via `activity_label`.
+pub async fn admin_activity(db: &PgPool) -> Result<ActivityResponse, AppError> {
+    let rows = repository::recent_activity(db).await?;
+    let items = rows.into_iter().map(activity_label).collect();
+    Ok(ActivityResponse { items })
+}
+
+/// Formats one merged UNION row into its response shape — the one place
+/// that knows each `kind`'s (Traditional Chinese, task-brief-verbatim)
+/// label template. `amount_cents`/`inquiry_type` are `None` for every kind
+/// except `order`/`inquiry` respectively (see `model::ActivityRow`'s doc
+/// comment), so `unwrap_or` defaults there are unreachable in practice, not
+/// a masked error case. The `order` amount is rendered as whole NT dollars
+/// (`cents / 100`, no decimals) embedded directly in the label — this
+/// module's response shape has no separate amount field, so an
+/// amount-bearing label has nowhere else to put it (see task report for the
+/// brief's internally-inconsistent wording on this point).
+fn activity_label(row: ActivityRow) -> ActivityItem {
+    let label = match row.kind.as_str() {
+        "user" => format!("新會員註冊:{}", row.detail),
+        "order" => {
+            let dollars = row.amount_cents.unwrap_or(0) / 100;
+            format!("訂單 {} 已付款:NT${dollars}", row.detail)
+        }
+        "enrolment" => format!("新報名:{}", row.detail),
+        "inquiry" => {
+            let inquiry_type = row.inquiry_type.as_deref().unwrap_or("general");
+            format!("新洽詢({inquiry_type}):{}", row.detail)
+        }
+        // Unreachable given `repository::recent_activity`'s fixed 4-branch
+        // UNION always tags one of the four kinds above.
+        other => format!("{}:{}", other, row.detail),
+    };
+    ActivityItem { kind: row.kind, label, occurred_at: row.occurred_at }
 }
 
 #[cfg(test)]

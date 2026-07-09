@@ -33,14 +33,22 @@ pub struct CourseSession {
 /// One row of `GET /sessions/today` — a materialized session JOINed with its
 /// course name, plus a live count of that course's active enrolments (same
 /// correlated-subquery pattern as `courses::model::Course::enrolled_count`).
+/// Round 4 Task B8 additive fields: `coach_name` (JOIN courses -> coaches ->
+/// users, `None` when the course has no assigned coach) and `venue`
+/// (resolved by rejoining `course_schedule_slots` on the session's derived
+/// `(course_id, day_of_week, start_time)` — the same reversible key
+/// `course_schedule_slots_unique` enforces — `None` when no slot matches,
+/// e.g. the slot was edited or deleted after this session materialized).
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct TodaySessionRow {
     pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
+    pub coach_name: Option<String>,
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
     pub enrolled_count: i64,
+    pub venue: Option<String>,
 }
 
 /// One row of `GET /schedule/me` — a course's weekly slot (not a materialized

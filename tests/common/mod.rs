@@ -126,9 +126,18 @@ pub async fn seed_time_slot_on_with_start(
     start: NaiveTime,
 ) -> Uuid {
     let id = Uuid::now_v7();
-    // `overflowing_add_signed` wraps at midnight; tests don't care about the
-    // wrap since they only use start_time for comparison.
-    let (end, _carry) = start.overflowing_add_signed(chrono::Duration::hours(1));
+    // `overflowing_add_signed` wraps at midnight, which would violate the
+    // `time_slots_time_order CHECK (end_time > start_time)` whenever `start`
+    // lands in the last hour of the day (callers pass wall-clock-derived
+    // starts, so any test run between 20:00 and 21:00 UTC used to hit this)
+    // — clamp to end-of-day instead of wrapping. Tests only compare against
+    // `start_time`, so the exact clamped end value is inconsequential.
+    let (end, carry) = start.overflowing_add_signed(chrono::Duration::hours(1));
+    let end = if carry != 0 {
+        NaiveTime::from_hms_micro_opt(23, 59, 59, 999_999).unwrap()
+    } else {
+        end
+    };
 
     sqlx::query(
         r#"
