@@ -30,12 +30,30 @@ impl From<Coupon> for CouponResponse {
     }
 }
 
-/// Response for `GET /coupons/{code}/validate` — intentionally just the two
-/// fields a checkout flow needs, not the full admin `CouponResponse` shape.
+/// Response for `GET /coupons/{code}/validate` — the checkout-flow shape,
+/// not the full admin `CouponResponse`. `discount_cents` is always the
+/// coupon's face value, never clamped. `applied_discount_cents` is an
+/// optional preview of what checkout would actually apply —
+/// `min(discount_cents, subtotal_cents)`, the same clamp
+/// `orders::pricing::clamp_coupon_discount` uses — populated only when the
+/// caller supplies `?subtotal_cents=` (see `ValidateCouponQuery`).
+/// `#[serde(skip_serializing_if)]` keeps a response with no `subtotal_cents`
+/// byte-for-byte identical to before this field existed; the exact-body
+/// assertions in `tests/http_coupons.rs` are the regression net for that.
 #[derive(Debug, Serialize)]
 pub struct CouponValidateResponse {
     pub code: String,
     pub discount_cents: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_discount_cents: Option<i64>,
+}
+
+/// Query parameters for `GET /coupons/{code}/validate`. `subtotal_cents` is
+/// optional; omitting it is exactly the pre-existing behavior described on
+/// `CouponValidateResponse`.
+#[derive(Debug, Deserialize)]
+pub struct ValidateCouponQuery {
+    pub subtotal_cents: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

@@ -67,7 +67,7 @@ async fn validate_coupon_returns_active_unexpired(db: PgPool) {
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "DREAMFLY100")
+    let resp = service::validate_coupon(&db, "DREAMFLY100", None)
         .await
         .expect("validate");
     assert_eq!(resp.code, "DREAMFLY100");
@@ -80,7 +80,7 @@ async fn validate_coupon_is_case_insensitive(db: PgPool) {
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "dreamfly100")
+    let resp = service::validate_coupon(&db, "dreamfly100", None)
         .await
         .expect("validate lowercase");
     assert_eq!(resp.code, "DREAMFLY100");
@@ -91,7 +91,7 @@ async fn validate_coupon_is_case_insensitive(db: PgPool) {
 async fn validate_coupon_expired_returns_not_found(db: PgPool) {
     seed_coupon(&db, "EXPIRED10", 100, true, Some(Utc::now() - Duration::days(1))).await;
 
-    let err = service::validate_coupon(&db, "EXPIRED10")
+    let err = service::validate_coupon(&db, "EXPIRED10", None)
         .await
         .expect_err("expired coupon must not validate");
     assert!(matches!(err, AppError::NotFound(_)));
@@ -101,7 +101,7 @@ async fn validate_coupon_expired_returns_not_found(db: PgPool) {
 async fn validate_coupon_inactive_returns_not_found(db: PgPool) {
     seed_coupon(&db, "DISABLED10", 100, false, None).await;
 
-    let err = service::validate_coupon(&db, "DISABLED10")
+    let err = service::validate_coupon(&db, "DISABLED10", None)
         .await
         .expect_err("inactive coupon must not validate");
     assert!(matches!(err, AppError::NotFound(_)));
@@ -109,10 +109,75 @@ async fn validate_coupon_inactive_returns_not_found(db: PgPool) {
 
 #[sqlx::test]
 async fn validate_coupon_nonexistent_returns_not_found(db: PgPool) {
-    let err = service::validate_coupon(&db, "NOSUCHCODE")
+    let err = service::validate_coupon(&db, "NOSUCHCODE", None)
         .await
         .expect_err("unknown coupon must not validate");
     assert!(matches!(err, AppError::NotFound(_)));
+}
+
+// ---------------------------------------------------------------------------
+// `subtotal_cents` preview (Round 5 Task D2)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn validate_coupon_subtotal_below_face_value_clamps_applied_discount(db: PgPool) {
+    service::create_coupon(&db, req("CLAMPLOW", 1000))
+        .await
+        .expect("create");
+
+    let resp = service::validate_coupon(&db, "CLAMPLOW", Some(400))
+        .await
+        .expect("validate");
+    assert_eq!(resp.discount_cents, 1000, "face value is never clamped");
+    assert_eq!(
+        resp.applied_discount_cents,
+        Some(400),
+        "applied discount clamps to the smaller subtotal"
+    );
+}
+
+#[sqlx::test]
+async fn validate_coupon_subtotal_at_or_above_face_value_applies_full_discount(db: PgPool) {
+    service::create_coupon(&db, req("CLAMPHIGH", 1000))
+        .await
+        .expect("create");
+
+    let resp = service::validate_coupon(&db, "CLAMPHIGH", Some(1500))
+        .await
+        .expect("validate");
+    assert_eq!(resp.discount_cents, 1000);
+    assert_eq!(
+        resp.applied_discount_cents,
+        Some(1000),
+        "subtotal exceeds face value, so the full discount applies unclamped"
+    );
+}
+
+#[sqlx::test]
+async fn validate_coupon_without_subtotal_leaves_applied_discount_none(db: PgPool) {
+    service::create_coupon(&db, req("NOPREVIEW", 1000))
+        .await
+        .expect("create");
+
+    let resp = service::validate_coupon(&db, "NOPREVIEW", None)
+        .await
+        .expect("validate");
+    assert_eq!(resp.applied_discount_cents, None);
+}
+
+#[sqlx::test]
+async fn validate_coupon_negative_subtotal_is_422_even_for_unknown_code(db: PgPool) {
+    // Precedence: the negative-subtotal_cents check runs before the coupon
+    // lookup, so an unknown code plus a negative subtotal_cents must be a
+    // Validation error (422), not a NotFound (404) — proves the check isn't
+    // gated behind a successful coupon lookup.
+    let err = service::validate_coupon(&db, "DOES-NOT-EXIST", Some(-1))
+        .await
+        .expect_err("negative subtotal_cents must be rejected");
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "subtotal_cents must be >= 0"),
+        "got: {err:?}"
+    );
 }
 
 #[sqlx::test]

@@ -84,6 +84,42 @@ async fn validate_nonexistent_returns_404(db: PgPool) {
     assert_eq!(resp.status_code(), 404);
 }
 
+// ---------------------------------------------------------------------------
+// `?subtotal_cents=` preview (Round 5 Task D2)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn validate_with_subtotal_returns_exact_body_with_applied_discount(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    seed_coupon(&app.db, "PREVIEWME", 1500, true, None).await;
+    let user = app.register_member("member-h@example.com", "Password!234").await;
+
+    let resp = app
+        .get("/api/v1/coupons/PREVIEWME/validate?subtotal_cents=1000")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(
+        body,
+        json!({ "code": "PREVIEWME", "discount_cents": 1500, "applied_discount_cents": 1000 }),
+        "subtotal 1000 < face value 1500, so applied_discount_cents clamps to the subtotal"
+    );
+}
+
+#[sqlx::test]
+async fn validate_negative_subtotal_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    seed_coupon(&app.db, "NEGSUBTOTAL", 500, true, None).await;
+    let user = app.register_member("member-i@example.com", "Password!234").await;
+
+    let resp = app
+        .get("/api/v1/coupons/NEGSUBTOTAL/validate?subtotal_cents=-1")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
 #[sqlx::test]
 async fn create_coupon_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;

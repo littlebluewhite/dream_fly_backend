@@ -13,18 +13,22 @@ use crate::utils::validation::ValidatedJson;
 
 use super::dto::{
     CouponListResponse, CouponResponse, CouponValidateResponse, CreateCouponRequest,
-    UpdateCouponRequest,
+    UpdateCouponRequest, ValidateCouponQuery,
 };
 use super::service;
 
-/// Validate a coupon code (any authenticated user, no role check).
+/// Validate a coupon code (any authenticated user, no role check). With
+/// `?subtotal_cents=`, the response also previews `applied_discount_cents`
+/// (see `CouponValidateResponse`'s doc comment); omitting it leaves the
+/// response unchanged from before this parameter existed.
 #[tracing::instrument(skip_all)]
 pub async fn validate(
     State(state): State<AppState>,
     _auth: AuthUser,
     Path(code): Path<String>,
+    Query(params): Query<ValidateCouponQuery>,
 ) -> Result<Json<CouponValidateResponse>, AppError> {
-    let result = service::validate_coupon(&state.db, &code).await?;
+    let result = service::validate_coupon(&state.db, &code, params.subtotal_cents).await?;
     Ok(Json(result))
 }
 

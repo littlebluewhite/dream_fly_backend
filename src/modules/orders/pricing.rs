@@ -32,6 +32,14 @@ pub struct PricingOutcome {
     pub points_earned: i64,
 }
 
+/// The coupon-discount clamp rule, single-sourced here so `price()` below
+/// and `coupons::service::validate_coupon`'s `subtotal_cents` preview can
+/// never drift apart: a coupon can never discount more than the amount it's
+/// being applied to.
+pub fn clamp_coupon_discount(coupon_cents: i64, subtotal_cents: i64) -> i64 {
+    coupon_cents.min(subtotal_cents)
+}
+
 /// Price a checkout. `coupon` must already be the validated row for a
 /// caller-supplied code — an unknown/inactive/expired code is a
 /// checkout-time 422 at load, before this function is ever called (see
@@ -68,7 +76,7 @@ pub fn price(
     let mut discount_cents: i64 = 0;
     let mut applied_coupon_code: Option<String> = None;
     if let Some(coupon) = coupon {
-        discount_cents = coupon.discount_cents.min(subtotal_cents);
+        discount_cents = clamp_coupon_discount(coupon.discount_cents, subtotal_cents);
         applied_coupon_code = Some(coupon.code.clone());
     }
     let after_coupon_cents = subtotal_cents - discount_cents;
@@ -125,6 +133,29 @@ mod tests {
             expires_at: None,
             created_at: Utc::now(),
         }
+    }
+
+    // --- clamp_coupon_discount (the pure function single-sourced for both
+    //     `price()` below and `coupons::service::validate_coupon`'s
+    //     `subtotal_cents` preview) ---
+
+    #[test]
+    fn clamp_coupon_discount_caps_at_the_smaller_of_the_two_amounts() {
+        assert_eq!(
+            clamp_coupon_discount(1_000, 400),
+            400,
+            "coupon larger than the subtotal clamps down to the subtotal"
+        );
+        assert_eq!(
+            clamp_coupon_discount(1_000, 1_500),
+            1_000,
+            "coupon smaller than the subtotal is unclamped"
+        );
+        assert_eq!(
+            clamp_coupon_discount(1_000, 1_000),
+            1_000,
+            "equal amounts: either bound applies, same result"
+        );
     }
 
     // --- golden cases (expected values read from tests/service_orders.rs) ---

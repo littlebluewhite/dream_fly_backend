@@ -543,10 +543,10 @@ Body（皆選填，`UpdateCouponRequest`）：`{ discount_cents?, is_active?, ex
 硬刪除。**語意設計**：停用（`PATCH` 設 `is_active: false`）為主要路徑，DELETE 留給誤建且尚未被使用的 code。`orders` 只存 `coupon_code` 字串快照、無 FK 關聯到 coupons 表，故刪除 coupon 不影響任何歷史訂單。回應：204 No Content。
 錯誤：404（查無此 coupon）。
 
-#### `GET /coupons/{code}/validate` — 需登入（任何已登入使用者，無角色限制）
-回應（`CouponValidateResponse`，**故意只有兩個欄位**）：`{ "code": "string", "discount_cents": "number" }`。
+#### `GET /coupons/{code}/validate?subtotal_cents=` — 需登入（任何已登入使用者，無角色限制）
+`subtotal_cents` 選填。回應（`CouponValidateResponse`）：`{ "code": "string", "discount_cents": "number", "applied_discount_cents"?: "number" }`。`discount_cents` 恆為券面額，不受夾擠影響；帶了 `subtotal_cents` 才多回 `applied_discount_cents = min(discount_cents, subtotal_cents)`——與結帳（`POST /orders`，見 §3.10）同一夾擠規則（`orders::pricing::clamp_coupon_discount`）。不帶 `subtotal_cents` 時，回應逐位元組不變（`applied_discount_cents` 完全不出現在 JSON 中，向後相容既有呼叫端）。
 判定「有效」= `is_active = true` 且（`expires_at` 為 null 或尚未過期）。
-錯誤：404（`"coupon not found"` — 不存在、未啟用、已過期皆回此訊息，不區分原因）。
+錯誤：404（`"coupon not found"` — 不存在、未啟用、已過期皆回此訊息，不區分原因）；422（`subtotal_cents` 為負數——此檢查先於 coupon 查詢，故未知 code 加負值一律回 422，不回 404）。
 
 ---
 

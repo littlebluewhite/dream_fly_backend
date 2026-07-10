@@ -30,17 +30,20 @@ pub async fn create(
     .await
 }
 
+/// Shared by [`find_valid_by_code`] and [`find_valid_by_code_tx`] so the
+/// pool and tx entry points can never drift apart on what "valid" means:
+/// active, and either no expiry or not yet expired.
+const FIND_VALID_BY_CODE_SQL: &str = "SELECT id, code, discount_cents, is_active, expires_at, created_at \
+     FROM coupons \
+     WHERE code = $1 AND is_active = true AND (expires_at IS NULL OR expires_at > now())";
+
 /// Look up a coupon by code, applying the same "valid" rule the checkout
 /// path uses: active, and either no expiry or not yet expired.
 pub async fn find_valid_by_code(db: &PgPool, code: &str) -> Result<Option<Coupon>, sqlx::Error> {
-    sqlx::query_as::<_, Coupon>(
-        "SELECT id, code, discount_cents, is_active, expires_at, created_at \
-         FROM coupons \
-         WHERE code = $1 AND is_active = true AND (expires_at IS NULL OR expires_at > now())",
-    )
-    .bind(normalize_code(code))
-    .fetch_optional(db)
-    .await
+    sqlx::query_as::<_, Coupon>(FIND_VALID_BY_CODE_SQL)
+        .bind(normalize_code(code))
+        .fetch_optional(db)
+        .await
 }
 
 /// Transactional counterpart of [`find_valid_by_code`], consumed by the
@@ -49,14 +52,10 @@ pub async fn find_valid_by_code_tx(
     tx: &mut Transaction<'_, Postgres>,
     code: &str,
 ) -> Result<Option<Coupon>, sqlx::Error> {
-    sqlx::query_as::<_, Coupon>(
-        "SELECT id, code, discount_cents, is_active, expires_at, created_at \
-         FROM coupons \
-         WHERE code = $1 AND is_active = true AND (expires_at IS NULL OR expires_at > now())",
-    )
-    .bind(normalize_code(code))
-    .fetch_optional(&mut **tx)
-    .await
+    sqlx::query_as::<_, Coupon>(FIND_VALID_BY_CODE_SQL)
+        .bind(normalize_code(code))
+        .fetch_optional(&mut **tx)
+        .await
 }
 
 pub async fn find_all(db: &PgPool, limit: u32, offset: u32) -> Result<Vec<Coupon>, sqlx::Error> {

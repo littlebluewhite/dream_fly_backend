@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::orders::pricing;
 
 use super::dto::{
     CouponListResponse, CouponResponse, CouponValidateResponse, CreateCouponRequest,
@@ -10,14 +11,37 @@ use super::dto::{
 };
 use super::repository;
 
-pub async fn validate_coupon(db: &PgPool, code: &str) -> Result<CouponValidateResponse, AppError> {
+/// `GET /coupons/{code}/validate`. `subtotal_cents`, when supplied, previews
+/// `applied_discount_cents` via the same clamp checkout applies
+/// (`orders::pricing::clamp_coupon_discount`); `discount_cents` in the
+/// response always stays the coupon's face value.
+///
+/// The negative-`subtotal_cents` check runs *before* the coupon lookup, so
+/// precedence is unambiguous: an unknown/expired code combined with a
+/// negative `subtotal_cents` is a 422 (bad input), not a 404 (the coupon
+/// lookup never runs).
+pub async fn validate_coupon(
+    db: &PgPool,
+    code: &str,
+    subtotal_cents: Option<i64>,
+) -> Result<CouponValidateResponse, AppError> {
+    if let Some(s) = subtotal_cents {
+        if s < 0 {
+            return Err(AppError::Validation("subtotal_cents must be >= 0".into()));
+        }
+    }
+
     let coupon = repository::find_valid_by_code(db, code)
         .await?
         .ok_or_else(|| AppError::NotFound("coupon not found".into()))?;
 
+    let applied_discount_cents =
+        subtotal_cents.map(|s| pricing::clamp_coupon_discount(coupon.discount_cents, s));
+
     Ok(CouponValidateResponse {
         code: coupon.code,
         discount_cents: coupon.discount_cents,
+        applied_discount_cents,
     })
 }
 
