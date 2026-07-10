@@ -38,15 +38,14 @@ pub async fn create_booking(
     // Reject bookings for slots that have already started. We interpret the
     // naïve (date, start_time) in the studio's local tz and compare to
     // Utc::now.
-    if studio_clock::has_started(tz, Utc::now(), slot.date, slot.start_time).ok_or_else(|| {
-        // Ambiguous or non-existent local time (DST transitions). Treat
-        // it as invalid rather than picking one arbitrarily.
-        AppError::BadRequest("time slot falls on an ambiguous local time".into())
-    })? {
-        return Err(AppError::BadRequest(
-            "cannot book a time slot that has already started".into(),
-        ));
-    }
+    studio_clock::require_not_started(
+        tz,
+        Utc::now(),
+        slot.date,
+        slot.start_time,
+        "time slot",
+        AppError::BadRequest("cannot book a time slot that has already started".into()),
+    )?;
 
     // The partial unique index `uq_bookings_user_slot_active` is the
     // authoritative duplicate guard — translate the unique-violation into a
@@ -125,9 +124,7 @@ pub async fn cancel_booking(
             .await?
             .ok_or_else(|| AppError::NotFound("time slot not found".into()))?;
 
-        let slot_utc = studio_clock::to_utc(tz, slot.date, slot.start_time).ok_or_else(|| {
-            AppError::BadRequest("time slot falls on an ambiguous local time".into())
-        })?;
+        let slot_utc = studio_clock::to_utc_checked(tz, slot.date, slot.start_time, "time slot")?;
 
         let hours_until = (slot_utc - Utc::now()).num_hours();
         if hours_until < 24 {

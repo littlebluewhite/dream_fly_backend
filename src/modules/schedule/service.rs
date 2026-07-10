@@ -90,13 +90,14 @@ pub async fn create_slots(
         // Reject past slots. Interpret the naive (date, start_time) in the
         // configured studio timezone and refuse anything not strictly in
         // the future.
-        if studio_clock::has_started(tz, now_utc, date, start_time).ok_or_else(|| {
-            AppError::BadRequest("start_time falls on an ambiguous local time".into())
-        })? {
-            return Err(AppError::BadRequest(
-                "cannot create a slot in the past".into(),
-            ));
-        }
+        studio_clock::require_not_started(
+            tz,
+            now_utc,
+            date,
+            start_time,
+            "start_time",
+            AppError::BadRequest("cannot create a slot in the past".into()),
+        )?;
 
         parsed_slots.push((
             date,

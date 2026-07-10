@@ -39,16 +39,14 @@ pub async fn create_leave_request(
         .await?
         .ok_or_else(|| AppError::NotFound("未報名此課程".into()))?;
 
-    if studio_clock::has_started(
+    studio_clock::require_not_started(
         studio_clock::studio_tz(server),
         Utc::now(),
         session.session_date,
         session.start_time,
-    )
-    .ok_or_else(|| AppError::BadRequest("session time falls on an ambiguous local time".into()))?
-    {
-        return Err(AppError::Validation("場次已開始，無法請假".into()));
-    }
+        "session time",
+        AppError::Validation("場次已開始，無法請假".into()),
+    )?;
 
     let lr = repository::insert(db, enrolment_id, req.session_id, req.reason.as_deref())
         .await
@@ -288,13 +286,14 @@ pub async fn book_makeup(
         return Err(AppError::Validation("補課場次須為同一課程".into()));
     }
 
-    if studio_clock::has_started(tz, Utc::now(), target.session_date, target.start_time)
-        .ok_or_else(|| {
-            AppError::BadRequest("session time falls on an ambiguous local time".into())
-        })?
-    {
-        return Err(AppError::Validation("補課場次已開始".into()));
-    }
+    studio_clock::require_not_started(
+        tz,
+        Utc::now(),
+        target.session_date,
+        target.start_time,
+        "session time",
+        AppError::Validation("補課場次已開始".into()),
+    )?;
 
     // Serialize concurrent makeups into the same target session across
     // *different* leave requests before counting seats — the leave-request

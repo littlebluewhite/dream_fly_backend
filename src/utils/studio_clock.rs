@@ -3,18 +3,33 @@
 //! studio's clock shows", and "today" is the studio-local calendar date.
 //! Single home for resolving the configured timezone, converting a naive
 //! local (date, time) to UTC (refusing DST-ambiguous or nonexistent
-//! instants), and the two derived questions every scheduling module asks:
-//! "has this instant passed?" and "what date is it at the studio right now?".
+//! instants), and the derived questions every scheduling module asks: "has
+//! this instant passed?", "what date/month is it at the studio right now?",
+//! and — the shape that used to be hand-copied at four call sites — "reject
+//! this local (date, time) if it's already started".
 //!
 //! `now` and `tz` are always parameters (never `Utc::now()` internally) so
 //! day-boundary and DST edge cases are unit-testable with fixed instants.
-//! Ambiguity yields `None`; each caller maps that to its own
-//! endpoint-specific error message, so API error text stays per-endpoint.
+//!
+//! Two layers of ambiguity handling live here. `to_utc`/`has_started`/
+//! `has_ended` return `None` on a DST-ambiguous or nonexistent local time
+//! and leave the mapping to an error up to the caller — for sites where the
+//! result isn't a straight reject (e.g. `sessions::model`'s display-status
+//! derivation). `to_utc_checked` and `require_not_started` are the
+//! `AppError`-carrying wrappers layered on top for the common "reject an
+//! already-started local (date, time)" gate: `to_utc_checked` maps
+//! ambiguity to `BadRequest("{noun} falls on an ambiguous local time")`,
+//! and `require_not_started` adds the "already started" check on top,
+//! taking that error whole from the caller since each of the four sites
+//! uses a different `AppError` variant and wording (422 `Validation` 中文
+//! ×2, 400 `BadRequest` 英文 ×2) — the same "caller owns the wording" shape
+//! as `AuthUser::owns_or_admin`.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 
 use crate::config::ServerConfig;
+use crate::error::AppError;
 
 /// Resolve the studio timezone. Falls back to UTC with a warning so a
 /// misconfigured deploy still runs, just without correct local-time rules.
@@ -54,6 +69,44 @@ pub fn to_utc(tz: Tz, date: NaiveDate, time: NaiveTime) -> Option<DateTime<Utc>>
     tz.from_local_datetime(&NaiveDateTime::new(date, time))
         .single()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Like [`to_utc`], but maps a DST-ambiguous/nonexistent local time to the
+/// `BadRequest` text every call site used to hand-roll identically:
+/// `"{noun} falls on an ambiguous local time"`. `noun` names the local
+/// value being converted (e.g. `"time slot"`, `"session time"`) so the
+/// message reads naturally at each call site.
+pub fn to_utc_checked(
+    tz: Tz,
+    date: NaiveDate,
+    time: NaiveTime,
+    noun: &str,
+) -> Result<DateTime<Utc>, AppError> {
+    to_utc(tz, date, time)
+        .ok_or_else(|| AppError::BadRequest(format!("{noun} falls on an ambiguous local time")))
+}
+
+/// Reject a studio-local (date, time) that has already started — its UTC
+/// instant is at or before `now` (`<=`, the same inclusive boundary as
+/// [`has_started`]) — returning `started` verbatim when it has. Every call
+/// site uses a different `AppError` variant and wording for "already
+/// started" (422 `Validation` 中文 ×2, 400 `BadRequest` 英文 ×2), so the
+/// caller supplies that error whole rather than this function picking a
+/// fixed variant (same "caller owns the wording" shape as
+/// `AuthUser::owns_or_admin`). `noun` only feeds the ambiguous-time error
+/// via [`to_utc_checked`].
+pub fn require_not_started(
+    tz: Tz,
+    now: DateTime<Utc>,
+    date: NaiveDate,
+    time: NaiveTime,
+    noun: &str,
+    started: AppError,
+) -> Result<(), AppError> {
+    if to_utc_checked(tz, date, time, noun)? <= now {
+        return Err(started);
+    }
+    Ok(())
 }
 
 /// Whether a studio-local (date, time) is at or before `now`. `None` on a
@@ -289,6 +342,78 @@ mod tests {
         // 09:00 Taipei = 01:00 UTC same day, year-round (no DST).
         let expected = Utc.with_ymd_and_hms(2026, 7, 6, 1, 0, 0).unwrap();
         assert_eq!(to_utc(taipei(), d(2026, 7, 6), t(9, 0)), Some(expected));
+    }
+
+    // --- to_utc_checked / require_not_started ---
+
+    #[test]
+    fn to_utc_checked_converts_unambiguous_local_time() {
+        // Mirrors `to_utc_converts_unambiguous_local_time`: 09:00 Taipei =
+        // 01:00 UTC same day, year-round (no DST).
+        let expected = Utc.with_ymd_and_hms(2026, 7, 6, 1, 0, 0).unwrap();
+        assert_eq!(
+            to_utc_checked(taipei(), d(2026, 7, 6), t(9, 0), "session time").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn to_utc_checked_embeds_noun_in_ambiguous_message() {
+        // Nonexistent local time (spring forward) — mirrors
+        // `to_utc_none_on_nonexistent_spring_forward_time`.
+        let err = to_utc_checked(new_york(), d(2026, 3, 8), t(2, 30), "time slot").unwrap_err();
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m == "time slot falls on an ambiguous local time")
+        );
+    }
+
+    #[test]
+    fn require_not_started_returns_started_error_verbatim_when_already_started() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 9, 30, 0).unwrap();
+        let err = require_not_started(
+            chrono_tz::UTC,
+            now,
+            d(2026, 7, 5),
+            t(9, 0),
+            "session time",
+            AppError::Validation("場次已開始，無法請假".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(ref m) if m == "場次已開始，無法請假"));
+    }
+
+    #[test]
+    fn require_not_started_blocks_at_exact_boundary_but_not_before() {
+        // `<=`: `now` exactly equal to the start instant already blocks —
+        // mirrors `has_started_true_when_now_is_at_or_after_start`'s
+        // boundary.
+        let start = d(2026, 7, 5);
+        let at_start = Utc.with_ymd_and_hms(2026, 7, 5, 9, 0, 0).unwrap();
+        let err = require_not_started(
+            chrono_tz::UTC,
+            at_start,
+            start,
+            t(9, 0),
+            "time slot",
+            AppError::BadRequest("cannot book a time slot that has already started".into()),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m == "cannot book a time slot that has already started")
+        );
+
+        let before_start = Utc.with_ymd_and_hms(2026, 7, 5, 8, 59, 59).unwrap();
+        assert!(
+            require_not_started(
+                chrono_tz::UTC,
+                before_start,
+                start,
+                t(9, 0),
+                "time slot",
+                AppError::BadRequest("cannot book a time slot that has already started".into()),
+            )
+            .is_ok()
+        );
     }
 
     // --- parse_time_of_day ---
