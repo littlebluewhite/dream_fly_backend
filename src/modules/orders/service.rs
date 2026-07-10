@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::{PageMeta, PaginationParams};
-use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
+use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload};
 use crate::kafka::outbox;
 use crate::modules::cart::model::{CartItemType, CheckoutLine};
 use crate::modules::cart::repository as cart_repo;
@@ -303,11 +303,8 @@ pub async fn checkout(
     //     atomically with the order itself. The background dispatcher (see
     //     `kafka::outbox::start_dispatcher`) publishes it to Kafka with
     //     at-least-once semantics.
-    outbox::insert_event_tx(
+    outbox::insert_domain_event_tx(
         &mut tx,
-        topics::ORDERS_CREATED,
-        event_types::ORDER_CREATED,
-        &order.id.to_string(),
         OrderCreatedPayload {
             order_id: order.id,
             user_id: order.user_id,
@@ -446,11 +443,8 @@ pub async fn update_order_status(
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
 
     // Queue the status-change event atomically with the status update.
-    outbox::insert_event_tx(
+    outbox::insert_domain_event_tx(
         &mut tx,
-        topics::ORDERS_STATUS_CHANGED,
-        event_types::ORDER_STATUS_CHANGED,
-        &updated.id.to_string(),
         OrderStatusChangedPayload {
             order_id: updated.id,
             user_id: updated.user_id,

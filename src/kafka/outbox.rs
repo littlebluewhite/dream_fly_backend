@@ -2,11 +2,11 @@
 //!
 //! ## Why an outbox
 //!
-//! The naïve `publish_event`-after-commit pattern has an irrecoverable gap:
-//! if the DB commit succeeds but the Kafka send fails (broker down, network
-//! blip, process crash), the business state advances while the downstream
-//! event is silently lost. Retries never happen because nothing in the DB
-//! records that the event was meant to fire.
+//! The naïve "publish to Kafka right after commit" pattern has an
+//! irrecoverable gap: if the DB commit succeeds but the Kafka send fails
+//! (broker down, network blip, process crash), the business state advances
+//! while the downstream event is silently lost. Retries never happen
+//! because nothing in the DB records that the event was meant to fire.
 //!
 //! The outbox moves the "remember to publish this" record into the same DB
 //! transaction as the business write: either both are durable or neither
@@ -19,20 +19,24 @@
 //! ## How to use
 //!
 //! Inside a service-layer transaction that mutates business data, call
-//! [`insert_event_tx`] before `tx.commit()`. For example, in
-//! `orders::service::checkout`:
+//! [`insert_domain_event_tx`] before `tx.commit()` with a payload that
+//! implements [`DomainEvent`]; topic, event_type, and partition key all
+//! come from the payload's [`DomainEvent::SPEC`] and
+//! [`DomainEvent::kafka_key`], so there is nothing to hand-author at the
+//! call site. For example, in `orders::service::checkout`:
 //!
 //! ```ignore
-//! outbox::insert_event_tx(
+//! outbox::insert_domain_event_tx(
 //!     &mut tx,
-//!     topics::ORDERS_CREATED,
-//!     event_types::ORDER_CREATED,
-//!     &order.id.to_string(),
 //!     OrderCreatedPayload { .. },
 //!     correlation_id, // from x-request-id, optional
 //! ).await?;
 //! tx.commit().await?;
 //! ```
+//!
+//! [`insert_event_tx`] remains available as the lower-level entry point for
+//! hand-authored events that have no `DomainEvent` impl (e.g. audit events
+//! published directly to [`topics::AUDIT_LOG`](super::events::topics::AUDIT_LOG)).
 //!
 //! The dispatcher is started once at process boot — see
 //! [`start_dispatcher`], wired in `main.rs`.
@@ -45,7 +49,7 @@ use sqlx::PgPool;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::events::KafkaEvent;
+use super::events::{DomainEvent, KafkaEvent};
 
 /// Poll interval for the dispatcher tick loop. Short enough that an event
 /// published to the outbox is typically on Kafka within a second, long
@@ -94,6 +98,29 @@ pub async fn insert_event_tx<T: Serialize>(
     .await?;
 
     Ok(())
+}
+
+/// Insert a [`DomainEvent`] into the outbox, deriving `topic`/`event_type`
+/// from its `SPEC` and the partition key from its `kafka_key()` — the
+/// single source of truth for the 5 domain event mappings (see
+/// [`crate::kafka::events::ALL_SPECS`]), instead of every publish site
+/// repeating them by hand. Delegates to [`insert_event_tx`] so the actual
+/// row shape is defined in exactly one place.
+pub async fn insert_domain_event_tx<E: DomainEvent>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event: E,
+    correlation_id: Option<String>,
+) -> Result<(), sqlx::Error> {
+    let key = event.kafka_key();
+    insert_event_tx(
+        tx,
+        E::SPEC.topic,
+        E::SPEC.event_type,
+        &key,
+        event,
+        correlation_id,
+    )
+    .await
 }
 
 /// Start the background dispatcher task. Runs until `shutdown_rx` goes true.

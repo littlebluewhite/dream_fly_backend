@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, AuthConfig};
 use crate::error::AppError;
-use crate::kafka::events::{UserRegisteredPayload, event_types, topics};
+use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
 use crate::modules::notifications::service as notify;
 use crate::modules::permissions::repository as permissions_repository;
@@ -114,11 +114,8 @@ pub async fn register(
     // audit / external integration only — the welcome notification is now
     // written synchronously post-commit via `notify::user_welcomed` below,
     // not derived from this event.
-    outbox::insert_event_tx(
+    outbox::insert_domain_event_tx(
         &mut tx,
-        topics::USERS_REGISTERED,
-        event_types::USER_REGISTERED,
-        &user.id.to_string(),
         UserRegisteredPayload {
             user_id: user.id,
             email: user.email.clone(),
@@ -326,11 +323,8 @@ pub async fn google_auth(
     // 7. First-time login only: queue user_registered event atomically
     //    with the newly-created (or newly-linked) user row.
     if !existed {
-        outbox::insert_event_tx(
+        outbox::insert_domain_event_tx(
             &mut tx,
-            topics::USERS_REGISTERED,
-            event_types::USER_REGISTERED,
-            &user.id.to_string(),
             UserRegisteredPayload {
                 user_id: user.id,
                 email: user.email.clone(),

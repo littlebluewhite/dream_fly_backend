@@ -66,7 +66,7 @@ use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio_stream::StreamExt;
 
-use super::events::topics;
+use super::events::{ALL_SPECS, spec_for_event_type, topics};
 
 /// Classifies a handler failure so the main loop can decide whether to
 /// retry (`Transient`) or give up and commit the offset (`Poison`).
@@ -141,14 +141,12 @@ pub async fn start_consumer(
     db: PgPool,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let topic_list = [
-        topics::AUDIT_LOG,
-        topics::ORDERS_CREATED,
-        topics::ORDERS_STATUS_CHANGED,
-        topics::BOOKINGS_CREATED,
-        topics::BOOKINGS_CANCELLED,
-        topics::USERS_REGISTERED,
-    ];
+    // Derived from `ALL_SPECS` (the same table producers use) plus
+    // `AUDIT_LOG`, instead of a hand-written array that could drift from
+    // the producer side. Order matches the previous literal array.
+    let topic_list: Vec<&str> = std::iter::once(topics::AUDIT_LOG)
+        .chain(ALL_SPECS.iter().map(|spec| spec.topic))
+        .collect();
 
     if let Err(e) = consumer.subscribe(&topic_list) {
         tracing::error!("Failed to subscribe to Kafka topics: {e}");
@@ -323,7 +321,19 @@ fn optional_uuid_from_data(event: &serde_json::Value, field: &str) -> Option<uui
 /// `None`, and the caller falls back to reading `data.resource` directly
 /// (defaulting to `"audit"`) — the pre-existing `AUDIT_LOG`-topic behavior,
 /// unchanged.
+///
+/// Looks up [`spec_for_event_type`] first — the same table the producer
+/// side uses — and only falls back to the prefix/exact rules below when it
+/// misses. The fallback exists so an event subtype not (yet) modeled in
+/// `ALL_SPECS` (e.g. a future `order_refunded`) still resolves to the right
+/// resource family instead of collapsing to the generic `"audit"` bucket;
+/// behavior for such unknown subtypes is unchanged from before `EventSpec`
+/// existed.
 fn domain_resource(event_type: &str) -> Option<(&'static str, &'static str)> {
+    if let Some(spec) = spec_for_event_type(event_type) {
+        return Some((spec.resource, spec.id_field));
+    }
+
     if event_type.starts_with("order_") {
         Some(("order", "order_id"))
     } else if event_type.starts_with("booking_") {

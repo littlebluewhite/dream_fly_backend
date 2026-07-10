@@ -6,7 +6,7 @@ use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
-use crate::kafka::events::{BookingCancelledPayload, BookingCreatedPayload, event_types, topics};
+use crate::kafka::events::{BookingCancelledPayload, BookingCreatedPayload};
 use crate::kafka::outbox;
 use crate::modules::notifications::service as notify;
 use crate::modules::schedule;
@@ -65,11 +65,8 @@ pub async fn create_booking(
     // Queue the booking_created event atomically with the booking row. The
     // background dispatcher publishes it to Kafka with at-least-once
     // semantics — no more silent loss if Kafka is down at checkout time.
-    outbox::insert_event_tx(
+    outbox::insert_domain_event_tx(
         &mut tx,
-        topics::BOOKINGS_CREATED,
-        event_types::BOOKING_CREATED,
-        &booking.id.to_string(),
         BookingCreatedPayload {
             booking_id: booking.id,
             user_id: booking.user_id,
@@ -143,11 +140,8 @@ pub async fn cancel_booking(
 
     schedule::repository::decrement_booked_tx(&mut tx, booking.time_slot_id).await?;
 
-    outbox::insert_event_tx(
+    outbox::insert_domain_event_tx(
         &mut tx,
-        topics::BOOKINGS_CANCELLED,
-        event_types::BOOKING_CANCELLED,
-        &updated.id.to_string(),
         BookingCancelledPayload {
             booking_id: updated.id,
             user_id: updated.user_id,
