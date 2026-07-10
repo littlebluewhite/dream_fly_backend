@@ -58,10 +58,49 @@ pub async fn replace_slots_tx(
     Ok(())
 }
 
+/// Proof that `materialize_range(db, course_ids, from, to)` has already run
+/// for this exact `(course_ids, from, to)` — collapses the "materialize
+/// then read" call-order invariant, previously enforced only by doc comments
+/// across 5 call sites, into the type system: read functions take `&
+/// MaterializedRange` instead of raw `(course_ids, from, to)` parameters.
+///
+/// This is **not** a course-scope filter guarantee: it proves the range was
+/// materialized, not that every reader filters by `course_ids`. Some readers
+/// (e.g. `reports::repository::venue_usage`/`coach_today_and_pending`) use
+/// only the date window and ignore `course_ids` entirely — see each reader's
+/// own doc for its actual scope. Fields are private; only `materialize_range`
+/// can construct one.
+#[derive(Debug, Clone)]
+pub struct MaterializedRange {
+    course_ids: Vec<Uuid>,
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+impl MaterializedRange {
+    pub fn course_ids(&self) -> &[Uuid] {
+        &self.course_ids
+    }
+
+    /// Named `from_date` (not `from`) to avoid colliding with
+    /// `std::convert::From`.
+    pub fn from_date(&self) -> NaiveDate {
+        self.from
+    }
+
+    pub fn to_date(&self) -> NaiveDate {
+        self.to
+    }
+}
+
 /// Materialize `course_sessions` rows for every date in `[from, to]` whose
 /// weekday matches one of `course_ids`' weekly slots. Idempotent — calling
 /// this twice for the same range never creates duplicate rows, thanks to
-/// `ON CONFLICT DO NOTHING` on `course_sessions_unique`.
+/// `ON CONFLICT DO NOTHING` on `course_sessions_unique`. Returns a
+/// [`MaterializedRange`] witness for this exact `(course_ids, from, to)` —
+/// including on both early-return paths — so callers thread it into the
+/// matching read function instead of re-stating the "materialize first"
+/// precondition in prose.
 ///
 /// Implemented as two steps (candidate SELECT, then a Rust-id-keyed bulk
 /// INSERT via UNNEST) rather than a single `INSERT ... SELECT` so that every
@@ -73,9 +112,11 @@ pub async fn materialize_range(
     course_ids: &[Uuid],
     from: NaiveDate,
     to: NaiveDate,
-) -> Result<(), sqlx::Error> {
+) -> Result<MaterializedRange, sqlx::Error> {
+    let witness = MaterializedRange { course_ids: course_ids.to_vec(), from, to };
+
     if course_ids.is_empty() {
-        return Ok(());
+        return Ok(witness);
     }
 
     let candidates = sqlx::query_as::<_, (Uuid, NaiveDate, NaiveTime, NaiveTime)>(
@@ -92,7 +133,7 @@ pub async fn materialize_range(
     .await?;
 
     if candidates.is_empty() {
-        return Ok(());
+        return Ok(witness);
     }
 
     let mut ids: Vec<Uuid> = Vec::with_capacity(candidates.len());
@@ -124,24 +165,22 @@ pub async fn materialize_range(
     .execute(db)
     .await?;
 
-    Ok(())
+    Ok(witness)
 }
 
-pub async fn find_sessions_by_course_range(
+pub async fn find_sessions_in(
     db: &PgPool,
-    course_id: Uuid,
-    from: NaiveDate,
-    to: NaiveDate,
+    mat: &MaterializedRange,
 ) -> Result<Vec<CourseSession>, sqlx::Error> {
     sqlx::query_as::<_, CourseSession>(
         "SELECT id, course_id, session_date, start_time, end_time, created_at \
          FROM course_sessions \
-         WHERE course_id = $1 AND session_date BETWEEN $2 AND $3 \
+         WHERE course_id = ANY($1::uuid[]) AND session_date BETWEEN $2 AND $3 \
          ORDER BY session_date, start_time",
     )
-    .bind(course_id)
-    .bind(from)
-    .bind(to)
+    .bind(mat.course_ids())
+    .bind(mat.from_date())
+    .bind(mat.to_date())
     .fetch_all(db)
     .await
 }
@@ -170,12 +209,21 @@ pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec
 /// `(course_id, day_of_week, start_time)` — the reversible key
 /// `course_schedule_slots_unique` guarantees at most one match, so this
 /// LEFT JOIN can never fan out a session into more than one row.
-pub async fn find_today_by_course_ids(
+///
+/// `mat` must be a single-day witness (`from_date() == to_date()`,
+/// `debug_assert`-checked): `TodaySessionRow` carries no date column, so a
+/// multi-day witness would silently blend sessions from different days into
+/// one undated list.
+pub async fn find_today_sessions_in(
     db: &PgPool,
-    course_ids: &[Uuid],
-    today: NaiveDate,
+    mat: &MaterializedRange,
 ) -> Result<Vec<TodaySessionRow>, sqlx::Error> {
-    if course_ids.is_empty() {
+    debug_assert!(
+        mat.from_date() == mat.to_date(),
+        "find_today_sessions_in requires a single-day witness (TodaySessionRow has no date column)"
+    );
+
+    if mat.course_ids().is_empty() {
         return Ok(Vec::new());
     }
 
@@ -193,11 +241,12 @@ pub async fn find_today_by_course_ids(
            ON s.course_id = cs.course_id \
           AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
           AND s.start_time = cs.start_time \
-         WHERE cs.session_date = $1 AND cs.course_id = ANY($2::uuid[]) \
-         ORDER BY cs.start_time",
+         WHERE cs.session_date BETWEEN $1 AND $2 AND cs.course_id = ANY($3::uuid[]) \
+         ORDER BY cs.session_date, cs.start_time",
     )
-    .bind(today)
-    .bind(course_ids)
+    .bind(mat.from_date())
+    .bind(mat.to_date())
+    .bind(mat.course_ids())
     .fetch_all(db)
     .await
 }

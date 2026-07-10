@@ -63,8 +63,8 @@ pub async fn list_course_sessions(
         )));
     }
 
-    repository::materialize_range(db, &[course_id], from, to).await?;
-    let sessions = repository::find_sessions_by_course_range(db, course_id, from, to).await?;
+    let mat = repository::materialize_range(db, &[course_id], from, to).await?;
+    let sessions = repository::find_sessions_in(db, &mat).await?;
     Ok(sessions
         .into_iter()
         .map(|s| {
@@ -98,8 +98,8 @@ pub async fn today_sessions(
         }
     };
 
-    repository::materialize_range(db, &course_ids, today, today).await?;
-    let rows = repository::find_today_by_course_ids(db, &course_ids, today).await?;
+    let mat = repository::materialize_range(db, &course_ids, today, today).await?;
+    let rows = repository::find_today_sessions_in(db, &mat).await?;
     Ok(rows
         .into_iter()
         .map(|r| {

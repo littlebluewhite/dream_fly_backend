@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::modules::orders::model::REVENUE_STATUSES;
+use crate::modules::sessions::repository::MaterializedRange;
 
 use super::model::{
     ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
@@ -600,15 +601,14 @@ pub async fn weekday_load(
 /// (Round 4 Phase 4): 本月已物化場次(caller materializes the month first —
 /// see `service::admin_report`)JOIN `course_schedule_slots` on the reversible
 /// `(course_id, day_of_week, start_time)` key (same join as
-/// `sessions::repository::find_today_by_course_ids`, Task B8) to resolve
+/// `sessions::repository::find_today_sessions_in`, Task B8) to resolve
 /// `venue`, then SUM each session's duration in minutes. **`venue` 為 NULL 的
 /// 場次不入** (the inner JOIN drops sessions with no matching slot; `venue IS
 /// NOT NULL` drops matched-but-venueless slots). Not zero-filled — venues
 /// with no sessions this month simply don't appear.
 pub async fn venue_usage(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    mat: &MaterializedRange,
 ) -> Result<Vec<VenueUsageRow>, sqlx::Error> {
     sqlx::query_as::<_, VenueUsageRow>(
         "SELECT s.venue, \
@@ -618,15 +618,13 @@ pub async fn venue_usage(
              ON s.course_id = cs.course_id \
             AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
             AND s.start_time = cs.start_time \
-          WHERE cs.session_date >= date_trunc('month', $1::timestamptz AT TIME ZONE $2)::date \
-            AND cs.session_date < (date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
-                                     + interval '1 month')::date \
+          WHERE cs.session_date BETWEEN $1 AND $2 \
             AND s.venue IS NOT NULL \
           GROUP BY s.venue \
           ORDER BY minutes DESC, s.venue",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(mat.from_date())
+    .bind(mat.to_date())
     .fetch_all(db)
     .await
 }
@@ -635,15 +633,24 @@ pub async fn venue_usage(
 // GET /reports/coach
 // ---------------------------------------------------------------------------
 
-/// `(today_sessions, pending_attendance)` for `coach_id`'s courses on
-/// `today`. Caller must materialize `today` first (see
-/// `sessions::repository::materialize_range`) — this only counts
-/// already-existing `course_sessions` rows.
+/// `(today_sessions, pending_attendance)` for `coach_id`'s courses within
+/// `mat`'s date window — this only counts already-existing `course_sessions`
+/// rows. `mat` must be a single-day witness (`from_date() == to_date()`,
+/// `debug_assert`-checked — a multi-day witness would silently count
+/// multiple days as "today"), so `session_date BETWEEN mat.from_date() AND
+/// mat.to_date()` is semantically the old `= today` equality. Coach scope
+/// comes from the `coach_id` JOIN, not from `mat.course_ids()` (unused
+/// here).
 pub async fn coach_today_and_pending(
     db: &PgPool,
     coach_id: Uuid,
-    today: NaiveDate,
+    mat: &MaterializedRange,
 ) -> Result<(i64, i64), sqlx::Error> {
+    debug_assert!(
+        mat.from_date() == mat.to_date(),
+        "coach_today_and_pending requires a single-day witness"
+    );
+
     sqlx::query_as::<_, (i64, i64)>(
         "SELECT COUNT(*), \
                 COUNT(*) FILTER (WHERE NOT EXISTS ( \
@@ -651,10 +658,11 @@ pub async fn coach_today_and_pending(
                 )) \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
-         WHERE c.coach_id = $1 AND cs.session_date = $2",
+         WHERE c.coach_id = $1 AND cs.session_date BETWEEN $2 AND $3",
     )
     .bind(coach_id)
-    .bind(today)
+    .bind(mat.from_date())
+    .bind(mat.to_date())
     .fetch_one(db)
     .await
 }
@@ -727,25 +735,24 @@ pub async fn my_active_enrolment_course_ids(
     .await
 }
 
-/// Count of `course_ids`' materialized sessions in `[from, to]`. Caller
-/// must materialize that range first (see
-/// `sessions::repository::materialize_range`).
+/// Count of `mat.course_ids()`'s materialized sessions in
+/// `[mat.from_date(), mat.to_date()]` — the one reader that binds all three
+/// witness fields directly (`venue_usage`/`coach_today_and_pending` only use
+/// the date window).
 pub async fn upcoming_session_count(
     db: &PgPool,
-    course_ids: &[Uuid],
-    from: NaiveDate,
-    to: NaiveDate,
+    mat: &MaterializedRange,
 ) -> Result<i64, sqlx::Error> {
-    if course_ids.is_empty() {
+    if mat.course_ids().is_empty() {
         return Ok(0);
     }
     sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM course_sessions \
          WHERE course_id = ANY($1::uuid[]) AND session_date BETWEEN $2 AND $3",
     )
-    .bind(course_ids)
-    .bind(from)
-    .bind(to)
+    .bind(mat.course_ids())
+    .bind(mat.from_date())
+    .bind(mat.to_date())
     .fetch_one(db)
     .await
 }

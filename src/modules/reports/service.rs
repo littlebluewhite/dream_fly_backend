@@ -89,8 +89,9 @@ pub async fn admin_report(
     let today = studio_clock::today(studio_clock::studio_tz(server), now);
     let (month_start, month_end) = studio_month_bounds(today);
     let all_course_ids = sessions_repository::find_all_course_ids(db).await?;
-    sessions_repository::materialize_range(db, &all_course_ids, month_start, month_end).await?;
-    let venue_rows = repository::venue_usage(db, now, tz_name).await?;
+    let mat =
+        sessions_repository::materialize_range(db, &all_course_ids, month_start, month_end).await?;
+    let venue_rows = repository::venue_usage(db, &mat).await?;
 
     let trend: Vec<RevenueMonthPoint> = trend_rows
         .into_iter()
@@ -265,11 +266,12 @@ pub async fn admin_report(
 }
 
 /// `(first_day, last_day)` of `today`'s calendar month. Used to bound the
-/// idempotent session materialization the `venue_usage` aggregate needs (the
-/// SQL itself re-derives the same month window from `now`/`tz` — see
-/// `repository::venue_usage`). `unwrap`s are total: day 1 always exists, and
-/// stepping to the first of next month then back one day always lands on a
-/// real last-of-month.
+/// idempotent session materialization the `venue_usage` aggregate needs —
+/// this function is the month window's sole owner; `venue_usage` receives it
+/// only via the `MaterializedRange` witness's date bounds, not by
+/// re-deriving it in SQL (see `repository::venue_usage`). `unwrap`s are
+/// total: day 1 always exists, and stepping to the first of next month then
+/// back one day always lands on a real last-of-month.
 fn studio_month_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
     let month_start = today.with_day(1).expect("day 1 is valid for every month");
     let next_month_first = if month_start.month() == 12 {
@@ -302,10 +304,10 @@ pub async fn coach_report(
 
     let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
-    sessions_repository::materialize_range(db, &course_ids, today, today).await?;
+    let mat = sessions_repository::materialize_range(db, &course_ids, today, today).await?;
 
     let (today_sessions, pending_attendance) =
-        repository::coach_today_and_pending(db, coach.id, today).await?;
+        repository::coach_today_and_pending(db, coach.id, &mat).await?;
     let unread_messages = messages_repository::count_unread_for_user(db, auth.user_id).await?;
     let student_count = attendance_repository::count_my_students(db, coach.id).await?;
 
@@ -337,9 +339,8 @@ pub async fn member_report(
     let active_enrolments = course_ids.len() as i64;
 
     let window_to = today + Duration::days(MEMBER_UPCOMING_WINDOW_DAYS);
-    sessions_repository::materialize_range(db, &course_ids, today, window_to).await?;
-    let upcoming_sessions_7d =
-        repository::upcoming_session_count(db, &course_ids, today, window_to).await?;
+    let mat = sessions_repository::materialize_range(db, &course_ids, today, window_to).await?;
+    let upcoming_sessions_7d = repository::upcoming_session_count(db, &mat).await?;
 
     Ok(MemberReportResponse {
         attended_total: present,
