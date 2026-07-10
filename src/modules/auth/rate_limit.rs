@@ -18,6 +18,7 @@
 use redis::AsyncCommands;
 
 use crate::error::AppError;
+use crate::utils::redis_counter::incr_with_ttl;
 
 /// Max failed login attempts per email before temporary lockout.
 pub(super) const LOGIN_MAX_ATTEMPTS: i64 = 10;
@@ -40,18 +41,7 @@ pub(super) const PASSWORD_RESET_TTL_SECONDS: i64 = 900; // 15 minutes
 /// Atomic INCR + EXPIRE for the failed-login counter. Best-effort: Redis
 /// outages must not prevent authentication entirely.
 pub(super) async fn bump_login_failure(redis: &mut redis::aio::ConnectionManager, key: &str) {
-    let script = r#"
-        local current = redis.call('INCR', KEYS[1])
-        if current == 1 then
-            redis.call('EXPIRE', KEYS[1], ARGV[1])
-        end
-        return current
-    "#;
-    let _: Result<i64, _> = redis::Script::new(script)
-        .key(key)
-        .arg(LOGIN_LOCKOUT_TTL)
-        .invoke_async(redis)
-        .await;
+    let _ = incr_with_ttl(redis, key, LOGIN_LOCKOUT_TTL).await;
 }
 
 /// Read the current value of a counter key, defaulting to 0 if it is unset
@@ -89,17 +79,5 @@ pub(super) async fn bump_count_best_effort(
     key: &str,
     ttl_seconds: i64,
 ) -> i64 {
-    let script = r#"
-        local current = redis.call('INCR', KEYS[1])
-        if current == 1 then
-            redis.call('EXPIRE', KEYS[1], ARGV[1])
-        end
-        return current
-    "#;
-    redis::Script::new(script)
-        .key(key)
-        .arg(ttl_seconds)
-        .invoke_async::<i64>(redis)
-        .await
-        .unwrap_or(0)
+    incr_with_ttl(redis, key, ttl_seconds).await.unwrap_or(0)
 }

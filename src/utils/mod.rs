@@ -2,6 +2,7 @@ pub mod email;
 pub mod google_oauth;
 pub mod jwt;
 pub mod password;
+pub mod redis_counter;
 pub mod slug;
 pub mod sms;
 pub mod studio_clock;
