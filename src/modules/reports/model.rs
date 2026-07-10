@@ -27,7 +27,10 @@ pub struct AdminCourseRow {
 /// One row of `GET /reports/admin`'s `coaches` list. `revenue_cents_12m`
 /// carries the coach-revenue attribution 口徑 (Round 4 Phase 4): course 類
 /// order line 毛額歸 `courses.coach_id`;票券/裝備/場租不歸因 — see
-/// `repository::coach_reports`.
+/// `repository::coach_reports`. `att_present`/`att_absent` are the raw
+/// present/absent counts across the coach's courses (all-time, `leave`
+/// excluded) the service turns into `attendance_rate` = present/(present+
+/// absent) via `service::safe_ratio` (無資料 → null).
 #[derive(Debug, sqlx::FromRow)]
 pub struct AdminCoachRow {
     pub coach_id: Uuid,
@@ -35,6 +38,69 @@ pub struct AdminCoachRow {
     pub course_count: i64,
     pub student_count: i64,
     pub revenue_cents_12m: i64,
+    pub att_present: i64,
+    pub att_absent: i64,
+}
+
+/// One fixed-bucket cell of the three human-flow distributions
+/// (`attendance_distribution` / `age_distribution` / `tier_distribution`) —
+/// the shared `(bucket, count)` shape every one of them zero-fills to its own
+/// fixed set of buckets (see `repository::attendance_distribution` /
+/// `age_distribution` / `tier_distribution`). `bucket` is a backend-neutral
+/// key (Chinese labels are the frontend's job); `count` is the member headcount.
+#[derive(Debug, sqlx::FromRow)]
+pub struct BucketCountRow {
+    pub bucket: String,
+    pub count: i64,
+}
+
+/// One of the trailing-6-month retention cohort rows (see
+/// `repository::retention`). `new_count`/`returning_count` split the month's
+/// active members (≥1 `present`) by whether this is their first-ever active
+/// month; `prev_active_count`/`retained_count` are the raw inputs the service
+/// turns into `rate` = |上月活躍 ∩ 本月活躍| / |上月活躍| via
+/// `service::safe_ratio` (上月空集合 → null). `month` is `YYYY-MM` in the
+/// studio timezone.
+#[derive(Debug, sqlx::FromRow)]
+pub struct RetentionRow {
+    pub month: String,
+    pub new_count: i64,
+    pub returning_count: i64,
+    pub prev_active_count: i64,
+    pub retained_count: i64,
+}
+
+/// One weekday bucket of `repository::weekday_load` — `weekday` is
+/// `0=Sunday..6=Saturday` (PostgreSQL `EXTRACT(DOW)`, contract §3.18), and
+/// `present_count` is the `present` attendance headcount on that weekday
+/// across the trailing 30 days' materialized sessions (zero-filled to all 7).
+#[derive(Debug, sqlx::FromRow)]
+pub struct WeekdayLoadRow {
+    pub weekday: i16,
+    pub present_count: i64,
+}
+
+/// One venue's summed session minutes this studio month (see
+/// `repository::venue_usage`). `venue` is the non-NULL
+/// `course_schedule_slots.venue` a session resolves to via the reversible
+/// `(course_id, day_of_week, start_time)` key; `minutes` is the summed
+/// session duration. Not a fixed-bucket dimension — venues with no sessions
+/// simply don't appear.
+#[derive(Debug, sqlx::FromRow)]
+pub struct VenueUsageRow {
+    pub venue: String,
+    pub minutes: i64,
+}
+
+/// The admin report's honest 2-stage 試上→報名 funnel (see
+/// `repository::funnel`) — both counts over the trailing 90 studio days:
+/// `trial_inquiries` = `contact_inquiries` with `inquiry_type = 'trial'`;
+/// `new_enrolments` = `enrolments` created excluding `cancelled`. No
+/// fabricated intermediate stages.
+#[derive(Debug, sqlx::FromRow)]
+pub struct FunnelRow {
+    pub trial_inquiries: i64,
+    pub new_enrolments: i64,
 }
 
 /// One row of `repository::kpis`'s single multi-scalar-subquery SELECT —

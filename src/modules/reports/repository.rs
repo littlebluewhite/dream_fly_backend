@@ -4,7 +4,10 @@ use uuid::Uuid;
 
 use crate::modules::orders::model::REVENUE_STATUSES;
 
-use super::model::{ActivityRow, AdminCoachRow, AdminCourseRow, IncomeSourceRow, KpiRow};
+use super::model::{
+    ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
+    RetentionRow, VenueUsageRow, WeekdayLoadRow,
+};
 
 /// `attendance_records.status` values shared by [`coach_attendance_in_range`],
 /// [`member_attendance`] and [`kpis`] — one spelling of each literal instead
@@ -305,6 +308,13 @@ pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Er
 /// The join on `oi.course_id` *is* the course-line filter — the
 /// `order_items_one_target` CHECK guarantees only `item_type = 'course'`
 /// lines have a non-NULL `course_id`.
+///
+/// `att_present`/`att_absent` 口徑 (Round 4 Phase 4): **該教練課程的
+/// present/(present+absent),`leave` 不入分母**。These are the raw all-time
+/// present/absent counts across the coach's courses' sessions; the service
+/// derives `attendance_rate` = present/(present+absent) (無資料 → null) via
+/// `service::safe_ratio`. No date window (unlike the coach dashboard's
+/// `attendance_rate_30d`), per the task brief.
 pub async fn coach_reports(
     db: &PgPool,
     now: DateTime<Utc>,
@@ -328,7 +338,17 @@ pub async fn coach_reports(
                         BETWEEN date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
                                   - interval '11 months' \
                             AND date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
-                )::bigint AS revenue_cents_12m \
+                )::bigint AS revenue_cents_12m, \
+                (SELECT COUNT(*) FROM attendance_records ar \
+                   JOIN course_sessions cs ON cs.id = ar.session_id \
+                   JOIN courses c ON c.id = cs.course_id \
+                  WHERE c.coach_id = co.id AND ar.status = $4::attendance_status) \
+                  AS att_present, \
+                (SELECT COUNT(*) FROM attendance_records ar \
+                   JOIN course_sessions cs ON cs.id = ar.session_id \
+                   JOIN courses c ON c.id = cs.course_id \
+                  WHERE c.coach_id = co.id AND ar.status = $5::attendance_status) \
+                  AS att_absent \
          FROM coaches co \
          JOIN users u ON u.id = co.user_id \
          ORDER BY u.name, co.id",
@@ -336,6 +356,290 @@ pub async fn coach_reports(
     .bind(now)
     .bind(tz_name)
     .bind(&REVENUE_STATUSES[..])
+    .bind(PRESENT)
+    .bind(ABSENT)
+    .fetch_all(db)
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin — Round 4 Phase 4 人流 (human-flow) aggregates
+// ---------------------------------------------------------------------------
+
+/// Member attendance-rate distribution — each member's present/(present+
+/// absent) (`leave` 不入分母) bucketed into 4 fixed bands, zero-filled.
+///
+/// 口徑 (Round 4 Phase 4): a member enters the distribution only if they have
+/// ≥1 `present`/`absent` record — **未點名(無任何紀錄)或僅請假(分母為 0)
+/// 的會員不入分布**（the `WHERE ar.status IN (present, absent)` filter drops
+/// leave-only and never-marked members before grouping, so the per-member
+/// division is always defined). Bands: `gte_95` (≥0.95, i.e. 95–100%) /
+/// `85_94` (≥0.85) / `75_84` (≥0.75) / `lt_75` (<0.75). The `VALUES` band
+/// list LEFT JOIN zero-fills all 4 buckets even when no member qualifies.
+pub async fn attendance_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>, sqlx::Error> {
+    sqlx::query_as::<_, BucketCountRow>(
+        "WITH bands(bucket, ord) AS ( \
+           VALUES ('gte_95', 1), ('85_94', 2), ('75_84', 3), ('lt_75', 4) \
+         ), \
+         member_rates AS ( \
+           SELECT e.user_id, \
+                  COUNT(*) FILTER (WHERE ar.status = $1::attendance_status)::float AS present, \
+                  COUNT(*)::float AS marked \
+             FROM attendance_records ar \
+             JOIN enrolments e ON e.id = ar.enrolment_id \
+            WHERE ar.status IN ($1::attendance_status, $2::attendance_status) \
+            GROUP BY e.user_id \
+         ), \
+         member_bands AS ( \
+           SELECT CASE \
+                    WHEN present / marked >= 0.95 THEN 'gte_95' \
+                    WHEN present / marked >= 0.85 THEN '85_94' \
+                    WHEN present / marked >= 0.75 THEN '75_84' \
+                    ELSE 'lt_75' \
+                  END AS bucket \
+             FROM member_rates \
+         ) \
+         SELECT b.bucket, COUNT(mb.bucket)::bigint AS count \
+           FROM bands b \
+           LEFT JOIN member_bands mb ON mb.bucket = b.bucket \
+          GROUP BY b.bucket, b.ord \
+          ORDER BY b.ord",
+    )
+    .bind(PRESENT)
+    .bind(ABSENT)
+    .fetch_all(db)
+    .await
+}
+
+/// Member age-bracket distribution — full-years age from `birth_date`
+/// (relative to the studio-local `today`) bucketed into 6 fixed brackets,
+/// zero-filled. 口徑 (Round 4 Phase 4): fixed brackets `0-6` / `7-12` /
+/// `13-17` / `18-25` / `26-40` / `41+`, **排除 `birth_date` NULL**. The
+/// `VALUES` bracket list (with an open-ended `41+` upper bound) LEFT JOIN
+/// zero-fills all 6 buckets.
+pub async fn age_distribution(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<Vec<BucketCountRow>, sqlx::Error> {
+    sqlx::query_as::<_, BucketCountRow>(
+        "WITH brackets(bucket, lo, hi, ord) AS ( \
+           VALUES ('0-6', 0, 6, 1), ('7-12', 7, 12, 2), ('13-17', 13, 17, 3), \
+                  ('18-25', 18, 25, 4), ('26-40', 26, 40, 5), ('41+', 41, 2147483647, 6) \
+         ), \
+         member_ages AS ( \
+           SELECT date_part('year', \
+                    age(($1::timestamptz AT TIME ZONE $2)::date, u.birth_date))::int AS age \
+             FROM users u \
+            WHERE u.birth_date IS NOT NULL \
+         ) \
+         SELECT b.bucket, COUNT(ma.age)::bigint AS count \
+           FROM brackets b \
+           LEFT JOIN member_ages ma ON ma.age BETWEEN b.lo AND b.hi \
+          GROUP BY b.bucket, b.ord \
+          ORDER BY b.ord",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .fetch_all(db)
+    .await
+}
+
+/// Member tier distribution — every user bucketed by `points_balance` into 4
+/// fixed tiers, zero-filled. 口徑 (Round 4 Phase 4): `regular` (<500) /
+/// `bronze` (500–1999) / `silver` (2000–4999) / `gold` (≥5000). Counts every
+/// `users` row (no role filter, matching `member_stats`'s `total` 口徑). The
+/// `CASE` is a total function over the whole `BIGINT` domain (a hypothetical
+/// negative balance falls into `regular`), so the `VALUES` LEFT JOIN
+/// zero-fills exactly the 4 named tiers.
+pub async fn tier_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>, sqlx::Error> {
+    sqlx::query_as::<_, BucketCountRow>(
+        "WITH tiers(bucket, ord) AS ( \
+           VALUES ('regular', 1), ('bronze', 2), ('silver', 3), ('gold', 4) \
+         ), \
+         user_tiers AS ( \
+           SELECT CASE \
+                    WHEN points_balance >= 5000 THEN 'gold' \
+                    WHEN points_balance >= 2000 THEN 'silver' \
+                    WHEN points_balance >= 500 THEN 'bronze' \
+                    ELSE 'regular' \
+                  END AS bucket \
+             FROM users \
+         ) \
+         SELECT t.bucket, COUNT(ut.bucket)::bigint AS count \
+           FROM tiers t \
+           LEFT JOIN user_tiers ut ON ut.bucket = t.bucket \
+          GROUP BY t.bucket, t.ord \
+          ORDER BY t.ord",
+    )
+    .fetch_all(db)
+    .await
+}
+
+/// Monthly-attendance retention cohort for the trailing 6 studio months
+/// (oldest first, 6 buckets zero-filled).
+///
+/// 口徑 (Round 4 Phase 4): a member is「M 月活躍」if they have ≥1 `present`
+/// record whose session falls in studio-month M. `new_count` counts that
+/// month's active members whose **first-ever** active month is M;
+/// `returning_count` counts those with an earlier active month.
+/// `prev_active_count` = |上月活躍| and `retained_count` = |上月活躍 ∩
+/// 本月活躍| are the raw inputs `service` turns into `rate` via `safe_ratio`
+/// (上月空集合 → null). `first_active` scans *all* history (not just the
+/// 6-month window) so「首次活躍」is judged against the member's whole past.
+/// Session month uses `date_trunc` on `session_date` (already a studio-local
+/// date per §3.18), matching [`kpis`]'s attendance bucketing.
+pub async fn retention(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<Vec<RetentionRow>, sqlx::Error> {
+    sqlx::query_as::<_, RetentionRow>(
+        "WITH months AS ( \
+           SELECT generate_series( \
+                    date_trunc('month', $1::timestamptz AT TIME ZONE $2) - interval '5 months', \
+                    date_trunc('month', $1::timestamptz AT TIME ZONE $2), \
+                    interval '1 month' \
+                  ) AS m \
+         ), \
+         active AS ( \
+           SELECT DISTINCT e.user_id, \
+                  date_trunc('month', cs.session_date::timestamp) AS am \
+             FROM attendance_records ar \
+             JOIN course_sessions cs ON cs.id = ar.session_id \
+             JOIN enrolments e ON e.id = ar.enrolment_id \
+            WHERE ar.status = $3::attendance_status \
+         ), \
+         first_active AS ( \
+           SELECT user_id, MIN(am) AS first_am FROM active GROUP BY user_id \
+         ) \
+         SELECT to_char(m.m, 'YYYY-MM') AS month, \
+                (SELECT COUNT(*) FROM active a \
+                   JOIN first_active fa ON fa.user_id = a.user_id \
+                  WHERE a.am = m.m AND fa.first_am = m.m)::bigint AS new_count, \
+                (SELECT COUNT(*) FROM active a \
+                   JOIN first_active fa ON fa.user_id = a.user_id \
+                  WHERE a.am = m.m AND fa.first_am < m.m)::bigint AS returning_count, \
+                (SELECT COUNT(*) FROM active p \
+                  WHERE p.am = m.m - interval '1 month')::bigint AS prev_active_count, \
+                (SELECT COUNT(*) FROM active p \
+                  WHERE p.am = m.m - interval '1 month' \
+                    AND EXISTS (SELECT 1 FROM active c \
+                                 WHERE c.user_id = p.user_id AND c.am = m.m) \
+                )::bigint AS retained_count \
+           FROM months m \
+          ORDER BY m.m",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .bind(PRESENT)
+    .fetch_all(db)
+    .await
+}
+
+/// The honest 2-stage 試上→報名 funnel — both counts over the trailing 90
+/// studio days. 口徑 (Round 4 Phase 4): `trial_inquiries` =
+/// `contact_inquiries` with `inquiry_type = 'trial'`; `new_enrolments` =
+/// `enrolments` created excluding `cancelled`. The window compares the
+/// studio-local *date* of each row (`AT TIME ZONE` for the `TIMESTAMPTZ`
+/// `created_at`) against `today - 90`, so「90 天窗」is a studio-calendar window
+/// (a row created 91 studio days ago is out; 90 or fewer is in). No middle
+/// stages are fabricated.
+pub async fn funnel(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<FunnelRow, sqlx::Error> {
+    sqlx::query_as::<_, FunnelRow>(
+        "SELECT \
+           (SELECT COUNT(*) FROM contact_inquiries ci \
+             WHERE ci.inquiry_type = 'trial' \
+               AND (ci.created_at AT TIME ZONE $2)::date \
+                   >= ($1::timestamptz AT TIME ZONE $2)::date - 90)::bigint AS trial_inquiries, \
+           (SELECT COUNT(*) FROM enrolments e \
+             WHERE e.status <> 'cancelled' \
+               AND (e.created_at AT TIME ZONE $2)::date \
+                   >= ($1::timestamptz AT TIME ZONE $2)::date - 90)::bigint AS new_enrolments",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .fetch_one(db)
+    .await
+}
+
+/// Weekday load — `present` attendance headcount over the trailing 30 studio
+/// days' materialized sessions, grouped into 7 weekday buckets
+/// (`0=Sunday..6=Saturday`, `EXTRACT(DOW)` / §3.18), zero-filled.
+///
+/// 口徑 (Round 4 Phase 4): 近 30 天(`session_date` between studio `today - 30`
+/// and `today`, inclusive)已物化場次的 `present` 出席人次按星期分 7 桶。
+/// Counts only existing (materialized) sessions' attendance — no
+/// materialization needed, since a `present` record can only exist on a
+/// session that was already created and attended. The `VALUES` weekday list
+/// LEFT JOIN zero-fills all 7 days.
+pub async fn weekday_load(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<Vec<WeekdayLoadRow>, sqlx::Error> {
+    sqlx::query_as::<_, WeekdayLoadRow>(
+        "WITH weekdays(weekday) AS ( \
+           VALUES (0::smallint), (1::smallint), (2::smallint), (3::smallint), \
+                  (4::smallint), (5::smallint), (6::smallint) \
+         ), \
+         present_by_day AS ( \
+           SELECT EXTRACT(DOW FROM cs.session_date)::smallint AS weekday, \
+                  COUNT(*)::bigint AS c \
+             FROM attendance_records ar \
+             JOIN course_sessions cs ON cs.id = ar.session_id \
+            WHERE ar.status = $3::attendance_status \
+              AND cs.session_date BETWEEN ($1::timestamptz AT TIME ZONE $2)::date - 30 \
+                                      AND ($1::timestamptz AT TIME ZONE $2)::date \
+            GROUP BY 1 \
+         ) \
+         SELECT w.weekday, COALESCE(p.c, 0)::bigint AS present_count \
+           FROM weekdays w \
+           LEFT JOIN present_by_day p ON p.weekday = w.weekday \
+          ORDER BY w.weekday",
+    )
+    .bind(now)
+    .bind(tz_name)
+    .bind(PRESENT)
+    .fetch_all(db)
+    .await
+}
+
+/// Per-venue summed session minutes for the current studio month. 口徑
+/// (Round 4 Phase 4): 本月已物化場次(caller materializes the month first —
+/// see `service::admin_report`)JOIN `course_schedule_slots` on the reversible
+/// `(course_id, day_of_week, start_time)` key (same join as
+/// `sessions::repository::find_today_by_course_ids`, Task B8) to resolve
+/// `venue`, then SUM each session's duration in minutes. **`venue` 為 NULL 的
+/// 場次不入** (the inner JOIN drops sessions with no matching slot; `venue IS
+/// NOT NULL` drops matched-but-venueless slots). Not zero-filled — venues
+/// with no sessions this month simply don't appear.
+pub async fn venue_usage(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    tz_name: &str,
+) -> Result<Vec<VenueUsageRow>, sqlx::Error> {
+    sqlx::query_as::<_, VenueUsageRow>(
+        "SELECT s.venue, \
+                SUM(EXTRACT(EPOCH FROM (cs.end_time - cs.start_time)) / 60)::bigint AS minutes \
+           FROM course_sessions cs \
+           JOIN course_schedule_slots s \
+             ON s.course_id = cs.course_id \
+            AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
+            AND s.start_time = cs.start_time \
+          WHERE cs.session_date >= date_trunc('month', $1::timestamptz AT TIME ZONE $2)::date \
+            AND cs.session_date < (date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                                     + interval '1 month')::date \
+            AND s.venue IS NOT NULL \
+          GROUP BY s.venue \
+          ORDER BY minutes DESC, s.venue",
+    )
+    .bind(now)
+    .bind(tz_name)
     .fetch_all(db)
     .await
 }

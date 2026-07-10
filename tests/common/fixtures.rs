@@ -663,6 +663,19 @@ pub async fn set_points_balance(db: &PgPool, user_id: Uuid, balance: i64) {
         .expect("set points balance");
 }
 
+/// Directly set a user's `users.birth_date` (the profile write path is
+/// Task P4-B2's scope) so the admin report's age-bracket distribution tests
+/// can place members in exact age buckets. `None` leaves/clears it NULL —
+/// the "excluded from ageDist" case.
+pub async fn set_birth_date(db: &PgPool, user_id: Uuid, birth_date: Option<NaiveDate>) {
+    sqlx::query("UPDATE users SET birth_date = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(birth_date)
+        .execute(db)
+        .await
+        .expect("set birth date");
+}
+
 /// Insert a `leave_requests` row directly (bypassing
 /// `leave::service::create_leave_request`), so tests can arrange exact
 /// pre-existing states — `status` in particular — without going through the

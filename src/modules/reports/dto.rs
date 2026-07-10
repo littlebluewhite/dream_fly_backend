@@ -45,7 +45,11 @@ pub struct AdminCourseReportRow {
 /// `revenue_cents_12m` (Round 4 Phase 4) 口徑:**coach 營收歸因 = course 類
 /// order line 毛額歸 `courses.coach_id`;票券/裝備/場租不歸因**。折扣前
 /// line 小計,orders ∈ `REVENUE_STATUSES`,`paid_at` 落在近 12 個 studio
-/// 月(與 `revenue.trend` 同窗)。`attendance_rate` 欄位留給 P4-B4b。
+/// 月(與 `revenue.trend` 同窗)。
+///
+/// `attendance_rate` (Round 4 Phase 4) 口徑:**該教練課程的 present/(present
+/// +absent),`leave` 不入分母**(全期,無出勤資料 → null,與 `service::
+/// safe_ratio` 同語意)。
 #[derive(Debug, Serialize)]
 pub struct AdminCoachReportRow {
     pub coach_id: Uuid,
@@ -53,6 +57,64 @@ pub struct AdminCoachReportRow {
     pub course_count: i64,
     pub student_count: i64,
     pub revenue_cents_12m: i64,
+    pub attendance_rate: Option<f64>,
+}
+
+/// One fixed-bucket cell of the three human-flow distributions
+/// (`attendance_distribution` / `age_distribution` / `tier_distribution`) —
+/// backend-neutral `bucket` key + member `count`. Shared 口徑:
+/// - **attendance_distribution**:每會員 present/(present+absent)(`leave`
+///   不入分母;**未點名/僅請假(分母為 0)的會員不入分布**)分入固定 4 桶
+///   `gte_95`(95–100%)/ `85_94` / `75_84` / `lt_75`(低於 75%)。
+/// - **age_distribution**:`birth_date` 算年齡分入固定 6 桶 `0-6` / `7-12` /
+///   `13-17` / `18-25` / `26-40` / `41+`,**排除 `birth_date` NULL**。
+/// - **tier_distribution**:`points_balance` 分入固定 4 桶 `regular`(<500)/
+///   `bronze`(500–1999)/ `silver`(2000–4999)/ `gold`(≥5000)。
+///
+/// 每種分布一律零填其固定桶(空桶 `count = 0`),中文標籤前端配。
+#[derive(Debug, Serialize)]
+pub struct BucketCountEntry {
+    pub bucket: String,
+    pub count: i64,
+}
+
+/// One of `retention`'s trailing-6-month cohort rows (oldest first, 6 桶
+/// 零填). 口徑:會員在 M 月有 ≥1 筆 `present` 即「M 月活躍」;首次活躍月
+/// 計入 `new_count`、此後再活躍計入 `returning_count`;`rate` =
+/// |上月活躍 ∩ 本月活躍| / |上月活躍|,**上月為空集合 → null**(undefined,
+/// 非 0)。`month` 為 studio 時區的 `YYYY-MM`。
+#[derive(Debug, Serialize)]
+pub struct RetentionMonthRow {
+    pub month: String,
+    pub new_count: i64,
+    pub returning_count: i64,
+    pub rate: Option<f64>,
+}
+
+/// One weekday bucket of `weekday_load` — `weekday` `0=週日..6=週六`(§3.18
+/// 慣例),`present_count` 為近 30 天已物化場次的 `present` 出席人次(7 桶
+/// 零填)。
+#[derive(Debug, Serialize)]
+pub struct WeekdayLoadEntry {
+    pub weekday: i16,
+    pub present_count: i64,
+}
+
+/// One venue row of `venue_usage` — 本月(studio 時區)該 `venue` 名下場次
+/// 的分鐘數合計(`venue` 為 NULL 的場次不入;非固定桶,無場次的場地不出列)。
+#[derive(Debug, Serialize)]
+pub struct VenueUsageEntry {
+    pub venue: String,
+    pub minutes: i64,
+}
+
+/// `funnel` — 誠實 2 段(近 90 studio 天):`trial_inquiries`
+/// (`inquiry_type='trial'` 洽詢計數)→ `new_enrolments`(`enrolments`
+/// created,不含 `cancelled`)。不造中間段。
+#[derive(Debug, Serialize)]
+pub struct FunnelSection {
+    pub trial_inquiries: i64,
+    pub new_enrolments: i64,
 }
 
 /// A this/last studio-month count pair. 環比 delta 不算(前端算)— the
@@ -143,8 +205,11 @@ pub struct PaymentSplitEntry {
 }
 
 /// `GET /reports/admin` — 既有 `revenue`/`members`/`courses`/`coaches` 加
-/// Round 4 Phase 4 金流 sections(additive;人流組 sections 是 P4-B4b)。
-/// 空庫時所有 section 零填/空陣列,絕不 500。
+/// Round 4 Phase 4 金流 sections(`kpis`/`revenue_breakdown`/
+/// `income_sources_12m`/`category_split`/`payment_split`)與人流 sections
+/// (`attendance_distribution`/`age_distribution`/`tier_distribution`/
+/// `retention`/`funnel`/`weekday_load`/`venue_usage`)。空庫時所有 section
+/// 零填/空陣列,絕不 500。
 #[derive(Debug, Serialize)]
 pub struct AdminReportResponse {
     pub revenue: AdminRevenueSection,
@@ -153,6 +218,13 @@ pub struct AdminReportResponse {
     pub income_sources_12m: Vec<IncomeSourceMonthEntry>,
     pub category_split: Vec<CategorySplitEntry>,
     pub payment_split: Vec<PaymentSplitEntry>,
+    pub attendance_distribution: Vec<BucketCountEntry>,
+    pub age_distribution: Vec<BucketCountEntry>,
+    pub tier_distribution: Vec<BucketCountEntry>,
+    pub retention: Vec<RetentionMonthRow>,
+    pub funnel: FunnelSection,
+    pub weekday_load: Vec<WeekdayLoadEntry>,
+    pub venue_usage: Vec<VenueUsageEntry>,
     pub members: AdminMembersSection,
     pub courses: Vec<AdminCourseReportRow>,
     pub coaches: Vec<AdminCoachReportRow>,

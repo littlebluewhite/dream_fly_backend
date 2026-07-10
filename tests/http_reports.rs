@@ -60,6 +60,16 @@ async fn admin_report_as_admin_returns_200_with_shape(db: PgPool) {
     assert_eq!(body["income_sources_12m"].as_array().expect("12m array").len(), 72);
     assert_eq!(body["category_split"].as_array().expect("split array").len(), 5);
     assert_eq!(body["payment_split"].as_array().expect("payment array").len(), 0);
+
+    // Round 4 Phase 4 人流 sections — fixed-bucket zero-fills on an empty DB.
+    assert_eq!(body["attendance_distribution"].as_array().expect("attDist array").len(), 4);
+    assert_eq!(body["age_distribution"].as_array().expect("ageDist array").len(), 6);
+    assert_eq!(body["tier_distribution"].as_array().expect("tierDist array").len(), 4);
+    assert_eq!(body["retention"].as_array().expect("retention array").len(), 6);
+    assert!(body["funnel"]["trial_inquiries"].is_number());
+    assert!(body["funnel"]["new_enrolments"].is_number());
+    assert_eq!(body["weekday_load"].as_array().expect("weekday array").len(), 7);
+    assert_eq!(body["venue_usage"].as_array().expect("venue array").len(), 0);
 }
 
 // ---------------------------------------------------------------------------

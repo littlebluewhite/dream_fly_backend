@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -11,9 +11,10 @@ use crate::utils::studio_clock;
 
 use super::dto::{
     ActivityItem, ActivityResponse, AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection,
-    AdminReportResponse, AdminRevenueSection, CategorySplitEntry, CoachReportResponse,
-    IncomeSourceEntry, IncomeSourceMonthEntry, KpisSection, MemberReportResponse, MonthPair,
-    PaymentSplitEntry, RateMonthPair, RevenueMonthPoint,
+    AdminReportResponse, AdminRevenueSection, BucketCountEntry, CategorySplitEntry,
+    CoachReportResponse, FunnelSection, IncomeSourceEntry, IncomeSourceMonthEntry, KpisSection,
+    MemberReportResponse, MonthPair, PaymentSplitEntry, RateMonthPair, RetentionMonthRow,
+    RevenueMonthPoint, VenueUsageEntry, WeekdayLoadEntry,
 };
 use super::model::ActivityRow;
 use super::repository;
@@ -72,6 +73,22 @@ pub async fn admin_report(
     let kpi = repository::kpis(db, now, tz_name).await?;
     let income_rows = repository::income_by_source(db, now, tz_name, INCOME_SOURCE_MONTHS).await?;
     let payment_rows = repository::payment_split(db, now, tz_name).await?;
+    let attendance_dist_rows = repository::attendance_distribution(db).await?;
+    let age_dist_rows = repository::age_distribution(db, now, tz_name).await?;
+    let tier_dist_rows = repository::tier_distribution(db).await?;
+    let retention_rows = repository::retention(db, now, tz_name).await?;
+    let funnel_row = repository::funnel(db, now, tz_name).await?;
+    let weekday_rows = repository::weekday_load(db, now, tz_name).await?;
+
+    // `venue_usage` is over *this studio month's* sessions, which may not all
+    // be materialized yet (future dates in the current month) — so idempotently
+    // materialize the whole month for every course first, mirroring how the
+    // coach/member reports materialize their own windows before counting.
+    let today = studio_clock::today(studio_clock::studio_tz(server), now);
+    let (month_start, month_end) = studio_month_bounds(today);
+    let all_course_ids = sessions_repository::find_all_course_ids(db).await?;
+    sessions_repository::materialize_range(db, &all_course_ids, month_start, month_end).await?;
+    let venue_rows = repository::venue_usage(db, now, tz_name).await?;
 
     let trend: Vec<RevenueMonthPoint> = trend_rows
         .into_iter()
@@ -110,6 +127,7 @@ pub async fn admin_report(
             course_count: r.course_count,
             student_count: r.student_count,
             revenue_cents_12m: r.revenue_cents_12m,
+            attendance_rate: safe_ratio(r.att_present, r.att_present + r.att_absent),
         })
         .collect();
 
@@ -182,6 +200,49 @@ pub async fn admin_report(
         .map(|(method, count)| PaymentSplitEntry { method, count })
         .collect();
 
+    // The three fixed-bucket distributions share `(bucket, count)` — each
+    // repository query already zero-fills its own fixed bucket set, so the
+    // service just renames the row into its DTO.
+    let attendance_distribution: Vec<BucketCountEntry> = attendance_dist_rows
+        .into_iter()
+        .map(|r| BucketCountEntry { bucket: r.bucket, count: r.count })
+        .collect();
+    let age_distribution: Vec<BucketCountEntry> = age_dist_rows
+        .into_iter()
+        .map(|r| BucketCountEntry { bucket: r.bucket, count: r.count })
+        .collect();
+    let tier_distribution: Vec<BucketCountEntry> = tier_dist_rows
+        .into_iter()
+        .map(|r| BucketCountEntry { bucket: r.bucket, count: r.count })
+        .collect();
+
+    // `rate` = |上月活躍 ∩ 本月活躍| / |上月活躍| — `safe_ratio` renders the
+    // empty-previous-month case as null (undefined), not 0.
+    let retention: Vec<RetentionMonthRow> = retention_rows
+        .into_iter()
+        .map(|r| RetentionMonthRow {
+            month: r.month,
+            new_count: r.new_count,
+            returning_count: r.returning_count,
+            rate: safe_ratio(r.retained_count, r.prev_active_count),
+        })
+        .collect();
+
+    let funnel = FunnelSection {
+        trial_inquiries: funnel_row.trial_inquiries,
+        new_enrolments: funnel_row.new_enrolments,
+    };
+
+    let weekday_load: Vec<WeekdayLoadEntry> = weekday_rows
+        .into_iter()
+        .map(|r| WeekdayLoadEntry { weekday: r.weekday, present_count: r.present_count })
+        .collect();
+
+    let venue_usage: Vec<VenueUsageEntry> = venue_rows
+        .into_iter()
+        .map(|r| VenueUsageEntry { venue: r.venue, minutes: r.minutes })
+        .collect();
+
     Ok(AdminReportResponse {
         revenue: AdminRevenueSection { this_month_cents, last_month_cents, trend },
         kpis,
@@ -189,10 +250,35 @@ pub async fn admin_report(
         income_sources_12m,
         category_split,
         payment_split,
+        attendance_distribution,
+        age_distribution,
+        tier_distribution,
+        retention,
+        funnel,
+        weekday_load,
+        venue_usage,
         members: AdminMembersSection { total, new_this_month, active },
         courses,
         coaches,
     })
+}
+
+/// `(first_day, last_day)` of `today`'s calendar month. Used to bound the
+/// idempotent session materialization the `venue_usage` aggregate needs (the
+/// SQL itself re-derives the same month window from `now`/`tz` — see
+/// `repository::venue_usage`). `unwrap`s are total: day 1 always exists, and
+/// stepping to the first of next month then back one day always lands on a
+/// real last-of-month.
+fn studio_month_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let month_start = today.with_day(1).expect("day 1 is valid for every month");
+    let next_month_first = if month_start.month() == 12 {
+        NaiveDate::from_ymd_opt(month_start.year() + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(month_start.year(), month_start.month() + 1, 1)
+    }
+    .expect("first day of next month is always valid");
+    let month_end = next_month_first.pred_opt().expect("every month has a last day");
+    (month_start, month_end)
 }
 
 /// `GET /reports/coach`. 404 if the caller holds the `coach` role but has
