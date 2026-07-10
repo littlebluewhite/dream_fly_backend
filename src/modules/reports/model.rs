@@ -2,8 +2,11 @@
 //! `orders`/`order_items`/`products`/`users`/`enrolments`/`courses`/
 //! `coaches`/`waitlist_entries`/`course_sessions`/`attendance_records`/
 //! `bookings`/`time_slots`/`conversations`/`messages`/`contact_inquiries`
-//! (all owned by other modules' migrations). Only the multi-column rows
-//! (admin sub-lists, the KPI/income aggregates, and the activity feed's
+//! (all owned by other modules' migrations). The present/absent attendance
+//! aggregates read `countable_attendance` — a view over `attendance_records`
+//! that is the single owner of that 出席口徑 (leave 排除) — instead of each
+//! query restating the status filter. Only the multi-column rows (admin
+//! sub-lists, the KPI/income aggregates, and the activity feed's
 //! merged-UNION row) get a named `FromRow` struct here; every other
 //! aggregate query decodes straight into a scalar or tuple in
 //! `repository.rs` (mirrors `sessions::repository::materialize_range`'s

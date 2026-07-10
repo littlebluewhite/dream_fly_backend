@@ -2,7 +2,6 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::orders::model::REVENUE_STATUSES;
 
 use super::model::{
@@ -95,10 +94,11 @@ pub async fn member_stats(
 /// - `paid_orders` — `orders` in `REVENUE_STATUSES`, bucketed by `paid_at`
 ///   (the month the money moved — same anchor as [`revenue_trend`];
 ///   排除 pending/refunded 於一切金額聚合);
-/// - `present`/`absent` — `attendance_records` bucketed by the session's
-///   `session_date` (already a studio-local date per contract §3.18), for
-///   the service's `attendance_rate` = present/(present+absent),`leave`
-///   不入分母;無資料月 → null (via `service::safe_ratio`).
+/// - `present`/`absent` — `countable_attendance`(leave 已由 view 成員資格
+///   排除)bucketed by the session's `session_date` (already a studio-local
+///   date per contract §3.18), for the service's `attendance_rate` =
+///   present/(present+absent),`leave` 不入分母;無資料月 → null (via
+///   `service::safe_ratio`).
 pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiRow, sqlx::Error> {
     sqlx::query_as::<_, KpiRow>(
         "WITH anchor AS ( \
@@ -127,24 +127,24 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
              WHERE o.status::text = ANY($3) \
                AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
                  = a.this_m - interval '1 month') AS paid_orders_last, \
-           (SELECT COUNT(*) FROM attendance_records ar \
-             JOIN course_sessions cs ON cs.id = ar.session_id \
-             WHERE ar.status = $4::attendance_status \
+           (SELECT COUNT(*) FROM countable_attendance ca \
+             JOIN course_sessions cs ON cs.id = ca.session_id \
+             WHERE ca.is_present \
                AND date_trunc('month', cs.session_date::timestamp) = a.this_m) \
              AS present_this, \
-           (SELECT COUNT(*) FROM attendance_records ar \
-             JOIN course_sessions cs ON cs.id = ar.session_id \
-             WHERE ar.status = $5::attendance_status \
+           (SELECT COUNT(*) FROM countable_attendance ca \
+             JOIN course_sessions cs ON cs.id = ca.session_id \
+             WHERE NOT ca.is_present \
                AND date_trunc('month', cs.session_date::timestamp) = a.this_m) \
              AS absent_this, \
-           (SELECT COUNT(*) FROM attendance_records ar \
-             JOIN course_sessions cs ON cs.id = ar.session_id \
-             WHERE ar.status = $4::attendance_status \
+           (SELECT COUNT(*) FROM countable_attendance ca \
+             JOIN course_sessions cs ON cs.id = ca.session_id \
+             WHERE ca.is_present \
                AND date_trunc('month', cs.session_date::timestamp) \
                  = a.this_m - interval '1 month') AS present_last, \
-           (SELECT COUNT(*) FROM attendance_records ar \
-             JOIN course_sessions cs ON cs.id = ar.session_id \
-             WHERE ar.status = $5::attendance_status \
+           (SELECT COUNT(*) FROM countable_attendance ca \
+             JOIN course_sessions cs ON cs.id = ca.session_id \
+             WHERE NOT ca.is_present \
                AND date_trunc('month', cs.session_date::timestamp) \
                  = a.this_m - interval '1 month') AS absent_last \
          FROM anchor a",
@@ -152,8 +152,6 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
     .bind(now)
     .bind(tz_name)
     .bind(&REVENUE_STATUSES[..])
-    .bind(AttendanceStatus::Present.as_str())
-    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
@@ -334,15 +332,15 @@ pub async fn coach_reports(
                                   - interval '11 months' \
                             AND date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
                 )::bigint AS revenue_cents_12m, \
-                (SELECT COUNT(*) FROM attendance_records ar \
-                   JOIN course_sessions cs ON cs.id = ar.session_id \
+                (SELECT COUNT(*) FROM countable_attendance ca \
+                   JOIN course_sessions cs ON cs.id = ca.session_id \
                    JOIN courses c ON c.id = cs.course_id \
-                  WHERE c.coach_id = co.id AND ar.status = $4::attendance_status) \
+                  WHERE c.coach_id = co.id AND ca.is_present) \
                   AS att_present, \
-                (SELECT COUNT(*) FROM attendance_records ar \
-                   JOIN course_sessions cs ON cs.id = ar.session_id \
+                (SELECT COUNT(*) FROM countable_attendance ca \
+                   JOIN course_sessions cs ON cs.id = ca.session_id \
                    JOIN courses c ON c.id = cs.course_id \
-                  WHERE c.coach_id = co.id AND ar.status = $5::attendance_status) \
+                  WHERE c.coach_id = co.id AND NOT ca.is_present) \
                   AS att_absent \
          FROM coaches co \
          JOIN users u ON u.id = co.user_id \
@@ -351,8 +349,6 @@ pub async fn coach_reports(
     .bind(now)
     .bind(tz_name)
     .bind(&REVENUE_STATUSES[..])
-    .bind(AttendanceStatus::Present.as_str())
-    .bind(AttendanceStatus::Absent.as_str())
     .fetch_all(db)
     .await
 }
@@ -366,11 +362,12 @@ pub async fn coach_reports(
 ///
 /// 口徑 (Round 4 Phase 4): a member enters the distribution only if they have
 /// ≥1 `present`/`absent` record — **未點名(無任何紀錄)或僅請假(分母為 0)
-/// 的會員不入分布**（the `WHERE ar.status IN (present, absent)` filter drops
-/// leave-only and never-marked members before grouping, so the per-member
-/// division is always defined). Bands: `gte_95` (≥0.95, i.e. 95–100%) /
-/// `85_94` (≥0.85) / `75_84` (≥0.75) / `lt_75` (<0.75). The `VALUES` band
-/// list LEFT JOIN zero-fills all 4 buckets even when no member qualifies.
+/// 的會員不入分布**(`countable_attendance` 的 view 成員資格本身已排除
+/// leave 列,drops leave-only and never-marked members before grouping, so
+/// the per-member division is always defined). Bands: `gte_95` (≥0.95, i.e.
+/// 95–100%) / `85_94` (≥0.85) / `75_84` (≥0.75) / `lt_75` (<0.75). The
+/// `VALUES` band list LEFT JOIN zero-fills all 4 buckets even when no
+/// member qualifies.
 pub async fn attendance_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>, sqlx::Error> {
     sqlx::query_as::<_, BucketCountRow>(
         "WITH bands(bucket, ord) AS ( \
@@ -378,11 +375,10 @@ pub async fn attendance_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>,
          ), \
          member_rates AS ( \
            SELECT e.user_id, \
-                  COUNT(*) FILTER (WHERE ar.status = $1::attendance_status)::float AS present, \
+                  COUNT(*) FILTER (WHERE ca.is_present)::float AS present, \
                   COUNT(*)::float AS marked \
-             FROM attendance_records ar \
-             JOIN enrolments e ON e.id = ar.enrolment_id \
-            WHERE ar.status IN ($1::attendance_status, $2::attendance_status) \
+             FROM countable_attendance ca \
+             JOIN enrolments e ON e.id = ca.enrolment_id \
             GROUP BY e.user_id \
          ), \
          member_bands AS ( \
@@ -400,8 +396,6 @@ pub async fn attendance_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>,
           GROUP BY b.bucket, b.ord \
           ORDER BY b.ord",
     )
-    .bind(AttendanceStatus::Present.as_str())
-    .bind(AttendanceStatus::Absent.as_str())
     .fetch_all(db)
     .await
 }
@@ -500,10 +494,10 @@ pub async fn retention(
          active AS ( \
            SELECT DISTINCT e.user_id, \
                   date_trunc('month', cs.session_date::timestamp) AS am \
-             FROM attendance_records ar \
-             JOIN course_sessions cs ON cs.id = ar.session_id \
-             JOIN enrolments e ON e.id = ar.enrolment_id \
-            WHERE ar.status = $3::attendance_status \
+             FROM countable_attendance ca \
+             JOIN course_sessions cs ON cs.id = ca.session_id \
+             JOIN enrolments e ON e.id = ca.enrolment_id \
+            WHERE ca.is_present \
          ), \
          first_active AS ( \
            SELECT user_id, MIN(am) AS first_am FROM active GROUP BY user_id \
@@ -527,7 +521,6 @@ pub async fn retention(
     )
     .bind(now)
     .bind(tz_name)
-    .bind(AttendanceStatus::Present.as_str())
     .fetch_all(db)
     .await
 }
@@ -585,9 +578,9 @@ pub async fn weekday_load(
          present_by_day AS ( \
            SELECT EXTRACT(DOW FROM cs.session_date)::smallint AS weekday, \
                   COUNT(*)::bigint AS c \
-             FROM attendance_records ar \
-             JOIN course_sessions cs ON cs.id = ar.session_id \
-            WHERE ar.status = $3::attendance_status \
+             FROM countable_attendance ca \
+             JOIN course_sessions cs ON cs.id = ca.session_id \
+            WHERE ca.is_present \
               AND cs.session_date BETWEEN ($1::timestamptz AT TIME ZONE $2)::date - 30 \
                                       AND ($1::timestamptz AT TIME ZONE $2)::date \
             GROUP BY 1 \
@@ -599,7 +592,6 @@ pub async fn weekday_load(
     )
     .bind(now)
     .bind(tz_name)
-    .bind(AttendanceStatus::Present.as_str())
     .fetch_all(db)
     .await
 }
@@ -677,18 +669,16 @@ pub async fn coach_attendance_in_range(
     to: NaiveDate,
 ) -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*) FILTER (WHERE ar.status = $4::attendance_status), \
-                COUNT(*) FILTER (WHERE ar.status = $5::attendance_status) \
-         FROM attendance_records ar \
-         JOIN course_sessions cs ON cs.id = ar.session_id \
+        "SELECT COUNT(*) FILTER (WHERE ca.is_present), \
+                COUNT(*) FILTER (WHERE NOT ca.is_present) \
+         FROM countable_attendance ca \
+         JOIN course_sessions cs ON cs.id = ca.session_id \
          JOIN courses c ON c.id = cs.course_id \
          WHERE c.coach_id = $1 AND cs.session_date BETWEEN $2 AND $3",
     )
     .bind(coach_id)
     .bind(from)
     .bind(to)
-    .bind(AttendanceStatus::Present.as_str())
-    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
@@ -703,15 +693,13 @@ pub async fn coach_attendance_in_range(
 /// happened. `leave` rows are never selected into either bucket.
 pub async fn member_attendance(db: &PgPool, user_id: Uuid) -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64)>(
-        "SELECT COUNT(*) FILTER (WHERE ar.status = $2::attendance_status), \
-                COUNT(*) FILTER (WHERE ar.status = $3::attendance_status) \
-         FROM attendance_records ar \
-         JOIN enrolments e ON e.id = ar.enrolment_id \
+        "SELECT COUNT(*) FILTER (WHERE ca.is_present), \
+                COUNT(*) FILTER (WHERE NOT ca.is_present) \
+         FROM countable_attendance ca \
+         JOIN enrolments e ON e.id = ca.enrolment_id \
          WHERE e.user_id = $1",
     )
     .bind(user_id)
-    .bind(AttendanceStatus::Present.as_str())
-    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
