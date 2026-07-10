@@ -38,6 +38,14 @@ pub fn today(tz: Tz, now: DateTime<Utc>) -> NaiveDate {
     now.with_timezone(&tz).date_naive()
 }
 
+/// The studio-local `YYYY-MM` month key of a UTC instant — the Rust twin of
+/// the SQL `to_char(..., 'YYYY-MM')` used throughout `reports::repository`.
+/// Same zone-then-format order as [`today`]: a UTC instant just after a
+/// studio-local month boundary must key to the studio's month, not UTC's.
+pub fn month_key(tz: Tz, now: DateTime<Utc>) -> String {
+    now.with_timezone(&tz).format("%Y-%m").to_string()
+}
+
 /// Convert a naive studio-local (date, time) to the UTC instant it names.
 /// `None` when the local time is DST-ambiguous or nonexistent — callers
 /// treat that as invalid input rather than picking an interpretation
@@ -147,6 +155,25 @@ mod tests {
         // that config the helper must degrade to the plain UTC date.
         let now = Utc.with_ymd_and_hms(2026, 7, 5, 22, 0, 0).unwrap();
         assert_eq!(today(chrono_tz::UTC, now), d(2026, 7, 5));
+    }
+
+    // --- month_key ---
+
+    #[test]
+    fn month_key_rolls_to_next_month_at_taipei_midnight() {
+        // 16:00:00Z on the 30th = 00:00:00 Taipei on the 1st of the NEXT
+        // month — the studio's month must win over UTC's (still June).
+        let now = Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 0).unwrap();
+        assert_eq!(month_key(taipei(), now), "2026-07");
+    }
+
+    #[test]
+    fn month_key_stays_in_previous_month_when_studio_tz_is_behind_utc() {
+        // 02:00:00Z on Aug 1st = 22:00:00 New York (EDT, UTC-4) on Jul 31st
+        // — the studio's month must stay July even though UTC has already
+        // rolled into August. Also exercises zero-padding ("07", not "7").
+        let now = Utc.with_ymd_and_hms(2026, 8, 1, 2, 0, 0).unwrap();
+        assert_eq!(month_key(new_york(), now), "2026-07");
     }
 
     // --- has_started (ported from leave::service::session_has_started tests) ---

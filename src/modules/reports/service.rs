@@ -158,8 +158,7 @@ pub async fn admin_report(
     // series, and `category_split` the order-line subset of the slice with
     // ratios over the order-line total (venue rental is not an order line
     // — see `dto::CategorySplitEntry`).
-    let current_month_key =
-        now.with_timezone(&studio_clock::studio_tz(server)).format("%Y-%m").to_string();
+    let current_month_key = studio_clock::month_key(studio_clock::studio_tz(server), now);
     let revenue_breakdown: Vec<IncomeSourceEntry> = income_rows
         .iter()
         .filter(|r| r.month == current_month_key)
