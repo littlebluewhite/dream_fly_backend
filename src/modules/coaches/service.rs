@@ -53,7 +53,7 @@ fn clock_record_to_response(r: super::model::ClockRecord) -> ClockRecordResponse
 /// Load a coach by ID and verify that the caller is either the coach's own
 /// user or an admin. Used as the shared authz helper for all ownership-gated
 /// coach endpoints — the handlers MUST NOT do this themselves.
-async fn require_coach_access(
+async fn require_own_coach_profile(
     db: &PgPool,
     auth: &AuthUser,
     coach_id: Uuid,
@@ -228,7 +228,7 @@ pub async fn update_schedules(
     coach_id: Uuid,
     entries: &[ScheduleEntry],
 ) -> Result<Vec<CoachScheduleResponse>, AppError> {
-    require_coach_access(db, auth, coach_id).await?;
+    require_own_coach_profile(db, auth, coach_id).await?;
 
     let schedules = repository::replace_schedules(db, coach_id, entries).await?;
     Ok(schedules.into_iter().map(schedule_to_response).collect())
@@ -240,7 +240,7 @@ pub async fn clock_in(
     coach_id: Uuid,
     note: Option<&str>,
 ) -> Result<ClockRecordResponse, AppError> {
-    require_coach_access(db, auth, coach_id).await?;
+    require_own_coach_profile(db, auth, coach_id).await?;
 
     // Double clock-in is prevented by the unique partial index
     // uq_clock_records_open (migration 00014). Translate that into a
@@ -256,7 +256,7 @@ pub async fn clock_out(
     auth: &AuthUser,
     coach_id: Uuid,
 ) -> Result<ClockRecordResponse, AppError> {
-    require_coach_access(db, auth, coach_id).await?;
+    require_own_coach_profile(db, auth, coach_id).await?;
 
     let record = repository::clock_out(db, coach_id)
         .await?
@@ -271,7 +271,7 @@ pub async fn get_clock_records(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<ClockRecordResponse>, AppError> {
-    require_coach_access(db, auth, coach_id).await?;
+    require_own_coach_profile(db, auth, coach_id).await?;
 
     let records = repository::find_clock_records(db, coach_id, limit, offset).await?;
     Ok(records.into_iter().map(clock_record_to_response).collect())

@@ -240,7 +240,7 @@ async fn clock_out_with_no_open_record_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn update_schedule_by_stranger_returns_403(db: PgPool) {
     // Owner uploads nothing; a different authenticated member hits PUT
-    // on /schedule → require_coach_access must reject with 403 (not 401,
+    // on /schedule → require_own_coach_profile must reject with 403 (not 401,
     // because the token is valid).
     let app = spawn_test_app(db).await;
     let owner = app.register_member("owner-sched@example.com", "Password!234").await;
@@ -285,7 +285,7 @@ async fn update_schedule_by_admin_on_other_coach_succeeds(db: PgPool) {
 
 #[sqlx::test]
 async fn clock_in_on_nonexistent_coach_returns_404(db: PgPool) {
-    // Valid token + random coach id — require_coach_access's first step is
+    // Valid token + random coach id — require_own_coach_profile's first step is
     // `find_by_id` → NotFound, which must surface as 404 (not 403).
     let app = spawn_test_app(db).await;
     let user = app.register_member("ghost@example.com", "Password!234").await;
