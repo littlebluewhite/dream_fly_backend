@@ -166,9 +166,12 @@ struct CourseSeed {
     /// required to enumerate every day in `schedule_text` — just enough for
     /// dev's weekly schedule view to have real data.
     slots: &'static [(i16, &'static str, &'static str)],
-    /// Venue name written onto every schedule slot. MUST match a seed
-    /// venue's `name` exactly — the reports module's venue-usage breakdown
-    /// JOINs `course_schedule_slots.venue` against `venues.name`.
+    /// Venue name written onto every schedule slot. Matching a seed venue's
+    /// `name` exactly is a deliberate display-layer alignment (so the string
+    /// shown in reports reads like a real venue) — the reports module's
+    /// venue-usage breakdown only `GROUP BY`s this string column
+    /// (`course_schedule_slots.venue`) directly; it never joins the
+    /// `venues` table.
     venue: &'static str,
 }
 

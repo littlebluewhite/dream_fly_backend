@@ -7,10 +7,13 @@
 -- this migration's brief. Task P4-B1 wires the full write path (checkout
 -- default + validation) on top of this column.
 --
--- The partial index on `paid_at` speeds up the reports module's existing
--- `WHERE paid_at IS NOT NULL` / `date_trunc('month', paid_at ...)` queries
--- (see `reports::repository`) — `orders.paid_at` already exists since the
--- initial schema (20260410000001), no fallback column needed.
+-- The partial index on `paid_at` speeds up `reports::repository::
+-- recent_activity`'s `WHERE paid_at IS NOT NULL ... ORDER BY paid_at DESC
+-- LIMIT 20` (index-order scan instead of a full sort). It does NOT help
+-- the reports module's `date_trunc('month', paid_at AT TIME ZONE ...)`
+-- queries — wrapping the column in an expression makes those non-sargable
+-- against this plain btree index. `orders.paid_at` already exists since
+-- the initial schema (20260410000001), no fallback column needed.
 -- =============================================================================
 
 ALTER TABLE orders ADD COLUMN payment_method VARCHAR(30);

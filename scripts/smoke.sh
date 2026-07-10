@@ -301,6 +301,7 @@ expect_status "GET /schedule/me (schedule-me)" "200" "$status"
 status="$(req GET /venues)"
 expect_status "GET /venues" "200" "$status"
 VENUE_ID="$(jq -r '.[0].id // empty' "$TMP_BODY")"
+ORIGINAL_VENUE_DESCRIPTION="$(jq -r '.[0].description' "$TMP_BODY")"
 if [[ -z "$VENUE_ID" ]]; then
   fail "no venues found — did you run 'cargo run --bin seed'?"
 else
@@ -311,6 +312,12 @@ patch_venue_body='{"description": "smoke test 更新的場館描述"}'
 status="$(req PATCH "/venues/$VENUE_ID" "$patch_venue_body" "$ADMIN_TOKEN")"
 expect_status "PATCH /venues/{id}" "200" "$status"
 expect_truthy "venue description reflects the PATCH" '.description == "smoke test 更新的場館描述"'
+
+# Restore the seed venue's original description — it's shown on the public
+# site, so this PATCH must not leave it permanently overwritten.
+restore_venue_body="$(jq -n --arg d "$ORIGINAL_VENUE_DESCRIPTION" '{description: $d}')"
+status="$(req PATCH "/venues/$VENUE_ID" "$restore_venue_body" "$ADMIN_TOKEN")"
+expect_status "PATCH /venues/{id} (restore original description)" "200" "$status"
 
 # ---------------------------------------------------------------------------
 # 15. POST /coaches + PATCH /coaches/{id} — admin (fresh throwaway user, so
