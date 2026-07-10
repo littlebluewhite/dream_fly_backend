@@ -34,13 +34,9 @@ pub async fn enrol_from_purchase_tx(
         return Err(AppError::Conflict("already enrolled".into()));
     }
 
-    match repository::insert_tx(tx, user_id, course_id, order_id).await {
-        Ok(enrolment) => Ok(enrolment),
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            Err(AppError::Conflict("already enrolled".into()))
-        }
-        Err(e) => Err(AppError::Database(e)),
-    }
+    repository::insert_tx(tx, user_id, course_id, order_id)
+        .await
+        .map_err(|e| AppError::conflict_on_unique(e, "already enrolled"))
 }
 
 /// This user's enrolments, newest first, each with `attended`/`total`

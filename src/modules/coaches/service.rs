@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::AppError;
+use crate::error::{AppError, constraint_name};
 use crate::extractors::auth::{AuthUser, invalidate_role_cache};
 use crate::modules::auth::repository as auth_repository;
 use crate::modules::users::repository as users_repository;
@@ -156,17 +156,13 @@ pub async fn create_coach(
         req.photo_url.as_deref(),
     )
     .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.constraint() == Some("coaches_user_id_key") {
-                return AppError::Conflict("user is already a coach".into());
-            }
-            if db_err.constraint() == Some("coaches_slug_key") {
-                let slug = req.slug.as_deref().unwrap_or_default();
-                return AppError::Conflict(format!("coach slug '{}' already exists", slug));
-            }
+    .map_err(|e| match constraint_name(&e) {
+        Some("coaches_user_id_key") => AppError::Conflict("user is already a coach".into()),
+        Some("coaches_slug_key") => {
+            let slug = req.slug.as_deref().unwrap_or_default();
+            AppError::Conflict(format!("coach slug '{}' already exists", slug))
         }
-        AppError::Database(e)
+        _ => AppError::Database(e),
     })?;
 
     auth_repository::assign_role_tx(&mut tx, req.user_id, "coach").await?;
@@ -201,13 +197,12 @@ pub async fn update_coach(
     )
     .await
     .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.constraint() == Some("coaches_slug_key") {
-                let slug = req.slug.clone().flatten().unwrap_or_default();
-                return AppError::Conflict(format!("coach slug '{}' already exists", slug));
-            }
-        }
-        AppError::Database(e)
+        let slug = req.slug.clone().flatten().unwrap_or_default();
+        AppError::conflict_on_constraint(
+            e,
+            "coaches_slug_key",
+            format!("coach slug '{}' already exists", slug),
+        )
     })?
     .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
@@ -247,17 +242,12 @@ pub async fn clock_in(
 ) -> Result<ClockRecordResponse, AppError> {
     require_coach_access(db, auth, coach_id).await?;
 
-    let record = repository::clock_in(db, coach_id, note).await.map_err(|e| {
-        // Double clock-in is prevented by the unique partial index
-        // uq_clock_records_open (migration 00014). Translate that into a
-        // friendly 409 instead of a raw DB error.
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.is_unique_violation() {
-                return AppError::Conflict("already clocked in".into());
-            }
-        }
-        AppError::Database(e)
-    })?;
+    // Double clock-in is prevented by the unique partial index
+    // uq_clock_records_open (migration 00014). Translate that into a
+    // friendly 409 instead of a raw DB error.
+    let record = repository::clock_in(db, coach_id, note)
+        .await
+        .map_err(|e| AppError::conflict_on_unique(e, "already clocked in"))?;
     Ok(clock_record_to_response(record))
 }
 

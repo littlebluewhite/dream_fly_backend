@@ -28,14 +28,9 @@ pub async fn create_coupon(
     // Rely on the DB unique index on `code` for uniqueness — avoids a TOCTOU
     // race between a SELECT check and the INSERT (same pattern as
     // `products::service::create`).
-    let coupon = match repository::create(db, &req.code, req.discount_cents, req.expires_at).await
-    {
-        Ok(c) => c,
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(AppError::Conflict("coupon code already exists".into()));
-        }
-        Err(e) => return Err(AppError::Database(e)),
-    };
+    let coupon = repository::create(db, &req.code, req.discount_cents, req.expires_at)
+        .await
+        .map_err(|e| AppError::conflict_on_unique(e, "coupon code already exists"))?;
 
     Ok(CouponResponse::from(coupon))
 }

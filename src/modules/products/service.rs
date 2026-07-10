@@ -83,7 +83,7 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
 
     // Rely on the DB unique index for slug uniqueness — avoids TOCTOU race
     // between a SELECT check and the INSERT.
-    let product = match repository::create(
+    let product = repository::create(
         db,
         ProductCreate {
             name: &req.name,
@@ -101,13 +101,7 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
         },
     )
     .await
-    {
-        Ok(p) => p,
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(AppError::Conflict(format!("slug '{}' already exists", slug)));
-        }
-        Err(e) => return Err(AppError::Database(e)),
-    };
+    .map_err(|e| AppError::conflict_on_unique(e, format!("slug '{}' already exists", slug)))?;
 
     to_response(db, product).await
 }

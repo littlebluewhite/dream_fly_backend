@@ -122,7 +122,7 @@ pub async fn create_user(db: &PgPool, req: CreateUserRequest) -> Result<UserResp
 
     let mut tx = db.begin().await?;
 
-    let user = match repository::create_user_tx(
+    let user = repository::create_user_tx(
         &mut tx,
         &email,
         &req.name,
@@ -131,13 +131,7 @@ pub async fn create_user(db: &PgPool, req: CreateUserRequest) -> Result<UserResp
         req.birth_date,
     )
     .await
-    {
-        Ok(u) => u,
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(AppError::Conflict("Email 已被使用".into()));
-        }
-        Err(e) => return Err(AppError::Database(e)),
-    };
+    .map_err(|e| AppError::conflict_on_unique(e, "Email 已被使用"))?;
 
     auth_repository::assign_role_tx(&mut tx, user.id, "member").await?;
 

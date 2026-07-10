@@ -50,27 +50,24 @@ pub async fn create_leave_request(
         return Err(AppError::Validation("場次已開始，無法請假".into()));
     }
 
-    match repository::insert(db, enrolment_id, req.session_id, req.reason.as_deref()).await {
-        Ok(lr) => Ok(LeaveRequestResponse {
-            id: lr.id,
-            course_id: session.course_id,
-            course_name: session.course_name,
-            session_id: lr.session_id,
-            session_date: session.session_date,
-            start_time: session.start_time,
-            reason: lr.reason,
-            status: lr.status.as_str().to_string(),
-            makeup_session_id: None,
-            makeup_session_date: None,
-            makeup_start_time: None,
-            decided_at: None,
-            created_at: lr.created_at,
-        }),
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            Err(AppError::Conflict("此場次已有請假紀錄".into()))
-        }
-        Err(e) => Err(AppError::Database(e)),
-    }
+    let lr = repository::insert(db, enrolment_id, req.session_id, req.reason.as_deref())
+        .await
+        .map_err(|e| AppError::conflict_on_unique(e, "此場次已有請假紀錄"))?;
+    Ok(LeaveRequestResponse {
+        id: lr.id,
+        course_id: session.course_id,
+        course_name: session.course_name,
+        session_id: lr.session_id,
+        session_date: session.session_date,
+        start_time: session.start_time,
+        reason: lr.reason,
+        status: lr.status.as_str().to_string(),
+        makeup_session_id: None,
+        makeup_session_date: None,
+        makeup_start_time: None,
+        decided_at: None,
+        created_at: lr.created_at,
+    })
 }
 
 /// `GET /leave-requests/me` — plain array, newest first (mirrors

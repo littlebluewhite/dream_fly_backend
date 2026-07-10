@@ -51,7 +51,7 @@ pub async fn create_booking(
     // The partial unique index `uq_bookings_user_slot_active` is the
     // authoritative duplicate guard — translate the unique-violation into a
     // friendly Conflict instead of racing on a pre-check SELECT.
-    let booking = match repository::create_tx(
+    let booking = repository::create_tx(
         &mut tx,
         user_id,
         req.time_slot_id,
@@ -59,15 +59,9 @@ pub async fn create_booking(
         slot.price_cents,
     )
     .await
-    {
-        Ok(b) => b,
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(AppError::Conflict(
-                "you already have a booking for this time slot".into(),
-            ));
-        }
-        Err(e) => return Err(AppError::Database(e)),
-    };
+    .map_err(|e| {
+        AppError::conflict_on_unique(e, "you already have a booking for this time slot")
+    })?;
 
     // Queue the booking_created event atomically with the booking row. The
     // background dispatcher publishes it to Kafka with at-least-once

@@ -49,6 +49,46 @@ pub enum AppError {
 /// service having to hand-translate them.
 const PG_UNIQUE_VIOLATION: &str = "23505";
 
+/// The violated constraint's name, if `e` is a `Database` error and the
+/// driver reports one. Any other `sqlx::Error` variant → `None`.
+pub fn constraint_name(e: &sqlx::Error) -> Option<&str> {
+    e.as_database_error()?.constraint()
+}
+
+impl AppError {
+    /// Translates a unique-constraint violation into a `Conflict(msg)`.
+    /// `e` is SQLSTATE 23505 (`unique_violation`) → `Conflict(msg)`;
+    /// anything else → `Database(e)` (500, same as an unhandled error).
+    ///
+    /// Same safety invariant as `IntoResponse`'s fallback below: `msg` is
+    /// caller-supplied and is the only thing that reaches the HTTP body —
+    /// no constraint name or bound value is ever surfaced.
+    pub fn conflict_on_unique(e: sqlx::Error, msg: impl Into<String>) -> Self {
+        if let Some(db_err) = e.as_database_error() {
+            if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
+                return AppError::Conflict(msg.into());
+            }
+        }
+        AppError::Database(e)
+    }
+
+    /// Like `conflict_on_unique`, but only matches when the violated
+    /// constraint's name equals `constraint` — for sites where more than
+    /// one unique constraint can fail on the same statement and each needs
+    /// a different message. `e` is SQLSTATE 23505 *and* its constraint name
+    /// is `constraint` → `Conflict(msg)`; anything else → `Database(e)`.
+    pub fn conflict_on_constraint(e: sqlx::Error, constraint: &str, msg: impl Into<String>) -> Self {
+        if let Some(db_err) = e.as_database_error() {
+            if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION)
+                && db_err.constraint() == Some(constraint)
+            {
+                return AppError::Conflict(msg.into());
+            }
+        }
+        AppError::Database(e)
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
@@ -100,5 +140,31 @@ impl IntoResponse for AppError {
         };
 
         (status, Json(json!({ "error": message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `RowNotFound` is a real, common `sqlx::Error` variant that carries no
+    /// `DatabaseError` — the representative "non-DB error" case for these
+    /// tests. None of them touch a database.
+    #[test]
+    fn constraint_name_is_none_for_non_database_error() {
+        assert_eq!(constraint_name(&sqlx::Error::RowNotFound), None);
+    }
+
+    #[test]
+    fn conflict_on_unique_falls_back_to_database_for_non_database_error() {
+        let err = AppError::conflict_on_unique(sqlx::Error::RowNotFound, "conflict");
+        assert!(matches!(err, AppError::Database(sqlx::Error::RowNotFound)));
+    }
+
+    #[test]
+    fn conflict_on_constraint_falls_back_to_database_for_non_database_error() {
+        let err =
+            AppError::conflict_on_constraint(sqlx::Error::RowNotFound, "some_key", "conflict");
+        assert!(matches!(err, AppError::Database(sqlx::Error::RowNotFound)));
     }
 }

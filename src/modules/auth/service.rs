@@ -99,13 +99,9 @@ pub async fn register(
 
     // Insert user. Rely on the DB unique constraint for the duplicate check
     // so existence enumeration is not possible via race condition probing.
-    let user = match repository::create_user_tx(&mut tx, &email, &req.name, &hashed).await {
-        Ok(u) => u,
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(AppError::Conflict("registration failed".into()));
-        }
-        Err(e) => return Err(AppError::Database(e)),
-    };
+    let user = repository::create_user_tx(&mut tx, &email, &req.name, &hashed)
+        .await
+        .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
 
     // Assign "member" role
     repository::assign_role_tx(&mut tx, user.id, "member").await?;

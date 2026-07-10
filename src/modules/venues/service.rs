@@ -50,15 +50,14 @@ pub async fn create_venue(
     )
     .await
     .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            // Migration defines a functional lowercase unique index
-            // named `uq_venues_slug_lower` rather than the default
-            // `venues_slug_key`, so match that constraint explicitly.
-            if db_err.constraint() == Some("uq_venues_slug_lower") {
-                return AppError::Conflict(format!("venue slug '{}' already exists", slug));
-            }
-        }
-        AppError::Database(e)
+        // Migration defines a functional lowercase unique index
+        // named `uq_venues_slug_lower` rather than the default
+        // `venues_slug_key`, so match that constraint explicitly.
+        AppError::conflict_on_constraint(
+            e,
+            "uq_venues_slug_lower",
+            format!("venue slug '{}' already exists", slug),
+        )
     })?;
 
     Ok(venue_to_response(venue))
@@ -87,13 +86,12 @@ pub async fn update_venue(
     )
     .await
     .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.constraint() == Some("uq_venues_slug_lower") {
-                let slug = req.slug.as_deref().unwrap_or_default();
-                return AppError::Conflict(format!("venue slug '{}' already exists", slug));
-            }
-        }
-        AppError::Database(e)
+        let slug = req.slug.as_deref().unwrap_or_default();
+        AppError::conflict_on_constraint(
+            e,
+            "uq_venues_slug_lower",
+            format!("venue slug '{}' already exists", slug),
+        )
     })?
     .ok_or_else(|| AppError::NotFound("venue not found".into()))?;
 

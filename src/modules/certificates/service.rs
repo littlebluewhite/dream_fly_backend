@@ -25,7 +25,7 @@ pub async fn create_report_card(
 
     coaches_service::require_course_coach(db, auth, ctx.coach_id, "非本課教練").await?;
 
-    match repository::insert_report_card(
+    let rc = repository::insert_report_card(
         db,
         req.enrolment_id,
         &req.term_label,
@@ -34,21 +34,15 @@ pub async fn create_report_card(
         auth.user_id,
     )
     .await
-    {
-        Ok(rc) => {
-            let row = repository::find_report_card_row(db, rc.id).await?.ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!(
-                    "report_card {} vanished right after insert",
-                    rc.id
-                ))
-            })?;
-            Ok(ReportCardResponse::from(row))
-        }
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            Err(AppError::Conflict("此期別已建立過成績單".into()))
-        }
-        Err(e) => Err(AppError::Database(e)),
-    }
+    .map_err(|e| AppError::conflict_on_unique(e, "此期別已建立過成績單"))?;
+
+    let row = repository::find_report_card_row(db, rc.id).await?.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!(
+            "report_card {} vanished right after insert",
+            rc.id
+        ))
+    })?;
+    Ok(ReportCardResponse::from(row))
 }
 
 /// `GET /report-cards/me` — plain array (mirrors `leave-requests/me`'s `/me`

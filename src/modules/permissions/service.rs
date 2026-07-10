@@ -53,12 +53,11 @@ pub async fn create_role(
     let role = repository::create_role(db, name, description)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint() == Some("roles_name_key") {
-                    return AppError::Conflict(format!("role '{}' already exists", name));
-                }
-            }
-            AppError::Database(e)
+            AppError::conflict_on_constraint(
+                e,
+                "roles_name_key",
+                format!("role '{}' already exists", name),
+            )
         })?;
 
     Ok(RoleResponse {

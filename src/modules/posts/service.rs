@@ -66,7 +66,7 @@ pub async fn create_post(
 
     // Rely on the DB unique index for slug uniqueness — avoids TOCTOU race
     // between a SELECT check and the INSERT.
-    let post = match repository::create(
+    let post = repository::create(
         db,
         author_id,
         &req.title,
@@ -77,13 +77,7 @@ pub async fn create_post(
         req.cover_image.as_deref(),
     )
     .await
-    {
-        Ok(p) => p,
-        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-            return Err(AppError::Conflict("post slug already exists".into()));
-        }
-        Err(e) => return Err(AppError::Database(e)),
-    };
+    .map_err(|e| AppError::conflict_on_unique(e, "post slug already exists"))?;
 
     Ok(PostDetailResponse::from(post))
 }
