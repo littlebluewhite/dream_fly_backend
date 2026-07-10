@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::orders::model::REVENUE_STATUSES;
+
 use super::model::Product;
 
 /// Input payload for `create`. Packages the 10 fields that previously formed
@@ -144,10 +146,11 @@ pub async fn try_decrement_stock_tx(
 /// must pass every id in a single call rather than looping one-at-a-time —
 /// that would reintroduce the N+1 this exists to avoid. A product id absent
 /// from the returned map has zero sold units.
-/// This status list is a semantic twin of `orders::model::REVENUE_STATUSES`
-/// (used by reports for revenue aggregation) — currently identical, kept separate
-/// on purpose because "sold units" and "revenue" are distinct domain concepts;
-/// a change to either side must be reconciled deliberately.
+/// The status filter binds `orders::model::REVENUE_STATUSES` directly
+/// (the same constant reports uses for revenue aggregation) instead of a
+/// hand-copied list — "sold units" and "revenue" stay distinct domain
+/// concepts, but now share one status set, so it can no longer drift out
+/// of sync.
 pub async fn find_sold_counts(
     db: &PgPool,
     product_ids: &[Uuid],
@@ -157,10 +160,11 @@ pub async fn find_sold_counts(
          FROM order_items oi \
          JOIN orders o ON o.id = oi.order_id \
          WHERE oi.product_id = ANY($1) \
-           AND o.status IN ('paid'::order_status, 'processing'::order_status, 'completed'::order_status) \
+           AND o.status::text = ANY($2) \
          GROUP BY oi.product_id",
     )
     .bind(product_ids)
+    .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
     .await?;
     Ok(rows.into_iter().collect())
