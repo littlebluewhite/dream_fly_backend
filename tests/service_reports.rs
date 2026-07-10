@@ -28,10 +28,10 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::reports::service;
 
 use common::fixtures::{
-    SeedOrderLine, seed_booking, seed_coach, seed_course, seed_course_schedule_slot,
-    seed_course_schedule_slot_with_venue, seed_course_session, seed_course_with_capacity,
-    seed_enrolment, seed_entitlement_product, seed_message, seed_order_with_items,
-    seed_waitlist_entry, set_birth_date, set_points_balance,
+    SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
+    seed_course_schedule_slot, seed_course_schedule_slot_with_venue, seed_course_session,
+    seed_course_with_capacity, seed_enrolment, seed_entitlement_product, seed_message,
+    seed_order_bare, seed_order_with_items, seed_waitlist_entry, set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on, test_server_config};
 
@@ -55,42 +55,13 @@ fn months_ago(now: DateTime<Utc>, n: i32) -> DateTime<Utc> {
     day1.with_year(year).unwrap().with_month(month as u32).unwrap()
 }
 
-/// Insert an order directly with an explicit `status` and `paid_at`
-/// (bypassing `orders::service::checkout`, and leaner than the shared
-/// `seed_order_with_item` fixture — these tests only ever read `orders.
-/// total_cents`/`status`/`paid_at`, never `order_items`). Mirrors
-/// `seed_order_with_item`'s UUID-based `order_number` (avoids a
-/// same-millisecond UUIDv7-prefix collision across repeated calls in one
-/// test).
-async fn seed_order(
-    db: &PgPool,
-    user_id: Uuid,
-    status: &str,
-    total_cents: i64,
-    paid_at: Option<DateTime<Utc>>,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    let order_number = format!("RPT-{id}");
-    sqlx::query(
-        "INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, paid_at, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4::order_status, $5, 0, $6, NOW(), NOW())",
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(&order_number)
-    .bind(status)
-    .bind(total_cents)
-    .bind(paid_at)
-    .execute(db)
-    .await
-    .expect("insert order");
-    id
-}
-
 /// Insert a `contact_inquiries` row directly (no shared fixture exists for
 /// this table), so the activity tests can control `created_at`/
-/// `inquiry_type`/`subject`/`name` precisely. Mirrors `seed_order`'s
-/// "local, leaner-than-a-shared-fixture" pattern above.
+/// `inquiry_type`/`subject`/`name` precisely. Unlike `seed_order` (now
+/// `seed_order_bare`), `seed_attendance`, and `backdate_user` — which
+/// graduated to `tests/common/fixtures.rs` once other reports tests needed
+/// them too — this one stays local: no other test file touches
+/// `contact_inquiries`.
 async fn seed_inquiry(
     db: &PgPool,
     name: &str,
@@ -113,32 +84,6 @@ async fn seed_inquiry(
     .execute(db)
     .await
     .expect("insert contact_inquiry");
-    id
-}
-
-/// Insert an `attendance_records` row directly (bypassing `PUT
-/// /sessions/{id}/attendance`), so tests can arrange present/absent/leave
-/// combinations without a real coach HTTP round trip.
-async fn seed_attendance(
-    db: &PgPool,
-    session_id: Uuid,
-    enrolment_id: Uuid,
-    status: &str,
-    marked_by: Uuid,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO attendance_records (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
-         VALUES ($1, $2, $3, $4::attendance_status, $5, NOW(), NOW())",
-    )
-    .bind(id)
-    .bind(session_id)
-    .bind(enrolment_id)
-    .bind(status)
-    .bind(marked_by)
-    .execute(db)
-    .await
-    .expect("insert attendance_record");
     id
 }
 
@@ -244,16 +189,16 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
     let user_id = seed_member(&db, "revenue-buyer@example.com", "Password!234").await;
     let now = Utc::now();
 
-    seed_order(&db, user_id, "paid", 10_000, Some(now)).await;
-    seed_order(&db, user_id, "processing", 20_000, Some(now)).await;
-    seed_order(&db, user_id, "completed", 30_000, Some(now)).await;
+    seed_order_bare(&db, user_id, "paid", 10_000, Some(now)).await;
+    seed_order_bare(&db, user_id, "processing", 20_000, Some(now)).await;
+    seed_order_bare(&db, user_id, "completed", 30_000, Some(now)).await;
     // None of these should count, even though each has a real `paid_at` in
     // the current month — a refunded order keeps its original `paid_at`
     // (see `orders::repository::update_status_and_paid_at_tx`), so the
     // filter must be on `status`, not `paid_at IS NOT NULL`.
-    seed_order(&db, user_id, "refunded", 999_999, Some(now)).await;
-    seed_order(&db, user_id, "cancelled", 999_999, Some(now)).await;
-    seed_order(&db, user_id, "pending", 999_999, None).await;
+    seed_order_bare(&db, user_id, "refunded", 999_999, Some(now)).await;
+    seed_order_bare(&db, user_id, "cancelled", 999_999, Some(now)).await;
+    seed_order_bare(&db, user_id, "pending", 999_999, None).await;
 
     let report = service::admin_report(&db, &test_server_config())
         .await
@@ -270,9 +215,9 @@ async fn admin_report_revenue_trend_buckets_by_month(db: PgPool) {
     let last_month = months_ago(now, 1);
     let oldest_month = months_ago(now, 11);
 
-    seed_order(&db, user_id, "paid", 1_000, Some(now)).await;
-    seed_order(&db, user_id, "paid", 2_000, Some(last_month)).await;
-    seed_order(&db, user_id, "paid", 3_000, Some(oldest_month)).await;
+    seed_order_bare(&db, user_id, "paid", 1_000, Some(now)).await;
+    seed_order_bare(&db, user_id, "paid", 2_000, Some(last_month)).await;
+    seed_order_bare(&db, user_id, "paid", 3_000, Some(oldest_month)).await;
 
     let report = service::admin_report(&db, &test_server_config())
         .await
@@ -295,11 +240,7 @@ async fn admin_report_members_total_new_and_active(db: PgPool) {
     let new_active_user = seed_member(&db, "new-active-member@example.com", "Password!234").await;
     let _new_plain_user = seed_member(&db, "new-plain-member@example.com", "Password!234").await;
 
-    sqlx::query("UPDATE users SET created_at = NOW() - interval '3 months' WHERE id = $1")
-        .bind(old_user)
-        .execute(&db)
-        .await
-        .unwrap();
+    backdate_user(&db, old_user, months_ago(Utc::now(), 3)).await;
 
     let course_id = seed_course(&db, "Members Stats Course", None).await;
     seed_enrolment(&db, old_user, course_id, "active", Utc::now()).await;
@@ -384,17 +325,6 @@ async fn admin_report_coach_course_and_student_count_scoped_per_coach(db: PgPool
 // GET /reports/admin — Round 4 Phase 4 金流 sections
 // ---------------------------------------------------------------------------
 
-/// Backdate a user's `created_at` so incidental fixture users don't leak
-/// into the KPI "new members this/last month" buckets.
-async fn backdate_user(db: &PgPool, user_id: Uuid, created_at: DateTime<Utc>) {
-    sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
-        .bind(user_id)
-        .bind(created_at)
-        .execute(db)
-        .await
-        .expect("backdate user");
-}
-
 #[sqlx::test]
 async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
     let now = Utc::now();
@@ -423,10 +353,10 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
 
     // paid_orders_count: refunded/pending never count, even with the same
     // month's `paid_at`.
-    seed_order(&db, buyer, "paid", 1_000, Some(now)).await;
-    seed_order(&db, buyer, "completed", 2_000, Some(last_month)).await;
-    seed_order(&db, buyer, "refunded", 3_000, Some(now)).await;
-    seed_order(&db, buyer, "pending", 4_000, None).await;
+    seed_order_bare(&db, buyer, "paid", 1_000, Some(now)).await;
+    seed_order_bare(&db, buyer, "completed", 2_000, Some(last_month)).await;
+    seed_order_bare(&db, buyer, "refunded", 3_000, Some(now)).await;
+    seed_order_bare(&db, buyer, "pending", 4_000, None).await;
 
     // attendance_rate this month: 1 present / (1 present + 1 absent) = 0.5,
     // leave in neither numerator nor denominator; last month has no records
@@ -1367,7 +1297,7 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
 
     // A buyer + paid order (kind=order).
     let buyer_id = seed_member(&db, "activity-buyer@example.com", "Password!234").await;
-    seed_order(&db, buyer_id, "paid", 50_000, Some(now - Duration::minutes(30))).await;
+    seed_order_bare(&db, buyer_id, "paid", 50_000, Some(now - Duration::minutes(30))).await;
 
     // A course + enrolment (kind=enrolment).
     let course_id = seed_course(&db, "Activity Feed Course", None).await;
@@ -1422,12 +1352,7 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
     let now = Utc::now();
     for i in 0..25i64 {
         let user_id = seed_member(&db, &format!("activity-cap-{i}@example.com"), "Password!234").await;
-        sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
-            .bind(user_id)
-            .bind(now - Duration::minutes(i))
-            .execute(&db)
-            .await
-            .expect("backdate cap-test user");
+        backdate_user(&db, user_id, now - Duration::minutes(i)).await;
     }
 
     let report = service::admin_activity(&db).await.expect("admin_activity");

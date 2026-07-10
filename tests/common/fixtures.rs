@@ -450,6 +450,42 @@ pub async fn seed_order_with_items(
     order_id
 }
 
+/// Insert an order directly with an explicit `status` and `paid_at`
+/// (bypassing `orders::service::checkout`, and leaner than
+/// `seed_order_with_item`/`seed_order_with_items` — these tests only ever
+/// read `orders.total_cents`/`status`/`paid_at`, never `order_items`).
+/// Named `_bare` — no `order_items` row is inserted at all — to stay
+/// distinct from `seed_order_with_items`, which always inserts at least one
+/// line. Mirrors `seed_order_with_item`'s UUID-based `order_number` (avoids
+/// a same-millisecond UUIDv7-prefix collision across repeated calls in one
+/// test). Returns the order id.
+pub async fn seed_order_bare(
+    db: &PgPool,
+    user_id: Uuid,
+    status: &str,
+    total_cents: i64,
+    paid_at: Option<DateTime<Utc>>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    let order_number = format!("RPT-{id}");
+    sqlx::query(
+        r#"
+        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, paid_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::order_status, $5, 0, $6, NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(&order_number)
+    .bind(status)
+    .bind(total_cents)
+    .bind(paid_at)
+    .execute(db)
+    .await
+    .expect("insert order");
+    id
+}
+
 /// Insert a booking row directly (bypassing `bookings::service::create`,
 /// which always starts bookings `confirmed` at the slot's current price) so
 /// venue-rental report tests can set an exact `status` — including
@@ -674,6 +710,46 @@ pub async fn set_birth_date(db: &PgPool, user_id: Uuid, birth_date: Option<Naive
         .execute(db)
         .await
         .expect("set birth date");
+}
+
+/// Backdate a user's `created_at` so incidental fixture users don't leak
+/// into the KPI "new members this/last month" buckets.
+pub async fn backdate_user(db: &PgPool, user_id: Uuid, created_at: DateTime<Utc>) {
+    sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(created_at)
+        .execute(db)
+        .await
+        .expect("backdate user");
+}
+
+/// Insert an `attendance_records` row directly (bypassing `PUT
+/// /sessions/{id}/attendance`), so tests can arrange present/absent/leave
+/// combinations without a real coach HTTP round trip. Returns the
+/// attendance record id.
+pub async fn seed_attendance(
+    db: &PgPool,
+    session_id: Uuid,
+    enrolment_id: Uuid,
+    status: &str,
+    marked_by: Uuid,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO attendance_records (id, session_id, enrolment_id, status, marked_by, marked_at, created_at)
+        VALUES ($1, $2, $3, $4::attendance_status, $5, NOW(), NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(enrolment_id)
+    .bind(status)
+    .bind(marked_by)
+    .execute(db)
+    .await
+    .expect("insert attendance_record");
+    id
 }
 
 /// Insert a `leave_requests` row directly (bypassing
