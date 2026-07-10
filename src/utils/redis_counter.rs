@@ -8,9 +8,9 @@
 //! because `middleware` must not depend on `auth` (middleware sits in
 //! front of every route; auth is just one more module behind it) and
 //! `auth` should not depend on `middleware` (auth is domain logic, not
-//! HTTP wiring) — `utils` is the common downstream both already import
-//! from, so it is the only place that does not create a cross-layer
-//! dependency.
+//! HTTP wiring) — `utils` is the common downstream both are free to
+//! depend on (auth already does, elsewhere), so it is the only place
+//! that does not create a cross-layer dependency.
 //!
 //! A plain `INCR` followed by a separate `EXPIRE` races: if the process
 //! crashes or the connection drops between the two calls, the counter is
