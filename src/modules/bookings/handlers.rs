@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
+use crate::extractors::request_id::RequestId;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
@@ -17,6 +18,7 @@ use super::service;
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
+    request_id: RequestId,
     ValidatedJson(req): ValidatedJson<CreateBookingRequest>,
 ) -> Result<Json<BookingResponse>, AppError> {
     let booking = service::create_booking(
@@ -24,6 +26,7 @@ pub async fn create(
         &state.config.server,
         auth.user_id,
         req,
+        request_id.0,
     )
     .await?;
     Ok(Json(booking))
@@ -43,10 +46,17 @@ pub async fn my_bookings(
 pub async fn cancel(
     State(state): State<AppState>,
     auth: AuthUser,
+    request_id: RequestId,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BookingResponse>, AppError> {
-    let booking =
-        service::cancel_booking(&state.db, &state.config.server, &auth, id).await?;
+    let booking = service::cancel_booking(
+        &state.db,
+        &state.config.server,
+        &auth,
+        id,
+        request_id.0,
+    )
+    .await?;
     Ok(Json(booking))
 }
 

@@ -20,6 +20,7 @@ pub async fn create_booking(
     server: &ServerConfig,
     user_id: Uuid,
     req: CreateBookingRequest,
+    correlation_id: Option<String>,
 ) -> Result<BookingResponse, AppError> {
     let tz = studio_clock::studio_tz(server);
 
@@ -72,7 +73,7 @@ pub async fn create_booking(
             user_id: booking.user_id,
             time_slot_id: booking.time_slot_id,
         },
-        None,
+        correlation_id,
     )
     .await?;
 
@@ -90,6 +91,7 @@ pub async fn cancel_booking(
     server: &ServerConfig,
     auth: &AuthUser,
     booking_id: Uuid,
+    correlation_id: Option<String>,
 ) -> Result<BookingResponse, AppError> {
     let tz = studio_clock::studio_tz(server);
 
@@ -147,7 +149,7 @@ pub async fn cancel_booking(
             user_id: updated.user_id,
             time_slot_id: updated.time_slot_id,
         },
-        None,
+        correlation_id,
     )
     .await?;
 

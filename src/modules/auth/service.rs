@@ -82,6 +82,7 @@ pub async fn register(
     db: &PgPool,
     config: &AuthConfig,
     req: RegisterRequest,
+    correlation_id: Option<String>,
 ) -> Result<AuthResponse, AppError> {
     // Normalize email to lowercase to avoid IDOR via case-insensitive
     // duplicates later on.
@@ -121,7 +122,7 @@ pub async fn register(
             email: user.email.clone(),
             name: user.name.clone(),
         },
-        None,
+        correlation_id,
     )
     .await?;
 
@@ -207,6 +208,7 @@ pub async fn google_auth(
     config: &AppConfig,
     http_client: &reqwest::Client,
     req: GoogleAuthRequest,
+    correlation_id: Option<String>,
 ) -> Result<AuthResponse, AppError> {
     // 1. Exchange authorization code for tokens (including id_token).
     //    The endpoint is configurable so integration tests can redirect to
@@ -330,7 +332,7 @@ pub async fn google_auth(
                 email: user.email.clone(),
                 name: user.name.clone(),
             },
-            None,
+            correlation_id,
         )
         .await?;
     }

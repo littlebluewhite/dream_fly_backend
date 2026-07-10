@@ -44,6 +44,7 @@ pub async fn checkout(
     user_id: Uuid,
     idempotency_key: Option<String>,
     req: CheckoutRequest,
+    correlation_id: Option<String>,
 ) -> Result<OrderResponse, AppError> {
     // 1. Idempotency pre-check (outside tx). If we've already processed this
     //    key for this user, return the prior order (artifacts included).
@@ -315,7 +316,7 @@ pub async fn checkout(
             points_used: order.points_used,
             points_earned: order.points_earned,
         },
-        None,
+        correlation_id,
     )
     .await?;
 
@@ -416,6 +417,7 @@ pub async fn update_order_status(
     db: &PgPool,
     order_id: Uuid,
     status_str: &str,
+    correlation_id: Option<String>,
 ) -> Result<OrderResponse, AppError> {
     let target: OrderStatus = status_str
         .parse()
@@ -450,7 +452,7 @@ pub async fn update_order_status(
             user_id: updated.user_id,
             status: target.as_str().to_string(),
         },
-        None,
+        correlation_id,
     )
     .await?;
 

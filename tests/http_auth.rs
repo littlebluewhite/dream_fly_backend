@@ -381,3 +381,33 @@ async fn reset_password_with_invalid_token_returns_bad_request(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 400);
 }
+
+// ---------------- Task E2: x-request-id -> outbox correlation_id ----------------
+
+/// Full-chain proof that `SetRequestIdLayer` -> `RequestId` extractor ->
+/// `auth::service::register` -> `insert_domain_event_tx` are actually wired
+/// together, not just individually unit-tested. `SetRequestIdLayer` never
+/// overwrites an existing `x-request-id` header, so the value set here on
+/// the request must survive all the way into the outbox row's payload.
+#[sqlx::test]
+async fn register_with_x_request_id_header_lands_in_outbox_correlation_id(db: PgPool) {
+    let app = spawn_test_app(db).await;
+
+    let resp = app
+        .post("/api/v1/auth/register")
+        .add_header("x-request-id", "rid-http-1")
+        .json(&json!({
+            "email": "corr-http@example.com",
+            "name": "Corr Http",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let correlation_id: String =
+        sqlx::query_scalar("SELECT payload->>'correlation_id' FROM events_outbox")
+            .fetch_one(&app.db)
+            .await
+            .expect("user_registered outbox row");
+    assert_eq!(correlation_id, "rid-http-1");
+}

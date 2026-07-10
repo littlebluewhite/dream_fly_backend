@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
+use crate::extractors::request_id::RequestId;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
@@ -39,6 +40,7 @@ pub async fn checkout(
     State(state): State<AppState>,
     auth: AuthUser,
     headers: HeaderMap,
+    request_id: RequestId,
     // `Option<Json<T>>` rather than `ValidatedJson<T>`: axum's built-in
     // `OptionalFromRequest` impl for `Json` yields `None` when the request
     // has no `Content-Type` header at all (the existing no-body `POST
@@ -52,7 +54,14 @@ pub async fn checkout(
 ) -> Result<Json<OrderResponse>, AppError> {
     let idempotency_key = extract_idempotency_key(&headers);
     let req = body.map(|Json(r)| r).unwrap_or_default();
-    let order = service::checkout(&state.db, auth.user_id, idempotency_key, req).await?;
+    let order = service::checkout(
+        &state.db,
+        auth.user_id,
+        idempotency_key,
+        req,
+        request_id.0,
+    )
+    .await?;
     Ok(Json(order))
 }
 
@@ -81,10 +90,11 @@ pub async fn update_status(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
+    request_id: RequestId,
     ValidatedJson(req): ValidatedJson<UpdateOrderStatusRequest>,
 ) -> Result<Json<OrderResponse>, AppError> {
     auth.require_role("admin")?;
-    let order = service::update_order_status(&state.db, id, &req.status).await?;
+    let order = service::update_order_status(&state.db, id, &req.status, request_id.0).await?;
     Ok(Json(order))
 }
 

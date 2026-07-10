@@ -29,6 +29,7 @@ async fn register_creates_user_with_hashed_password(db: PgPool) {
             name: "Alice".into(),
             password: "sup3rsecret".into(),
         },
+        None,
     )
     .await
     .expect("register");
@@ -87,6 +88,7 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
             name: "Bob".into(),
             password: "passw0rd!".into(),
         },
+        None,
     )
     .await
     .expect("first register");
@@ -101,6 +103,7 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
             name: "Other Bob".into(),
             password: "passw0rd!".into(),
         },
+        None,
     )
     .await
     .expect_err("second register should fail");
@@ -162,6 +165,7 @@ async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
             name: "Dave".into(),
             password: "sup3rsecret".into(),
         },
+        None,
     )
     .await
     .expect("register");
@@ -214,6 +218,7 @@ async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
             name: "Eve".into(),
             password: "sup3rsecret".into(),
         },
+        None,
     )
     .await
     .expect("register");

@@ -2,6 +2,7 @@ use axum::{Json, extract::State};
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
+use crate::extractors::request_id::RequestId;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
@@ -14,9 +15,10 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn register(
     State(state): State<AppState>,
+    request_id: RequestId,
     ValidatedJson(req): ValidatedJson<RegisterRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let response = service::register(&state.db, &state.config.auth, req).await?;
+    let response = service::register(&state.db, &state.config.auth, req, request_id.0).await?;
     Ok(Json(response))
 }
 
@@ -33,6 +35,7 @@ pub async fn login(
 #[tracing::instrument(skip_all)]
 pub async fn google_auth(
     State(state): State<AppState>,
+    request_id: RequestId,
     ValidatedJson(req): ValidatedJson<GoogleAuthRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
     let response = service::google_auth(
@@ -40,6 +43,7 @@ pub async fn google_auth(
         &state.config,
         &state.http_client,
         req,
+        request_id.0,
     )
     .await?;
     Ok(Json(response))
