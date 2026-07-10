@@ -5,6 +5,8 @@ use validator::Validate;
 
 use crate::utils::url_validation::validate_stored_url;
 
+use super::model::{ClockRecord, Coach, CoachSchedule};
+
 #[derive(Debug, Serialize)]
 pub struct CoachResponse {
     pub id: Uuid,
@@ -22,6 +24,26 @@ pub struct CoachResponse {
     pub created_at: DateTime<Utc>,
 }
 
+impl From<Coach> for CoachResponse {
+    fn from(c: Coach) -> Self {
+        Self {
+            id: c.id,
+            user_id: c.user_id,
+            name: c.name,
+            title: c.title,
+            bio: c.bio,
+            experience: c.experience,
+            specialties: c.specialties,
+            certifications: c.certifications,
+            is_active: c.is_active,
+            display_order: c.display_order,
+            slug: c.slug,
+            photo_url: c.photo_url,
+            created_at: c.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct CoachDetailResponse {
     pub coach: CoachResponse,
@@ -35,6 +57,18 @@ pub struct CoachScheduleResponse {
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
     pub is_available: bool,
+}
+
+impl From<CoachSchedule> for CoachScheduleResponse {
+    fn from(s: CoachSchedule) -> Self {
+        Self {
+            id: s.id,
+            day_of_week: s.day_of_week,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            is_available: s.is_available,
+        }
+    }
 }
 
 /// `POST /coaches` (admin). Binds an existing user (created via the
@@ -135,6 +169,18 @@ pub struct ClockRecordResponse {
     pub clock_out: Option<DateTime<Utc>>,
     pub note: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+impl From<ClockRecord> for ClockRecordResponse {
+    fn from(r: ClockRecord) -> Self {
+        Self {
+            id: r.id,
+            clock_in: r.clock_in,
+            clock_out: r.clock_out,
+            note: r.note,
+            created_at: r.created_at,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Validate)]

@@ -7,30 +7,16 @@ use crate::utils::slug::slugify;
 use super::dto::{CreateVenueRequest, UpdateVenueRequest, VenueResponse};
 use super::repository;
 
-fn venue_to_response(v: super::model::Venue) -> VenueResponse {
-    VenueResponse {
-        id: v.id,
-        category_id: v.category_id,
-        name: v.name,
-        slug: v.slug,
-        description: v.description,
-        features: v.features,
-        image_url: v.image_url,
-        is_active: v.is_active,
-        created_at: v.created_at,
-    }
-}
-
 pub async fn list_active(db: &PgPool) -> Result<Vec<VenueResponse>, AppError> {
     let venues = repository::find_all_active(db).await?;
-    Ok(venues.into_iter().map(venue_to_response).collect())
+    Ok(venues.into_iter().map(VenueResponse::from).collect())
 }
 
 pub async fn get_by_slug(db: &PgPool, slug: &str) -> Result<VenueResponse, AppError> {
     let venue = repository::find_by_slug(db, slug)
         .await?
         .ok_or_else(|| AppError::NotFound("venue not found".into()))?;
-    Ok(venue_to_response(venue))
+    Ok(VenueResponse::from(venue))
 }
 
 pub async fn create_venue(
@@ -60,7 +46,7 @@ pub async fn create_venue(
         )
     })?;
 
-    Ok(venue_to_response(venue))
+    Ok(VenueResponse::from(venue))
 }
 
 /// `PATCH /venues/{id}` — admin only (checked by the handler). Slug
@@ -95,5 +81,5 @@ pub async fn update_venue(
     })?
     .ok_or_else(|| AppError::NotFound("venue not found".into()))?;
 
-    Ok(venue_to_response(venue))
+    Ok(VenueResponse::from(venue))
 }

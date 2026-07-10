@@ -5,6 +5,8 @@ use validator::Validate;
 
 use crate::utils::url_validation::validate_stored_url;
 
+use super::model::Venue;
+
 #[derive(Debug, Serialize)]
 pub struct VenueCategoryResponse {
     pub id: Uuid,
@@ -25,6 +27,22 @@ pub struct VenueResponse {
     pub image_url: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
+}
+
+impl From<Venue> for VenueResponse {
+    fn from(v: Venue) -> Self {
+        Self {
+            id: v.id,
+            category_id: v.category_id,
+            name: v.name,
+            slug: v.slug,
+            description: v.description,
+            features: v.features,
+            image_url: v.image_url,
+            is_active: v.is_active,
+            created_at: v.created_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
