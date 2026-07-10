@@ -51,29 +51,17 @@ async fn checkout_creates_order_and_clears_cart(db: PgPool) {
     assert_eq!(resp.points_earned, 2);
 
     // Cart is now empty
-    let cart_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cart_items WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let cart_count = common::cart_count(&db, user).await;
     assert_eq!(cart_count, 0, "cart must be cleared after checkout");
 
     // Exactly one order row exists
-    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 1);
 
     // An "Order Placed" notification is written post-commit.
-    let title: String = sqlx::query_scalar(
-        "SELECT title FROM notifications WHERE user_id = $1 AND type = 'order_placed'::notification_type",
-    )
-    .bind(user)
-    .fetch_one(&db)
-    .await
-    .expect("order placed notification row");
+    let (title, _) = common::latest_notification(&db, user, "order_placed")
+        .await
+        .expect("order placed notification row");
     assert_eq!(title, "Order Placed");
 }
 
@@ -117,21 +105,13 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
 
     // Transaction rolled back: cart intact, no order created, stock unchanged.
-    let cart_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cart_items WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let cart_count = common::cart_count(&db, user).await;
     assert_eq!(
         cart_count, 1,
         "cart should still exist after failed checkout"
     );
 
-    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 0);
 
     assert_eq!(common::product_stock(&db, product).await, Some(1));
@@ -301,11 +281,7 @@ async fn checkout_coupon_plus_points_can_reach_zero_total(db: PgPool) {
     assert_eq!(resp.total_cents, 0);
     assert_eq!(resp.points_earned, 0, "a fully-covered order earns nothing");
 
-    let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let balance = common::points_balance_of(&db, user).await;
     assert_eq!(balance, 0, "all 100 points redeemed, none earned back");
 }
 
@@ -325,11 +301,7 @@ async fn checkout_with_invalid_coupon_returns_validation_error(db: PgPool) {
         .expect_err("invalid coupon should fail");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 
-    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 0, "no order should be created on invalid coupon");
 }
 
@@ -365,11 +337,7 @@ async fn checkout_with_deactivated_coupon_returns_validation_error(db: PgPool) {
         .expect_err("deactivated coupon should fail checkout");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 
-    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 0, "no order should be created on deactivated coupon");
 }
 
@@ -391,11 +359,7 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
     assert_eq!(resp.points_used, 500);
     assert_eq!(resp.total_cents, 300_000 - 50_000);
 
-    let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let balance = common::points_balance_of(&db, user).await;
     // Started at 500, redeemed all 500 (-> 0), then earned this checkout's
     // own `points_earned` on top.
     assert_eq!(balance, resp.points_earned);
@@ -458,11 +422,7 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     // Nothing was written: no order, enrolment count for the course
     // unchanged (still just the pre-existing one), stock untouched, no
     // ledger row, and the points balance untouched.
-    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 0);
 
     let enrolment_count: i64 = sqlx::query_scalar(
@@ -483,19 +443,11 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
         .unwrap();
     assert_eq!(ledger_count, 0, "no ledger row should survive the rollback");
 
-    let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let balance = common::points_balance_of(&db, user).await;
     assert_eq!(balance, 100, "points balance must be unchanged");
 
     // The cart itself is untouched too (checkout never got to clear it).
-    let cart_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cart_items WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let cart_count = common::cart_count(&db, user).await;
     assert_eq!(cart_count, 2);
 }
 
@@ -529,11 +481,7 @@ async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool
     .unwrap();
     assert_eq!(enrolment_count, 1, "replay must not create a duplicate enrolment");
 
-    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 1, "replay must not create a duplicate order");
 }
 
@@ -706,13 +654,9 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
     assert_eq!(db_status, "processing");
 
     // An "Order Update" notification (type order_status) is written.
-    let (title, message): (String, String) = sqlx::query_as(
-        "SELECT title, message FROM notifications WHERE user_id = $1 AND type = 'order_status'::notification_type",
-    )
-    .bind(user)
-    .fetch_one(&db)
-    .await
-    .expect("order status notification row");
+    let (title, message) = common::latest_notification(&db, user, "order_status")
+        .await
+        .expect("order status notification row");
     assert_eq!(title, "Order Update");
     assert!(message.contains("processing"));
 }

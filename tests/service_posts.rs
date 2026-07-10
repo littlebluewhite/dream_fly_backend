@@ -17,18 +17,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::posts::dto::{CreatePostRequest, UpdatePostRequest};
 use dream_fly_backend::modules::posts::service;
-
-fn auth_for(user_id: Uuid, roles: &[&str]) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: format!("{user_id}@example.com"),
-        roles: roles.iter().map(|r| (*r).to_string()).collect(),
-    }
-}
 
 fn create_req(title: &str, category: &str) -> CreatePostRequest {
     CreatePostRequest {
@@ -109,7 +100,7 @@ async fn update_post_by_non_author_non_admin_returns_forbidden(db: PgPool) {
     let err = service::update_post(
         &db,
         post.id,
-        &auth_for(other, &["member"]),
+        &common::member_auth(other),
         UpdatePostRequest {
             title: Some("Pwned".into()),
             slug: None,
@@ -135,7 +126,7 @@ async fn update_post_by_author_succeeds(db: PgPool) {
     let updated = service::update_post(
         &db,
         post.id,
-        &auth_for(author, &["member"]),
+        &common::member_auth(author),
         UpdatePostRequest {
             title: Some("Renamed".into()),
             slug: None,
@@ -163,7 +154,7 @@ async fn update_post_by_admin_on_other_author_succeeds(db: PgPool) {
     service::update_post(
         &db,
         post.id,
-        &auth_for(admin, &["admin"]),
+        &common::admin_auth(admin),
         UpdatePostRequest {
             title: Some("Admin Fixed".into()),
             slug: None,
@@ -191,7 +182,7 @@ async fn update_post_draft_to_published_sets_published_at(db: PgPool) {
     let updated = service::update_post(
         &db,
         post.id,
-        &auth_for(author, &["member"]),
+        &common::member_auth(author),
         UpdatePostRequest {
             title: None,
             slug: None,

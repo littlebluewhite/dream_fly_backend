@@ -21,6 +21,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::config::{AuthConfig, ServerConfig};
+use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::utils::password;
 
 /// Pin the server config tests use to UTC so naïve date+time arithmetic
@@ -64,6 +65,32 @@ pub fn test_auth_config() -> AuthConfig {
         google_redirect_url: "http://localhost/oauth/callback".into(),
         google_token_url: "http://127.0.0.1:1/oauth/token".into(),
     }
+}
+
+/// Build an `AuthUser` for a pre-seeded user id, carrying the given roles.
+/// Email is synthesized as `{user_id}@example.com` — safe because no
+/// service under test reads `AuthUser::email`.
+pub fn auth_with_roles(user_id: Uuid, roles: &[&str]) -> AuthUser {
+    AuthUser {
+        user_id,
+        email: format!("{user_id}@example.com"),
+        roles: roles.iter().map(|r| (*r).to_string()).collect(),
+    }
+}
+
+/// Convenience wrapper: a single `member`-role `AuthUser`.
+pub fn member_auth(user_id: Uuid) -> AuthUser {
+    auth_with_roles(user_id, &["member"])
+}
+
+/// Convenience wrapper: a single `coach`-role `AuthUser`.
+pub fn coach_auth(user_id: Uuid) -> AuthUser {
+    auth_with_roles(user_id, &["coach"])
+}
+
+/// Convenience wrapper: a single `admin`-role `AuthUser`.
+pub fn admin_auth(user_id: Uuid) -> AuthUser {
+    auth_with_roles(user_id, &["admin"])
 }
 
 /// Insert a member user with a pre-hashed password. Returns the new user's id.
@@ -239,4 +266,52 @@ pub async fn slot_booked(db: &PgPool, slot_id: Uuid) -> i32 {
         .fetch_one(db)
         .await
         .expect("fetch booked count")
+}
+
+/// Fetch the newest `(title, message)` of a user's notifications matching
+/// `notification_type` (e.g. `"booking_confirmed"`, `"order_status"`).
+/// `None` if no matching row exists.
+pub async fn latest_notification(
+    db: &PgPool,
+    user_id: Uuid,
+    notification_type: &str,
+) -> Option<(String, String)> {
+    sqlx::query_as(
+        "SELECT title, message FROM notifications \
+         WHERE user_id = $1 AND type = $2::notification_type \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(notification_type)
+    .fetch_optional(db)
+    .await
+    .expect("query latest_notification")
+}
+
+/// Count a user's `orders` rows (any status). For a database-wide total
+/// (e.g. cross-user race assertions) query `orders` directly instead.
+pub async fn order_count(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .expect("count orders")
+}
+
+/// Count a user's `cart_items` rows (product and course lines combined).
+pub async fn cart_count(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM cart_items WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .expect("count cart_items")
+}
+
+/// Fetch a user's current `points_balance`.
+pub async fn points_balance_of(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .expect("fetch points_balance")
 }

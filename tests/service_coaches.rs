@@ -16,17 +16,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::coaches::dto::ScheduleEntry;
 use dream_fly_backend::modules::coaches::service;
-
-fn auth_for(user_id: Uuid, roles: &[&str]) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: format!("{user_id}@example.com"),
-        roles: roles.iter().map(|r| (*r).to_string()).collect(),
-    }
-}
 
 async fn set_coach_active(db: &PgPool, coach_id: Uuid, active: bool) {
     sqlx::query("UPDATE coaches SET is_active = $1 WHERE id = $2")
@@ -78,7 +69,7 @@ async fn update_schedules_by_owner_succeeds(db: PgPool) {
         },
     ];
 
-    let auth = auth_for(user_id, &["member", "coach"]);
+    let auth = common::auth_with_roles(user_id, &["member", "coach"]);
     let resp = service::update_schedules(&db, &auth, coach_id, &entries)
         .await
         .expect("owner may replace their schedule");
@@ -97,7 +88,7 @@ async fn update_schedules_by_stranger_returns_forbidden(db: PgPool) {
 
     let err = service::update_schedules(
         &db,
-        &auth_for(stranger_id, &["member"]),
+        &common::member_auth(stranger_id),
         coach_id,
         &[],
     )
@@ -114,7 +105,7 @@ async fn update_schedules_by_admin_on_other_coach_succeeds(db: PgPool) {
 
     service::update_schedules(
         &db,
-        &auth_for(admin_id, &["member", "admin"]),
+        &common::auth_with_roles(admin_id, &["member", "admin"]),
         coach_id,
         &[ScheduleEntry {
             day_of_week: 2,
@@ -135,7 +126,7 @@ async fn clock_in_twice_without_clock_out_returns_conflict(db: PgPool) {
     // DB error would surface as a 500 to the client.
     let user_id = common::seed_member(&db, "coach@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Coach").await;
-    let auth = auth_for(user_id, &["coach"]);
+    let auth = common::coach_auth(user_id);
 
     service::clock_in(&db, &auth, coach_id, Some("starting shift"))
         .await
@@ -155,7 +146,7 @@ async fn clock_out_with_no_open_record_returns_not_found(db: PgPool) {
     let user_id = common::seed_member(&db, "coach@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Coach").await;
 
-    let err = service::clock_out(&db, &auth_for(user_id, &["coach"]), coach_id)
+    let err = service::clock_out(&db, &common::coach_auth(user_id), coach_id)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));

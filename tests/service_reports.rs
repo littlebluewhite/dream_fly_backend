@@ -25,7 +25,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::reports::service;
 
 use common::fixtures::{
@@ -35,14 +34,6 @@ use common::fixtures::{
     seed_waitlist_entry, set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on, test_server_config};
-
-fn auth_for(user_id: Uuid, roles: &[&str]) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: format!("{user_id}@example.com"),
-        roles: roles.iter().map(|r| (*r).to_string()).collect(),
-    }
-}
 
 fn t(h: u32, m: u32) -> chrono::NaiveTime {
     chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -1068,7 +1059,7 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
 #[sqlx::test]
 async fn coach_report_no_coach_row_returns_not_found(db: PgPool) {
     let user_id = seed_member(&db, "no-coach-row@example.com", "Password!234").await;
-    let auth = auth_for(user_id, &["coach"]);
+    let auth = common::coach_auth(user_id);
 
     let err = service::coach_report(&db, &test_server_config(), &auth)
         .await
@@ -1081,7 +1072,7 @@ async fn coach_report_no_coach_row_returns_not_found(db: PgPool) {
 async fn coach_report_empty_domain_is_all_zero_or_null(db: PgPool) {
     let user_id = seed_member(&db, "empty-coach@example.com", "Password!234").await;
     seed_coach(&db, user_id, "Empty Coach").await;
-    let auth = auth_for(user_id, &["coach"]);
+    let auth = common::coach_auth(user_id);
 
     let report = service::coach_report(&db, &test_server_config(), &auth)
         .await
@@ -1107,7 +1098,7 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
     let student = seed_member(&db, "today-student@example.com", "Password!234").await;
     seed_enrolment(&db, student, course_id, "active", Utc::now()).await;
 
-    let auth = auth_for(coach_user, &["coach"]);
+    let auth = common::coach_auth(coach_user);
     let report = service::coach_report(&db, &test_server_config(), &auth)
         .await
         .expect("coach_report (before marking)");
@@ -1167,7 +1158,7 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
     // Outside the window: a present record that must not be counted.
     seed_attendance(&db, session_out, enrolment_a, "present", coach_user).await;
 
-    let auth = auth_for(coach_user, &["coach"]);
+    let auth = common::coach_auth(coach_user);
     let report = service::coach_report(&db, &test_server_config(), &auth)
         .await
         .expect("coach_report");
@@ -1199,7 +1190,7 @@ async fn coach_report_scoped_to_own_domain(db: PgPool) {
     seed_enrolment(&db, student_a, course_a, "active", Utc::now()).await;
     seed_enrolment(&db, student_b, course_b, "active", Utc::now()).await;
 
-    let auth_a = auth_for(coach_a_user, &["coach"]);
+    let auth_a = common::coach_auth(coach_a_user);
     let report_a = service::coach_report(&db, &test_server_config(), &auth_a)
         .await
         .expect("coach_report for coach A");
@@ -1235,7 +1226,7 @@ async fn coach_report_unread_messages_counts_only_incoming_unread(db: PgPool) {
     seed_message(&db, conversation_id, member_user, "please read", None, Utc::now()).await;
     seed_message(&db, conversation_id, member_user, "please read 2", None, Utc::now()).await;
 
-    let auth = auth_for(coach_user, &["coach"]);
+    let auth = common::coach_auth(coach_user);
     let report = service::coach_report(&db, &test_server_config(), &auth)
         .await
         .expect("coach_report");

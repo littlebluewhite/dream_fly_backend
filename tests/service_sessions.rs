@@ -17,7 +17,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{repository as sessions_repository, service};
 
@@ -25,14 +24,6 @@ use common::fixtures::{
     seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
     seed_course_session, seed_enrolment,
 };
-
-fn auth_for(user_id: Uuid, roles: &[&str]) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: format!("{user_id}@example.com"),
-        roles: roles.iter().map(|r| (*r).to_string()).collect(),
-    }
-}
 
 /// PostgreSQL `EXTRACT(DOW)` / this module's `day_of_week` convention:
 /// 0=Sunday .. 6=Saturday.
@@ -219,7 +210,7 @@ async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPo
     seed_enrolment(&db, m2, own_course, "active", Utc::now()).await;
     seed_enrolment(&db, m3, own_course, "cancelled", Utc::now()).await;
 
-    let auth = auth_for(coach_user, &["coach"]);
+    let auth = common::coach_auth(coach_user);
     let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
         .await
         .expect("today sessions");
@@ -238,7 +229,7 @@ async fn today_sessions_coach_role_without_coach_row_returns_empty(db: PgPool) {
     // A user with the "coach" role but no matching `coaches` row (data
     // anomaly) must get an empty list, not an error.
     let user_id = common::seed_member(&db, "phantom-coach@example.com", "hunter22-secret").await;
-    let auth = auth_for(user_id, &["coach"]);
+    let auth = common::coach_auth(user_id);
     let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
         .await
         .expect("today sessions");
@@ -264,7 +255,7 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
     seed_course_schedule_slot(&db, without_coach, dow, t(11, 0), t(12, 0)).await;
 
     let admin_id = common::seed_member(&db, "coach-name-admin@example.com", "hunter22-secret").await;
-    let auth = auth_for(admin_id, &["admin"]);
+    let auth = common::admin_auth(admin_id);
     let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
         .await
         .expect("today sessions");
@@ -285,7 +276,7 @@ async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
     seed_course_schedule_slot_with_venue(&db, course_id, dow, t(9, 0), t(10, 0), "Main Hall").await;
 
     let admin_id = common::seed_member(&db, "venue-match-admin@example.com", "hunter22-secret").await;
-    let auth = auth_for(admin_id, &["admin"]);
+    let auth = common::admin_auth(admin_id);
     let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
         .await
         .expect("today sessions");
@@ -306,7 +297,7 @@ async fn today_sessions_venue_is_null_when_no_matching_slot(db: PgPool) {
     seed_course_session(&db, course_id, today, t(9, 0), t(10, 0)).await;
 
     let admin_id = common::seed_member(&db, "venue-no-match-admin@example.com", "hunter22-secret").await;
-    let auth = auth_for(admin_id, &["admin"]);
+    let auth = common::admin_auth(admin_id);
     let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
         .await
         .expect("today sessions");
@@ -329,7 +320,7 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
     seed_course_schedule_slot(&db, course_b, dow, t(9, 0), t(10, 0)).await;
 
     let admin_id = common::seed_member(&db, "admin-today@example.com", "hunter22-secret").await;
-    let auth = auth_for(admin_id, &["admin"]);
+    let auth = common::admin_auth(admin_id);
     let sessions = service::today_sessions(&db, &common::test_server_config(), &auth)
         .await
         .expect("admin today sessions");

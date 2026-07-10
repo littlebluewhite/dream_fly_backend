@@ -13,20 +13,10 @@ mod common;
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
-use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::bookings::dto::CreateBookingRequest;
 use dream_fly_backend::modules::bookings::service;
-
-fn member_auth(user_id: Uuid) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: "member@test".into(),
-        roles: vec!["member".into()],
-    }
-}
 
 #[sqlx::test]
 async fn create_booking_increments_slot_booked(db: PgPool) {
@@ -52,13 +42,9 @@ async fn create_booking_increments_slot_booked(db: PgPool) {
     assert_eq!(common::slot_booked(&db, slot).await, 1);
 
     // A "Booking Confirmed" notification is written post-commit.
-    let title: String = sqlx::query_scalar(
-        "SELECT title FROM notifications WHERE user_id = $1 AND type = 'booking_confirmed'::notification_type",
-    )
-    .bind(user)
-    .fetch_one(&db)
-    .await
-    .expect("booking confirmation notification row");
+    let (title, _) = common::latest_notification(&db, user, "booking_confirmed")
+        .await
+        .expect("booking confirmation notification row");
     assert_eq!(title, "Booking Confirmed");
 }
 
@@ -141,7 +127,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
     let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
-    let auth = member_auth(user);
+    let auth = common::member_auth(user);
 
     let booking = service::create_booking(
         &db,
@@ -164,13 +150,9 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
     assert_eq!(common::slot_booked(&db, slot).await, 0);
 
     // A "Booking Cancelled" notification is written post-commit.
-    let title: String = sqlx::query_scalar(
-        "SELECT title FROM notifications WHERE user_id = $1 AND type = 'booking_cancelled'::notification_type",
-    )
-    .bind(user)
-    .fetch_one(&db)
-    .await
-    .expect("booking cancellation notification row");
+    let (title, _) = common::latest_notification(&db, user, "booking_cancelled")
+        .await
+        .expect("booking cancellation notification row");
     assert_eq!(title, "Booking Cancelled");
 
     // Second cancel of the same booking should fail cleanly (not underflow
@@ -191,7 +173,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
 async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let auth = member_auth(user);
+    let auth = common::member_auth(user);
 
     // Schedule a slot for a few hours from now (within 24h window, but
     // still in the future so create_booking doesn't reject it for being
@@ -294,7 +276,7 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
         .execute(&db)
         .await
         .expect("bump slot price");
-    let auth = member_auth(user);
+    let auth = common::member_auth(user);
 
     let booking = service::create_booking(
         &db,

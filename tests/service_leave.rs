@@ -14,19 +14,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::config::ServerConfig;
-use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::leave::dto::MakeupRequest;
 use dream_fly_backend::modules::leave::service;
 
 use common::fixtures::{seed_course_session, seed_course_with_capacity, seed_enrolment, seed_leave_request};
-
-fn member_auth(user_id: Uuid) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: "member@test".into(),
-        roles: vec!["member".into()],
-    }
-}
 
 fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -39,7 +30,7 @@ async fn attempt_makeup(
     leave_id: Uuid,
     target_session_id: Uuid,
 ) -> bool {
-    let auth = member_auth(user_id);
+    let auth = common::member_auth(user_id);
     service::book_makeup(
         &db,
         &server,
