@@ -8,7 +8,7 @@ use super::dto::{LedgerEntryResponse, PointsMeResponse};
 use super::model::PointReason;
 use super::repository;
 
-/// 原子調整點數並寫 ledger；餘額不足（結果 < 0）→ AppError::Conflict("insufficient points")。
+/// 原子調整點數並寫 ledger；餘額不足（結果 < 0）→ AppError::Conflict("點數不足")。
 ///
 /// `delta == 0` is rejected up front (a zero-delta ledger row would be
 /// pure noise) without touching the database. Otherwise the balance update
@@ -32,13 +32,13 @@ pub async fn apply_delta_tx(
         // Scoped to the balance constraint by name: `users` carries other
         // CHECK constraints (`users_has_auth_method` today, possibly more
         // later), and only a `users_points_balance_check` violation means
-        // "insufficient points". Any other check violation falls through
+        // "點數不足". Any other check violation falls through
         // to the generic Database arm.
         Err(sqlx::Error::Database(ref db_err))
             if db_err.is_check_violation()
                 && db_err.constraint() == Some("users_points_balance_check") =>
         {
-            return Err(AppError::Conflict("insufficient points".into()));
+            return Err(AppError::Conflict("點數不足".into()));
         }
         Err(e) => return Err(AppError::Database(e)),
     };
@@ -74,7 +74,7 @@ pub async fn lock_balance_tx(
 ///
 /// Insufficient balance → `AppError::Conflict("點數不足")` — this exact
 /// Chinese text is pinned byte-for-byte by `tests/service_rewards.rs:107`.
-/// `apply_delta_tx`'s own `Conflict("insufficient points")`, which fires
+/// `apply_delta_tx`'s own `Conflict("點數不足")`, which fires
 /// from the `users_points_balance_check` CHECK-constraint violation, is a
 /// DB-level backstop for callers that adjust `users.points_balance` without
 /// pre-checking (e.g. admin adjustments via `apply_delta_tx` directly);

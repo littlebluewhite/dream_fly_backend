@@ -119,7 +119,7 @@ async fn apply_delta_insufficient_balance_returns_conflict_and_does_not_persist(
     tx.rollback().await.expect("rollback");
 
     match err {
-        AppError::Conflict(msg) => assert_eq!(msg, "insufficient points"),
+        AppError::Conflict(msg) => assert_eq!(msg, "點數不足"),
         other => panic!("expected Conflict, got {other:?}"),
     }
 
