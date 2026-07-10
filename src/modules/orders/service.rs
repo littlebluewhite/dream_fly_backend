@@ -12,12 +12,14 @@ use crate::modules::cart::repository as cart_repo;
 use crate::modules::coupons::model::Coupon;
 use crate::modules::coupons::repository as coupons_repo;
 use crate::modules::enrolments::dto::EnrolmentResponse;
+use crate::modules::enrolments::repository as enrolments_repo;
 use crate::modules::enrolments::service as enrolments_service;
 use crate::modules::notifications::service as notify;
 use crate::modules::points::model::PointReason;
 use crate::modules::points::service as points_service;
 use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
+use crate::modules::subscriptions::repository as subscriptions_repo;
 use crate::modules::subscriptions::service as subscriptions_service;
 
 use super::dto::{
@@ -338,12 +340,12 @@ async fn fetch_artifacts(
     db: &PgPool,
     order_id: Uuid,
 ) -> Result<(Vec<EnrolmentResponse>, Vec<SubscriptionResponse>), AppError> {
-    let enrolments = repository::find_enrolments_by_order(db, order_id)
+    let enrolments = enrolments_repo::find_by_order(db, order_id)
         .await?
         .into_iter()
         .map(EnrolmentResponse::from)
         .collect();
-    let subscriptions = repository::find_subscriptions_by_order(db, order_id)
+    let subscriptions = subscriptions_repo::find_by_order(db, order_id)
         .await?
         .into_iter()
         .map(SubscriptionResponse::from)

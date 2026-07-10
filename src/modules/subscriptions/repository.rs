@@ -68,6 +68,29 @@ pub async fn find_by_user(
     .await
 }
 
+/// This order's subscriptions JOINed with `products`, oldest first. Used by
+/// `orders::service::fetch_artifacts` to assemble the checkout response
+/// (fresh, replayed, or re-fetched via `GET /orders/{id}`) — distinct from
+/// [`find_by_user`] above: filters by `order_id` instead of `user_id`, and
+/// ASC order (checkout wants purchase order, not newest-first).
+pub async fn find_by_order(
+    db: &PgPool,
+    order_id: Uuid,
+) -> Result<Vec<SubscriptionWithProduct>, sqlx::Error> {
+    sqlx::query_as::<_, SubscriptionWithProduct>(
+        "SELECT s.id, s.product_id, p.name AS product_name, s.status, s.started_at, \
+                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents, \
+                subscription_derived_status(s.status, s.expires_at, s.remaining_sessions) AS derived_status \
+         FROM subscriptions s \
+         JOIN products p ON p.id = s.product_id \
+         WHERE s.order_id = $1 \
+         ORDER BY s.created_at",
+    )
+    .bind(order_id)
+    .fetch_all(db)
+    .await
+}
+
 /// Product name for response assembly after a redeem.
 /// `subscriptions.product_id` is a NOT NULL FK into `products` (which has no
 /// cascading delete), so the row always exists; if that invariant somehow

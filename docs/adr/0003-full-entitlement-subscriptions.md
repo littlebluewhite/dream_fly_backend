@@ -30,7 +30,7 @@
 
 現在：
 
-- 所有讀取 subscription 的查詢（`insert_tx`、`find_by_id`、`find_by_user`、`redeem_one_session`，以及 `orders::repository::find_subscriptions_by_order`）都直接 `SELECT`/`RETURNING` 這個 function 算出的 `derived_status` 欄位；`Subscription`/`SubscriptionWithProduct` 兩個 struct 各自帶一個 `derived_status: SubscriptionStatus` 欄位承接。
+- 所有讀取 subscription 的查詢（`insert_tx`、`find_by_id`、`find_by_user`、`redeem_one_session`，以及 `find_by_order`）都直接 `SELECT`/`RETURNING` 這個 function 算出的 `derived_status` 欄位；`Subscription`/`SubscriptionWithProduct` 兩個 struct 各自帶一個 `derived_status: SubscriptionStatus` 欄位承接。
 - `redeem_one_session` 的 `WHERE` 也改呼叫同一個 function（`subscription_derived_status(...) = 'active'`），另外疊加 `remaining_sessions > 0`（無限堂 membership 用 function 算出來是 `active`，但沒有堂數可扣，仍不可核銷）。SQL 端不再有獨立維護的第二份 predicate。
 - Rust 側的 `derive_status` 函式與配對守護測試已刪除——不是規則消失，是規則的 owner 換成資料庫，兩份實作變成一份。
 

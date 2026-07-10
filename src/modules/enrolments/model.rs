@@ -57,7 +57,7 @@ pub struct EnrolmentWithCourse {
 /// `repository::find_by_user_with_course` — feeds `GET /enrolments/me` only.
 /// Kept as a separate row type (rather than adding these columns to
 /// `EnrolmentWithCourse` itself) because that struct is also decoded from
-/// `cancel_if_active_tx`'s `RETURNING` and from `orders::repository`'s
+/// `cancel_if_active_tx`'s `RETURNING` and from `repository::find_by_order`'s
 /// checkout-summary query, neither of which computes attendance stats.
 #[derive(Debug, sqlx::FromRow)]
 pub struct MyEnrolmentRow {

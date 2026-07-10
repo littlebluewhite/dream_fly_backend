@@ -101,6 +101,29 @@ pub async fn find_by_user_with_course(
     .await
 }
 
+/// This order's enrolments JOINed with course info, oldest first. Used by
+/// `orders::service::fetch_artifacts` to assemble the checkout response
+/// (fresh, replayed, or re-fetched via `GET /orders/{id}`) — distinct from
+/// [`find_by_user_with_course`] above: filters by `order_id` instead of
+/// `user_id`, no attendance aggregation, and ASC order (checkout wants
+/// purchase order, not newest-first).
+pub async fn find_by_order(
+    db: &PgPool,
+    order_id: Uuid,
+) -> Result<Vec<EnrolmentWithCourse>, sqlx::Error> {
+    sqlx::query_as::<_, EnrolmentWithCourse>(
+        "SELECT e.id, e.course_id, c.name AS course_name, c.level AS course_level, \
+                c.schedule_text, e.status, e.enrolled_at \
+         FROM enrolments e \
+         JOIN courses c ON c.id = e.course_id \
+         WHERE e.order_id = $1 \
+         ORDER BY e.enrolled_at",
+    )
+    .bind(order_id)
+    .fetch_all(db)
+    .await
+}
+
 /// This enrolment's owning user id, or `None` if the enrolment doesn't
 /// exist. Used by `service::get_attendance`'s ownership gate — kept as a
 /// single scalar column (not the full `Enrolment` row) since that's all the

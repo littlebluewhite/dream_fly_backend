@@ -1,9 +1,6 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::modules::enrolments::model::EnrolmentWithCourse;
-use crate::modules::subscriptions::model::SubscriptionWithProduct;
-
 use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus, OrderSummaryRow};
 
 /// Create the order row. Checkout in this application has no separate
@@ -241,52 +238,6 @@ pub async fn insert_idempotency_tx(
     .execute(&mut **tx)
     .await?;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Artifacts by order_id — checkout response assembly + idempotent replay
-// ---------------------------------------------------------------------------
-//
-// These mirror `enrolments::repository::find_by_user_with_course` and
-// `subscriptions::repository::find_by_user` (same JOIN, same row shape)
-// but filter by `order_id` instead of `user_id`. They live here rather than
-// in the enrolments/subscriptions modules because reconstructing the
-// checkout response (fresh, replayed, or re-fetched via `GET
-// /orders/{id}`) is strictly an orders-module concern.
-
-pub async fn find_enrolments_by_order(
-    db: &PgPool,
-    order_id: Uuid,
-) -> Result<Vec<EnrolmentWithCourse>, sqlx::Error> {
-    sqlx::query_as::<_, EnrolmentWithCourse>(
-        "SELECT e.id, e.course_id, c.name AS course_name, c.level AS course_level, \
-                c.schedule_text, e.status, e.enrolled_at \
-         FROM enrolments e \
-         JOIN courses c ON c.id = e.course_id \
-         WHERE e.order_id = $1 \
-         ORDER BY e.enrolled_at",
-    )
-    .bind(order_id)
-    .fetch_all(db)
-    .await
-}
-
-pub async fn find_subscriptions_by_order(
-    db: &PgPool,
-    order_id: Uuid,
-) -> Result<Vec<SubscriptionWithProduct>, sqlx::Error> {
-    sqlx::query_as::<_, SubscriptionWithProduct>(
-        "SELECT s.id, s.product_id, p.name AS product_name, s.status, s.started_at, \
-                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents, \
-                subscription_derived_status(s.status, s.expires_at, s.remaining_sessions) AS derived_status \
-         FROM subscriptions s \
-         JOIN products p ON p.id = s.product_id \
-         WHERE s.order_id = $1 \
-         ORDER BY s.created_at",
-    )
-    .bind(order_id)
-    .fetch_all(db)
-    .await
 }
 
 // ---------------------------------------------------------------------------
