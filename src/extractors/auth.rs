@@ -95,6 +95,24 @@ impl AuthUser {
             Err(AppError::Forbidden(forbidden_msg.into()))
         }
     }
+
+    /// 非 owner 且非 admin → NotFound(not_found_msg):對外遮蔽資源存在性
+    pub fn owns_or_admin_masked(&self, owner_id: Uuid, not_found_msg: &str) -> Result<(), AppError> {
+        if self.user_id == owner_id || self.is_admin() {
+            Ok(())
+        } else {
+            Err(AppError::NotFound(not_found_msg.into()))
+        }
+    }
+
+    /// 僅資源本人可通過;admin 亦不可代 → 否則 Forbidden(forbidden_msg)
+    pub fn owner_only(&self, owner_id: Uuid, forbidden_msg: &str) -> Result<(), AppError> {
+        if self.user_id == owner_id {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden(forbidden_msg.into()))
+        }
+    }
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -245,5 +263,52 @@ mod tests {
         let id = Uuid::now_v7();
         let a = auth(id, &["admin"]);
         assert!(a.owns_or_admin(id, "nope").is_ok());
+    }
+
+    #[test]
+    fn masked_owner_non_admin_is_ok() {
+        let id = Uuid::now_v7();
+        let a = auth(id, &["member"]);
+        assert!(a.owns_or_admin_masked(id, "nope").is_ok());
+    }
+
+    #[test]
+    fn masked_non_owner_admin_is_ok() {
+        let owner_id = Uuid::now_v7();
+        let a = auth(Uuid::now_v7(), &["admin"]);
+        assert!(a.owns_or_admin_masked(owner_id, "nope").is_ok());
+    }
+
+    #[test]
+    fn masked_neither_owner_nor_admin_is_not_found_with_message() {
+        let owner_id = Uuid::now_v7();
+        let a = auth(Uuid::now_v7(), &["member"]);
+        let err = a
+            .owns_or_admin_masked(owner_id, "resource not found")
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(ref m) if m == "resource not found"));
+    }
+
+    #[test]
+    fn owner_only_owner_is_ok() {
+        let id = Uuid::now_v7();
+        let a = auth(id, &["member"]);
+        assert!(a.owner_only(id, "nope").is_ok());
+    }
+
+    #[test]
+    fn owner_only_admin_non_owner_is_forbidden() {
+        let owner_id = Uuid::now_v7();
+        let a = auth(Uuid::now_v7(), &["admin"]);
+        let err = a.owner_only(owner_id, "僅本人可取消請假申請").unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(ref m) if m == "僅本人可取消請假申請"));
+    }
+
+    #[test]
+    fn owner_only_neither_owner_nor_admin_is_forbidden_with_message() {
+        let owner_id = Uuid::now_v7();
+        let a = auth(Uuid::now_v7(), &["member"]);
+        let err = a.owner_only(owner_id, "僅本人可預約補課").unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(ref m) if m == "僅本人可預約補課"));
     }
 }

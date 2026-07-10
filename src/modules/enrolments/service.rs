@@ -87,9 +87,7 @@ pub async fn get_attendance(
         .await?
         .ok_or_else(|| AppError::NotFound("enrolment not found".into()))?;
 
-    if owner_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::NotFound("enrolment not found".into()));
-    }
+    auth.owns_or_admin_masked(owner_id, "enrolment not found")?;
 
     let rows = repository::find_attendance_timeline(db, id).await?;
     Ok(rows.into_iter().map(AttendanceEntryResponse::from).collect())

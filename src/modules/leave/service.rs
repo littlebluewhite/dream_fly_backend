@@ -90,9 +90,7 @@ pub async fn cancel_leave_request(db: &PgPool, auth: &AuthUser, id: Uuid) -> Res
         .await?
         .ok_or_else(|| AppError::NotFound("請假申請不存在".into()))?;
 
-    if owner.user_id != auth.user_id {
-        return Err(AppError::Forbidden("僅本人可取消請假申請".into()));
-    }
+    auth.owner_only(owner.user_id, "僅本人可取消請假申請")?;
 
     repository::cancel_if_pending_tx(&mut tx, id)
         .await?
@@ -274,9 +272,7 @@ pub async fn book_makeup(
         .await?
         .ok_or_else(|| AppError::NotFound("請假申請不存在".into()))?;
 
-    if leave.user_id != auth.user_id {
-        return Err(AppError::Forbidden("僅本人可預約補課".into()));
-    }
+    auth.owner_only(leave.user_id, "僅本人可預約補課")?;
     if leave.status != LeaveStatus::Approved {
         return Err(AppError::Conflict("僅已核准的假單可預約補課".into()));
     }
