@@ -19,7 +19,7 @@ pub struct SubscriptionResponse {
 
 impl From<SubscriptionWithProduct> for SubscriptionResponse {
     fn from(s: SubscriptionWithProduct) -> Self {
-        let status = s.derived_status().to_string();
+        let status = s.derived_status.as_str().to_string();
         Self {
             id: s.id,
             product_id: s.product_id,
@@ -41,7 +41,7 @@ impl SubscriptionResponse {
     /// could observe a concurrent redeem's later decrement and misreport
     /// what this call consumed.
     pub fn from_subscription(s: Subscription, product_name: String) -> Self {
-        let status = s.derived_status().to_string();
+        let status = s.derived_status.as_str().to_string();
         Self {
             id: s.id,
             product_id: s.product_id,

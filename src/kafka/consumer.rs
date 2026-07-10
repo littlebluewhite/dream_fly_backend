@@ -1,3 +1,62 @@
+//! Kafka consumer: the audit-log sink.
+//!
+//! ## Subscribed topics
+//!
+//! Subscribes to the 5 domain topics the rest of the service publishes to
+//! (orders created / status-changed, bookings created / cancelled, users registered)
+//! plus [`topics::AUDIT_LOG`] (reserved for hand-authored audit events; none published today).
+//! Every subscribed topic is routed through the same [`handle_audit_event`]
+//! handler — there is no per-topic branch beyond the resource mapping
+//! described below.
+//!
+//! ## Audit-only invariant
+//!
+//! This consumer's only job is durably recording events into `audit_log`.
+//! It must never drive other business side effects (notifications, points,
+//! etc.) — those are written synchronously by their own service-layer code
+//! at the point of mutation. Keeping this consumer audit-only means it can
+//! be paused, replayed, or rebuilt from Kafka without affecting anything
+//! else the system does.
+//!
+//! ## Resource mapping
+//!
+//! The 5 domain payloads don't carry a `data.resource` field the way
+//! hand-authored audit events do (none published today), so without a mapping step every domain
+//! event would collapse onto the generic `"audit"` fallback. [`domain_resource`]
+//! maps `event_type` to the `(resource, id_field)` pair used to populate
+//! `audit_log.resource` / `resource_id`. Anything it doesn't recognize
+//! returns `None`, and the caller falls back to reading `data.resource`
+//! directly (defaulting to `"audit"`) — the reserved `AUDIT_LOG`-topic
+//! behavior, ready for future hand-authored events.
+//!
+//! ## Idempotency key
+//!
+//! The envelope's `event_id` (a UUIDv7, unique per produced event) is used
+//! directly as `audit_log.id`, with `ON CONFLICT (id) DO NOTHING` on insert.
+//! This makes redelivery (consumer restart before commit, rebalance,
+//! at-least-once redelivery in general) a no-op rather than a duplicate row,
+//! without a schema migration for a separate dedupe key. An envelope missing
+//! `event_id` (defensive fallback only — the producer always sets one) gets
+//! a fresh `Uuid::now_v7()`, which forgoes idempotency for that one record
+//! rather than failing the whole write.
+//!
+//! ## Accepted risks
+//!
+//! - **First-deploy backfill**: `auto.offset.reset=earliest` means the
+//!   first time this consumer group runs, it replays every event still in
+//!   topic retention. Combined with the idempotency key above, this is a
+//!   one-time, deterministic backfill, not an ongoing duplication risk.
+//! - **`created_at` is consumption time, not event time**: the column is
+//!   set to `NOW()` at insert, not the envelope's `timestamp`. This is the
+//!   pre-existing behavior for the `AUDIT_LOG` topic and is left unchanged
+//!   for the domain topics too, for consistency.
+//! - **A user deleted before its event is consumed**: `audit_log.user_id`
+//!   has a foreign key to `users`. If the referenced row is gone by the
+//!   time the event is processed, the insert fails with a FK violation,
+//!   which `From<sqlx::Error>` classifies as `Transient` and retries up to
+//!   [`MAX_TRANSIENT_RETRIES`] times before being dropped loudly. This
+//!   existing error classification is not changed here.
+
 use std::collections::HashMap;
 
 use rdkafka::Message;
@@ -20,7 +79,7 @@ use super::events::topics;
 ///   at ERROR and commits past the message so the consumer group is not
 ///   stuck in a redelivery loop. A DLQ would replace this once available.
 #[derive(Debug)]
-enum ProcessingError {
+pub enum ProcessingError {
     Transient(String),
     Poison(String),
 }
@@ -82,7 +141,14 @@ pub async fn start_consumer(
     db: PgPool,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    let topic_list = [topics::AUDIT_LOG];
+    let topic_list = [
+        topics::AUDIT_LOG,
+        topics::ORDERS_CREATED,
+        topics::ORDERS_STATUS_CHANGED,
+        topics::BOOKINGS_CREATED,
+        topics::BOOKINGS_CANCELLED,
+        topics::USERS_REGISTERED,
+    ];
 
     if let Err(e) = consumer.subscribe(&topic_list) {
         tracing::error!("Failed to subscribe to Kafka topics: {e}");
@@ -160,12 +226,10 @@ pub async fn start_consumer(
 
                 tracing::debug!(topic = %topic, "Received Kafka message");
 
-                let handler_result = if topic == topics::AUDIT_LOG {
-                    handle_audit_event(&db, &payload).await
-                } else {
-                    tracing::warn!(topic = %topic, "unhandled Kafka topic");
-                    Ok(())
-                };
+                // Every subscribed topic (AUDIT_LOG + the 5 domain topics)
+                // is durably recorded the same way — see the module docs
+                // for how domain payloads get mapped to a resource.
+                let handler_result = handle_audit_event(&db, &payload).await;
 
                 match handler_result {
                     Ok(()) => {
@@ -247,31 +311,79 @@ fn optional_uuid_from_data(event: &serde_json::Value, field: &str) -> Option<uui
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
 }
 
-async fn handle_audit_event(db: &PgPool, payload: &str) -> Result<(), ProcessingError> {
+/// Map a domain event's `event_type` to the `(resource, id_field)` pair used
+/// to populate `audit_log.resource` / `resource_id`. The 5 domain topics
+/// (`order_*`, `booking_*`, `user_registered`) don't carry a `data.resource`
+/// field the way hand-authored audit events do, so without this mapping
+/// every domain event would collapse onto the generic `"audit"` fallback.
+///
+/// `order_*` and `booking_*` are prefix-matched (there are two event types
+/// in each family); `user_registered` is matched exactly since it's the
+/// only user-domain event type today. Anything not matched here returns
+/// `None`, and the caller falls back to reading `data.resource` directly
+/// (defaulting to `"audit"`) — the pre-existing `AUDIT_LOG`-topic behavior,
+/// unchanged.
+fn domain_resource(event_type: &str) -> Option<(&'static str, &'static str)> {
+    if event_type.starts_with("order_") {
+        Some(("order", "order_id"))
+    } else if event_type.starts_with("booking_") {
+        Some(("booking", "booking_id"))
+    } else if event_type == "user_registered" {
+        Some(("user", "user_id"))
+    } else {
+        None
+    }
+}
+
+/// Resolve the row id for this audit_log insert: the envelope's `event_id`
+/// when present and parseable — this is what makes redelivery idempotent —
+/// or a fresh v7 UUID otherwise. A missing/invalid `event_id` should never
+/// happen from our own producer, but degrading to "write once, without
+/// idempotency" is safer than treating it as poison.
+fn event_row_id(event: &serde_json::Value) -> uuid::Uuid {
+    event
+        .get("event_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .unwrap_or_else(uuid::Uuid::now_v7)
+}
+
+pub async fn handle_audit_event(db: &PgPool, payload: &str) -> Result<(), ProcessingError> {
     let event: serde_json::Value = serde_json::from_str(payload)
         .map_err(|e| ProcessingError::poison(format!("invalid JSON: {e}")))?;
 
     // `event_type` is required — if it's missing, the producer is broken.
     let action = required_str(&event, "event_type")?.to_string();
 
-    // `data.resource` defaults to "audit" for events that don't carry
-    // resource context (e.g., login events). This is a legitimate default,
-    // not a poisoned-field substitute, so it stays as a fallback.
-    let resource = event
-        .get("data")
-        .and_then(|d| d.get("resource"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("audit")
-        .to_string();
+    // Domain events (order_*/booking_*/user_registered) map to a concrete
+    // resource; anything else falls back to `data.resource` (defaulting to
+    // "audit") — the original AUDIT_LOG-topic behavior, unchanged.
+    let (resource, resource_id) = match domain_resource(&action) {
+        Some((resource, id_field)) => (
+            resource.to_string(),
+            optional_uuid_from_data(&event, id_field),
+        ),
+        None => (
+            event
+                .get("data")
+                .and_then(|d| d.get("resource"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("audit")
+                .to_string(),
+            optional_uuid_from_data(&event, "resource_id"),
+        ),
+    };
 
-    let resource_id = optional_uuid_from_data(&event, "resource_id");
     let user_id = optional_uuid_from_data(&event, "user_id");
     let new_value = event.get("data").cloned().unwrap_or(serde_json::json!({}));
+    let id = event_row_id(&event);
 
     sqlx::query(
         "INSERT INTO audit_log (id, user_id, action, resource, resource_id, new_value, created_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW())",
+         VALUES ($1, $2, $3, $4, $5, $6, NOW()) \
+         ON CONFLICT (id) DO NOTHING",
     )
+    .bind(id)
     .bind(user_id)
     .bind(&action)
     .bind(&resource)

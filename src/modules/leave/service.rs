@@ -9,6 +9,7 @@ use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::service as coaches_service;
+use crate::modules::courses::seats;
 use crate::modules::notifications::service as notify;
 use crate::utils::studio_clock;
 
@@ -252,8 +253,8 @@ pub async fn decide_leave_request(
 /// the leave-request row lock (`find_for_makeup_tx`) serializes two
 /// concurrent calls for the *same* request (only the first can see
 /// `makeup_session_id IS NULL`), and the target-session row lock
-/// (`lock_session_tx`, taken before the seat count) serializes *different*
-/// leave requests racing for the same session's last free seat.
+/// (`seats::lock_session_tx`, taken before the seat count) serializes
+/// *different* leave requests racing for the same session's last free seat.
 ///
 /// Seat check — physical seat model (controller ruling 2026-07-06): of the
 /// course's `max_students` seats at the target session, every active
@@ -261,7 +262,7 @@ pub async fn decide_leave_request(
 /// one, and every makeup already booked into it takes one back:
 /// `max_students - active_count + approved_leave_count - makeup_count > 0`.
 /// Both counts consider only still-active enrolments (see
-/// `repository::find_makeup_capacity_tx`).
+/// `seats::session_seats_tx`).
 pub async fn book_makeup(
     db: &PgPool,
     server: &ServerConfig,
@@ -305,20 +306,17 @@ pub async fn book_makeup(
     // Serialize concurrent makeups into the same target session across
     // *different* leave requests before counting seats — the leave-request
     // row lock above only defends re-booking of the same request.
-    repository::lock_session_tx(&mut tx, req.session_id)
+    seats::lock_session_tx(&mut tx, req.session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
 
-    let capacity = repository::find_makeup_capacity_tx(&mut tx, target.course_id, req.session_id)
+    let session_seats = seats::session_seats_tx(&mut tx, target.course_id, req.session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("課程不存在".into()))?;
 
     // Physical seat model: leave for the target frees a seat, an existing
     // makeup into it occupies one (controller ruling 2026-07-06).
-    let remaining = capacity.max_students as i64 - capacity.active_count
-        + capacity.approved_leave_count
-        - capacity.makeup_count;
-    if remaining <= 0 {
+    if session_seats.remaining() <= 0 {
         return Err(AppError::Conflict("該場次名額已滿".into()));
     }
 

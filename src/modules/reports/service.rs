@@ -5,7 +5,9 @@ use uuid::Uuid;
 use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
+use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::service as coaches_service;
+use crate::modules::messages::repository as messages_repository;
 use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::studio_clock;
 
@@ -305,8 +307,8 @@ pub async fn coach_report(
 
     let (today_sessions, pending_attendance) =
         repository::coach_today_and_pending(db, coach.id, today).await?;
-    let unread_messages = repository::unread_message_count(db, auth.user_id).await?;
-    let student_count = repository::coach_student_count(db, coach.id).await?;
+    let unread_messages = messages_repository::count_unread_for_user(db, auth.user_id).await?;
+    let student_count = attendance_repository::count_my_students(db, coach.id).await?;
 
     let window_from = today - Duration::days(COACH_ATTENDANCE_WINDOW_DAYS);
     let (present, absent) =

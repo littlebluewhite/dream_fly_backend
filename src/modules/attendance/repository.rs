@@ -95,9 +95,9 @@ pub async fn upsert_attendance_tx(
 
 /// Distinct students across a coach's active courses' active enrolments,
 /// each with a `jsonb_agg`-aggregated `courses` list — one query for the
-/// whole roster, not one per student. `WHERE` clause is a semantic twin of
-/// `reports::repository::coach_student_count`'s — copied, not shared (no
-/// sqlx compile-time check here to catch drift); keep both in sync.
+/// whole roster, not one per student. `WHERE` clause is the same predicate
+/// as [`count_my_students`]'s, both owned by this module (see that
+/// function's doc for why).
 pub async fn find_my_students(
     db: &PgPool,
     coach_id: Uuid,
@@ -116,5 +116,21 @@ pub async fn find_my_students(
     )
     .bind(coach_id)
     .fetch_all(db)
+    .await
+}
+
+/// Distinct student count across a coach's active courses' active
+/// enrolments — the `COUNT` variant of [`find_my_students`]'s roster query,
+/// kept beside it so any future `WHERE` drift between the two is visible in
+/// one file instead of split across modules. This module owns the
+/// predicate; current caller: `reports::service::coach_report`.
+pub async fn count_my_students(db: &PgPool, coach_id: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(DISTINCT e.user_id) FROM enrolments e \
+         JOIN courses c ON c.id = e.course_id \
+         WHERE c.coach_id = $1 AND c.is_active = true AND e.status = 'active'",
+    )
+    .bind(coach_id)
+    .fetch_one(db)
     .await
 }

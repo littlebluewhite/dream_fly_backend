@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload, event_types, topics};
 use crate::kafka::outbox;
@@ -15,7 +16,7 @@ use crate::modules::enrolments::service as enrolments_service;
 use crate::modules::notifications::service as notify;
 use crate::modules::points::model::PointReason;
 use crate::modules::points::service as points_service;
-use crate::modules::products::repository as product_repo;
+use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
 use crate::modules::subscriptions::service as subscriptions_service;
 
@@ -111,9 +112,7 @@ pub async fn checkout(
     //    "no redemption" needs.
     let use_points = req.use_points.unwrap_or(false);
     let points_balance = if use_points {
-        repository::lock_user_points_balance_tx(&mut tx, user_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("user not found".into()))?
+        points_service::lock_balance_tx(&mut tx, user_id).await?
     } else {
         0
     };
@@ -129,31 +128,26 @@ pub async fn checkout(
     let outcome = pricing::price(&cart_items, coupon.as_ref(), points_balance, use_points)?;
 
     // 6. Stock decrement — product lines only; fail fast on shortage.
-    //    Sorted by product_id (deterministic global lock order) before
-    //    touching any row: two concurrent checkouts that share two products
-    //    added to their carts in opposite order could otherwise acquire the
-    //    per-row UPDATE locks in opposite orders and deadlock. The cart
-    //    read's own order is per-user cart-insertion order, which is not
-    //    globally consistent across different users' carts.
-    let mut product_lines: Vec<&CheckoutLine> = cart_items
+    //    `products::service::reserve_stock_tx` owns the lock-ordering
+    //    discipline now (sorts by product_id before touching any row — see
+    //    its doc comment for why) and hands back every decremented row,
+    //    each already locked by this transaction; step 10b below reuses
+    //    those rows instead of re-reading them.
+    let product_lines: Vec<&CheckoutLine> = cart_items
         .iter()
         .filter(|item| matches!(item.item_type, CartItemType::Product))
         .collect();
-    product_lines.sort_by_key(|line| line.product_id);
 
-    for item in &product_lines {
-        let product_id = item
-            .product_id
-            .expect("product line always carries product_id");
-        let result =
-            product_repo::try_decrement_stock_tx(&mut tx, product_id, item.quantity).await?;
-        if result.is_none() {
-            return Err(AppError::Conflict(format!(
-                "insufficient stock for product {}",
-                item.name
-            )));
-        }
-    }
+    let reserve_lines: Vec<(Uuid, i32, &str)> = product_lines
+        .iter()
+        .map(|item| {
+            let product_id = item
+                .product_id
+                .expect("product line always carries product_id");
+            (product_id, item.quantity, item.name.as_str())
+        })
+        .collect();
+    let reserved = product_service::reserve_stock_tx(&mut tx, &reserve_lines).await?;
 
     // 7. Generate an order number. UUID-v7 suffix (base36-encoded last 32
     //    bits) gives us an unambiguous, monotonic, unguessable unique
@@ -201,8 +195,11 @@ pub async fn checkout(
     //      global lock order: `enrol_from_purchase_tx` takes `FOR UPDATE`
     //      on the course row, and two concurrent checkouts sharing two
     //      courses could otherwise lock them in opposite orders and
-    //      deadlock — same rationale as the product-line sort above). A
-    //      full course or a duplicate active enrolment rolls back the
+    //      deadlock — same lock-ordering discipline
+    //      `products::service::reserve_stock_tx` now applies internally to
+    //      product lines in step 6; course lines have no equivalent batch
+    //      deep function yet, so checkout still does this sort directly).
+    //      A full course or a duplicate active enrolment rolls back the
     //      *entire* checkout (order, order_items, stock decrement — all of
     //      it), which is correct: partially fulfilling a cart is not an
     //      acceptable outcome.
@@ -224,22 +221,23 @@ pub async fn checkout(
     //      `Ok(None)` for non-eligible types, so every product line is
     //      simply offered to it. It does not itself validate quantity >= 1;
     //      cart quantity is enforced to 1..=999 at add-time, so that always
-    //      holds by the time we get here.
+    //      holds by the time we get here. The row comes straight out of
+    //      `reserved` (step 6's `reserve_stock_tx` result) instead of a
+    //      fresh read — that transaction already holds this row's lock,
+    //      and the fields `grant_from_purchase_tx` reads
+    //      (product_type/session_count/valid_days) are untouched by the
+    //      stock decrement.
     for item in &product_lines {
         let product_id = item
             .product_id
             .expect("product line always carries product_id");
-        let product = product_repo::find_by_id_tx(&mut tx, product_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!(
-                    "product {product_id} vanished mid-checkout after stock decrement"
-                ))
-            })?;
+        let product = reserved
+            .get(&product_id)
+            .expect("product line was reserved in step 6");
         subscriptions_service::grant_from_purchase_tx(
             &mut tx,
             user_id,
-            &product,
+            product,
             item.quantity,
             item.price_cents,
             order.id,
@@ -364,19 +362,14 @@ async fn assemble_response(db: &PgPool, order: Order) -> Result<OrderResponse, A
 pub async fn get_order(
     db: &PgPool,
     order_id: Uuid,
-    user_id: Uuid,
-    is_admin: bool,
+    auth: &AuthUser,
 ) -> Result<OrderResponse, AppError> {
     let order = repository::find_by_id(db, order_id)
         .await?
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
 
     // Check ownership or admin
-    if order.user_id != user_id && !is_admin {
-        return Err(AppError::Forbidden(
-            "not authorized to view this order".into(),
-        ));
-    }
+    auth.owns_or_admin(order.user_id, "not authorized to view this order")?;
 
     assemble_response(db, order).await
 }

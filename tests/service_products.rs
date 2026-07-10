@@ -8,6 +8,10 @@
 //! - `list` filters inactive rows and applies product_type filter
 //! - `update` NotFound when row doesn't exist
 //! - `update` rejects unknown product_type
+//! - `reserve_stock_tx`: mixed finite+unlimited stock reserves correctly
+//! - `reserve_stock_tx`: insufficient stock -> Conflict, rollback leaves stock untouched
+//! - `reserve_stock_tx`: descending input still reports the smallest product_id first (lock order)
+//! - `reserve_stock_tx`: empty lines is a no-op returning an empty map
 
 mod common;
 
@@ -274,4 +278,116 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
     let b_resp = list.products.iter().find(|p| p.id == b.id).expect("b in list");
     assert_eq!(a_resp.sold, 4);
     assert_eq!(b_resp.sold, 9);
+}
+
+#[sqlx::test]
+async fn reserve_stock_tx_decrements_mixed_finite_and_unlimited_stock(db: PgPool) {
+    let finite = common::seed_product(&db, "reserve-finite", 1000, Some(10)).await;
+    let unlimited = common::seed_product(&db, "reserve-unlimited", 500, None).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let reserved = service::reserve_stock_tx(
+        &mut tx,
+        &[(finite, 3, "Finite Stock"), (unlimited, 5, "Unlimited Stock")],
+    )
+    .await
+    .expect("sufficient stock should reserve");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(reserved.len(), 2, "both lines should appear in the returned map");
+    assert_eq!(
+        reserved.get(&finite).expect("finite product in map").stock,
+        Some(7),
+        "finite stock must be decremented by the requested quantity"
+    );
+    assert_eq!(
+        reserved.get(&unlimited).expect("unlimited product in map").stock,
+        None,
+        "NULL (unlimited) stock must remain untouched"
+    );
+
+    // Independently verify persisted state via the pool, outside the
+    // committed transaction.
+    assert_eq!(common::product_stock(&db, finite).await, Some(7));
+    assert_eq!(common::product_stock(&db, unlimited).await, None);
+}
+
+#[sqlx::test]
+async fn reserve_stock_tx_insufficient_returns_conflict_and_rolls_back(db: PgPool) {
+    let product = common::seed_product(&db, "reserve-short", 1000, Some(1)).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let err = service::reserve_stock_tx(&mut tx, &[(product, 2, "Widget")])
+        .await
+        .expect_err("insufficient stock should fail");
+    // Roll back explicitly so the connection is cleanly back in the pool
+    // before the independent verification query below.
+    tx.rollback().await.expect("rollback");
+
+    match err {
+        AppError::Conflict(msg) => {
+            assert_eq!(msg, "insufficient stock for product Widget")
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    assert_eq!(
+        common::product_stock(&db, product).await,
+        Some(1),
+        "stock must be unchanged after rollback"
+    );
+}
+
+#[sqlx::test]
+async fn reserve_stock_tx_insufficient_multiple_reports_smallest_product_id_despite_descending_input(
+    db: PgPool,
+) {
+    // Two products, both insufficient for the requested quantity. The lock
+    // order inside `reserve_stock_tx` sorts by product_id ascending before
+    // touching any row, so whichever product has the smaller id must be
+    // the one reported as the Conflict — regardless of the order the
+    // caller listed the lines in. UUIDv7 creation order is not guaranteed
+    // to match value order within the same millisecond, so the smaller/
+    // larger id is determined by direct comparison rather than assumed
+    // from creation order.
+    let product_a = common::seed_product(&db, "reserve-race-a", 1000, Some(1)).await;
+    let product_b = common::seed_product(&db, "reserve-race-b", 1000, Some(1)).await;
+
+    let (smaller_id, smaller_name, larger_id, larger_name) = if product_a < product_b {
+        (product_a, "Product A", product_b, "Product B")
+    } else {
+        (product_b, "Product B", product_a, "Product A")
+    };
+
+    let mut tx = db.begin().await.expect("begin tx");
+    // Deliberately descending (larger id first) — the sort inside
+    // `reserve_stock_tx`, not this input order, must decide which line is
+    // reached (and fails) first.
+    let err = service::reserve_stock_tx(
+        &mut tx,
+        &[(larger_id, 5, larger_name), (smaller_id, 5, smaller_name)],
+    )
+    .await
+    .expect_err("both lines are insufficient (stock=1, requesting 5)");
+    tx.rollback().await.expect("rollback");
+
+    match err {
+        AppError::Conflict(msg) => assert_eq!(
+            msg,
+            format!("insufficient stock for product {smaller_name}"),
+            "the smallest product_id must be reported first, not the input order"
+        ),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
+#[sqlx::test]
+async fn reserve_stock_tx_empty_lines_returns_empty_map(db: PgPool) {
+    let mut tx = db.begin().await.expect("begin tx");
+    let reserved = service::reserve_stock_tx(&mut tx, &[])
+        .await
+        .expect("empty lines must be a no-op success");
+    tx.commit().await.expect("commit");
+
+    assert!(reserved.is_empty(), "empty input must return an empty map");
 }

@@ -36,15 +36,13 @@ pub async fn create_booking(
     };
 
     // Reject bookings for slots that have already started. We interpret the
-    // naïve (date, start_time) in the studio's local tz, convert to UTC,
-    // and compare to Utc::now.
-    let slot_utc = studio_clock::to_utc(tz, slot.date, slot.start_time).ok_or_else(|| {
+    // naïve (date, start_time) in the studio's local tz and compare to
+    // Utc::now.
+    if studio_clock::has_started(tz, Utc::now(), slot.date, slot.start_time).ok_or_else(|| {
         // Ambiguous or non-existent local time (DST transitions). Treat
         // it as invalid rather than picking one arbitrarily.
         AppError::BadRequest("time slot falls on an ambiguous local time".into())
-    })?;
-
-    if slot_utc <= Utc::now() {
+    })? {
         return Err(AppError::BadRequest(
             "cannot book a time slot that has already started".into(),
         ));
@@ -114,11 +112,7 @@ pub async fn cancel_booking(
         .ok_or_else(|| AppError::NotFound("booking not found".into()))?;
 
     // 2. Ownership or admin
-    if booking.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden(
-            "you can only cancel your own bookings".into(),
-        ));
-    }
+    auth.owns_or_admin(booking.user_id, "you can only cancel your own bookings")?;
 
     // 3. State machine: only pending/confirmed bookings can be cancelled.
     //    Cancelling a Completed / NoShow booking would decrement the slot

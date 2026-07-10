@@ -12,6 +12,7 @@ use crate::utils::studio_clock;
 use super::dto::{
     CourseSessionResponse, MyScheduleEntryResponse, SessionsRangeQuery, TodaySessionResponse,
 };
+use super::model::SessionStatus;
 use super::repository;
 
 /// Upper bound on `[from, to]` span for `GET /courses/{id}/sessions` — a
@@ -41,7 +42,9 @@ pub async fn list_course_sessions(
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
-    let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
+    let tz = studio_clock::studio_tz(server);
+    let now = Utc::now();
+    let today = studio_clock::today(tz, now);
     let from = match query.from {
         Some(s) => parse_query_date(&s)?,
         None => today,
@@ -62,7 +65,13 @@ pub async fn list_course_sessions(
 
     repository::materialize_range(db, &[course_id], from, to).await?;
     let sessions = repository::find_sessions_by_course_range(db, course_id, from, to).await?;
-    Ok(sessions.into_iter().map(CourseSessionResponse::from).collect())
+    Ok(sessions
+        .into_iter()
+        .map(|s| {
+            let status = SessionStatus::derive(tz, now, s.session_date, s.start_time, s.end_time);
+            CourseSessionResponse::from_session(s, status)
+        })
+        .collect())
 }
 
 /// `GET /sessions/today` — admin sees every course's sessions today; a coach
@@ -76,7 +85,9 @@ pub async fn today_sessions(
     server: &ServerConfig,
     auth: &AuthUser,
 ) -> Result<Vec<TodaySessionResponse>, AppError> {
-    let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
+    let tz = studio_clock::studio_tz(server);
+    let now = Utc::now();
+    let today = studio_clock::today(tz, now);
 
     let course_ids = if auth.is_admin() {
         repository::find_all_course_ids(db).await?
@@ -89,7 +100,13 @@ pub async fn today_sessions(
 
     repository::materialize_range(db, &course_ids, today, today).await?;
     let rows = repository::find_today_by_course_ids(db, &course_ids, today).await?;
-    Ok(rows.into_iter().map(TodaySessionResponse::from).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let status = SessionStatus::derive(tz, now, today, r.start_time, r.end_time);
+            TodaySessionResponse::from_row(r, status)
+        })
+        .collect())
 }
 
 /// `GET /schedule/me` — the caller's weekly pattern across their active

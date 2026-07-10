@@ -154,16 +154,3 @@ pub struct LeaveRequestForMakeup {
     pub start_time: NaiveTime,
     pub reason: Option<String>,
 }
-
-/// Inputs to the makeup seat check — physical seat model (controller ruling
-/// 2026-07-06): remaining seats at the target session = `max_students -
-/// active_count + approved_leave_count - makeup_count` (leave frees a seat,
-/// makeup occupies one); both leave/makeup counts consider only still-active
-/// enrolments. See `service::book_makeup`.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct MakeupCapacity {
-    pub max_students: i32,
-    pub active_count: i64,
-    pub approved_leave_count: i64,
-    pub makeup_count: i64,
-}

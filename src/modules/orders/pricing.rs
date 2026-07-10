@@ -9,12 +9,12 @@
 //! `checkout` (`orders::service`) still owns everything genuinely
 //! transactional/orchestration: loading and validating the coupon code
 //! (`find_valid_by_code_tx`, 422 on an unknown/inactive/expired code),
-//! locking the points balance (`lock_user_points_balance_tx`, `FOR UPDATE`,
-//! 404 on a missing user), lock ordering, stock decrement, order/order_items
-//! creation, enrolment/subscription artifacts, the points ledger,
-//! idempotency, and the outbox. This module only prices an already-assembled
-//! cart — pure function, zero DB, zero async, same shape as
-//! `utils::studio_clock`.
+//! locking the points balance (`points::service::lock_balance_tx`, `FOR
+//! UPDATE`, 404 on a missing user), lock ordering, stock decrement,
+//! order/order_items creation, enrolment/subscription artifacts, the points
+//! ledger, idempotency, and the outbox. This module only prices an
+//! already-assembled cart — pure function, zero DB, zero async, same shape
+//! as `utils::studio_clock`.
 
 use crate::error::AppError;
 use crate::modules::cart::model::{CheckoutLine, checked_line_subtotal};

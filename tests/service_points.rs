@@ -236,6 +236,142 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
     }
 }
 
+/// Attempt a `try_spend_tx` spend inside its own transaction, committing on
+/// success / rolling back on failure — used by the concurrent race test
+/// below. Mirrors `service_rewards.rs`'s `attempt_redeem` helper.
+async fn attempt_spend(db: PgPool, user_id: Uuid, cost: i64) -> Result<i64, AppError> {
+    let mut tx = db.begin().await.expect("begin tx");
+    let result = service::try_spend_tx(&mut tx, user_id, cost, PointReason::Redeem, None).await;
+    match &result {
+        Ok(_) => tx.commit().await.expect("commit"),
+        Err(_) => tx.rollback().await.expect("rollback"),
+    }
+    result
+}
+
+#[sqlx::test]
+async fn try_spend_success_returns_balance_after_and_writes_ledger_row(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-spend-ok@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 100).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let balance_after = service::try_spend_tx(&mut tx, user_id, 30, PointReason::Redeem, None)
+        .await
+        .expect("spend should succeed");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(balance_after, 70);
+
+    let balance = points_repo::find_balance(&db, user_id)
+        .await
+        .expect("query balance")
+        .expect("user exists");
+    assert_eq!(balance, 70, "users.points_balance must match balance_after");
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].delta, -30);
+    assert_eq!(ledger[0].balance_after, 70);
+    assert_eq!(ledger[0].reason, PointReason::Redeem);
+    assert_eq!(ledger[0].order_id, None);
+}
+
+#[sqlx::test]
+async fn try_spend_insufficient_balance_returns_conflict_and_does_not_persist(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-spend-poor@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 10).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let err = service::try_spend_tx(&mut tx, user_id, 50, PointReason::Redeem, None)
+        .await
+        .expect_err("insufficient balance must be rejected");
+    tx.rollback().await.expect("rollback");
+
+    match err {
+        AppError::Conflict(msg) => assert_eq!(msg, "點數不足"),
+        other => panic!("expected Conflict(\"點數不足\"), got {other:?}"),
+    }
+
+    let balance = points_repo::find_balance(&db, user_id)
+        .await
+        .expect("query balance")
+        .expect("user exists");
+    assert_eq!(balance, 10, "balance must be unchanged");
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert!(ledger.is_empty(), "no ledger row should have been written");
+}
+
+#[sqlx::test]
+async fn concurrent_try_spend_same_user_exactly_one_succeeds(db: PgPool) {
+    // Two concurrent try_spend_tx calls against the same user, with a
+    // balance that covers exactly one of the two spends. The `FOR UPDATE`
+    // lock in `lock_balance_tx` must serialize the two attempts so only the
+    // first commits its spend — the loser re-reads the now-updated (lower)
+    // balance and gets Conflict("點數不足"). Mirrors
+    // `service_orders.rs::concurrent_checkout_last_unit_only_succeeds_once`
+    // / `service_rewards.rs::concurrent_redeem_last_stock_unit_only_one_succeeds`.
+    let user_id = common::seed_member(&db, "pts-spend-race@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 50).await;
+
+    let (res_a, res_b) = tokio::join!(
+        tokio::spawn(attempt_spend(db.clone(), user_id, 50)),
+        tokio::spawn(attempt_spend(db.clone(), user_id, 50)),
+    );
+    let res_a = res_a.expect("task a panicked");
+    let res_b = res_b.expect("task b panicked");
+
+    let ok_count = [&res_a, &res_b].iter().filter(|r| r.is_ok()).count();
+    assert_eq!(ok_count, 1, "exactly one concurrent spend should succeed");
+
+    let conflict_count = [&res_a, &res_b]
+        .iter()
+        .filter(|r| {
+            matches!(r, Err(AppError::Conflict(msg)) if msg == "點數不足")
+        })
+        .count();
+    assert_eq!(conflict_count, 1, "the other must fail with Conflict(\"點數不足\")");
+
+    let balance = points_repo::find_balance(&db, user_id)
+        .await
+        .expect("query balance")
+        .expect("user exists");
+    assert_eq!(balance, 0, "exactly one spend of 50 should have landed");
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert_eq!(
+        ledger.len(),
+        1,
+        "exactly one ledger row should have been written"
+    );
+}
+
+#[sqlx::test]
+async fn try_spend_nonpositive_cost_returns_validation_error(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-spend-badcost@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 100).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let err = service::try_spend_tx(&mut tx, user_id, 0, PointReason::Redeem, None)
+        .await
+        .expect_err("zero cost must be rejected");
+    tx.rollback().await.expect("rollback");
+    assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let err = service::try_spend_tx(&mut tx, user_id, -10, PointReason::Redeem, None)
+        .await
+        .expect_err("negative cost must be rejected");
+    tx.rollback().await.expect("rollback");
+    assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+}
+
 #[sqlx::test]
 async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-clamp@example.com", "Password!234").await;

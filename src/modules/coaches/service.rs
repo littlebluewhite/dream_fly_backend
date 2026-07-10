@@ -61,9 +61,7 @@ async fn require_coach_access(
     let coach = repository::find_by_id(db, coach_id)
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
-    if coach.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden("not authorized".into()));
-    }
+    auth.owns_or_admin(coach.user_id, "not authorized")?;
     Ok(coach)
 }
 

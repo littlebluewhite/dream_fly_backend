@@ -22,7 +22,7 @@ pub async fn insert_tx(
          (id, user_id, product_id, order_id, expires_at, total_sessions, remaining_sessions, \
           price_cents, created_at, updated_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()) \
-         RETURNING *",
+         RETURNING *, subscription_derived_status(status, expires_at, remaining_sessions) AS derived_status",
     )
     .bind(Uuid::now_v7())
     .bind(user_id)
@@ -39,7 +39,8 @@ pub async fn insert_tx(
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Subscription>, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         "SELECT id, user_id, product_id, order_id, status, started_at, expires_at, \
-         total_sessions, remaining_sessions, price_cents, created_at, updated_at \
+         total_sessions, remaining_sessions, price_cents, created_at, updated_at, \
+         subscription_derived_status(status, expires_at, remaining_sessions) AS derived_status \
          FROM subscriptions WHERE id = $1",
     )
     .bind(id)
@@ -55,7 +56,8 @@ pub async fn find_by_user(
 ) -> Result<Vec<SubscriptionWithProduct>, sqlx::Error> {
     sqlx::query_as::<_, SubscriptionWithProduct>(
         "SELECT s.id, s.product_id, p.name AS product_name, s.status, s.started_at, \
-                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents \
+                s.expires_at, s.total_sessions, s.remaining_sessions, s.price_cents, \
+                subscription_derived_status(s.status, s.expires_at, s.remaining_sessions) AS derived_status \
          FROM subscriptions s \
          JOIN products p ON p.id = s.product_id \
          WHERE s.user_id = $1 \
@@ -83,15 +85,19 @@ pub async fn product_name(db: &PgPool, product_id: Uuid) -> Result<String, sqlx:
 /// `service::redeem` re-reads the row to distinguish 404 from the specific
 /// 409 reason.
 ///
-/// Rust-side twin: `model::derive_status` encodes this same expiry/session-quota
-/// predicate for read-time status; `tests/service_subscriptions.rs` guards
-/// the two staying in sync.
+/// Redeemability is `subscription_derived_status(...) = 'active'` — the same
+/// SQL function every other subscription query reads its `derived_status`
+/// column from — plus an extra `remaining_sessions > 0` guard: an unlimited
+/// membership (`remaining_sessions IS NULL`) derives to `active` but still
+/// has nothing to redeem a session from. There is no Rust-side twin of this
+/// predicate anymore; the SQL function is the single implementation.
 pub async fn redeem_one_session(db: &PgPool, id: Uuid) -> Result<Option<Subscription>, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         "UPDATE subscriptions SET remaining_sessions = remaining_sessions - 1 \
-         WHERE id = $1 AND status = 'active' AND remaining_sessions > 0 \
-           AND (expires_at IS NULL OR expires_at > NOW()) \
-         RETURNING *",
+         WHERE id = $1 \
+           AND subscription_derived_status(status, expires_at, remaining_sessions) = 'active' \
+           AND remaining_sessions > 0 \
+         RETURNING *, subscription_derived_status(status, expires_at, remaining_sessions) AS derived_status",
     )
     .bind(id)
     .fetch_optional(db)

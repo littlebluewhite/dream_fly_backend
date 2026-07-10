@@ -66,7 +66,8 @@ async fn course_sessions_default_range_materializes_todays_slot(db: PgPool) {
             && s["start_time"] == "09:00:00"
             && s["end_time"] == "10:00:00"
             && s["course_id"] == course_id.to_string()
-            && s["id"].as_str().is_some()),
+            && s["id"].as_str().is_some()
+            && matches!(s["status"].as_str(), Some("upcoming" | "ongoing" | "done"))),
         "expected today's materialized session in {arr:?}"
     );
 
@@ -109,6 +110,38 @@ async fn course_sessions_range_over_60_days_returns_422(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn course_sessions_future_slot_status_is_upcoming(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("sess-future@example.com", "Password!234").await;
+    let course_id = seed_course(&app.db, "Sessions Future Slot Course", None).await;
+
+    // A slot 7 days out — same day_of_week as today, so querying a range
+    // that starts strictly after today (not the default [today, ...]) is
+    // what keeps this deterministic: today's own occurrence of that
+    // weekday never enters the response.
+    let future_date = Utc::now().date_naive() + Duration::days(7);
+    seed_course_schedule_slot(&app.db, course_id, dow_of(future_date), t(9, 0), t(10, 0)).await;
+
+    let resp = app
+        .get(&format!(
+            "/api/v1/courses/{course_id}/sessions?from={future_date}&to={future_date}"
+        ))
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let arr = body.as_array().expect("plain array, not an envelope");
+    assert!(
+        !arr.is_empty(),
+        "expected the future slot to have materialized, got {arr:?}"
+    );
+    assert!(
+        arr.iter().all(|s| s["status"] == "upcoming"),
+        "every session 7 days out must be upcoming, got {arr:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +201,10 @@ async fn today_as_coach_returns_own_course_with_enrolled_count(db: PgPool) {
     assert_eq!(arr[0]["course_name"], "HTTP Today Own Course");
     assert_eq!(arr[0]["enrolled_count"], 1);
     assert!(arr[0]["id"].as_str().is_some());
+    assert!(matches!(
+        arr[0]["status"].as_str(),
+        Some("upcoming" | "ongoing" | "done")
+    ));
 }
 
 #[sqlx::test]

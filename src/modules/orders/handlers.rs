@@ -72,7 +72,7 @@ pub async fn get_order(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<OrderResponse>, AppError> {
-    let order = service::get_order(&state.db, id, auth.user_id, auth.is_admin()).await?;
+    let order = service::get_order(&state.db, id, &auth).await?;
     Ok(Json(order))
 }
 

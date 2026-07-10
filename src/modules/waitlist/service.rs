@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
+use crate::modules::courses::seats;
 
 use super::dto::WaitlistResponse;
 use super::repository;
@@ -10,9 +11,11 @@ use super::repository;
 /// 加入候補：課程必須存在、上架、且已滿班才允許加入；重複候補會被擋下。
 ///
 /// No `FOR UPDATE` lock on the fullness check here (unlike enrolments'
-/// `enrol_from_purchase_tx`, which locks the course row): a waitlist join
-/// racing a concurrent enrolment cancellation and reading a stale "full"
-/// count is acceptable staleness for this feature — see task plan.
+/// `enrol_from_purchase_tx`, which takes `seats::lock_course_seats_tx`): a
+/// waitlist join racing a concurrent enrolment cancellation and reading a
+/// stale "full" count is acceptable staleness for this feature — the
+/// `&PgPool`-typed `seats::course_seats` declares exactly that (see
+/// `courses::seats`'s lock-strategy doc).
 pub async fn join_waitlist(
     db: &PgPool,
     user_id: Uuid,
@@ -26,8 +29,10 @@ pub async fn join_waitlist(
         return Err(AppError::BadRequest("course is not available".into()));
     }
 
-    let active_count = repository::count_active_enrolments(db, course_id).await?;
-    if active_count < course.max_students as i64 {
+    let seats = seats::course_seats(db, course_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("course not found".into()))?;
+    if !seats.is_full() {
         return Err(AppError::Conflict("course is not full".into()));
     }
 
@@ -71,11 +76,7 @@ pub async fn cancel_waitlist_entry(db: &PgPool, auth: &AuthUser, id: Uuid) -> Re
         .await?
         .ok_or_else(|| AppError::NotFound("waitlist entry not found".into()))?;
 
-    if entry.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden(
-            "you can only cancel your own waitlist entries".into(),
-        ));
-    }
+    auth.owns_or_admin(entry.user_id, "you can only cancel your own waitlist entries")?;
 
     repository::cancel_if_waiting_tx(&mut tx, id)
         .await?

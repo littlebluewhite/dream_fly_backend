@@ -2,18 +2,13 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::orders::model::REVENUE_STATUSES;
 
 use super::model::{
     ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
     RetentionRow, VenueUsageRow, WeekdayLoadRow,
 };
-
-/// `attendance_records.status` values shared by [`coach_attendance_in_range`],
-/// [`member_attendance`] and [`kpis`] — one spelling of each literal instead
-/// of three.
-const PRESENT: &str = "present";
-const ABSENT: &str = "absent";
 
 /// 場租計收的 booking 狀態(Round 4 Phase 4 口徑):**場租計收 = status ∈
 /// confirmed/completed 的 bookings 之 `price_cents` 快照,歸屬 slot 使用日
@@ -157,8 +152,8 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
     .bind(now)
     .bind(tz_name)
     .bind(&REVENUE_STATUSES[..])
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
@@ -356,8 +351,8 @@ pub async fn coach_reports(
     .bind(now)
     .bind(tz_name)
     .bind(&REVENUE_STATUSES[..])
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_all(db)
     .await
 }
@@ -405,8 +400,8 @@ pub async fn attendance_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>,
           GROUP BY b.bucket, b.ord \
           ORDER BY b.ord",
     )
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_all(db)
     .await
 }
@@ -532,7 +527,7 @@ pub async fn retention(
     )
     .bind(now)
     .bind(tz_name)
-    .bind(PRESENT)
+    .bind(AttendanceStatus::Present.as_str())
     .fetch_all(db)
     .await
 }
@@ -604,7 +599,7 @@ pub async fn weekday_load(
     )
     .bind(now)
     .bind(tz_name)
-    .bind(PRESENT)
+    .bind(AttendanceStatus::Present.as_str())
     .fetch_all(db)
     .await
 }
@@ -672,39 +667,6 @@ pub async fn coach_today_and_pending(
     .await
 }
 
-/// Total unread messages across every conversation `user_id` participates
-/// in, on either side — mirrors `messages::repository::
-/// find_my_conversations`'s per-conversation `unread_count` correlated
-/// subquery, aggregated here to one grand total instead of one row per
-/// conversation.
-pub async fn unread_message_count(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM messages m \
-         JOIN conversations c ON c.id = m.conversation_id \
-         WHERE (c.member_id = $1 OR c.coach_id = $1) \
-           AND m.sender_id <> $1 AND m.read_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_one(db)
-    .await
-}
-
-/// Distinct students across `coach_id`'s *active* courses' *active*
-/// enrolments. Mirrors `attendance::repository::find_my_students`'s WHERE
-/// clause (copied, not shared — that module's own comment documents this
-/// as the established convention) but as a bare count, without the
-/// `jsonb_agg` course list `find_my_students` builds for its own response.
-pub async fn coach_student_count(db: &PgPool, coach_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT e.user_id) FROM enrolments e \
-         JOIN courses c ON c.id = e.course_id \
-         WHERE c.coach_id = $1 AND c.is_active = true AND e.status = 'active'",
-    )
-    .bind(coach_id)
-    .fetch_one(db)
-    .await
-}
-
 /// `(present_count, absent_count)` across `coach_id`'s courses' sessions in
 /// `[from, to]`. `leave` rows are never selected into either bucket — the
 /// brief's "leave 不入分母" rule.
@@ -725,8 +687,8 @@ pub async fn coach_attendance_in_range(
     .bind(coach_id)
     .bind(from)
     .bind(to)
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }
@@ -748,8 +710,8 @@ pub async fn member_attendance(db: &PgPool, user_id: Uuid) -> Result<(i64, i64),
          WHERE e.user_id = $1",
     )
     .bind(user_id)
-    .bind(PRESENT)
-    .bind(ABSENT)
+    .bind(AttendanceStatus::Present.as_str())
+    .bind(AttendanceStatus::Absent.as_str())
     .fetch_one(db)
     .await
 }

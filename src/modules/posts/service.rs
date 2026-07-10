@@ -2,6 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
 use crate::utils::slug::slugify;
 
@@ -90,8 +91,7 @@ pub async fn create_post(
 pub async fn update_post(
     db: &PgPool,
     id: Uuid,
-    auth_user_id: Uuid,
-    is_admin: bool,
+    auth: &AuthUser,
     req: UpdatePostRequest,
 ) -> Result<PostDetailResponse, AppError> {
     // Verify the post exists and check ownership
@@ -99,11 +99,7 @@ pub async fn update_post(
         .await?
         .ok_or_else(|| AppError::NotFound("post not found".into()))?;
 
-    if existing.author_id != auth_user_id && !is_admin {
-        return Err(AppError::Forbidden(
-            "you can only update your own posts".into(),
-        ));
-    }
+    auth.owns_or_admin(existing.author_id, "you can only update your own posts")?;
 
     // Validate category if provided
     if let Some(ref category) = req.category {

@@ -60,7 +60,7 @@ pub async fn update(
     let id: Uuid = id_str
         .parse()
         .map_err(|_| AppError::BadRequest("invalid post id".into()))?;
-    let post = service::update_post(&state.db, id, auth.user_id, auth.is_admin(), req).await?;
+    let post = service::update_post(&state.db, id, &auth, req).await?;
     Ok(Json(post))
 }
 

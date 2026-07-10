@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
+use crate::modules::courses::seats;
 
 use super::dto::{AttendanceEntryResponse, EnrolmentResponse, MyEnrolmentResponse};
 use super::model::Enrolment;
@@ -17,13 +18,13 @@ pub async fn enrol_from_purchase_tx(
     order_id: Uuid,
 ) -> Result<Enrolment, AppError> {
     // Lock the course row so a concurrent enrolment for the same course
-    // can't read a stale capacity count.
-    let max_students = repository::lock_course_capacity_tx(tx, course_id)
+    // can't read a stale capacity count (lock-then-count ordering lives in
+    // `seats::lock_course_seats_tx`).
+    let seats = seats::lock_course_seats_tx(tx, course_id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
-    let active_count = repository::count_active_tx(tx, course_id).await?;
-    if active_count >= max_students as i64 {
+    if seats.is_full() {
         return Err(AppError::Conflict("course is full".into()));
     }
 
@@ -65,11 +66,7 @@ pub async fn cancel_enrolment(
         .await?
         .ok_or_else(|| AppError::NotFound("enrolment not found".into()))?;
 
-    if enrolment.user_id != auth.user_id && !auth.is_admin() {
-        return Err(AppError::Forbidden(
-            "you can only cancel your own enrolments".into(),
-        ));
-    }
+    auth.owns_or_admin(enrolment.user_id, "you can only cancel your own enrolments")?;
 
     let updated = repository::cancel_if_active_tx(&mut tx, id)
         .await?

@@ -779,12 +779,13 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 
 ### 3.18 Course Sessions & Weekly Schedule（課程場次與週課表）
 
-課程的結構化週模式（`course_schedule_slots`，見 §3.3 的 `schedule_slots`）與由週模式物化到實際日期的上課場次（`course_sessions`）。`course_schedule_slots`／`course_sessions` 皆**無 `status` 欄位**——v1 不支援停課，場次「進行中／已結束」由前端依目前時間與 `start_time`/`end_time` 自行判斷，後端不提供衍生欄位。
+課程的結構化週模式（`course_schedule_slots`，見 §3.3 的 `schedule_slots`）與由週模式物化到實際日期的上課場次（`course_sessions`）。`course_schedule_slots`／`course_sessions` 資料表本身皆**無 `status` 欄位**——v1 不支援停課；但 `course_sessions` 的回應（`CourseSessionResponse`/`TodaySessionResponse`）會附上後端即時推導的 `status`（`upcoming`/`ongoing`/`done`），前端不需再自行依 `start_time`/`end_time` 判斷，見下方裁決 4。
 
 **裁決**：
 1. **與 `time_slots`（§3.6 Schedule，場館時段行事曆）是完全不同的資源**，彼此不共用資料表、不互相影響。`GET /schedule`（月曆）、`POST /schedule/slots` 等既有端點語意不變；本節端點（含 `GET /schedule/me`）是課程本身的週課表/場次，路徑雖有 `schedule` 前綴但與場館時段是兩回事，前端請勿混用。
 2. **時間採牆鐘（wall-clock）語意**：`session_date`／`start_time`／`end_time` 皆為 naive 值（無時區資訊），直接對應館所課表上的日期與時刻。本節所有「今天」的判定（`GET /sessions/today`，以及 `GET /courses/{id}/sessions` 未帶 `from` 時的預設值）一律為 **`studio_timezone`（`Asia/Taipei`）的當地日期**——伺服器以 UTC 當下時間轉換至館所時區後取日期，與 `schedule`/`bookings` 模組的時區慣例一致。因此台北清晨（例如 07:00，等於前一日 23:00 UTC）呼叫 `GET /sessions/today`，拿到的是台北的「今天」，不會因 UTC 日期落後而偏移一天。
 3. `day_of_week` 為 **0=Sunday .. 6=Saturday**（PostgreSQL `EXTRACT(DOW)` 慣例，也是 JavaScript `Date.getDay()` 慣例）——`course_schedule_slots` 與 `GET /schedule/me` 回應皆遵循此編碼。
+4. **`status`（`upcoming`/`ongoing`/`done`）是牆鐘衍生值，不是狀態機**：沒有 `suspended`/`cancelled` 等額外狀態，每次讀取當下即時計算、不落地儲存。邊界採 **[start, end) 閉開**——`now == start_time` 即 `ongoing`，`now == end_time` 即 `done`，三態剛好無縫銜接。換算 `session_date`+`start_time`/`end_time` 為 UTC 時如遇 DST 造成當地時間不存在或有歧義（裁決 2 的換算規則），**降級為以 studio-local 日期層級比較**：`session_date` 早於今天 → `done`；晚於今天 → `upcoming`；等於今天則依「是否已開始」二分為 `ongoing`/`upcoming`——不會讓端點因此報錯（`Asia/Taipei` 無 DST，此分支 production 不可達）。前端原本若有自行依 `start_time`/`end_time` 推導狀態的邏輯，現在可以直接淘汰，改讀這裡的 `status`。
 
 #### `GET /courses/{id}/sessions?from=YYYY-MM-DD&to=YYYY-MM-DD` — 需登入
 先物化（依該課程的 `schedule_slots`，為 `[from, to]` 範圍內尚未存在的場次執行 `INSERT ... ON CONFLICT DO NOTHING`；重複呼叫同一範圍不會產生重複場次），再回傳該課程在此範圍內的場次列表。`from`/`to` 皆選填：預設 `from=今天`、`to=from+28 天`（只給其中一個時，另一個仍依此規則相對計算）。422：`to < from`，或範圍跨距（`to - from`）超過 **60 天**（剛好 60 天可接受）。404：課程不存在。
@@ -794,7 +795,8 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 ```jsonc
 [
   { "id": "uuid", "course_id": "uuid", "session_date": "YYYY-MM-DD",
-    "start_time": "HH:MM:SS", "end_time": "HH:MM:SS" }
+    "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
+    "status": "upcoming|ongoing|done" }
 ]
 ```
 
@@ -806,7 +808,8 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
   { "id": "uuid", "course_id": "uuid", "course_name": "string",
     "coach_name": "string|null",
     "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
-    "enrolled_count": "number", "venue": "string|null" }
+    "enrolled_count": "number", "venue": "string|null",
+    "status": "upcoming|ongoing|done" }
 ]
 ```
 
