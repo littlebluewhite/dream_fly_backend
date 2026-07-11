@@ -4,6 +4,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
+use crate::utils::double_option::deserialize_some;
 
 use super::model::Product;
 
@@ -111,16 +112,21 @@ pub struct UpdateProductRequest {
     #[validate(range(min = 0, max = 100_000_000))]
     pub price_cents: Option<i64>,
     /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub original_price_cents: Option<Option<i64>>,
     pub features: Option<Vec<String>>,
     pub is_highlighted: Option<bool>,
     /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub badge: Option<Option<String>>,
     /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub stock: Option<Option<i32>>,
     /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub valid_days: Option<Option<i32>>,
     /// `Some(Some(v))` = set to v, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub session_count: Option<Option<i32>>,
     pub is_active: Option<bool>,
 }

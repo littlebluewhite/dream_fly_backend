@@ -5,6 +5,7 @@ mod common;
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 #[sqlx::test]
 async fn list_products_public_empty(db: PgPool) {
@@ -212,4 +213,88 @@ async fn update_product_as_member_returns_403(db: PgPool) {
         .json(&json!({ "price_cents": 999 }))
         .await;
     assert_eq!(resp.status_code(), 403);
+}
+
+// ---------------------------------------------------------------------------
+// BE#22 — PATCH `null` must clear nullable columns, not be silently ignored
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_product_clears_nullable_fields_to_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+
+    let created: serde_json::Value = app
+        .post("/api/v1/products")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "name": "Clearable Ticket",
+            "product_type": "ticket",
+            "price_cents": 100000,
+            "original_price_cents": 150000,
+            "badge": "熱銷",
+            "stock": 20,
+            "valid_days": 30,
+            "session_count": 5,
+        }))
+        .await
+        .json();
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["original_price_cents"], 150000);
+    assert_eq!(created["badge"], "熱銷");
+    assert_eq!(created["stock"], 20);
+    assert_eq!(created["valid_days"], 30);
+    assert_eq!(created["session_count"], 5);
+
+    // Explicit null on all five: must clear to NULL, not be silently
+    // ignored. `stock: null` in particular means "unlimited stock" — the
+    // ticket page's actual business semantics, not just a data-hygiene nit.
+    let resp = app
+        .patch(&format!("/api/v1/products/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({
+            "original_price_cents": null,
+            "badge": null,
+            "stock": null,
+            "valid_days": null,
+            "session_count": null,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["original_price_cents"].is_null());
+    assert!(body["badge"].is_null());
+    assert!(body["stock"].is_null());
+    assert!(body["quota"].is_null());
+    assert!(body["valid_days"].is_null());
+    assert!(body["session_count"].is_null());
+
+    let row: (Option<i64>, Option<String>, Option<i32>, Option<i32>, Option<i32>) = sqlx::query_as(
+        "SELECT original_price_cents, badge, stock, valid_days, session_count FROM products WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(id).unwrap())
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert!(row.0.is_none(), "original_price_cents must be NULL in the DB, not just absent from JSON");
+    assert!(row.1.is_none(), "badge must be NULL in the DB, not just absent from JSON");
+    assert!(row.2.is_none(), "stock must be NULL in the DB, not just absent from JSON");
+    assert!(row.3.is_none(), "valid_days must be NULL in the DB, not just absent from JSON");
+    assert!(row.4.is_none(), "session_count must be NULL in the DB, not just absent from JSON");
+
+    // Field-absent PATCH afterward must not error and must leave the
+    // now-NULL columns alone — proves "absent" stays distinct from "null".
+    let resp2 = app
+        .patch(&format!("/api/v1/products/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "name": "Renamed After Clear" }))
+        .await;
+    assert_eq!(resp2.status_code(), 200, "body={}", resp2.text());
+    let body2: serde_json::Value = resp2.json();
+    assert_eq!(body2["name"], "Renamed After Clear");
+    assert!(body2["original_price_cents"].is_null());
+    assert!(body2["badge"].is_null());
+    assert!(body2["stock"].is_null());
+    assert!(body2["valid_days"].is_null());
+    assert!(body2["session_count"].is_null());
 }

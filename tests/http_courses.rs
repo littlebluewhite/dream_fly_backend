@@ -2,10 +2,11 @@
 
 mod common;
 
-use common::fixtures::{seed_course, seed_course_schedule_slot};
+use common::fixtures::{seed_coach, seed_course, seed_course_schedule_slot};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 #[sqlx::test]
 async fn list_courses_is_public_and_empty_initially(db: PgPool) {
@@ -375,4 +376,92 @@ async fn patch_course_schedule_slots_end_before_start_returns_422(db: PgPool) {
         }))
         .await;
     assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+// ---------------------------------------------------------------------------
+// BE#22 — PATCH `null` must clear nullable columns, not be silently ignored
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let (coach_user_id, _coach_token) = app
+        .seed_user_with_roles("be22-coach@example.com", &["coach"])
+        .await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "BE22 Coach").await;
+
+    // Create a course with all five nullable fields populated.
+    let created: serde_json::Value = app
+        .post("/api/v1/courses")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "name": "Clearable Course",
+            "level": "beginner",
+            "duration_minutes": 60,
+            "price_cents": 50000,
+            "max_students": 10,
+            "min_age": 6,
+            "max_age": 12,
+            "coach_id": coach_id,
+            "category": "體操",
+            "schedule_text": "週一 18:00-19:00",
+        }))
+        .await
+        .json();
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["min_age"], 6);
+    assert_eq!(created["max_age"], 12);
+    assert_eq!(created["coach_id"], coach_id.to_string());
+    assert_eq!(created["category"], "體操");
+    assert_eq!(created["schedule_text"], "週一 18:00-19:00");
+
+    // Explicit null on all five: must clear to NULL, not be silently ignored.
+    let resp = app
+        .patch(&format!("/api/v1/courses/{id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "min_age": null,
+            "max_age": null,
+            "coach_id": null,
+            "category": null,
+            "schedule_text": null,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["min_age"].is_null());
+    assert!(body["max_age"].is_null());
+    assert!(body["coach_id"].is_null());
+    assert!(body["category"].is_null());
+    assert!(body["schedule_text"].is_null());
+
+    let row: (Option<i32>, Option<i32>, Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT min_age, max_age, coach_id, category, schedule_text FROM courses WHERE id = $1",
+    )
+    .bind(Uuid::parse_str(id).unwrap())
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert!(row.0.is_none(), "min_age must be NULL in the DB, not just absent from JSON");
+    assert!(row.1.is_none(), "max_age must be NULL in the DB, not just absent from JSON");
+    assert!(row.2.is_none(), "coach_id must be NULL in the DB, not just absent from JSON");
+    assert!(row.3.is_none(), "category must be NULL in the DB, not just absent from JSON");
+    assert!(row.4.is_none(), "schedule_text must be NULL in the DB, not just absent from JSON");
+
+    // Field-absent PATCH afterward must not error and must leave the
+    // now-NULL columns alone — proves "absent" stays distinct from "null".
+    let resp2 = app
+        .patch(&format!("/api/v1/courses/{id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "name": "Renamed After Clear" }))
+        .await;
+    assert_eq!(resp2.status_code(), 200, "body={}", resp2.text());
+    let body2: serde_json::Value = resp2.json();
+    assert_eq!(body2["name"], "Renamed After Clear");
+    assert!(body2["min_age"].is_null());
+    assert!(body2["max_age"].is_null());
+    assert!(body2["coach_id"].is_null());
+    assert!(body2["category"].is_null());
+    assert!(body2["schedule_text"].is_null());
 }

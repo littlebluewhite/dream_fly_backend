@@ -5,6 +5,7 @@ use validator::Validate;
 
 use super::model::Post;
 use crate::extractors::pagination::PageMeta;
+use crate::utils::double_option::deserialize_some;
 use crate::utils::url_validation::validate_stored_url;
 
 /// List view — excludes content for efficiency
@@ -107,11 +108,13 @@ pub struct UpdatePostRequest {
     #[validate(length(min = 1, max = 100_000))]
     pub content: Option<String>,
     /// `Some(Some(v))` = set, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub excerpt: Option<Option<String>>,
     #[validate(length(max = 50))]
     pub category: Option<String>,
     #[validate(length(max = 50))]
     pub status: Option<String>,
     /// `Some(Some(v))` = set, `Some(None)` = clear to NULL, `None` = don't touch
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub cover_image: Option<Option<String>>,
 }

@@ -124,3 +124,62 @@ async fn delete_post_as_admin_succeeds(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 204);
 }
+
+// ---------------------------------------------------------------------------
+// BE#22 — PATCH `null` must clear nullable columns, not be silently ignored
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_post_clears_excerpt_and_cover_image_to_null(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+
+    let created: serde_json::Value = app
+        .post("/api/v1/posts")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "title": "Clearable Post",
+            "content": "Body content",
+            "category": "article",
+            "excerpt": "An excerpt",
+            "cover_image": "https://example.com/cover.jpg",
+        }))
+        .await
+        .json();
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["excerpt"], "An excerpt");
+    assert_eq!(created["cover_image"], "https://example.com/cover.jpg");
+
+    // Explicit null on both: must clear to NULL, not be silently ignored.
+    let resp = app
+        .patch(&format!("/api/v1/posts/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "excerpt": null, "cover_image": null }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert!(body["excerpt"].is_null());
+    assert!(body["cover_image"].is_null());
+
+    let row: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT excerpt, cover_image FROM posts WHERE id = $1")
+            .bind(Uuid::parse_str(id).unwrap())
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert!(row.0.is_none(), "excerpt must be NULL in the DB, not just absent from JSON");
+    assert!(row.1.is_none(), "cover_image must be NULL in the DB, not just absent from JSON");
+
+    // Field-absent PATCH afterward must not error and must leave the
+    // now-NULL columns alone — proves "absent" stays distinct from "null".
+    let resp2 = app
+        .patch(&format!("/api/v1/posts/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "title": "Renamed After Clear" }))
+        .await;
+    assert_eq!(resp2.status_code(), 200, "body={}", resp2.text());
+    let body2: serde_json::Value = resp2.json();
+    assert_eq!(body2["title"], "Renamed After Clear");
+    assert!(body2["excerpt"].is_null());
+    assert!(body2["cover_image"].is_null());
+}

@@ -352,7 +352,7 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 Body（`CreateCourseRequest`）：`{ name, slug?, level, description?, duration_minutes, price_cents, max_students, min_age?, max_age?, features?, coach_id?, category?, schedule_text?, is_highlighted?, schedule_slots? }`。`schedule_slots`（選填）：`[{ day_of_week, start_time: "HH:MM", end_time: "HH:MM", venue? }]`——不帶則建立的課程沒有任何週模式。回應：`CourseDetailResponse`。
 
 #### `PATCH /courses/{id}` — admin
-Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。**`schedule_slots` 為整組替換語意**：帶此欄位（即使是空陣列 `[]`）會在同一交易內刪除該課程現有全部 slots 並以新內容取代；**不帶此欄位（欄位整個不存在於 JSON body）則完全不動現有 slots**。回應：`CourseDetailResponse`。
+Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。`min_age`/`max_age`/`coach_id`/`category`/`schedule_text` 可明確傳 `null` 清空，欄位不帶則維持原值不動。**`schedule_slots` 為整組替換語意**：帶此欄位（即使是空陣列 `[]`）會在同一交易內刪除該課程現有全部 slots 並以新內容取代；**不帶此欄位（欄位整個不存在於 JSON body）則完全不動現有 slots**。回應：`CourseDetailResponse`。
 
 ---
 
@@ -756,7 +756,7 @@ slug 或 UUID 皆可。回應（`PostDetailResponse`，**多了 `content` 與 `u
 Body：`{ title, slug?, content, excerpt?, category, cover_image? }`（category 1-50 字，非嚴格 enum 檢查但預期為上述四值之一）。新建文章預設 `status: "draft"`。回應：`PostDetailResponse`。
 
 #### `PATCH /posts/{id}` — admin 或該文章作者本人
-Body（皆選填）：`{ title?, slug?, content?, excerpt?, category?, status?, cover_image? }`（`status` 可設為 `draft|published|archived`，設為 `published` 才會出現在公開端點）。回應：`PostDetailResponse`。
+Body（皆選填）：`{ title?, slug?, content?, excerpt?, category?, status?, cover_image? }`（`status` 可設為 `draft|published|archived`，設為 `published` 才會出現在公開端點）。`excerpt`/`cover_image` 可明確傳 `null` 清空，欄位不帶則維持原值不動。回應：`PostDetailResponse`。
 
 #### `DELETE /posts/{id}` — admin
 回應：204 No Content。

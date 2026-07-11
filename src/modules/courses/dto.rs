@@ -5,6 +5,7 @@ use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
 use crate::modules::sessions::dto::{CourseScheduleSlotEntry, CourseScheduleSlotResponse};
+use crate::utils::double_option::deserialize_some;
 
 use super::model::Course;
 
@@ -125,11 +126,16 @@ pub struct UpdateCourseRequest {
     pub price_cents: Option<i64>,
     #[validate(range(min = 1, max = 10_000))]
     pub max_students: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub min_age: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub max_age: Option<Option<i32>>,
     pub features: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub coach_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub category: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub schedule_text: Option<Option<String>>,
     pub is_highlighted: Option<bool>,
     /// Not present (`None`) leaves existing slots untouched; `Some(vec)`
