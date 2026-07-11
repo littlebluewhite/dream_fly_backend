@@ -39,7 +39,17 @@ for bin in curl jq; do
 done
 
 TMP_BODY="$(mktemp)"
-trap 'rm -f "$TMP_BODY"' EXIT
+cleanup() {
+  # Failure-path safety net: if the script exits before step 24 releases the
+  # seat it consumed (e.g. a mid-script fail()), best-effort release it here.
+  # Must not use req()/expect_* — they write $TMP_BODY and fail() recurses.
+  if [[ -n "${ENROLMENT_ID:-}" && "$ENROLMENT_ID" != "null" && -z "${SEAT_RELEASED:-}" ]]; then
+    curl -s -o /dev/null -X PATCH "$BASE_URL/enrolments/$ENROLMENT_ID/cancel" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" || true
+  fi
+  rm -f "$TMP_BODY"
+}
+trap cleanup EXIT
 
 STEP=0
 pass() {
@@ -437,6 +447,17 @@ expect_truthy "age_distribution has the fixed 6 buckets" '(.age_distribution | l
 expect_truthy "tier_distribution has the fixed 4 buckets" '(.tier_distribution | length) == 4'
 expect_truthy "retention has the fixed 6 months" '(.retention | length) == 6'
 expect_truthy "weekday_load has the fixed 7 buckets" '(.weekday_load | length) == 7'
+
+# 24. Release the seat this run consumed — smoke must not permanently
+#     consume finite seed capacity across runs (mirrors venue restore)
+if [[ -z "$ENROLMENT_ID" || "$ENROLMENT_ID" == "null" ]]; then
+  fail "cannot release seat — enrolment id missing (step 10)"
+else
+  status="$(req PATCH "/enrolments/$ENROLMENT_ID/cancel" "" "$ACCESS_TOKEN")"
+  expect_status "PATCH /enrolments/{id}/cancel (release smoke seat)" "200" "$status"
+  expect_truthy "enrolment released back to seed capacity" '.status == "cancelled"'
+  SEAT_RELEASED=1
+fi
 
 echo ""
 echo "All $STEP checks passed."
