@@ -110,6 +110,14 @@ pub struct CreateCourseRequest {
     pub schedule_slots: Option<Vec<CourseScheduleSlotEntry>>,
 }
 
+/// Partial update payload for `PATCH /courses/{id}`. Every field optional;
+/// `min_age`/`max_age`/`coach_id`/`category`/`schedule_text` use
+/// `Option<Option<T>>` (paired with `deserialize_some`) so callers can
+/// distinguish "don't touch" (`None`), "set to NULL" (`Some(None)`), and
+/// "set to value" (`Some(Some(v))`) — those five columns are the nullable
+/// ones. No `#[validate]` on those five fields (validator can't express
+/// nested `Option` cleanly; the DB schema is the backstop — mirrors
+/// `venues::dto::UpdateVenueRequest`).
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateCourseRequest {
     #[validate(length(min = 1, max = 100))]
