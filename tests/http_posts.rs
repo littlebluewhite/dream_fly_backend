@@ -182,4 +182,27 @@ async fn update_post_clears_excerpt_and_cover_image_to_null(db: PgPool) {
     assert_eq!(body2["title"], "Renamed After Clear");
     assert!(body2["excerpt"].is_null());
     assert!(body2["cover_image"].is_null());
+
+    // Re-populate both, then PATCH with the fields absent — populated
+    // values must survive an absent-key update (guards the "absent
+    // accidentally clears" regression class in the deserialize_some wiring).
+    let resp3 = app
+        .patch(&format!("/api/v1/posts/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({
+            "excerpt": "Refilled excerpt",
+            "cover_image": "https://example.com/refilled-cover.jpg",
+        }))
+        .await;
+    assert_eq!(resp3.status_code(), 200, "body={}", resp3.text());
+
+    let resp4 = app
+        .patch(&format!("/api/v1/posts/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "title": "Renamed With Values Intact" }))
+        .await;
+    assert_eq!(resp4.status_code(), 200, "body={}", resp4.text());
+    let body4: serde_json::Value = resp4.json();
+    assert_eq!(body4["excerpt"], "Refilled excerpt");
+    assert_eq!(body4["cover_image"], "https://example.com/refilled-cover.jpg");
 }

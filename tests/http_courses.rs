@@ -464,4 +464,33 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     assert!(body2["coach_id"].is_null());
     assert!(body2["category"].is_null());
     assert!(body2["schedule_text"].is_null());
+
+    // Re-populate all five, then PATCH with the fields absent — populated
+    // values must survive an absent-key update (guards the "absent
+    // accidentally clears" regression class in the deserialize_some wiring).
+    let resp3 = app
+        .patch(&format!("/api/v1/courses/{id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "min_age": 8,
+            "max_age": 14,
+            "coach_id": coach_id,
+            "category": "韻律",
+            "schedule_text": "週三 19:00-20:00",
+        }))
+        .await;
+    assert_eq!(resp3.status_code(), 200, "body={}", resp3.text());
+
+    let resp4 = app
+        .patch(&format!("/api/v1/courses/{id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "name": "Renamed With Values Intact" }))
+        .await;
+    assert_eq!(resp4.status_code(), 200, "body={}", resp4.text());
+    let body4: serde_json::Value = resp4.json();
+    assert_eq!(body4["min_age"], 8);
+    assert_eq!(body4["max_age"], 14);
+    assert_eq!(body4["coach_id"], coach_id.to_string());
+    assert_eq!(body4["category"], "韻律");
+    assert_eq!(body4["schedule_text"], "週三 19:00-20:00");
 }

@@ -297,4 +297,33 @@ async fn update_product_clears_nullable_fields_to_null(db: PgPool) {
     assert!(body2["stock"].is_null());
     assert!(body2["valid_days"].is_null());
     assert!(body2["session_count"].is_null());
+
+    // Re-populate all five, then PATCH with the fields absent — populated
+    // values must survive an absent-key update (guards the "absent
+    // accidentally clears" regression class in the deserialize_some wiring).
+    let resp3 = app
+        .patch(&format!("/api/v1/products/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({
+            "original_price_cents": 180000,
+            "badge": "限量回歸",
+            "stock": 35,
+            "valid_days": 45,
+            "session_count": 8,
+        }))
+        .await;
+    assert_eq!(resp3.status_code(), 200, "body={}", resp3.text());
+
+    let resp4 = app
+        .patch(&format!("/api/v1/products/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "name": "Renamed With Values Intact" }))
+        .await;
+    assert_eq!(resp4.status_code(), 200, "body={}", resp4.text());
+    let body4: serde_json::Value = resp4.json();
+    assert_eq!(body4["original_price_cents"], 180000);
+    assert_eq!(body4["badge"], "限量回歸");
+    assert_eq!(body4["stock"], 35);
+    assert_eq!(body4["valid_days"], 45);
+    assert_eq!(body4["session_count"], 8);
 }
