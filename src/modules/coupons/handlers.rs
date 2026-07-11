@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::StatusCode,
 };
 use uuid::Uuid;
@@ -21,13 +21,19 @@ use super::service;
 /// `?subtotal_cents=`, the response also previews `applied_discount_cents`
 /// (see `CouponValidateResponse`'s doc comment); omitting it leaves the
 /// response unchanged from before this parameter existed.
+/// The `Result` extractor keeps a malformed `subtotal_cents` (e.g. `abc`)
+/// inside the standard `{"error":...}` envelope — a bare `Query` would let
+/// axum's rejection answer in `text/plain`, breaking the error-format
+/// contract (integration-contract §1.3).
 #[tracing::instrument(skip_all)]
 pub async fn validate(
     State(state): State<AppState>,
     _auth: AuthUser,
     Path(code): Path<String>,
-    Query(params): Query<ValidateCouponQuery>,
+    params: Result<Query<ValidateCouponQuery>, QueryRejection>,
 ) -> Result<Json<CouponValidateResponse>, AppError> {
+    let Query(params) =
+        params.map_err(|_| AppError::BadRequest("subtotal_cents must be an integer".into()))?;
     let result = service::validate_coupon(&state.db, &code, params.subtotal_cents).await?;
     Ok(Json(result))
 }

@@ -27,8 +27,10 @@ async fn validate_valid_code_returns_200_with_exact_body(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
-    let body: serde_json::Value = resp.json();
-    assert_eq!(body, json!({ "code": "DREAMFLY100", "discount_cents": 1500 }));
+    // Raw-text comparison, not parsed-Value equality: the backward-compat
+    // promise for the no-subtotal_cents path is *byte-for-byte*, and a
+    // serde_json::Value comparison cannot pin key order or whitespace.
+    assert_eq!(resp.text(), r#"{"code":"DREAMFLY100","discount_cents":1500}"#);
 }
 
 #[sqlx::test]
@@ -118,6 +120,26 @@ async fn validate_negative_subtotal_returns_422(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
+async fn validate_malformed_subtotal_returns_400_json_envelope(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    seed_coupon(&app.db, "BADQUERY1", 500, true, None).await;
+    let user = app.register_member("member-j@example.com", "Password!234").await;
+
+    let resp = app
+        .get("/api/v1/coupons/BADQUERY1/validate?subtotal_cents=abc")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 400, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(
+        body,
+        json!({ "error": "subtotal_cents must be an integer" }),
+        "malformed query params must use the standard JSON error envelope, \
+         not axum's text/plain Query rejection"
+    );
 }
 
 #[sqlx::test]
