@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
+use crate::utils::double_option::deserialize_some;
 
 use super::model::{RedemptionWithReward, Reward};
 
@@ -96,22 +97,6 @@ pub struct CreateRewardRequest {
     #[validate(range(min = 0))]
     pub stock: Option<i32>,
     pub display_order: Option<i32>,
-}
-
-/// Plain `Option<Option<T>>` cannot distinguish "key absent" from "key
-/// present with JSON `null`" — serde's built-in `Option<T>` deserialize
-/// collapses a `null` straight to the *outer* `None`, so a bare
-/// `Option<Option<T>>` field could never actually clear a nullable column
-/// back to `NULL` via PATCH. Paired with `#[serde(default)]`, this makes the
-/// present-with-`null` case reach the *inner* `Option`, producing
-/// `Some(None)` (clear) instead of `None` (don't touch) — the standard serde
-/// "tri-state Option" recipe.
-fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// Partial update payload for `PATCH /rewards/{id}`. `description`/`stock`

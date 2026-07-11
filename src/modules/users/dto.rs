@@ -1,27 +1,12 @@
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
 use super::model::User;
 use crate::extractors::pagination::PageMeta;
+use crate::utils::double_option::deserialize_some;
 use crate::utils::url_validation::validate_stored_url;
-
-/// Plain `Option<Option<T>>` cannot distinguish "key absent" from "key
-/// present with JSON `null`" — serde's built-in `Option<T>` deserialize
-/// collapses a `null` straight to the *outer* `None`, so a bare
-/// `Option<Option<T>>` field could never actually clear a nullable column
-/// back to `NULL` via PATCH. Paired with `#[serde(default)]`, this makes the
-/// present-with-`null` case reach the *inner* `Option`, producing
-/// `Some(None)` (clear) instead of `None` (don't touch) — mirrors
-/// `venues::dto::deserialize_some` / `coaches::dto::deserialize_some`.
-fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Deserialize::deserialize(deserializer).map(Some)
-}
 
 /// Earliest/latest `birth_date` accepted by both `CreateUserRequest` and
 /// `UpdateProfileRequest` — Round 4 Task P4-B2. Returns `Some(message)` when
