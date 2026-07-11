@@ -199,6 +199,10 @@ expect_status "POST /orders (checkout)" "200" "$status"
 
 ORDER_ID="$(jq -r '.id' "$TMP_BODY")"
 ORDER_NUMBER="$(jq -r '.order_number' "$TMP_BODY")"
+# Capture the enrolment id straight from the checkout response so the EXIT
+# trap can release the seat even if a later step fails before step 10
+# re-derives it from /enrolments/me.
+ENROLMENT_ID="$(jq -r '.enrolments[0].id // empty' "$TMP_BODY")"
 expect_truthy "order status is paid" '.status == "paid"'
 expect_truthy "response has enrolments[0]" '(.enrolments // []) | length > 0'
 expect_truthy "response has subscriptions[0]" '(.subscriptions // []) | length > 0'
