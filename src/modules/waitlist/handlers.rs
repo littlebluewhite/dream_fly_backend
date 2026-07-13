@@ -63,10 +63,9 @@ pub async fn cancel(
 #[tracing::instrument(skip_all)]
 pub async fn list_for_course(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     params: WaitlistQuery,
 ) -> Result<Json<Vec<WaitlistResponse>>, AppError> {
-    auth.require_role("admin")?;
     let entries = service::list_for_course(&state.db, params.course_id).await?;
     Ok(Json(entries))
 }

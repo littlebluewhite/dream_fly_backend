@@ -12,9 +12,8 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn get_settings(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
 ) -> Result<Json<SettingsResponse>, AppError> {
-    auth.require_role("admin")?;
     let settings = service::get_settings(&state.db).await?;
     Ok(Json(settings))
 }
@@ -23,10 +22,9 @@ pub async fn get_settings(
 #[tracing::instrument(skip_all)]
 pub async fn update_settings(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<UpdateSettingsRequest>,
 ) -> Result<Json<SettingsResponse>, AppError> {
-    auth.require_role("admin")?;
     let settings = service::update_settings(&state.db, req).await?;
     Ok(Json(settings))
 }

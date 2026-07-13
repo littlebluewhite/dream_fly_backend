@@ -34,10 +34,9 @@ pub async fn get_by_slug_or_id(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateCourseRequest>,
 ) -> Result<Json<CourseDetailResponse>, AppError> {
-    auth.require_role("admin")?;
     let course = service::create_course(&state.db, req).await?;
     Ok(Json(course))
 }
@@ -45,11 +44,10 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id_str): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateCourseRequest>,
 ) -> Result<Json<CourseDetailResponse>, AppError> {
-    auth.require_role("admin")?;
     let id: Uuid = id_str
         .parse()
         .map_err(|_| AppError::BadRequest("invalid course id".into()))?;

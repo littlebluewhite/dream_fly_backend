@@ -87,10 +87,10 @@ async fn unauthorized_variant_returns_401_with_fixed_message(db: PgPool) {
 
 #[sqlx::test]
 async fn forbidden_variant_returns_403_with_error_shape(db: PgPool) {
-    // A plain member hitting an admin-only endpoint triggers
-    // `auth.require_role("admin")` → Forbidden. The permissions router
-    // mounts at `/api/v1/roles` (no `/permissions/` prefix — see
-    // `src/modules/permissions/routes.rs`).
+    // A plain member hitting an admin-only endpoint is rejected at the
+    // route seam by the `require_admin` middleware → Forbidden. The
+    // permissions router mounts at `/api/v1/roles` (no `/permissions/`
+    // prefix — see `src/modules/permissions/routes.rs`).
     let app = spawn_test_app(db).await;
     let user = app
         .register_member("forbidden@example.com", "Password!234")

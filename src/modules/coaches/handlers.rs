@@ -36,10 +36,9 @@ pub async fn get_by_id(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateCoachRequest>,
 ) -> Result<Json<CoachResponse>, AppError> {
-    auth.require_role("admin")?;
     let mut redis = state.redis.clone();
     let coach = service::create_coach(&state.db, &mut redis, &req).await?;
     Ok(Json(coach))
@@ -48,11 +47,10 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateCoachRequest>,
 ) -> Result<Json<CoachResponse>, AppError> {
-    auth.require_role("admin")?;
     let coach = service::update_coach(&state.db, id, &req).await?;
     Ok(Json(coach))
 }

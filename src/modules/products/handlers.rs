@@ -48,10 +48,9 @@ pub async fn get_by_slug(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateProductRequest>,
 ) -> Result<Json<ProductResponse>, AppError> {
-    auth.require_role("admin")?;
     let product = service::create(&state.db, req).await?;
     Ok(Json(product))
 }
@@ -59,11 +58,10 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateProductRequest>,
 ) -> Result<Json<ProductResponse>, AppError> {
-    auth.require_role("admin")?;
     let id: Uuid = id
         .parse()
         .map_err(|_| AppError::BadRequest("invalid product id".into()))?;

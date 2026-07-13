@@ -34,10 +34,9 @@ pub async fn get_availability(
 #[tracing::instrument(skip_all)]
 pub async fn create_slots(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateSlotsRequest>,
 ) -> Result<Json<Vec<TimeSlotResponse>>, AppError> {
-    auth.require_role("admin")?;
     let slots = service::create_slots(&state.db, &state.config.server, req).await?;
     Ok(Json(slots))
 }

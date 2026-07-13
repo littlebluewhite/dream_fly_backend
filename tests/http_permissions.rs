@@ -117,10 +117,10 @@ async fn assign_and_remove_role_round_trip(db: PgPool) {
 
 #[sqlx::test]
 async fn create_role_as_member_returns_403(db: PgPool) {
-    // Defense-in-depth: any admin-only handler should reject members with
-    // 403 even when the input payload is well-formed, so a forgotten
-    // `require_role` call in a future refactor cannot silently open the
-    // endpoint up.
+    // Defense-in-depth: any admin-only endpoint should reject members with
+    // 403 even when the input payload is well-formed, so a mis-wired
+    // `admin_router()` / `require_admin` route seam in a future refactor
+    // cannot silently open the endpoint up.
     let app = spawn_test_app(db).await;
     let user = app.register_member("m-create@example.com", "Password!234").await;
     let resp = app

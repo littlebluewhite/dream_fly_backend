@@ -11,9 +11,8 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn admin_report(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
 ) -> Result<Json<AdminReportResponse>, AppError> {
-    auth.require_role("admin")?;
     let report = service::admin_report(&state.db, &state.config.server).await?;
     Ok(Json(report))
 }
@@ -43,9 +42,8 @@ pub async fn member_report(
 #[tracing::instrument(skip_all)]
 pub async fn admin_activity(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
 ) -> Result<Json<ActivityResponse>, AppError> {
-    auth.require_role("admin")?;
     let report = service::admin_activity(&state.db).await?;
     Ok(Json(report))
 }

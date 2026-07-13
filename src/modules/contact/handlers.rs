@@ -29,10 +29,9 @@ pub async fn submit(
 #[tracing::instrument(skip_all)]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<InquiryListResponse>, AppError> {
-    auth.require_role("admin")?;
     let result = service::list_inquiries(&state.db, &params).await?;
     Ok(Json(result))
 }
@@ -42,11 +41,10 @@ pub async fn list(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateInquiryRequest>,
 ) -> Result<Json<InquiryResponse>, AppError> {
-    auth.require_role("admin")?;
     let inquiry = service::update_inquiry(&state.db, id, &req).await?;
     Ok(Json(inquiry))
 }

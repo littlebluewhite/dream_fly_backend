@@ -25,6 +25,9 @@ pub async fn list(
     Query(params): Query<RewardListQuery>,
 ) -> Result<Json<RewardListResponse>, AppError> {
     let all = params.all.unwrap_or(false);
+    // 條件式閘門:僅 `?all=true` 才需 admin。因依賴 query 參數,**不可上移**到
+    // route 層 `require_admin`(否則會連 member 的 `?all=false` 一併擋成 403)。
+    // 其餘 34 份純閘門已上移;此支原地保留為唯一例外。
     if all {
         auth.require_role("admin")?;
     }
@@ -58,10 +61,9 @@ pub async fn my_redemptions(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateRewardRequest>,
 ) -> Result<Json<RewardResponse>, AppError> {
-    auth.require_role("admin")?;
     let result = service::create(&state.db, req).await?;
     Ok(Json(result))
 }
@@ -70,11 +72,10 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateRewardRequest>,
 ) -> Result<Json<RewardResponse>, AppError> {
-    auth.require_role("admin")?;
     let result = service::update(&state.db, id, req).await?;
     Ok(Json(result))
 }

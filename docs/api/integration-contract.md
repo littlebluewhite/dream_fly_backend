@@ -62,6 +62,9 @@
 | 422 Unprocessable Entity | 欄位驗證失敗 | `validator` 規則不通過（長度、格式、必填） |
 | 500 Internal Server Error | 未預期錯誤 | 一律回通用訊息，不洩漏內部細節 |
 
+**總則:admin-only 端點的角色閘門先於請求驗證。** admin 專屬端點在 route 層即檢查
+角色,非 admin 呼叫者一律先回 403——不論 payload/query 是否合法(即 403 先於 422/400)。
+
 ### 1.4 分頁慣例
 
 - Query 參數：`page`（預設 1）、`per_page`（預設 20，最大 **100**，超過會被 clamp，不會報錯）。
@@ -684,7 +687,7 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
 回應：`WaitlistResponse[]`（**純陣列**，新到舊）。
 
 #### `GET /waitlist?course_id=uuid` — admin
-回應：`WaitlistResponse[]`（該課程候補中的名單，舊到新）。缺少/無效 `course_id` 回 422。
+回應：`WaitlistResponse[]`（該課程候補中的名單，舊到新）。缺少/無效 `course_id` 回 422（admin 以外先 403）。
 
 #### `DELETE /waitlist/{id}` — 需登入（本人或 admin）
 取消候補。回應：204 No Content。

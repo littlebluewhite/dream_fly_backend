@@ -68,10 +68,9 @@ pub async fn update(
 #[tracing::instrument(skip_all)]
 pub async fn delete(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id_str): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    auth.require_role("admin")?;
     let id: Uuid = id_str
         .parse()
         .map_err(|_| AppError::BadRequest("invalid post id".into()))?;

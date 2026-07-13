@@ -63,10 +63,9 @@ pub async fn cancel(
 #[tracing::instrument(skip_all)]
 pub async fn list_all(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedBookingsResponse>, AppError> {
-    auth.require_role("admin")?;
     let response = service::list_all(&state.db, &params).await?;
     Ok(Json(response))
 }

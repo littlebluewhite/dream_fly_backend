@@ -32,10 +32,9 @@ pub async fn get_by_slug(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateVenueRequest>,
 ) -> Result<Json<VenueResponse>, AppError> {
-    auth.require_role("admin")?;
     let venue = service::create_venue(&state.db, &req).await?;
     Ok(Json(venue))
 }
@@ -43,11 +42,10 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateVenueRequest>,
 ) -> Result<Json<VenueResponse>, AppError> {
-    auth.require_role("admin")?;
     let venue = service::update_venue(&state.db, id, &req).await?;
     Ok(Json(venue))
 }

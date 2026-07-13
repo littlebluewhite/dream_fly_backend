@@ -88,12 +88,11 @@ pub async fn get_order(
 #[tracing::instrument(skip_all)]
 pub async fn update_status(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<Uuid>,
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<UpdateOrderStatusRequest>,
 ) -> Result<Json<OrderResponse>, AppError> {
-    auth.require_role("admin")?;
     let order = service::update_order_status(&state.db, id, &req.status, request_id.0).await?;
     Ok(Json(order))
 }
@@ -102,10 +101,9 @@ pub async fn update_status(
 #[tracing::instrument(skip_all)]
 pub async fn admin_list_orders(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<AdminOrderListResponse>, AppError> {
-    auth.require_role("admin")?;
     let result = service::list_all_orders(&state.db, &params).await?;
     Ok(Json(result))
 }
