@@ -49,3 +49,10 @@ pub struct Booking {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// 場租計收的 booking 狀態(Round 4 Phase 4 口徑,ADR-0004):場租計收 =
+/// status ∈ confirmed/completed 的 bookings 之 `price_cents` 快照,歸屬 slot
+/// 使用日(非下訂日);`pending`/`cancelled`/`no_show` 一律不入。「哪些狀態算
+/// 場租營收」的單一歸屬點——改這裡,報表跟著變。與 `orders::model::
+/// REVENUE_STATUSES` 是不同狀態機的各自口徑,刻意不共用。
+pub const VENUE_REVENUE_STATUSES: [&str; 2] = ["confirmed", "completed"];

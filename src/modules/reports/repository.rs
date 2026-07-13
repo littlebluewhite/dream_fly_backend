@@ -2,6 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::bookings::model::VENUE_REVENUE_STATUSES;
 use crate::modules::orders::model::REVENUE_STATUSES;
 use crate::modules::sessions::repository::MaterializedRange;
 
@@ -9,13 +10,6 @@ use super::model::{
     ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
     RetentionRow, VenueUsageRow, WeekdayLoadRow,
 };
-
-/// 場租計收的 booking 狀態(Round 4 Phase 4 口徑):**場租計收 = status ∈
-/// confirmed/completed 的 bookings 之 `price_cents` 快照,歸屬 slot 使用日
-/// (非下訂日)**。`pending`/`cancelled`/`no_show` 一律不入 — the venue-rental
-/// twin of `orders::model::REVENUE_STATUSES`, kept separate because
-/// `booking_status` is its own state machine, not the order one.
-const VENUE_REVENUE_STATUSES: [&str; 2] = ["confirmed", "completed"];
 
 // ---------------------------------------------------------------------------
 // GET /reports/admin
@@ -168,7 +162,7 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
 /// - source 值域:`course`(item_type = course 的 line)/ `ticket` /
 ///   `membership` / `course_package` / `merchandise`(product line 按
 ///   `products.product_type`)+ **venue_rental**(bookings 快照價,見
-///   [`VENUE_REVENUE_STATUSES`],歸屬 **slot 使用日**(非下訂日)——
+///   `bookings::model::VENUE_REVENUE_STATUSES`,歸屬 **slot 使用日**(非下訂日)——
 ///   `time_slots.date` is already a studio-local date per contract §3.18,
 ///   so it needs no `AT TIME ZONE` shift)。
 /// - order lines 歸屬 `paid_at` 的 studio 月份;**排除 pending/refunded 於
