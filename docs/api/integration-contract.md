@@ -62,8 +62,8 @@
 | 422 Unprocessable Entity | 欄位驗證失敗 | `validator` 規則不通過（長度、格式、必填） |
 | 500 Internal Server Error | 未預期錯誤 | 一律回通用訊息，不洩漏內部細節 |
 
-**總則:admin-only 端點的角色閘門先於請求驗證。** admin 專屬端點在 route 層即檢查
-角色,非 admin 呼叫者一律先回 403——不論 payload/query 是否合法(即 403 先於 422/400)。
+**總則：admin-only 端點的角色閘門先於請求驗證。** admin 專屬端點在 route 層即檢查
+角色，非 admin 呼叫者一律先回 403——不論 payload/query 是否合法（即 403 先於 422/400）。
 
 ### 1.4 分頁慣例
 

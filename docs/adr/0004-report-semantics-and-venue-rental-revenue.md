@@ -103,3 +103,7 @@ Task P4-B2）採**建立時快照**：一筆 booking 誕生的當下，把當時
   位，本輪不新增假的分校維度去湊這個欄位，於契約文件（`docs/api/integration-contract.md` §3.24「mock
   有但契約無」清單）明列維持既有 mock。若未來真的要支援多分校，需要在 `venues`（或更上層）新增
   campus/branch 概念，不是能在現有結構上逆向拼湊出來的，不在本 ADR 範圍內。
+
+## Addendum（2026-07-13）：場租計收狀態集歸家 bookings::model
+
+Consequences 首條「口徑集中寫在 `reports::dto`/`reports::repository` 的 doc comment 上」自此有一個例外：場租計收狀態集 `VENUE_REVENUE_STATUSES` 連同其權威 doc 已歸家 `bookings::model`（「哪些狀態算場租營收」的單一歸屬點，reports 改為 import 消費同一常數）。本檔其餘敘述維持決策當下狀態。
