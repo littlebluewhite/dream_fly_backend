@@ -1,13 +1,15 @@
 //! 座位(Seats)——「課程還有沒有位子」這個 invariant 的單一 owner。
 //!
-//! 鎖協定、COUNT 謂詞(`enrolments.status = 'active'`)、實體座位公式
-//! (契約 §3.20)是同一個 invariant 的三個面向;拆散到各模組的 repository
-//! 就會重造出靠「Copied (not imported)」註解人肉同步的 keep-in-sync 接縫
-//! (本檔成立前 enrolments/waitlist/leave 三處各持一份拷貝)。因此三個
-//! 決策端(enrol、waitlist join、makeup)一律呼叫本模組;
-//! `courses::repository`/`sessions::repository` 顯示用的 `enrolled_count`
-//! 子查詢是刻意保留的 inline 拷貝(函式化 = N+1 查詢;共用 const 需
-//! `format!` 組裝、犧牲字串 SQL 的可 grep 性),見各該檔案的註解。
+//! 鎖協定、實體座位公式(契約 §3.20)是本模組持有的兩個面向;COUNT 謂詞
+//! (原 `enrolments.status = 'active'`)這第三個面向已下沉為
+//! `active_enrolments` view(migration `20260711000001`)單一持有——拆散
+//! 到各模組的 repository 就會重造出靠「Copied (not imported)」註解人肉
+//! 同步的 keep-in-sync 接縫(本檔成立前 enrolments/waitlist/leave 三處各
+//! 持一份拷貝)。因此三個決策端(enrol、waitlist join、makeup)一律呼叫
+//! 本模組取座位快照;`courses::repository`/`sessions::repository` 顯示用
+//! 的 `enrolled_count` 子查詢改讀該 view(見各該檔案的註解)——原本在
+//! 「函式化(= N+1 查詢)」與「共用 const(需 `format!` 組裝、犧牲字串
+//! SQL 的可 grep 性)」間取捨的裁決,view 換底後兩個反對理由皆不成立。
 //!
 //! 這是 repo 第一處 repository.rs 以外的 SQL——**刻意、有文件的例外**
 //! (先例:`orders/pricing.rs` 已是「模組第七檔」):seat 判斷的 SQL 與
@@ -60,7 +62,7 @@ pub async fn lock_course_seats_tx(
     };
 
     let active_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM enrolments WHERE course_id = $1 AND status = 'active'",
+        "SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1",
     )
     .bind(course_id)
     .fetch_one(&mut **tx)
@@ -90,7 +92,7 @@ pub async fn course_seats(
     };
 
     let active_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM enrolments WHERE course_id = $1 AND status = 'active'",
+        "SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1",
     )
     .bind(course_id)
     .fetch_one(db)
@@ -148,13 +150,13 @@ pub async fn session_seats_tx(
 ) -> Result<Option<SessionSeats>, sqlx::Error> {
     sqlx::query_as::<_, SessionSeats>(
         "SELECT c.max_students, \
-                (SELECT COUNT(*) FROM enrolments \
-                  WHERE course_id = c.id AND status = 'active') AS active_count, \
+                (SELECT COUNT(*) FROM active_enrolments \
+                  WHERE course_id = c.id) AS active_count, \
                 (SELECT COUNT(*) FROM leave_requests lr \
-                  JOIN enrolments e ON e.id = lr.enrolment_id AND e.status = 'active' \
+                  JOIN active_enrolments e ON e.id = lr.enrolment_id \
                   WHERE lr.session_id = $2 AND lr.status = 'approved'::leave_status) AS approved_leave_count, \
                 (SELECT COUNT(*) FROM leave_requests lr \
-                  JOIN enrolments e ON e.id = lr.enrolment_id AND e.status = 'active' \
+                  JOIN active_enrolments e ON e.id = lr.enrolment_id \
                   WHERE lr.makeup_session_id = $2) AS makeup_count \
          FROM courses c WHERE c.id = $1",
     )

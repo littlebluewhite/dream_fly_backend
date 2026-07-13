@@ -13,7 +13,7 @@ pub async fn exists_active_tx(
     course_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM enrolments WHERE user_id = $1 AND course_id = $2 AND status = 'active')",
+        "SELECT EXISTS(SELECT 1 FROM active_enrolments WHERE user_id = $1 AND course_id = $2)",
     )
     .bind(user_id)
     .bind(course_id)

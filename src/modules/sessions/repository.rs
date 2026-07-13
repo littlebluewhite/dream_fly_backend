@@ -227,11 +227,11 @@ pub async fn find_today_sessions_in(
         return Ok(Vec::new());
     }
 
-    // enrolled_count: display-only inline copy of the seat COUNT predicate — owner: `courses::seats` (see its module doc).
+    // enrolled_count:座位 COUNT 謂詞的顯示用 inline 拷貝——owner 是 `active_enrolments` view(migration `20260711000001`),非 `courses::seats`(見其模組 doc)。
     sqlx::query_as::<_, TodaySessionRow>(
         "SELECT cs.id, cs.course_id, c.name AS course_name, u.name AS coach_name, \
          cs.start_time, cs.end_time, \
-         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = cs.course_id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = cs.course_id) AS enrolled_count, \
          s.venue AS venue \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
@@ -261,12 +261,12 @@ pub async fn find_my_weekly_schedule(
     sqlx::query_as::<_, MyScheduleRow>(
         "SELECT c.id AS course_id, c.name AS course_name, u.name AS coach_name, \
          s.day_of_week, s.start_time, s.end_time, s.venue \
-         FROM enrolments e \
+         FROM active_enrolments e \
          JOIN courses c ON c.id = e.course_id \
          JOIN course_schedule_slots s ON s.course_id = c.id \
          LEFT JOIN coaches co ON co.id = c.coach_id \
          LEFT JOIN users u ON u.id = co.user_id \
-         WHERE e.user_id = $1 AND e.status = 'active' \
+         WHERE e.user_id = $1 \
          ORDER BY s.day_of_week, s.start_time",
     )
     .bind(user_id)

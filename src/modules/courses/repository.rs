@@ -1,11 +1,11 @@
-//! Course reads/writes. The `enrolled_count` correlated subquery repeated in
-//! every SELECT below is a **display-only inline copy** of the seat COUNT
-//! predicate (`enrolments.status = 'active'`), whose owner is
-//! `courses::seats` — change the predicate there first, then keep these
-//! copies in sync. The copies stay inline deliberately: routing display
-//! counts through `seats` would turn one-query lists into N+1, and a shared
-//! SQL const would need `format!` assembly, losing plain string SQL's
-//! grep-ability (deletion-test ruling; see `seats.rs`'s module doc).
+//! Course 讀寫。以下每個 SELECT 重複出現的 `enrolled_count` correlated
+//! subquery 是座位 COUNT 謂詞的**顯示用 inline 拷貝**;謂詞本身已下沉為
+//! `active_enrolments` view(migration `20260711000001`)單一持有——多處
+//! 拷貝共享同一份 view 定義,不再需要「先改 `courses::seats` 的謂詞、
+//! 再人肉同步這些拷貝」的慣例。拷貝仍刻意保留 inline(不函式化、不共用
+//! SQL const):函式化會把單查詢列表變成 N+1;共用 const 則需要 `format!`
+//! 組裝,犧牲字串 SQL 的可 grep 性(deletion-test 裁決;見 `seats.rs` 模組
+//! doc)。
 
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -21,7 +21,7 @@ pub async fn find_all_active(
         "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
          FROM courses c WHERE c.is_active = true ORDER BY c.name \
          LIMIT $1 OFFSET $2",
@@ -43,7 +43,7 @@ pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sql
         "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
          FROM courses c WHERE LOWER(c.slug) = LOWER($1)",
     )
@@ -57,7 +57,7 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::E
         "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
          FROM courses c WHERE c.id = $1",
     )
@@ -96,7 +96,7 @@ pub async fn create(
          RETURNING c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
     )
     .bind(name)
@@ -187,7 +187,7 @@ pub async fn update(
         " RETURNING c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
           c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
           c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-          (SELECT COUNT(*) FROM enrolments e WHERE e.course_id = c.id AND e.status = 'active') AS enrolled_count, \
+          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
           (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
     );
 

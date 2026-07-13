@@ -33,10 +33,10 @@ pub async fn find_roster(
     sqlx::query_as::<_, RosterRow>(
         "SELECT e.id AS enrolment_id, u.id AS user_id, u.name AS user_name, \
                 ar.status AS attendance_status \
-         FROM enrolments e \
+         FROM active_enrolments e \
          JOIN users u ON u.id = e.user_id \
          LEFT JOIN attendance_records ar ON ar.session_id = $2 AND ar.enrolment_id = e.id \
-         WHERE e.course_id = $1 AND e.status = 'active' \
+         WHERE e.course_id = $1 \
          ORDER BY u.name, e.id",
     )
     .bind(course_id)
@@ -55,8 +55,8 @@ pub async fn find_active_enrolment_ids_in(
     enrolment_ids: &[Uuid],
 ) -> Result<Vec<Uuid>, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM enrolments \
-         WHERE course_id = $1 AND status = 'active' AND id = ANY($2::uuid[])",
+        "SELECT id FROM active_enrolments \
+         WHERE course_id = $1 AND id = ANY($2::uuid[])",
     )
     .bind(course_id)
     .bind(enrolment_ids)
@@ -95,9 +95,10 @@ pub async fn upsert_attendance_tx(
 
 /// Distinct students across a coach's active courses' active enrolments,
 /// each with a `jsonb_agg`-aggregated `courses` list — one query for the
-/// whole roster, not one per student. `WHERE` clause is the same predicate
-/// as [`count_my_students`]'s, both owned by this module (see that
-/// function's doc for why).
+/// whole roster, not one per student. `WHERE` 子句中 enrolment-active 的
+/// 篩選已下沉為 `active_enrolments` view(migration `20260711000001`);
+/// 剩下的 `c.coach_id`/`c.is_active` 條件與 [`count_my_students`] 是同一份
+/// 謂詞,兩者一致性仍由本模組維護(原因見該函式 doc)。
 pub async fn find_my_students(
     db: &PgPool,
     coach_id: Uuid,
@@ -107,10 +108,10 @@ pub async fn find_my_students(
                 jsonb_agg(jsonb_build_object('course_id', c.id, 'course_name', c.name, \
                                              'enrolment_id', e.id) \
                           ORDER BY c.name) AS courses \
-         FROM enrolments e \
+         FROM active_enrolments e \
          JOIN courses c ON c.id = e.course_id \
          JOIN users u ON u.id = e.user_id \
-         WHERE c.coach_id = $1 AND c.is_active = true AND e.status = 'active' \
+         WHERE c.coach_id = $1 AND c.is_active = true \
          GROUP BY u.id, u.name, u.phone \
          ORDER BY u.name, u.id",
     )
@@ -122,13 +123,14 @@ pub async fn find_my_students(
 /// Distinct student count across a coach's active courses' active
 /// enrolments — the `COUNT` variant of [`find_my_students`]'s roster query,
 /// kept beside it so any future `WHERE` drift between the two is visible in
-/// one file instead of split across modules. This module owns the
-/// predicate; current caller: `reports::service::coach_report`.
+/// one file instead of split across modules. Enrolment-active 這段謂詞現由
+/// `active_enrolments` view 單一持有;`c.coach_id`/`c.is_active` 這段仍是
+/// 本模組所有;current caller: `reports::service::coach_report`.
 pub async fn count_my_students(db: &PgPool, coach_id: Uuid) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT e.user_id) FROM enrolments e \
+        "SELECT COUNT(DISTINCT e.user_id) FROM active_enrolments e \
          JOIN courses c ON c.id = e.course_id \
-         WHERE c.coach_id = $1 AND c.is_active = true AND e.status = 'active'",
+         WHERE c.coach_id = $1 AND c.is_active = true",
     )
     .bind(coach_id)
     .fetch_one(db)

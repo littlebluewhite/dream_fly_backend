@@ -67,7 +67,7 @@ pub async fn member_stats(
                   WHERE date_trunc('month', u.created_at AT TIME ZONE $2) \
                       = date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
                 ), \
-                (SELECT COUNT(DISTINCT user_id) FROM enrolments WHERE status = 'active') \
+                (SELECT COUNT(DISTINCT user_id) FROM active_enrolments) \
          FROM users u",
     )
     .bind(now)
@@ -95,6 +95,7 @@ pub async fn member_stats(
 ///   present/(present+absent),`leave` 不入分母;無資料月 → null (via
 ///   `service::safe_ratio`).
 pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiRow, sqlx::Error> {
+    // new_enrolments_this/_last 刻意不換底至 active_enrolments view——量的是「報名事件」(status <> 'cancelled' + created_at 分桶),非「目前占位」,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, KpiRow>(
         "WITH anchor AS ( \
            SELECT date_trunc('month', $1::timestamptz AT TIME ZONE $2) AS this_m \
@@ -272,8 +273,8 @@ pub async fn payment_split(
 pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminCourseRow>(
         "SELECT c.id AS course_id, c.name, \
-                (SELECT COUNT(*) FROM enrolments e \
-                  WHERE e.course_id = c.id AND e.status = 'active') AS enrolled, \
+                (SELECT COUNT(*) FROM active_enrolments e \
+                  WHERE e.course_id = c.id) AS enrolled, \
                 c.max_students, \
                 (SELECT COUNT(*) FROM waitlist_entries w \
                   WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
@@ -312,9 +313,9 @@ pub async fn coach_reports(
         "SELECT co.id AS coach_id, u.name, \
                 (SELECT COUNT(*) FROM courses c \
                   WHERE c.coach_id = co.id) AS course_count, \
-                (SELECT COUNT(DISTINCT e.user_id) FROM enrolments e \
+                (SELECT COUNT(DISTINCT e.user_id) FROM active_enrolments e \
                    JOIN courses c ON c.id = e.course_id \
-                  WHERE c.coach_id = co.id AND e.status = 'active') AS student_count, \
+                  WHERE c.coach_id = co.id) AS student_count, \
                 (SELECT COALESCE(SUM(oi.unit_price_cents * oi.quantity), 0) \
                    FROM order_items oi \
                    JOIN orders o ON o.id = oi.order_id \
@@ -533,6 +534,7 @@ pub async fn funnel(
     now: DateTime<Utc>,
     tz_name: &str,
 ) -> Result<FunnelRow, sqlx::Error> {
+    // new_enrolments 刻意不換底至 active_enrolments view——同 kpis 的「報名事件」口徑,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, FunnelRow>(
         "SELECT \
            (SELECT COUNT(*) FROM contact_inquiries ci \
@@ -722,7 +724,7 @@ pub async fn my_active_enrolment_course_ids(
     user_id: Uuid,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT course_id FROM enrolments WHERE user_id = $1 AND status = 'active'",
+        "SELECT course_id FROM active_enrolments WHERE user_id = $1",
     )
     .bind(user_id)
     .fetch_all(db)
@@ -776,6 +778,11 @@ pub async fn upcoming_session_count(
 /// one by the order status machine, but this keeps decoding into a non-
 /// `Option<DateTime<Utc>>` `occurred_at` column provably safe at the SQL
 /// level too, not just by app-level invariant.
+///
+/// `enrolment` 分支(`FROM enrolments e`)刻意無 `status` 過濾——活動流是
+/// 報名「事件」視角(含已取消,cancelled 一樣算作發生過的報名動作),與
+/// `kpis`/`funnel` 的 `new_enrolments` 同族,都刻意不換底至
+/// `active_enrolments` view;不是「目前占位」的占用面視角。
 ///
 /// The contact-inquiry branch's `detail` falls back to `name` when
 /// `subject` is empty (`COALESCE(NULLIF(subject, ''), name)`) per the task

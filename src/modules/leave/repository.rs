@@ -46,17 +46,17 @@ pub async fn find_session_context_tx(
 /// The caller's active enrolment id for a course, if any — used by
 /// `POST /leave-requests` to resolve `session_id` → "my enrolment" without
 /// a capacity lock (creating a leave request doesn't touch course capacity).
-/// Queries `enrolments` directly rather than going through
-/// `enrolments::repository` (no plain, non-transactional "by user+course"
-/// lookup exists there) — mirrors `sessions::repository::find_all_course_ids`'s
-/// convention of reading a sibling module's table directly for a one-off need.
+/// 直接讀 `active_enrolments`(view,見 migration `20260711000001`),不經
+/// `enrolments::repository`(該處沒有現成的、非交易式「by user+course」
+/// 查找)——沿用 `sessions::repository::find_all_course_ids` 直接讀取
+/// sibling module 資料表/view 應付一次性需求的慣例。
 pub async fn find_active_enrolment(
     db: &PgPool,
     user_id: Uuid,
     course_id: Uuid,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM enrolments WHERE user_id = $1 AND course_id = $2 AND status = 'active'",
+        "SELECT id FROM active_enrolments WHERE user_id = $1 AND course_id = $2",
     )
     .bind(user_id)
     .bind(course_id)
