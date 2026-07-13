@@ -29,9 +29,10 @@ use dream_fly_backend::modules::reports::service;
 
 use common::fixtures::{
     SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
-    seed_course_schedule_slot, seed_course_schedule_slot_with_venue, seed_course_session,
-    seed_course_with_capacity, seed_enrolment, seed_entitlement_product, seed_message,
-    seed_order_bare, seed_order_with_items, seed_waitlist_entry, set_birth_date, set_points_balance,
+    seed_course_revenue, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
+    seed_course_session, seed_course_with_capacity, seed_enrolment, seed_entitlement_product,
+    seed_member_created_at, seed_message, seed_order_bare, seed_order_with_items,
+    seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on, test_server_config};
 
@@ -332,15 +333,12 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
     let three_months_ago = months_ago(now, 3);
 
     // Helper users whose creation must not pollute the new-member KPI.
-    let student = seed_member(&db, "kpi-student@example.com", "Password!234").await;
-    let buyer = seed_member(&db, "kpi-buyer@example.com", "Password!234").await;
-    backdate_user(&db, student, three_months_ago).await;
-    backdate_user(&db, buyer, three_months_ago).await;
+    let student = seed_member_created_at(&db, "kpi-student@example.com", three_months_ago).await;
+    let buyer = seed_member_created_at(&db, "kpi-buyer@example.com", three_months_ago).await;
 
     // new_members: 1 this month, 1 last month.
     let _member_this = seed_member(&db, "kpi-new-this@example.com", "Password!234").await;
-    let member_last = seed_member(&db, "kpi-new-last@example.com", "Password!234").await;
-    backdate_user(&db, member_last, last_month).await;
+    let _member_last = seed_member_created_at(&db, "kpi-new-last@example.com", last_month).await;
 
     // new_enrolments: 1 this month, 1 last month; a cancelled one this
     // month must not count.
@@ -491,24 +489,20 @@ async fn admin_report_venue_rental_counts_only_confirmed_completed(db: PgPool) {
     let this_month_date = months_ago(now, 0).date_naive();
     let last_month_date = months_ago(now, 1).date_naive();
 
-    // One user per booking — `uq_bookings_user_slot_active` forbids one
-    // user holding two non-cancelled bookings on the same slot.
-    let u1 = seed_member(&db, "venue-1@example.com", "Password!234").await;
-    let u2 = seed_member(&db, "venue-2@example.com", "Password!234").await;
-    let u3 = seed_member(&db, "venue-3@example.com", "Password!234").await;
-    let u4 = seed_member(&db, "venue-4@example.com", "Password!234").await;
-    let u5 = seed_member(&db, "venue-5@example.com", "Password!234").await;
-
-    let slot_this = seed_time_slot_on(&db, 10, this_month_date).await;
-    let slot_last = seed_time_slot_on(&db, 10, last_month_date).await;
-
-    seed_booking(&db, u1, slot_this, "confirmed", 5_000).await;
-    seed_booking(&db, u2, slot_this, "completed", 3_000).await;
-    seed_booking(&db, u3, slot_this, "cancelled", 99_999).await;
-    seed_booking(&db, u4, slot_this, "no_show", 99_999).await;
-    seed_booking(&db, u5, slot_this, "pending", 99_999).await;
+    seed_venue_rentals(
+        &db,
+        this_month_date,
+        &[
+            ("confirmed", 5_000),
+            ("completed", 3_000),
+            ("cancelled", 99_999),
+            ("no_show", 99_999),
+            ("pending", 99_999),
+        ],
+    )
+    .await;
     // Booked *now*, but the slot's use date is last month — 歸屬 slot 使用日.
-    seed_booking(&db, u1, slot_last, "confirmed", 7_000).await;
+    seed_venue_rentals(&db, last_month_date, &[("confirmed", 7_000)]).await;
 
     let report = service::admin_report(&db, &test_server_config())
         .await
@@ -636,44 +630,12 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
     )
     .await;
     // Oldest in-window month (11 months back) still counts for coach B…
-    seed_order_with_items(
-        &db,
-        buyer,
-        "paid",
-        None,
-        Some(months_ago(now, 11)),
-        &[SeedOrderLine::Course { course_id: course_b, unit_price_cents: 30_000 }],
-    )
-    .await;
+    seed_course_revenue(&db, buyer, course_b, 30_000, "paid", Some(months_ago(now, 11))).await;
     // …but 12 months back is outside the window, and refunded never counts.
-    seed_order_with_items(
-        &db,
-        buyer,
-        "paid",
-        None,
-        Some(months_ago(now, 12)),
-        &[SeedOrderLine::Course { course_id: course_a, unit_price_cents: 99_999 }],
-    )
-    .await;
-    seed_order_with_items(
-        &db,
-        buyer,
-        "refunded",
-        None,
-        Some(now),
-        &[SeedOrderLine::Course { course_id: course_a, unit_price_cents: 88_888 }],
-    )
-    .await;
+    seed_course_revenue(&db, buyer, course_a, 99_999, "paid", Some(months_ago(now, 12))).await;
+    seed_course_revenue(&db, buyer, course_a, 88_888, "refunded", Some(now)).await;
     // A coachless course's line is attributed to nobody (and must not 500).
-    seed_order_with_items(
-        &db,
-        buyer,
-        "paid",
-        None,
-        Some(now),
-        &[SeedOrderLine::Course { course_id: course_orphan, unit_price_cents: 7_777 }],
-    )
-    .await;
+    seed_course_revenue(&db, buyer, course_orphan, 7_777, "paid", Some(now)).await;
 
     let report = service::admin_report(&db, &test_server_config())
         .await

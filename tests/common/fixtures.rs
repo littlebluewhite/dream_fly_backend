@@ -11,6 +11,8 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::{seed_member, seed_time_slot_on};
+
 /// Insert a coach profile linked to the given user. Returns the coach id.
 pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
     let id = Uuid::now_v7();
@@ -856,4 +858,90 @@ pub fn slugify(s: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string()
+}
+
+// ── 場景組合層(composite builders)──
+//
+// 以下 builders 不直接碰 SQL,只是把上面/父模組既有的 leaf builders 按常見
+// 場景組裝成單一呼叫,收斂報表測試裡重複出現的多段式 inline arrange 序列。
+
+/// `seed_member` + `backdate_user` 的組合,取代「建會員、再另呼叫
+/// `backdate_user` 回填 created_at」的兩段式 inline 序列(報表 KPI 測試常
+/// 需要把輔助帳號的建立時間排除在「本月新會員」統計之外)。密碼沿用測試
+/// 共用密碼。Returns the user id.
+pub async fn seed_member_created_at(db: &PgPool, email: &str, created_at: DateTime<Utc>) -> Uuid {
+    let id = seed_member(db, email, "Password!234").await;
+    backdate_user(db, id, created_at).await;
+    id
+}
+
+/// [`seed_marked_attendance`] 回傳的新建 member/enrolment/session/
+/// attendance 四個 id。
+pub struct AttendanceScene {
+    pub member: Uuid,
+    pub enrolment: Uuid,
+    pub session: Uuid,
+    pub attendance: Uuid,
+}
+
+/// 「某課程在某日某時段有一筆已點名出勤」:`seed_member`(自動編號 email)
+/// + `seed_enrolment`(active, now)+ `seed_course_session`(`start_time` 起
+/// 一小時)+ `seed_attendance`(status, marked_by=member),取代四段式 inline
+/// 序列。`start_time` 顯式入參:`course_sessions` 有 UNIQUE(course_id,
+/// session_date, start_time),固定時間會讓同課同日的第二筆場景直接撞鍵,
+/// 呼叫端需自行錯開。Returns the new scene.
+pub async fn seed_marked_attendance(
+    db: &PgPool,
+    course_id: Uuid,
+    session_date: NaiveDate,
+    start_time: NaiveTime,
+    status: &str,
+) -> AttendanceScene {
+    let email = format!("attendance-{}@example.com", Uuid::now_v7());
+    let member = seed_member(db, &email, "Password!234").await;
+    let enrolment = seed_enrolment(db, member, course_id, "active", Utc::now()).await;
+    let end_time = start_time + Duration::hours(1);
+    let session = seed_course_session(db, course_id, session_date, start_time, end_time).await;
+    let attendance = seed_attendance(db, session, enrolment, status, member).await;
+    AttendanceScene { member, enrolment, session, attendance }
+}
+
+/// 一行式課程營收:`seed_order_with_items` 包一層,只塞一筆
+/// `SeedOrderLine::Course`,消掉呼叫端重複的樣板。Returns the order id.
+pub async fn seed_course_revenue(
+    db: &PgPool,
+    buyer: Uuid,
+    course_id: Uuid,
+    unit_price_cents: i64,
+    status: &str,
+    paid_at: Option<DateTime<Utc>>,
+) -> Uuid {
+    seed_order_with_items(
+        db,
+        buyer,
+        status,
+        None,
+        paid_at,
+        &[SeedOrderLine::Course { course_id, unit_price_cents }],
+    )
+    .await
+}
+
+/// 「某日一個時段被多筆不同狀態的預訂占用」:`seed_time_slot_on` 建一個
+/// slot,`rentals` 每筆 (status, price_cents) 各自造一個新 member 再
+/// `seed_booking`,取代「一個 slot + 逐筆各自 seed_member/seed_booking」的
+/// inline 序列。Returns the new booking ids, in `rentals` order.
+pub async fn seed_venue_rentals(
+    db: &PgPool,
+    slot_date: NaiveDate,
+    rentals: &[(&str, i64)],
+) -> Vec<Uuid> {
+    let slot_id = seed_time_slot_on(db, rentals.len() as i32, slot_date).await;
+    let mut booking_ids = Vec::with_capacity(rentals.len());
+    for &(status, price_cents) in rentals {
+        let email = format!("venue-rental-{}@example.com", Uuid::now_v7());
+        let member = seed_member(db, &email, "Password!234").await;
+        booking_ids.push(seed_booking(db, member, slot_id, status, price_cents).await);
+    }
+    booking_ids
 }
