@@ -673,6 +673,10 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 
 ### 3.13 Waitlist（候補）
 
+候補為純登記名單：名額釋出（取消報名）**不會**觸發自動遞補或通知，遞補由 admin 依
+`GET /waitlist?course_id=`（舊到新）名單人工聯絡——名單項目目前不含會員聯絡欄位，身分對照需另行處理；遞
+補成功後的候補列由 admin 或會員手動取消。（ADR-0006）
+
 #### `POST /waitlist` — 需登入
 Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_id, course_name, status: "waiting"|"cancelled", created_at }`。
 
