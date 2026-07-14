@@ -112,6 +112,8 @@ pub async fn create_slots(
 
     // `bulk_create` already wraps the UNNEST insert in its own transaction,
     // so a mid-batch failure leaves no half-materialised schedule behind.
-    let slots = repository::bulk_create(db, &parsed_slots).await?;
+    let slots = repository::bulk_create(db, &parsed_slots)
+        .await
+        .map_err(|e| AppError::conflict_on_exclusion(e, "場地時段與既有時段重疊"))?;
     Ok(slots.into_iter().map(TimeSlotResponse::from).collect())
 }

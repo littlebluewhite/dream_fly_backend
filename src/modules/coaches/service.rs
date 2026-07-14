@@ -192,7 +192,9 @@ pub async fn update_schedules(
 ) -> Result<Vec<CoachScheduleResponse>, AppError> {
     require_own_coach_profile(db, auth, coach_id).await?;
 
-    let schedules = repository::replace_schedules(db, coach_id, entries).await?;
+    let schedules = repository::replace_schedules(db, coach_id, entries)
+        .await
+        .map_err(|e| AppError::conflict_on_exclusion(e, "教練班表時段重疊"))?;
     Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())
 }
 

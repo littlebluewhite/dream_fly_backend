@@ -283,6 +283,43 @@ async fn update_schedule_by_admin_on_other_coach_succeeds(db: PgPool) {
     assert_eq!(body.as_array().unwrap().len(), 1);
 }
 
+/// Phase 1 (EXCLUDE → 409): `replace_schedules` DELETEs the coach's existing
+/// rows before INSERTing the new ones (coaches/repository.rs), so seeding a
+/// pre-existing row and PUTting one overlapping entry would incorrectly
+/// succeed — the old row is already gone by the time the new one is
+/// inserted. The overlap has to be between two entries within the same
+/// request body: same `day_of_week`, overlapping time ranges, violating
+/// `coach_schedules_no_overlap` (SQLSTATE 23P01). Before the
+/// `IntoResponse`/`conflict_on_exclusion` fix this surfaced as a bare 500.
+#[sqlx::test]
+async fn update_schedule_with_overlapping_entries_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let owner = app.register_member("owner-overlap@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, owner.user_id, "Overlap Coach").await;
+
+    let resp = app
+        .put(&format!("/api/v1/coaches/{coach_id}/schedule"))
+        .authorization_bearer(&owner.access_token)
+        .json(&json!({
+            "schedules": [
+                {
+                    "day_of_week": 1,
+                    "start_time": "09:00:00",
+                    "end_time": "12:00:00",
+                    "is_available": true
+                },
+                {
+                    "day_of_week": 1,
+                    "start_time": "11:00:00",
+                    "end_time": "13:00:00",
+                    "is_available": true
+                }
+            ]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+}
+
 #[sqlx::test]
 async fn clock_in_on_nonexistent_coach_returns_404(db: PgPool) {
     // Valid token + random coach id — require_own_coach_profile's first step is

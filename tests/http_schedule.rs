@@ -3,7 +3,7 @@
 mod common;
 
 use chrono::{Datelike, Duration, Utc};
-use common::fixtures::seed_time_slot_full;
+use common::fixtures::{seed_time_slot_full, seed_venue};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -122,5 +122,34 @@ async fn create_slots_as_admin_with_price_cents_persists_it(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert_eq!(body[0]["price_cents"], 50000);
+}
+
+/// Phase 1 (EXCLUDE → 409): a new slot on the same venue, same date, with a
+/// time range overlapping an already-existing slot violates
+/// `time_slots_venue_no_overlap` (SQLSTATE 23P01). Before the
+/// `IntoResponse`/`conflict_on_exclusion` fix this surfaced as a bare 500.
+#[sqlx::test]
+async fn create_slots_overlapping_existing_venue_slot_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let venue_id = seed_venue(&app.db, "Overlap Venue", None).await;
+    // `seed_time_slot_full` always seeds today + 2 days, 10:00-11:00.
+    seed_time_slot_full(&app.db, None, Some(venue_id), 10).await;
+    let date = (Utc::now() + Duration::days(2)).date_naive();
+
+    let resp = app
+        .post("/api/v1/schedule/slots")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "slots": [{
+                "date": date.to_string(),
+                "start_time": "10:30",
+                "end_time": "11:30",
+                "venue_id": venue_id,
+                "capacity": 10,
+            }]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
 }
 

@@ -399,6 +399,7 @@ Service 內同一交易完成兩件事：新增 coaches 列 + 指派該 user `co
 
 #### `PUT /coaches/{id}/schedule` — 需登入
 Body：`{ schedules: [{ day_of_week, start_time, end_time, is_available }] }`。整批覆蓋該教練的排班。回應：更新後的 `CoachScheduleResponse[]`。
+錯誤：409（教練班表時段重疊）。
 
 #### `POST /coaches/{id}/clock-in` / `POST /coaches/{id}/clock-out` — 需登入
 Body（clock-in）：`{ note? }`（≤500 字）。回應（`ClockRecordResponse`）：`{ id, clock_in, clock_out, note, created_at }`。clock-out 無 body。同一教練同時只能有一筆未結束的打卡（DB 唯一索引保證）。
@@ -437,6 +438,7 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, descri
 
 #### `POST /schedule/slots` — 需登入
 Body：`{ slots: [{ date, start_time, end_time, venue_id?, course_id?, capacity, price_cents? }] }`。`price_cents` 選填，省略預設 `0`（§1.5）。回應：建立後的時段列表（`TimeSlotResponse[]`）。
+錯誤：409（場地時段與既有時段重疊）。
 
 #### Bookings（場租預約）— `price_cents` 快照語意
 

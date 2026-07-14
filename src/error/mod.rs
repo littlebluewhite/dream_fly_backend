@@ -49,6 +49,12 @@ pub enum AppError {
 /// service having to hand-translate them.
 const PG_UNIQUE_VIOLATION: &str = "23505";
 
+/// PostgreSQL SQLSTATE for `exclusion_violation` (an `EXCLUDE USING gist`
+/// constraint rejecting an overlapping row, e.g. double-booked time ranges).
+/// Centralized here so the `Database` arm can auto-map it the same way it
+/// does `PG_UNIQUE_VIOLATION`.
+const PG_EXCLUSION_VIOLATION: &str = "23P01";
+
 /// The violated constraint's name, if `e` is a `Database` error and the
 /// driver reports one. Any other `sqlx::Error` variant → `None`.
 pub fn constraint_name(e: &sqlx::Error) -> Option<&str> {
@@ -66,6 +72,22 @@ impl AppError {
     pub fn conflict_on_unique(e: sqlx::Error, msg: impl Into<String>) -> Self {
         if let Some(db_err) = e.as_database_error() {
             if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
+                return AppError::Conflict(msg.into());
+            }
+        }
+        AppError::Database(e)
+    }
+
+    /// Translates an exclusion-constraint violation into a `Conflict(msg)`.
+    /// `e` is SQLSTATE 23P01 (`exclusion_violation`) → `Conflict(msg)`;
+    /// anything else → `Database(e)` (500, same as an unhandled error).
+    ///
+    /// Same safety invariant as `IntoResponse`'s fallback below: `msg` is
+    /// caller-supplied and is the only thing that reaches the HTTP body —
+    /// no constraint name or bound value is ever surfaced.
+    pub fn conflict_on_exclusion(e: sqlx::Error, msg: impl Into<String>) -> Self {
+        if let Some(db_err) = e.as_database_error() {
+            if db_err.code().as_deref() == Some(PG_EXCLUSION_VIOLATION) {
                 return AppError::Conflict(msg.into());
             }
         }
@@ -110,6 +132,18 @@ impl IntoResponse for AppError {
                         return (
                             StatusCode::CONFLICT,
                             Json(json!({ "error": "resource already exists" })),
+                        )
+                            .into_response();
+                    }
+                    // Same rationale as the unique-violation branch above,
+                    // but for an `EXCLUDE USING gist` constraint (e.g.
+                    // overlapping time ranges) — any future EXCLUDE
+                    // constraint automatically gets a 409 instead of a 500.
+                    if db_err.code().as_deref() == Some(PG_EXCLUSION_VIOLATION) {
+                        tracing::warn!(sqlstate = PG_EXCLUSION_VIOLATION, "exclusion violation");
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(json!({ "error": "resource overlaps with an existing one" })),
                         )
                             .into_response();
                     }
