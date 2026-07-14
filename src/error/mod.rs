@@ -196,6 +196,12 @@ mod tests {
     }
 
     #[test]
+    fn conflict_on_exclusion_falls_back_to_database_for_non_database_error() {
+        let err = AppError::conflict_on_exclusion(sqlx::Error::RowNotFound, "conflict");
+        assert!(matches!(err, AppError::Database(sqlx::Error::RowNotFound)));
+    }
+
+    #[test]
     fn conflict_on_constraint_falls_back_to_database_for_non_database_error() {
         let err =
             AppError::conflict_on_constraint(sqlx::Error::RowNotFound, "some_key", "conflict");

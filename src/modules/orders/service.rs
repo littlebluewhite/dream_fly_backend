@@ -168,7 +168,7 @@ pub async fn checkout(
     //    studio-LOCAL calendar day (`studio_clock::today` on the handler's
     //    sampled `now`), not the UTC day — a Taipei-evening checkout (UTC
     //    16:00–24:00) stamps tomorrow's local date, per contract §3.18 裁決 2
-    //    wall-clock semantics. UUID-v7 suffix (base36-encoded last 32 bits)
+    //    wall-clock semantics. UUID-v7 suffix (hex-encoded last 32 bits)
     //    gives us an unambiguous, monotonic, unguessable unique component —
     //    no birthday collisions and no modulo bias.
     let order_number = {
@@ -220,8 +220,9 @@ pub async fn checkout(
     //      checkouts sharing two courses can't lock them in opposite orders
     //      and deadlock — the same discipline
     //      `products::service::reserve_stock_tx` applies to product lines in
-    //      step 6, course lines' batch deep function at last, so this body no
-    //      longer sorts them itself). A full course or a duplicate active
+    //      step 6 — course lines get a batch deep function of their own at
+    //      last, so this body no longer sorts them itself). A full course or
+    //      a duplicate active
     //      enrolment rolls back the *entire* checkout (order, order_items,
     //      stock decrement — all of it), which is correct: partially
     //      fulfilling a cart is not an acceptable outcome.

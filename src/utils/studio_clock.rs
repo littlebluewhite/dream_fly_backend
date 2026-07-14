@@ -162,8 +162,9 @@ pub fn has_ended(tz: Tz, now: DateTime<Utc>, date: NaiveDate, time: NaiveTime) -
 /// that `reports::service::studio_month_bounds` and
 /// `schedule::repository::find_by_month` used to hand-roll themselves.
 /// `None` on an invalid `month` (must be `1..=12`) or when the December
-/// rollover's `year + 1` would overflow — handled via `checked_add` so a
-/// caller passing `i32::MAX` can't panic.
+/// rollover's `year + 1` would overflow — `from_ymd_opt`'s year-range
+/// check rejects the year first, so `i32::MAX` still can't panic;
+/// `checked_add` here is defensive redundancy, not the actual guard.
 pub fn month_bounds(year: i32, month: u32) -> Option<(NaiveDate, NaiveDate)> {
     let first_day = NaiveDate::from_ymd_opt(year, month, 1)?;
     let next_month_first = if month == 12 {
@@ -609,8 +610,10 @@ mod tests {
 
     #[test]
     fn month_bounds_none_on_i32_max_year_does_not_panic() {
-        // December rollover computes `year + 1`; at `i32::MAX` that would
-        // overflow a bare `+`. `checked_add` must yield `None`, not panic.
+        // `from_ymd_opt`'s year-range check rejects `i32::MAX` before the
+        // December rollover's `year + 1` is ever reached; `checked_add`
+        // guarding that arithmetic is defensive redundancy here, not what
+        // actually stops the panic.
         assert_eq!(month_bounds(i32::MAX, 12), None);
     }
 
