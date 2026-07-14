@@ -4,6 +4,7 @@ use rdkafka::producer::FutureProducer;
 use sqlx::PgPool;
 
 use crate::config::AppConfig;
+use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
 use crate::utils::sms::SmsSender;
 
@@ -22,4 +23,8 @@ pub struct AppState {
     /// Shared outbound SMS sender. Held as a trait object so integration
     /// tests can substitute an in-memory recorder without touching Twilio.
     pub sms_client: Arc<dyn SmsSender>,
+    /// Source of "now" for handler-sampled wall-clock decisions. Held as a
+    /// trait object so integration tests can pin or advance it via
+    /// `MockClock` instead of racing the real system clock.
+    pub clock: Arc<dyn Clock>,
 }

@@ -67,3 +67,7 @@ _Avoid_: 現役報名、未取消報名
 **候補(Waitlist)**:
 `waitlist_entries` 表——課程滿班時的**諮詢名單(advisory list)**,依加入序呈現(`GET /waitlist?course_id=`,admin only,舊到新,見 `waitlist::service::list_for_course`)。名額釋出(取消報名)不觸發任何自動遞補或通知;遞補一律由 admin 依名單順序人工聯絡,由候補者自行完成結帳——報名唯一入口是結帳(ADR-0002),系統不存在「保留座位給候補第一名」的模型(見 ADR-0006)。repo 現行「queue order」用語(同一支 doc comment)指的是這份名單的**列序**,與本詞條「不自動化」的定案並不衝突——列序本身仍有意義(人工聯絡依序進行),只是不會被系統自動出隊消費。
 _Avoid_: 遞補佇列(「佇列」暗示自動出隊消費,與人工遞補定案相悖;僅避自動化暗示,不避「依序」語意本身)、waiting list promotion(`Promotion` 在本系統另指 `notifications`/`posts` 的行銷促銷分類,語意不同)
+
+**時鐘 seam(Clock Seam)**:
+`utils::clock`——handler 在請求開始經 `state.clock.now()` 取樣一次,以 `now: DateTime<Utc>` 參數往下傳入 service;service 內部不再自行呼叫 `Utc::now()`。`utils::studio_clock` 的純函式(`today`/`has_started`/…)本身不變,一樣收 `now` 參數——這層只是把「由誰取樣」從 service 上移到 handler 一層。
+_Avoid_: 把 `studio_clock` 也算進這層 seam(它的函式簽章未變,只是呼叫端現在傳的是 handler 取樣值)

@@ -13,6 +13,7 @@ use dream_fly_backend::config::AppConfig;
 use dream_fly_backend::kafka;
 use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
+use dream_fly_backend::utils::clock::{Clock, SystemClock};
 use dream_fly_backend::utils::email::{EmailClient, EmailSender};
 use dream_fly_backend::utils::sms::{SmsClient, SmsSender};
 
@@ -246,6 +247,10 @@ async fn main() -> anyhow::Result<()> {
     let sms_client: Arc<dyn SmsSender> =
         Arc::new(SmsClient::new(&config.sms, http_client.clone()));
 
+    // Wall-clock source for handler-sampled `now` — production always reads
+    // the real system clock; tests substitute `MockClock`.
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+
     // Wrap the config in Arc once — AppState::clone is per-request.
     let config_arc = Arc::new(config);
 
@@ -258,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
         http_client,
         email_client,
         sms_client,
+        clock,
     };
 
     // Background task: periodically delete expired/revoked refresh tokens

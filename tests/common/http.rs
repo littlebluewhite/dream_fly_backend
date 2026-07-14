@@ -38,11 +38,12 @@ use dream_fly_backend::config::{
 };
 use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
+use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::sms::SmsSender;
 
-use super::mocks::{MockEmailClient, MockSmsClient};
+use super::mocks::{MockClock, MockEmailClient, MockSmsClient};
 
 /// Client IP counter so every `TestApp` gets a unique synthetic source IP.
 /// Combined with `trust_proxy=true`, this gives each test its own rate-limit
@@ -125,6 +126,7 @@ pub struct TestApp {
     pub config: Arc<AppConfig>,
     pub email: Arc<MockEmailClient>,
     pub sms: Arc<MockSmsClient>,
+    pub clock: Arc<MockClock>,
     /// Synthetic source IP used as `X-Forwarded-For` on every request.
     pub client_ip: IpAddr,
 }
@@ -304,6 +306,8 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     let sms = Arc::new(MockSmsClient::new());
     let email_state: Arc<dyn EmailSender> = email.clone();
     let sms_state: Arc<dyn SmsSender> = sms.clone();
+    let clock = Arc::new(MockClock::new());
+    let clock_state: Arc<dyn Clock> = clock.clone();
 
     let http_client = reqwest::Client::new();
 
@@ -316,6 +320,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         http_client,
         email_client: email_state,
         sms_client: sms_state,
+        clock: clock_state,
     };
 
     let router = startup::build_router(state);
@@ -333,6 +338,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         config: config_arc,
         email,
         sms,
+        clock,
         client_ip,
     }
 }

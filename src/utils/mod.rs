@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod double_option;
 pub mod email;
 pub mod google_oauth;
