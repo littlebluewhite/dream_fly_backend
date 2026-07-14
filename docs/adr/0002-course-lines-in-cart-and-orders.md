@@ -28,3 +28,7 @@
 - 結帳交易變複雜：需要對商品行與課程行分別排序（依 `product_id`/`course_id`）才鎖表，避免兩個並發結帳因鎖定順序不同而死鎖（見 `orders::service::checkout` 內的排序註解）。
 - 前端購物車/結帳頁必須同時處理兩種 item_type 的顯示與互動（無法假設購物車只有商品），這是 Task 15（購物車 UUID 改版）與 Task 16（結帳接線）要處理的核心改動。
 - 課程報名失敗（額滿/重複報名）現在會讓**整筆訂單**（含其他商品行）一起回滾，而不是部分成功——這是刻意的設計（不允許「買了方案但課程報名失敗」的不一致狀態），前端需要把結帳的 409 錯誤處理成「請調整購物車內容再試」，而非局部重試。
+
+## Addendum（2026-07-14）：課程行排序 owner 遷至 enrolments::enrol_batch_from_purchase_tx
+
+Decision「課程行 → 呼叫 `enrolments_service::enrol_from_purchase_tx`」與 Consequences 第三條「結帳交易…需要對商品行與課程行分別排序（依 `product_id`/`course_id`）才鎖表…（見 `orders::service::checkout` 內的排序註解）」自此更新：checkout 不再自己內聯 `.filter(matches!)` 篩課程行、`.sort_by_key` 排序、逐行迴圈呼叫 `enrol_from_purchase_tx`。item_type 分派收進純函式 `orders::fulfilment::plan`（對 `CartItemType` 一處 exhaustive match），課程行的排序（`course_id` 序）連同其死鎖防護紀律遷入 `enrolments::service::enrol_batch_from_purchase_tx`——商品行早有的 `products::service::reserve_stock_tx` 對應物，課程行的批次深函式 owner，在拿寫鎖之前排序自己的副本。checkout 改為單次呼叫 `enrol_batch_from_purchase_tx`（內部複製、`sort()`、逐一委派仍 public 的 `enrol_from_purchase_tx`——座位鎖協定的文件化 owner）。此為函式體重接，wire format 與回滾語意不變。本檔其餘敘述維持決策當下狀態。

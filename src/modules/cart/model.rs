@@ -12,6 +12,34 @@ pub enum CartItemType {
 }
 
 impl CartItemType {
+    /// The SQL string literal for this variant. The Postgres `cart_item_type`
+    /// enum, the `item_type` columns, and this method must all agree on these
+    /// two spellings, and — outside `fulfilment::plan` — the type system
+    /// cannot enforce that: the spellings are hand-written into SQL at a
+    /// spread of sites.
+    ///
+    /// SQL-literal sites, by function (each hard-codes `'product'`/`'course'`):
+    /// - `cart::repository::add_product_item` — `'product'::cart_item_type` on insert
+    /// - `cart::repository::add_course_item` — `'course'::cart_item_type` on insert
+    /// - `cart::repository::find_cart_items_for_checkout_tx` — ×4: the
+    ///   `'product'`/`'course'` SELECT literal plus the `item_type = '…'`
+    ///   filter, once in each of the two (product, course) branch queries
+    /// - `orders::repository::create_order_items` — the `CASE WHEN
+    ///   u.product_id IS NOT NULL THEN 'product' ELSE 'course' END` derivation
+    /// - `reports::repository` income-source `CASE` — maps `oi.item_type =
+    ///   'course'` into the `course` revenue bucket
+    /// - `bin/seed.rs` order-line `CASE` — the same product/course derivation
+    ///   for the deterministic reporting dataset
+    ///
+    /// Adding a variant — the full checklist:
+    /// 1. `ALTER TYPE cart_item_type ADD VALUE '…'` migration.
+    /// 2. Re-sync the `cart_items` target + quantity CHECKs
+    ///    (`cart_items_one_target`, `cart_items_course_qty`; migration
+    ///    `20260704000001`, lines 34–49) — a new target column and its
+    ///    exclusivity/quantity rules.
+    /// 3. Every SQL-literal site listed above.
+    /// 4. `orders::fulfilment::plan`'s exhaustive `match` — the compiler forces
+    ///    this one (no `_` arm); it is the only site the type system catches.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Product => "product",

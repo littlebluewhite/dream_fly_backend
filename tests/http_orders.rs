@@ -2,7 +2,8 @@
 
 mod common;
 
-use common::http::{spawn_test_app, TestApp};
+use chrono::{Duration, TimeZone, Utc};
+use common::http::{spawn_test_app, spawn_test_app_with, TestApp};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -297,4 +298,114 @@ async fn admin_list_orders_as_admin_paginates_and_includes_user_info(db: PgPool)
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["name"], "Bundle");
     assert_eq!(items[0]["quantity"], 1);
+}
+
+// ---------------------------------------------------------------------
+// Clock seam: order-number datestamp is the studio-LOCAL day (Phase 6
+// Commit B — the fourth and last authorized user-visible behavior change).
+// ---------------------------------------------------------------------
+
+/// A checkout at a Taipei-evening instant (UTC 16:00–24:00), when Taipei
+/// (UTC+8) has already rolled into the next calendar day, stamps the order
+/// number with the studio-LOCAL day sampled from the injected clock — not
+/// the UTC day `Utc::now()` used to stamp. Studio timezone pinned to
+/// `Asia/Taipei` and "now" pinned via `MockClock`.
+#[sqlx::test]
+async fn checkout_order_number_uses_studio_local_day_not_utc(db: PgPool) {
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.server.studio_timezone = "Asia/Taipei".into();
+    })
+    .await;
+    // 2026-07-14 16:30:00Z = 2026-07-15 00:30 Taipei — the studio's calendar
+    // day is already the 15th while UTC is still the 14th (UTC day + 1).
+    app.clock
+        .set(Utc.with_ymd_and_hms(2026, 7, 14, 16, 30, 0).unwrap());
+
+    let user = app
+        .register_member("taipei-eve@example.com", "Password!234")
+        .await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let resp = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let order_number = body["order_number"].as_str().expect("order_number");
+
+    // "DF-YYYYMMDD........": the 8-digit date field is the Taipei day
+    // (20260715), not the UTC day (20260714).
+    assert_eq!(
+        &order_number[3..11],
+        "20260715",
+        "order_number={order_number}"
+    );
+}
+
+/// Cross-day idempotent replay: the datestamp is generated exactly once (at
+/// the first checkout) and never regenerated. Replaying the same
+/// Idempotency-Key a full studio day later returns the original order —
+/// original number, no new row — because the idempotency pre-check
+/// short-circuits before the order number is ever built. The contract's
+/// idempotency promise does not loosen once "now" is an injected parameter.
+#[sqlx::test]
+async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: PgPool) {
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.server.studio_timezone = "Asia/Taipei".into();
+    })
+    .await;
+    // Pin to a fixed Taipei-evening instant — studio day D = 2026-07-15.
+    app.clock
+        .set(Utc.with_ymd_and_hms(2026, 7, 14, 16, 30, 0).unwrap());
+
+    let user = app
+        .register_member("replay-day@example.com", "Password!234")
+        .await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let first: serde_json::Value = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .add_header("idempotency-key", "cross-day-key-1")
+        .await
+        .json();
+    let first_number = first["order_number"]
+        .as_str()
+        .expect("order_number")
+        .to_string();
+    assert_eq!(&first_number[3..11], "20260715", "first stamps studio day D");
+
+    // Advance a full day → studio day D+1 (2026-07-16).
+    app.clock.advance(Duration::days(1));
+
+    let second: serde_json::Value = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .add_header("idempotency-key", "cross-day-key-1")
+        .await
+        .json();
+
+    // Same order returned verbatim — the stamp was NOT regenerated to D+1.
+    assert_eq!(
+        second["order_number"].as_str().unwrap(),
+        first_number,
+        "replay must return the original order number"
+    );
+
+    // And the replay created no second order row.
+    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user.user_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(order_count, 1, "replay must not create a second order");
 }

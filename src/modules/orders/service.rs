@@ -1,7 +1,8 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::{PageMeta, PaginationParams};
@@ -18,6 +19,7 @@ use crate::modules::points::service as points_service;
 use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
 use crate::modules::subscriptions::service as subscriptions_service;
+use crate::utils::studio_clock;
 
 use super::dto::{
     AdminOrderListResponse, AdminOrderSummary, CheckoutRequest, OrderListResponse, OrderResponse,
@@ -34,15 +36,26 @@ use super::repository;
 ///
 /// Rule order: coupon load -> points-balance lock -> `pricing::price`
 /// (subtotal -> coupon clamp -> points cap -> total -> points earned; see
-/// that module for the arithmetic itself) -> stock decrement -> create
-/// order (paid) -> order_items -> artifacts (enrolments, subscriptions,
-/// points ledger) -> clear cart -> idempotency -> outbox + notify.
+/// that module for the arithmetic itself) -> `fulfilment::plan` (item_type
+/// split: product lines to reserve, course ids to enrol) -> stock decrement
+/// -> create order (paid) -> order_items -> artifacts (enrolments via
+/// `enrol_batch`, subscriptions, points ledger) -> clear cart -> idempotency
+/// -> outbox + notify.
+///
+/// The transactional cart/coupon reads and the enrolment/subscription DTO
+/// assembly go through their owning modules' service seams (ADR-0005), so
+/// this module holds no sibling repository imports. `server`/`now` are the
+/// handler-supplied studio timezone + sampled clock: the order number's date
+/// stamp is the studio-LOCAL calendar day (contract §3.18 裁決 2 wall-clock
+/// semantics), not the UTC day.
 pub async fn checkout(
     db: &PgPool,
     user_id: Uuid,
     idempotency_key: Option<String>,
     req: CheckoutRequest,
     correlation_id: Option<String>,
+    server: &ServerConfig,
+    now: DateTime<Utc>,
 ) -> Result<OrderResponse, AppError> {
     // 1. Idempotency pre-check (outside tx). If we've already processed this
     //    key for this user, return the prior order (artifacts included).
@@ -151,12 +164,20 @@ pub async fn checkout(
         .collect();
     let reserved = product_service::reserve_stock_tx(&mut tx, &reserve_lines).await?;
 
-    // 7. Generate an order number. UUID-v7 suffix (base36-encoded last 32
-    //    bits) gives us an unambiguous, monotonic, unguessable unique
-    //    component — no birthday collisions and no modulo bias.
+    // 7. Generate an order number. The `DF-YYYYMMDD` date prefix is the
+    //    studio-LOCAL calendar day (`studio_clock::today` on the handler's
+    //    sampled `now`), not the UTC day — a Taipei-evening checkout (UTC
+    //    16:00–24:00) stamps tomorrow's local date, per contract §3.18 裁決 2
+    //    wall-clock semantics. UUID-v7 suffix (base36-encoded last 32 bits)
+    //    gives us an unambiguous, monotonic, unguessable unique component —
+    //    no birthday collisions and no modulo bias.
     let order_number = {
         let suffix = Uuid::now_v7().as_u128() as u32;
-        format!("DF-{}{:08X}", Utc::now().format("%Y%m%d"), suffix)
+        format!(
+            "DF-{}{:08X}",
+            studio_clock::today(studio_clock::studio_tz(server), now).format("%Y%m%d"),
+            suffix
+        )
     };
 
     // 8. Create the order row FIRST, already `paid` — order_id is needed

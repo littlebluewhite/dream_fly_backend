@@ -21,6 +21,10 @@ _Avoid_: notification, message
 **訂單定價(Order Pricing)**:
 `orders::pricing::price → PricingOutcome`,純函式,交易編排留 checkout。
 
+**行計畫(Line Fulfilment)**:
+`orders::fulfilment::plan → FulfilmentPlan`,純函式(pricing 的姊妹),對 `CartItemType` 一處 exhaustive match(無 `_` arm——新變體 = 此處編譯錯誤)把結帳購物車切成商品行(`ProductFulfilment`:reserve 庫存 + grant 訂閱)與課程 id(enrol),取代 checkout 原本兩次互斥 `.filter(matches!)`。**排序不在此**:寫入保留序(write-reservation order;type-major、id-minor)由拿寫鎖的 owner 各自負責——商品 `products::service::reserve_stock_tx`、課程 `enrolments::service::enrol_batch_from_purchase_tx`——plan() 只保留輸入序,不排序(一個 invariant 兩個 owner 比沒有 owner 更糟)。
+_Avoid_: 分派/dispatch(那是動作,這裡指切出來的計畫結構)、鎖序/排序(不在此純函式,歸拿寫鎖的深函式)
+
 **營收狀態集(Revenue Statuses)**:
 `orders::model::REVENUE_STATUSES`;products 的「paid-class」售出計數(`find_sold_counts`)直接消費同一常數,不再是另一份攣生清單。
 
