@@ -300,11 +300,11 @@ pub async fn book_makeup(
     // Serialize concurrent makeups into the same target session across
     // *different* leave requests before counting seats — the leave-request
     // row lock above only defends re-booking of the same request.
-    seats::lock_session_tx(&mut tx, req.session_id)
+    let lock = seats::lock_session_tx(&mut tx, req.session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
 
-    let session_seats = seats::session_seats_tx(&mut tx, target.course_id, req.session_id)
+    let session_seats = seats::session_seats_tx(&mut tx, &lock)
         .await?
         .ok_or_else(|| AppError::NotFound("課程不存在".into()))?;
 

@@ -20,8 +20,10 @@
 //! - `&PgPool`、無前綴(`course_seats`)= 無鎖快照,stale 可接受;
 //! - `&mut Transaction` + `lock_` 前綴(`lock_course_seats_tx`、
 //!   `lock_session_tx`)= 在呼叫端交易內取 `FOR UPDATE` 列鎖;
-//! - `_tx` 後綴、無 `lock_` 前綴(`session_seats_tx`)= 交易內讀取,
-//!   呼叫前**必須已持有**對應列鎖(見各函式 doc)。
+//! - `_tx` 後綴、無 `lock_` 前綴(`session_seats_tx`)= 交易內讀取,呼叫前
+//!   必須已持對應列鎖——`session_seats_tx` 這條由 [`SessionLock`] witness
+//!   型別擔保(欄位私有,唯一建構點 `lock_session_tx`),不再只靠 doc 前綴
+//!   宣示。
 
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -123,30 +125,66 @@ impl SessionSeats {
     }
 }
 
+/// 見證 `lock_session_tx` 已在呼叫端仍開啟的交易內,對此場次列取得
+/// `FOR UPDATE` 鎖——把「呼叫 [`session_seats_tx`] 前必須已持場次列鎖」這條
+/// 原本只靠該函式 doc 前綴宣示的呼叫順序 invariant,收進型別系統:
+/// [`session_seats_tx`] 改收 `&SessionLock`,不再收裸 `session_id`。
+///
+/// 欄位私有,僅 `lock_session_tx` 能建構;唯讀存取 `session_id()`/
+/// `course_id()`。兩個欄位取自同一列 `SELECT`,故持有此值同時擔保兩件事:
+/// 「已持有該場次列鎖」與「session↔course 為同一列讀出的配對」——原設計
+/// `session_seats_tx` 另外收一個呼叫端自由傳入的 `course_id` 參數,傳錯
+/// 配對沒有型別防護。
+#[derive(Debug, Clone)]
+pub struct SessionLock {
+    session_id: Uuid,
+    course_id: Uuid,
+}
+
+impl SessionLock {
+    pub fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+
+    pub fn course_id(&self) -> Uuid {
+        self.course_id
+    }
+}
+
 /// 【course_sessions 列 FOR UPDATE】makeup 前置鎖(自
 /// `leave::repository::lock_session_tx` 原樣搬入):在 [`session_seats_tx`]
 /// 計數前鎖住目標場次列,序列化**不同**假單搶同一場次名額(controller
-/// ruling 2026-07-06)——假單自身的列鎖只擋同一張假單的重複預約。
-/// `None` = 場次不存在。
+/// ruling 2026-07-06)——假單自身的列鎖只擋同一張假單的重複預約。回傳
+/// [`SessionLock`] witness,一併帶出鎖定列自身的 `course_id`,供
+/// [`session_seats_tx`] 使用。`None` = 場次不存在。
 pub async fn lock_session_tx(
     tx: &mut Transaction<'_, Postgres>,
     session_id: Uuid,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM course_sessions WHERE id = $1 FOR UPDATE")
-        .bind(session_id)
-        .fetch_optional(&mut **tx)
-        .await
+) -> Result<Option<SessionLock>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT id, course_id FROM course_sessions WHERE id = $1 FOR UPDATE",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(row.map(|(session_id, course_id)| SessionLock {
+        session_id,
+        course_id,
+    }))
 }
 
-/// 【呼叫前必須已持場次列鎖】四數單查詢(自
+/// 【`&SessionLock` 見證場次列鎖已持有】四數單查詢(自
 /// `leave::repository::find_makeup_capacity_tx` 原樣搬入),把課程的
-/// `max_students` 與三個 correlated count 一次讀齊。兩個請假/補課計數皆
-/// 只計 enrolment 仍為 `active` 者(controller ruling 2026-07-06):請假後
-/// 退課的人不釋出幽靈座位,補課後退課的人不繼續佔位。`None` = 課程不存在。
+/// `max_students` 與三個 correlated count 一次讀齊。`course_id`/
+/// `target_session_id` 皆取自 `lock`(`lock.course_id()`/
+/// `lock.session_id()`),不再是呼叫端另傳的裸參數——見 [`SessionLock`]。
+/// 兩個請假/補課計數皆只計 enrolment 仍為 `active` 者(controller ruling
+/// 2026-07-06):請假後退課的人不釋出幽靈座位,補課後退課的人不繼續佔位。
+/// `None` = 課程不存在。
 pub async fn session_seats_tx(
     tx: &mut Transaction<'_, Postgres>,
-    course_id: Uuid,
-    target_session_id: Uuid,
+    lock: &SessionLock,
 ) -> Result<Option<SessionSeats>, sqlx::Error> {
     sqlx::query_as::<_, SessionSeats>(
         "SELECT c.max_students, \
@@ -160,8 +198,8 @@ pub async fn session_seats_tx(
                   WHERE lr.makeup_session_id = $2) AS makeup_count \
          FROM courses c WHERE c.id = $1",
     )
-    .bind(course_id)
-    .bind(target_session_id)
+    .bind(lock.course_id())
+    .bind(lock.session_id())
     .fetch_optional(&mut **tx)
     .await
 }

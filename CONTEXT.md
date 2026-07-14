@@ -49,7 +49,7 @@ _Avoid_: 偏好設定(那是 `users.preferences`,per-user 不是全域)、組態
 _Avoid_: state, live/done
 
 **座位(Seats)**:
-「課程還有沒有位子」invariant 的單一 owner:`courses::seats`——課程層 `CourseSeats::is_full`(enrol 持鎖 `lock_course_seats_tx`、waitlist 無鎖 `course_seats`)與場次層 `SessionSeats::remaining`(實體座位模型 `max - active + leave - makeup`,契約 §3.20)。鎖策略由參數型別宣告:`&PgPool` = 無鎖快照、`&mut Transaction` + `lock_` 前綴 = `FOR UPDATE` 列鎖;`courses`/`sessions` repository 的 `enrolled_count` 是顯示用 inline 拷貝,拷貝的是對 `active_enrolments` view 的引用——謂詞單源已下沉至該 view,非決策端。
+「課程還有沒有位子」invariant 的單一 owner:`courses::seats`——課程層 `CourseSeats::is_full`(enrol 持鎖 `lock_course_seats_tx`、waitlist 無鎖 `course_seats`)與場次層 `SessionSeats::remaining`(實體座位模型 `max - active + leave - makeup`,契約 §3.20)。鎖策略由參數型別宣告:`&PgPool` = 無鎖快照、`&mut Transaction` + `lock_` 前綴 = `FOR UPDATE` 列鎖;`courses`/`sessions` repository 的 `enrolled_count` 是顯示用 inline 拷貝,拷貝的是對 `active_enrolments` view 的引用——謂詞單源已下沉至該 view,非決策端。場次層「先鎖列、再讀座位」的呼叫順序也已收進型別系統,比照「場次物化」詞條的 `MaterializedRange` 寫法:`lock_session_tx` 回傳 `SessionLock` witness(欄位私有、僅該函式能建構,唯讀存取 `session_id()`/`course_id()`),`session_seats_tx` 改收 `&SessionLock`——原本呼叫端另傳的 `course_id` 參數已不存在,「course_id 與被鎖場次不配對」整類錯誤隨之消失。
 _Avoid_: capacity, quota
 
 **出席口徑(Countable Attendance)**:
