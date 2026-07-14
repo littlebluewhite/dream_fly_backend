@@ -1,4 +1,4 @@
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -35,6 +35,7 @@ fn parse_query_date(s: &str) -> Result<NaiveDate, AppError> {
 pub async fn list_course_sessions(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     course_id: Uuid,
     query: SessionsRangeQuery,
 ) -> Result<Vec<CourseSessionResponse>, AppError> {
@@ -43,7 +44,6 @@ pub async fn list_course_sessions(
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
     let tz = studio_clock::studio_tz(server);
-    let now = Utc::now();
     let today = studio_clock::today(tz, now);
     let from = match query.from {
         Some(s) => parse_query_date(&s)?,
@@ -83,10 +83,10 @@ pub async fn list_course_sessions(
 pub async fn today_sessions(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     auth: &AuthUser,
 ) -> Result<Vec<TodaySessionResponse>, AppError> {
     let tz = studio_clock::studio_tz(server);
-    let now = Utc::now();
     let today = studio_clock::today(tz, now);
 
     let course_ids = if auth.is_admin() {
