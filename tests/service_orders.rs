@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use common::add_course_to_cart;
 use common::fixtures::{
-    seed_course_with_capacity, seed_coupon, seed_enrolment, seed_entitlement_product,
-    set_points_balance,
+    SeedCartLine, seed_carted_member, seed_course_with_capacity, seed_coupon,
+    seed_entitlement_product, seed_full_course, set_points_balance,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
@@ -129,12 +129,18 @@ async fn checkout_empty_cart_fails(db: PgPool) {
 
 #[sqlx::test]
 async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
-    let user = common::seed_member(&db, "mixed-buyer@example.com", "passw0rd!").await;
     let course = seed_course_with_capacity(&db, "Mixed Cart Course", None, 12).await;
     let product = seed_entitlement_product(&db, "membership-mix", "membership", 8000, None, None).await;
-
-    add_course_to_cart(&db, user, course).await;
-    common::add_to_cart(&db, user, product, 1).await;
+    let user = seed_carted_member(
+        &db,
+        "mixed-buyer@example.com",
+        &[
+            SeedCartLine::Course { course_id: course },
+            SeedCartLine::Product { product_id: product, quantity: 1 },
+        ],
+        0,
+    )
+    .await;
 
     let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
         .await
@@ -395,19 +401,22 @@ async fn checkout_use_points_zero_balance_uses_none(db: PgPool) {
 
 #[sqlx::test]
 async fn checkout_full_course_rolls_back_everything(db: PgPool) {
-    let other_user = common::seed_member(&db, "already-in@example.com", "passw0rd!").await;
-    let user = common::seed_member(&db, "latecomer@example.com", "passw0rd!").await;
-    let course = seed_course_with_capacity(&db, "Full Class", None, 1).await;
-    seed_enrolment(&db, other_user, course, "active", chrono::Utc::now()).await;
-
+    let full_course = seed_full_course(&db, "Full Class", 1).await;
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
-    add_course_to_cart(&db, user, course).await;
-    common::add_to_cart(&db, user, product, 1).await;
     // Also request points redemption so, if the failure did NOT roll back
     // everything, a stray point_ledger row or balance mutation would show
     // up below. The enrolment check (course capacity) runs before the
     // points-ledger step, so this must never be reached either.
-    set_points_balance(&db, user, 100).await;
+    let user = seed_carted_member(
+        &db,
+        "latecomer@example.com",
+        &[
+            SeedCartLine::Course { course_id: full_course.course },
+            SeedCartLine::Product { product_id: product, quantity: 1 },
+        ],
+        100,
+    )
+    .await;
     let req = CheckoutRequest {
         coupon_code: None,
         use_points: Some(true),
@@ -428,7 +437,7 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     let enrolment_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM enrolments WHERE course_id = $1 AND status = 'active'",
     )
-    .bind(course)
+    .bind(full_course.course)
     .fetch_one(&db)
     .await
     .unwrap();
@@ -507,12 +516,21 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
     // checkout simultaneously. Exactly one should succeed, the other should
     // fail with Conflict, and the product should end up with 0 stock and
     // exactly 1 order.
-    let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
-    let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
     let product = common::seed_product(&db, "prod-1", 1000, Some(1)).await;
-
-    common::add_to_cart(&db, user_a, product, 1).await;
-    common::add_to_cart(&db, user_b, product, 1).await;
+    let user_a = seed_carted_member(
+        &db,
+        "a@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        0,
+    )
+    .await;
+    let user_b = seed_carted_member(
+        &db,
+        "b@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        0,
+    )
+    .await;
 
     let db_a = Arc::new(db.clone());
     let db_b = Arc::new(db.clone());

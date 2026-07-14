@@ -14,7 +14,7 @@ mod common;
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
     seed_coach, seed_course, seed_course_session, seed_course_with_capacity, seed_enrolment,
-    seed_leave_request,
+    seed_leave_request, seed_leave_scene,
 };
 use common::http::spawn_test_app;
 use serde_json::json;
@@ -121,15 +121,12 @@ async fn create_duplicate_active_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-dup@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Dup Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
-    seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, user.user_id, course_id, "pending", None).await;
 
     let resp = app
         .post("/api/v1/leave-requests")
         .authorization_bearer(&user.access_token)
-        .json(&json!({"session_id": session_id}))
+        .json(&json!({"session_id": scene.session}))
         .await;
     assert_eq!(resp.status_code(), 409, "body={}", resp.text());
 }
@@ -142,15 +139,12 @@ async fn create_after_prior_cancelled_request_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-recreate@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Recreate Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
-    seed_leave_request(&app.db, enrolment_id, session_id, "cancelled").await;
+    let scene = seed_leave_scene(&app.db, user.user_id, course_id, "cancelled", None).await;
 
     let resp = app
         .post("/api/v1/leave-requests")
         .authorization_bearer(&user.access_token)
-        .json(&json!({"session_id": session_id}))
+        .json(&json!({"session_id": scene.session}))
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 }
@@ -173,18 +167,12 @@ async fn me_returns_joined_fields_including_makeup(db: PgPool) {
     let course_id = seed_course(&app.db, "Leave Me Course", None).await;
     let session_date = tomorrow();
     let makeup_date = (Utc::now() + Duration::days(8)).date_naive();
-    let session_id = seed_course_session(&app.db, course_id, session_date, t(9, 0), t(10, 0)).await;
     let makeup_session_id =
         seed_course_session(&app.db, course_id, makeup_date, t(14, 0), t(15, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
-    sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
-        .bind(leave_id)
-        .bind(makeup_session_id)
-        .execute(&app.db)
-        .await
-        .expect("set makeup_session_id");
+    let scene =
+        seed_leave_scene(&app.db, user.user_id, course_id, "approved", Some(makeup_session_id))
+            .await;
+    let leave_id = scene.leave;
 
     let resp = app
         .get("/api/v1/leave-requests/me")
@@ -221,20 +209,17 @@ async fn cancel_pending_by_owner_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-cancel-ok@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Cancel Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, user.user_id, course_id, "pending", None).await;
 
     let resp = app
-        .delete(&format!("/api/v1/leave-requests/{leave_id}"))
+        .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 204, "body={}", resp.text());
 
     let status: String =
         sqlx::query_scalar("SELECT status::text FROM leave_requests WHERE id = $1")
-            .bind(leave_id)
+            .bind(scene.leave)
             .fetch_one(&app.db)
             .await
             .expect("fetch status");
@@ -246,13 +231,10 @@ async fn cancel_non_pending_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-cancel-409@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Cancel 409 Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
+    let scene = seed_leave_scene(&app.db, user.user_id, course_id, "approved", None).await;
 
     let resp = app
-        .delete(&format!("/api/v1/leave-requests/{leave_id}"))
+        .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 409, "body={}", resp.text());
@@ -264,13 +246,10 @@ async fn cancel_by_non_owner_returns_403(db: PgPool) {
     let owner = app.register_member("leave-cancel-owner@example.com", "Password!234").await;
     let other = app.register_member("leave-cancel-other@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Cancel Owner Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, owner.user_id, course_id, "pending", None).await;
 
     let resp = app
-        .delete(&format!("/api/v1/leave-requests/{leave_id}"))
+        .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&other.access_token)
         .await;
     assert_eq!(resp.status_code(), 403, "body={}", resp.text());
@@ -305,17 +284,10 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
 
     let course_a = seed_course(&app.db, "Leave List Course A", None).await;
     let course_b = seed_course(&app.db, "Leave List Course B", None).await;
-    let session_a = seed_course_session(&app.db, course_a, tomorrow(), t(9, 0), t(10, 0)).await;
-    let session_b = seed_course_session(&app.db, course_b, tomorrow(), t(9, 0), t(10, 0)).await;
-
     let user_a = app.register_member("leave-list-a@example.com", "Password!234").await;
     let user_b = app.register_member("leave-list-b@example.com", "Password!234").await;
-    let enrolment_a =
-        seed_enrolment(&app.db, user_a.user_id, course_a, "active", Utc::now()).await;
-    let enrolment_b =
-        seed_enrolment(&app.db, user_b.user_id, course_b, "active", Utc::now()).await;
-    seed_leave_request(&app.db, enrolment_a, session_a, "pending").await;
-    seed_leave_request(&app.db, enrolment_b, session_b, "approved").await;
+    seed_leave_scene(&app.db, user_a.user_id, course_a, "pending", None).await;
+    seed_leave_scene(&app.db, user_b.user_id, course_b, "approved", None).await;
 
     // No filter: admin sees both.
     let resp = app
@@ -363,17 +335,11 @@ async fn list_as_coach_scoped_to_own_courses(db: PgPool) {
 
     let course_a = seed_course(&app.db, "Leave List Coach Course A", Some(coach_a_id)).await;
     let course_b = seed_course(&app.db, "Leave List Coach Course B", Some(coach_b_id)).await;
-    let session_a = seed_course_session(&app.db, course_a, tomorrow(), t(9, 0), t(10, 0)).await;
-    let session_b = seed_course_session(&app.db, course_b, tomorrow(), t(9, 0), t(10, 0)).await;
 
     let user_a = app.register_member("leave-list-student-a@example.com", "Password!234").await;
     let user_b = app.register_member("leave-list-student-b@example.com", "Password!234").await;
-    let enrolment_a =
-        seed_enrolment(&app.db, user_a.user_id, course_a, "active", Utc::now()).await;
-    let enrolment_b =
-        seed_enrolment(&app.db, user_b.user_id, course_b, "active", Utc::now()).await;
-    seed_leave_request(&app.db, enrolment_a, session_a, "pending").await;
-    seed_leave_request(&app.db, enrolment_b, session_b, "pending").await;
+    seed_leave_scene(&app.db, user_a.user_id, course_a, "pending", None).await;
+    seed_leave_scene(&app.db, user_b.user_id, course_b, "pending", None).await;
 
     let resp = app
         .get("/api/v1/leave-requests")
@@ -408,14 +374,11 @@ async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
         app.seed_user_with_roles("leave-decide-coach@example.com", &["coach"]).await;
     let coach_id = seed_coach(&app.db, coach_user_id, "Decide Coach").await;
     let course_id = seed_course(&app.db, "Leave Decide Course", Some(coach_id)).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("leave-decide-member@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
 
     let resp = app
-        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&coach_token)
         .json(&json!({"status": "approved"}))
         .await;
@@ -427,7 +390,7 @@ async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
     // leave_requests row updated.
     let status: String =
         sqlx::query_scalar("SELECT status::text FROM leave_requests WHERE id = $1")
-            .bind(leave_id)
+            .bind(scene.leave)
             .fetch_one(&app.db)
             .await
             .expect("fetch status");
@@ -437,8 +400,8 @@ async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
     let att_status: String = sqlx::query_scalar(
         "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
     )
-    .bind(session_id)
-    .bind(enrolment_id)
+    .bind(scene.session)
+    .bind(scene.enrolment)
     .fetch_one(&app.db)
     .await
     .expect("fetch attendance status");
@@ -462,14 +425,11 @@ async fn decide_reject_does_not_write_attendance(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Reject Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("leave-reject-member@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
 
     let resp = app
-        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&admin_token)
         .json(&json!({"status": "rejected"}))
         .await;
@@ -480,8 +440,8 @@ async fn decide_reject_does_not_write_attendance(db: PgPool) {
     let att_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
     )
-    .bind(session_id)
-    .bind(enrolment_id)
+    .bind(scene.session)
+    .bind(scene.enrolment)
     .fetch_one(&app.db)
     .await
     .expect("count attendance");
@@ -506,14 +466,11 @@ async fn decide_by_non_owning_coach_returns_403(db: PgPool) {
 
     // Course has no coach assigned at all (distinct from `other_coach`).
     let course_id = seed_course(&app.db, "Leave Decide Unowned Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("leave-decide-member2@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
 
     let resp = app
-        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&other_coach_token)
         .json(&json!({"status": "approved"}))
         .await;
@@ -525,14 +482,11 @@ async fn decide_non_pending_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Decide 409 Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("leave-decide-409@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "approved", None).await;
 
     let resp = app
-        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&admin_token)
         .json(&json!({"status": "rejected"}))
         .await;
@@ -544,15 +498,12 @@ async fn decide_invalid_status_value_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Decide 422 Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("leave-decide-422@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
-    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
 
     // "pending" is a valid LeaveStatus value but not one PATCH accepts.
     let resp = app
-        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
         .authorization_bearer(&admin_token)
         .json(&json!({"status": "pending"}))
         .await;

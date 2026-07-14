@@ -31,8 +31,9 @@ use common::fixtures::{
     SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
     seed_course_revenue, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
     seed_course_session, seed_course_with_capacity, seed_enrolment, seed_entitlement_product,
-    seed_member_created_at, seed_message, seed_order_bare, seed_order_with_items,
-    seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
+    seed_marked_attendance, seed_member_created_at, seed_message, seed_order_bare,
+    seed_order_with_items, seed_venue_rentals, seed_waitlist_entry, set_birth_date,
+    set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on, test_server_config};
 
@@ -665,26 +666,25 @@ fn birth_for_age(today: NaiveDate, years: i32) -> NaiveDate {
 #[sqlx::test]
 async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
     let course_id = seed_course(&db, "AttDist Course", None).await;
+    let today = Utc::now().date_naive();
 
     // A member marked present once -> rate 1.0 -> gte_95.
-    let m_present = seed_member(&db, "attdist-present@example.com", "Password!234").await;
-    let e_present = seed_enrolment(&db, m_present, course_id, "active", Utc::now()).await;
-    // A member present once + absent once -> 0.5 -> lt_75.
+    seed_marked_attendance(&db, course_id, today - Duration::days(5), t(9, 0), "present").await;
+    // A member marked only `leave` -> denominator 0 -> excluded.
+    seed_marked_attendance(&db, course_id, today - Duration::days(5), t(10, 0), "leave").await;
+
+    // A member present once + absent once -> 0.5 -> lt_75. Same member across
+    // two sessions — can't be expressed by `seed_marked_attendance`, which
+    // always mints a brand-new member per call — stays inline.
     let m_low = seed_member(&db, "attdist-low@example.com", "Password!234").await;
     let e_low = seed_enrolment(&db, m_low, course_id, "active", Utc::now()).await;
-    // A member marked only `leave` -> denominator 0 -> excluded.
-    let m_leave = seed_member(&db, "attdist-leave@example.com", "Password!234").await;
-    let e_leave = seed_enrolment(&db, m_leave, course_id, "active", Utc::now()).await;
-    // A member enrolled but never marked -> excluded.
-    let _m_unmarked = seed_member(&db, "attdist-unmarked@example.com", "Password!234").await;
-
-    let today = Utc::now().date_naive();
-    let s1 = seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
-    let s2 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, s1, e_present, "present", m_present).await;
+    let s1 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
+    let s2 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
     seed_attendance(&db, s1, e_low, "present", m_low).await;
     seed_attendance(&db, s2, e_low, "absent", m_low).await;
-    seed_attendance(&db, s1, e_leave, "leave", m_leave).await;
+
+    // A member enrolled but never marked -> excluded.
+    let _m_unmarked = seed_member(&db, "attdist-unmarked@example.com", "Password!234").await;
 
     let report = service::admin_report(&db, &test_server_config(), Utc::now())
         .await

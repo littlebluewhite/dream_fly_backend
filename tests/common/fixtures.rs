@@ -11,7 +11,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{seed_member, seed_time_slot_on};
+use super::{add_course_to_cart, add_to_cart, seed_member, seed_time_slot_on};
 
 /// Insert a coach profile linked to the given user. Returns the coach id.
 pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
@@ -944,4 +944,113 @@ pub async fn seed_venue_rentals(
         booking_ids.push(seed_booking(db, member, slot_id, status, price_cents).await);
     }
     booking_ids
+}
+
+/// [`seed_leave_scene`] 回傳的新建 session/enrolment/leave 三個 id,外加呼叫
+/// 端已持有的 member/course id 原樣附回——一次拿到完整場景,不必另外記混
+/// 用不同來源的變數。
+pub struct LeaveScene {
+    pub member: Uuid,
+    pub course: Uuid,
+    pub session: Uuid,
+    pub enrolment: Uuid,
+    pub leave: Uuid,
+}
+
+/// 「某會員在某課程明日 09:00 場次請假(指定狀態)」:`seed_course_session`
+/// (明日 09:00–10:00)+ `seed_enrolment`(active, now)+ `seed_leave_request`
+/// (status),取代 `http_leave.rs` 反覆出現的五行儀式其中三行。`user_id`/
+/// `course_id` 顯式入參,不像 [`seed_marked_attendance`] 自建新 member——
+/// 請假測試常要「以請假本人的身分」打 owner-only 端點,呼叫端得自行決定用
+/// `app.register_member`(需要 token)或 `common::seed_member`(純資料列)
+/// 造這個人,composite 沒辦法代猜;`course_id` 同理,容量/coach 指派等變異
+/// 呼叫端已有 `seed_course`/`seed_course_with_capacity` 可選。
+/// `makeup_session_id` 給 `Some` 時,額外把它寫回
+/// `leave_requests.makeup_session_id`——回補場次本身仍由呼叫端以
+/// `seed_course_session` 建立,composite 只負責串接這最後一步。Returns the
+/// new scene.
+pub async fn seed_leave_scene(
+    db: &PgPool,
+    user_id: Uuid,
+    course_id: Uuid,
+    status: &str,
+    makeup_session_id: Option<Uuid>,
+) -> LeaveScene {
+    let tomorrow = (Utc::now() + Duration::days(1)).date_naive();
+    let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let end = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+    let session = seed_course_session(db, course_id, tomorrow, start, end).await;
+    let enrolment = seed_enrolment(db, user_id, course_id, "active", Utc::now()).await;
+    let leave = seed_leave_request(db, enrolment, session, status).await;
+    if let Some(makeup_id) = makeup_session_id {
+        sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
+            .bind(leave)
+            .bind(makeup_id)
+            .execute(db)
+            .await
+            .expect("set makeup_session_id");
+    }
+    LeaveScene { member: user_id, course: course_id, session, enrolment, leave }
+}
+
+/// [`seed_full_course`] 回傳的課程 id,與坐滿座位的會員 id 列表。
+pub struct FullCourse {
+    pub course: Uuid,
+    pub occupants: Vec<Uuid>,
+}
+
+/// 「某課程剛好坐滿」:`seed_course_with_capacity`(max_students,不掛
+/// coach)+ 等量的 `seed_member`/`seed_enrolment`(active, now)各造一位占位
+/// 會員填滿座位,取代「建課、逐一造會員、逐一造 active enrolment」的多段式
+/// inline 序列。參數名沿用 `courses` 表欄位 `max_students`(CONTEXT.md 座位
+/// 詞條——_Avoid_: capacity)。Returns the new course id and its occupants'
+/// member ids, in creation order.
+pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> FullCourse {
+    let course = seed_course_with_capacity(db, name, None, max_students).await;
+    let mut occupants = Vec::with_capacity(max_students as usize);
+    for _ in 0..max_students {
+        let email = format!("occupant-{}@example.com", Uuid::now_v7());
+        let member = seed_member(db, &email, "Password!234").await;
+        seed_enrolment(db, member, course, "active", Utc::now()).await;
+        occupants.push(member);
+    }
+    FullCourse { course, occupants }
+}
+
+/// One line of a [`seed_carted_member`] cart — either a product line
+/// (quantity) or a course line (always quantity 1, mirroring the
+/// `cart_items_course_qty` CHECK). Mirrors [`SeedOrderLine`]'s shape but
+/// carries no price field: cart lines don't snapshot a price the way order
+/// lines do — checkout re-reads the live `products`/`courses` row at commit
+/// time (`cart::repository::find_cart_items_for_checkout_tx`), so reusing
+/// `SeedOrderLine` here would accept a `unit_price_cents` argument that
+/// checkout silently ignores.
+pub enum SeedCartLine {
+    Product { product_id: Uuid, quantity: i32 },
+    Course { course_id: Uuid },
+}
+
+/// 「某會員的購物車裝了一車東西,還帶著點數餘額」:`seed_member`+ 逐行
+/// `add_to_cart`/`add_course_to_cart`(依 [`SeedCartLine`])+
+/// `set_points_balance`,取代 checkout 測試裡「建會員、逐行加入購物車、設
+/// 點數餘額」的多段式 inline 序列。`cart` 用 [`SeedCartLine`] 而非
+/// [`SeedOrderLine`]——理由見該 enum 的文件。`points = 0` 等同不特別設定
+/// (會員預設餘額本就是 0)。Returns the new member's id.
+pub async fn seed_carted_member(
+    db: &PgPool,
+    email: &str,
+    cart: &[SeedCartLine],
+    points: i64,
+) -> Uuid {
+    let member = seed_member(db, email, "Password!234").await;
+    for line in cart {
+        match line {
+            SeedCartLine::Product { product_id, quantity } => {
+                add_to_cart(db, member, *product_id, *quantity).await
+            }
+            SeedCartLine::Course { course_id } => add_course_to_cart(db, member, *course_id).await,
+        }
+    }
+    set_points_balance(db, member, points).await;
+    member
 }
