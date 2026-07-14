@@ -50,7 +50,7 @@ async fn create_slots_happy_path_persists_rows(db: PgPool) {
             future_slot(2, "10:00", "11:00", 8),
         ],
     };
-    let resp = service::create_slots(&db, &utc_server(), req).await.unwrap();
+    let resp = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap();
     assert_eq!(resp.len(), 2);
     assert_eq!(resp[0].capacity, 10);
     assert_eq!(resp[1].capacity, 8);
@@ -67,7 +67,7 @@ async fn create_slots_rejects_end_before_start(db: PgPool) {
     let req = CreateSlotsRequest {
         slots: vec![future_slot(2, "11:00", "10:00", 10)],
     };
-    let err = service::create_slots(&db, &utc_server(), req).await.unwrap_err();
+    let err = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if m.contains("end_time")),
         "got {err:?}"
@@ -85,7 +85,7 @@ async fn create_slots_rejects_past_date(db: PgPool) {
     let req = CreateSlotsRequest {
         slots: vec![future_slot(-1, "09:00", "10:00", 10)],
     };
-    let err = service::create_slots(&db, &utc_server(), req).await.unwrap_err();
+    let err = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if m.contains("past")),
         "got {err:?}"
@@ -97,7 +97,7 @@ async fn create_slots_rejects_zero_capacity(db: PgPool) {
     let req = CreateSlotsRequest {
         slots: vec![future_slot(2, "09:00", "10:00", 0)],
     };
-    let err = service::create_slots(&db, &utc_server(), req).await.unwrap_err();
+    let err = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if m.contains("capacity")),
         "got {err:?}"
@@ -114,7 +114,7 @@ async fn create_slots_rolls_back_on_mid_batch_failure(db: PgPool) {
             future_slot(-2, "09:00", "10:00", 10),
         ],
     };
-    let err = service::create_slots(&db, &utc_server(), req).await.unwrap_err();
+    let err = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap_err();
     assert!(matches!(err, AppError::BadRequest(_)));
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM time_slots")
@@ -172,7 +172,7 @@ async fn create_slots_persists_price_cents_and_defaults_to_zero(db: PgPool) {
     let req = CreateSlotsRequest {
         slots: vec![priced, unpriced],
     };
-    let resp = service::create_slots(&db, &utc_server(), req).await.unwrap();
+    let resp = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap();
     assert_eq!(resp[0].price_cents, 50_000);
     // Omitted `price_cents` must default to 0, not fail to deserialize.
     assert_eq!(resp[1].price_cents, 0);

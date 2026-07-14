@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 
 use crate::config::ServerConfig;
@@ -61,10 +61,10 @@ pub async fn get_availability(
 pub async fn create_slots(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     req: CreateSlotsRequest,
 ) -> Result<Vec<TimeSlotResponse>, AppError> {
     let tz = studio_clock::studio_tz(server);
-    let now_utc = Utc::now();
 
     let mut parsed_slots = Vec::with_capacity(req.slots.len());
 
@@ -92,7 +92,7 @@ pub async fn create_slots(
         // the future.
         studio_clock::require_not_started(
             tz,
-            now_utc,
+            now,
             date,
             start_time,
             "start_time",
