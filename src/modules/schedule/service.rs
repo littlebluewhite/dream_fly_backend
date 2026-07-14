@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::config::ServerConfig;
@@ -51,8 +51,8 @@ pub async fn get_availability(
     db: &PgPool,
     params: AvailabilityQuery,
 ) -> Result<Vec<TimeSlotResponse>, AppError> {
-    let date = NaiveDate::parse_from_str(&params.date, "%Y-%m-%d")
-        .map_err(|_| AppError::BadRequest("invalid date format, expected YYYY-MM-DD".into()))?;
+    let date = studio_clock::parse_date(&params.date)
+        .ok_or_else(|| AppError::BadRequest("invalid date format, expected YYYY-MM-DD".into()))?;
 
     let slots = repository::find_by_date(db, date).await?;
     Ok(slots.into_iter().map(TimeSlotResponse::from).collect())
@@ -69,8 +69,8 @@ pub async fn create_slots(
     let mut parsed_slots = Vec::with_capacity(req.slots.len());
 
     for entry in &req.slots {
-        let date = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d")
-            .map_err(|_| AppError::BadRequest(format!("invalid date format: {}", entry.date)))?;
+        let date = studio_clock::parse_date(&entry.date)
+            .ok_or_else(|| AppError::BadRequest(format!("invalid date format: {}", entry.date)))?;
         let start_time = studio_clock::parse_time_of_day(&entry.start_time).ok_or_else(|| {
             AppError::BadRequest(format!("invalid start_time format: {}", entry.start_time))
         })?;

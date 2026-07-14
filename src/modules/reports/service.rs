@@ -267,21 +267,14 @@ pub async fn admin_report(
 
 /// `(first_day, last_day)` of `today`'s calendar month. Used to bound the
 /// idempotent session materialization the `venue_usage` aggregate needs —
-/// this function is the month window's sole owner; `venue_usage` receives it
-/// only via the `MaterializedRange` witness's date bounds, not by
-/// re-deriving it in SQL (see `repository::venue_usage`). `unwrap`s are
-/// total: day 1 always exists, and stepping to the first of next month then
-/// back one day always lands on a real last-of-month.
+/// `venue_usage` receives it only via the `MaterializedRange` witness's
+/// date bounds, not by re-deriving it in SQL (see
+/// `repository::venue_usage`). Thin shell over `studio_clock::month_bounds`
+/// (the year-rollover + `pred_opt` dance's single owner now); `today`'s own
+/// year/month always yields valid bounds, so the `expect` is total.
 fn studio_month_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    let month_start = today.with_day(1).expect("day 1 is valid for every month");
-    let next_month_first = if month_start.month() == 12 {
-        NaiveDate::from_ymd_opt(month_start.year() + 1, 1, 1)
-    } else {
-        NaiveDate::from_ymd_opt(month_start.year(), month_start.month() + 1, 1)
-    }
-    .expect("first day of next month is always valid");
-    let month_end = next_month_first.pred_opt().expect("every month has a last day");
-    (month_start, month_end)
+    studio_clock::month_bounds(today.year(), today.month())
+        .expect("today's own year/month always yields valid month bounds")
 }
 
 /// `GET /reports/coach`. 404 if the caller holds the `coach` role but has

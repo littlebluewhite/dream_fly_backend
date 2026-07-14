@@ -127,6 +127,7 @@ pub async fn cancel_booking(
 
         let slot_utc = studio_clock::to_utc_checked(tz, slot.date, slot.start_time, "time slot")?;
 
+        // Inline — the repo's only 24h-window check; extract a helper if a second appears.
         let hours_until = (slot_utc - now).num_hours();
         if hours_until < 24 {
             return Err(AppError::BadRequest(

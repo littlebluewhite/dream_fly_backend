@@ -157,6 +157,35 @@ pub fn has_ended(tz: Tz, now: DateTime<Utc>, date: NaiveDate, time: NaiveTime) -
     to_utc(tz, date, time).map(|utc| utc <= now)
 }
 
+/// `(first_day, last_day)` of the given calendar month — the single owner
+/// of the "roll to the first of next month, then step back one day" dance
+/// that `reports::service::studio_month_bounds` and
+/// `schedule::repository::find_by_month` used to hand-roll themselves.
+/// `None` on an invalid `month` (must be `1..=12`) or when the December
+/// rollover's `year + 1` would overflow — handled via `checked_add` so a
+/// caller passing `i32::MAX` can't panic.
+pub fn month_bounds(year: i32, month: u32) -> Option<(NaiveDate, NaiveDate)> {
+    let first_day = NaiveDate::from_ymd_opt(year, month, 1)?;
+    let next_month_first = if month == 12 {
+        NaiveDate::from_ymd_opt(year.checked_add(1)?, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+    }?;
+    let last_day = next_month_first.pred_opt()?;
+    Some((first_day, last_day))
+}
+
+/// Parse a `YYYY-MM-DD` calendar date string — the single owner of that
+/// format knowledge, replacing three call sites that used to hand-roll
+/// `NaiveDate::parse_from_str(s, "%Y-%m-%d")` themselves. Mirrors
+/// [`parse_time_of_day`]'s `Option` convention: each call site keeps its
+/// own 400 wording (they differ — with/without the input value echoed
+/// back, different phrasing) via `.ok_or_else(...)`, the same "caller owns
+/// the wording" shape as [`to_utc_checked`]/[`require_not_started`].
+pub fn parse_date(s: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+}
+
 /// Parse an `HH:MM` or `HH:MM:SS` time-of-day string. Accepting both formats
 /// makes the API lenient to callers that send whatever their UI produces
 /// (HTML `<input type="time">` for example sometimes emits seconds), without
@@ -552,6 +581,57 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    // --- month_bounds ---
+
+    #[test]
+    fn month_bounds_returns_first_and_last_day_of_month() {
+        assert_eq!(month_bounds(2026, 7), Some((d(2026, 7, 1), d(2026, 7, 31))));
+    }
+
+    #[test]
+    fn month_bounds_handles_december_year_rollover() {
+        // Exercises the `month == 12` branch: next-month-first is Jan 1 of
+        // `year + 1`, stepped back one day to land on Dec 31 of `year`.
+        assert_eq!(month_bounds(2026, 12), Some((d(2026, 12, 1), d(2026, 12, 31))));
+    }
+
+    #[test]
+    fn month_bounds_none_on_month_zero() {
+        assert_eq!(month_bounds(2026, 0), None);
+    }
+
+    #[test]
+    fn month_bounds_none_on_month_thirteen() {
+        assert_eq!(month_bounds(2026, 13), None);
+    }
+
+    #[test]
+    fn month_bounds_none_on_i32_max_year_does_not_panic() {
+        // December rollover computes `year + 1`; at `i32::MAX` that would
+        // overflow a bare `+`. `checked_add` must yield `None`, not panic.
+        assert_eq!(month_bounds(i32::MAX, 12), None);
+    }
+
+    // --- parse_date ---
+
+    #[test]
+    fn parse_date_accepts_iso_format() {
+        assert_eq!(parse_date("2026-07-05"), Some(d(2026, 7, 5)));
+    }
+
+    #[test]
+    fn parse_date_rejects_garbage_format() {
+        assert_eq!(parse_date("07/05/2026"), None);
+        assert_eq!(parse_date("not-a-date"), None);
+        assert_eq!(parse_date(""), None);
+    }
+
+    #[test]
+    fn parse_date_rejects_invalid_calendar_date() {
+        // February never has 30 days, even in a leap year.
+        assert_eq!(parse_date("2026-02-30"), None);
     }
 
     // --- parse_time_of_day ---

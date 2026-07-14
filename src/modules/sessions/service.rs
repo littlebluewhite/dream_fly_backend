@@ -25,8 +25,8 @@ const MAX_RANGE_DAYS: i64 = 60;
 const DEFAULT_RANGE_DAYS: i64 = 28;
 
 fn parse_query_date(s: &str) -> Result<NaiveDate, AppError> {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| AppError::BadRequest(format!("invalid date format, expected YYYY-MM-DD: {s}")))
+    studio_clock::parse_date(s)
+        .ok_or_else(|| AppError::BadRequest(format!("invalid date format, expected YYYY-MM-DD: {s}")))
 }
 
 /// Materialize then list a single course's sessions in `[from, to]`

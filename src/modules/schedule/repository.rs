@@ -2,6 +2,8 @@ use chrono::{NaiveDate, NaiveTime};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::utils::studio_clock;
+
 use super::model::TimeSlot;
 
 /// `(date, start_time, end_time, venue_id, course_id, capacity, price_cents)`
@@ -13,21 +15,10 @@ pub async fn find_by_month(
     year: i32,
     month: u32,
 ) -> Result<Vec<TimeSlot>, sqlx::Error> {
-    // Caller already validates month/year ranges, but we still construct
-    // dates with `from_ymd_opt` and fall back sanely on any overflow to
-    // avoid panicking on an unexpected input.
-    let first_day = NaiveDate::from_ymd_opt(year, month, 1)
-        .ok_or_else(|| sqlx::Error::Protocol("invalid year/month".into()))?;
-
-    let next_month_first = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1)
-    } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1)
-    }
-    .ok_or_else(|| sqlx::Error::Protocol("invalid year/month".into()))?;
-
-    let last_day = next_month_first
-        .pred_opt()
+    // Caller already validates month/year ranges, but `month_bounds` still
+    // falls back to `None` (mapped to this error) on any overflow, rather
+    // than panicking, as a defensive backstop.
+    let (first_day, last_day) = studio_clock::month_bounds(year, month)
         .ok_or_else(|| sqlx::Error::Protocol("invalid year/month".into()))?;
 
     sqlx::query_as::<_, TimeSlot>(
