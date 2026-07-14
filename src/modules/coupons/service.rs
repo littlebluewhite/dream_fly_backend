@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -9,6 +9,7 @@ use super::dto::{
     CouponListResponse, CouponResponse, CouponValidateResponse, CreateCouponRequest,
     UpdateCouponRequest,
 };
+use super::model::Coupon;
 use super::repository;
 
 /// `GET /coupons/{code}/validate`. `subtotal_cents`, when supplied, previews
@@ -43,6 +44,18 @@ pub async fn validate_coupon(
         discount_cents: coupon.discount_cents,
         applied_discount_cents,
     })
+}
+
+/// Transactional coupon lookup seam (ADR-0005 轉手層), consumed by
+/// `orders::service::checkout` which already holds an open transaction. An
+/// unknown/inactive/expired code resolves to `Ok(None)`, which checkout turns
+/// into its own 422. Strict pass-through with no error mapping — adding one
+/// (e.g. `conflict_on_unique`) would change checkout's error contract.
+pub async fn find_valid_by_code_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    code: &str,
+) -> Result<Option<Coupon>, AppError> {
+    Ok(repository::find_valid_by_code_tx(tx, code).await?)
 }
 
 pub async fn create_coupon(

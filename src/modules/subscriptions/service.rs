@@ -84,6 +84,21 @@ pub async fn list_my_subscriptions(
     Ok(rows.into_iter().map(SubscriptionResponse::from).collect())
 }
 
+/// This order's subscriptions, mapped to their response DTOs. The DTO
+/// wrapping lives in this owning module (not in `orders::service`) per
+/// ADR-0005's "DTO 包裝在 service.rs" placement rule;
+/// `orders::service::fetch_artifacts` calls this seam so `orders` never
+/// reaches into this module's repository.
+pub async fn list_by_order(
+    db: &PgPool,
+    order_id: Uuid,
+) -> Result<Vec<SubscriptionResponse>, AppError> {
+    let rows = repository::find_by_order(db, order_id)
+        .await
+        .map_err(AppError::Database)?;
+    Ok(rows.into_iter().map(SubscriptionResponse::from).collect())
+}
+
 /// Redeem (consume) one session from a subscription. The decrement is a
 /// single atomic `UPDATE ... RETURNING`, and the response is built from the
 /// exact row that UPDATE returned — re-reading the subscription here could

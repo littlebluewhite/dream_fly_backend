@@ -1,10 +1,10 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
 
 use super::dto::CartResponse;
-use super::model::CartItemType;
+use super::model::{CartItemType, CheckoutLine};
 use super::repository;
 
 pub async fn get_cart(db: &PgPool, user_id: Uuid) -> Result<CartResponse, AppError> {
@@ -157,4 +157,28 @@ pub async fn remove_item(db: &PgPool, user_id: Uuid, item_id: Uuid) -> Result<Ca
 pub async fn clear(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
     repository::clear_cart(db, user_id).await?;
     Ok(())
+}
+
+/// Transactional cart-for-checkout read seam (ADR-0005 轉手層). Locks the
+/// cart rows + priced product/course rows and returns the snapshot
+/// `orders::service::checkout` prices and plans against — see
+/// `repository::find_cart_items_for_checkout_tx` for the exact locking
+/// shape. Strict pass-through with no error mapping, so checkout's error
+/// contract stays exactly the repository's.
+pub async fn find_cart_items_for_checkout_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<Vec<CheckoutLine>, AppError> {
+    Ok(repository::find_cart_items_for_checkout_tx(tx, user_id).await?)
+}
+
+/// Clear the cart inside the caller's transaction — checkout's step 11.
+/// Distinct from the pool-based [`clear`] above (the `_tx` suffix marks the
+/// transactional variant); the two coexist. Strict pass-through, no error
+/// mapping.
+pub async fn clear_cart_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    Ok(repository::clear_cart_tx(tx, user_id).await?)
 }

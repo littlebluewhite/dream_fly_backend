@@ -7,25 +7,23 @@ use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::{PageMeta, PaginationParams};
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload};
 use crate::kafka::outbox;
-use crate::modules::cart::model::{CartItemType, CheckoutLine};
-use crate::modules::cart::repository as cart_repo;
+use crate::modules::cart::service as cart_service;
 use crate::modules::coupons::model::Coupon;
-use crate::modules::coupons::repository as coupons_repo;
+use crate::modules::coupons::service as coupons_service;
 use crate::modules::enrolments::dto::EnrolmentResponse;
-use crate::modules::enrolments::repository as enrolments_repo;
 use crate::modules::enrolments::service as enrolments_service;
 use crate::modules::notifications::service as notify;
 use crate::modules::points::model::PointReason;
 use crate::modules::points::service as points_service;
 use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
-use crate::modules::subscriptions::repository as subscriptions_repo;
 use crate::modules::subscriptions::service as subscriptions_service;
 
 use super::dto::{
     AdminOrderListResponse, AdminOrderSummary, CheckoutRequest, OrderListResponse, OrderResponse,
     OrderSummary,
 };
+use super::fulfilment;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
 use super::repository;
@@ -80,7 +78,7 @@ pub async fn checkout(
     // 2. Lock and read cart items + current product/course prices. Course
     //    lines are now first-class (the Task-3 "not yet supported" guard is
     //    gone).
-    let cart_items = cart_repo::find_cart_items_for_checkout_tx(&mut tx, user_id).await?;
+    let cart_items = cart_service::find_cart_items_for_checkout_tx(&mut tx, user_id).await?;
 
     if cart_items.is_empty() {
         return Err(AppError::BadRequest("cart is empty".into()));
@@ -100,7 +98,7 @@ pub async fn checkout(
         .filter(|s| !s.is_empty())
     {
         coupon = Some(
-            coupons_repo::find_valid_by_code_tx(&mut tx, code)
+            coupons_service::find_valid_by_code_tx(&mut tx, code)
                 .await?
                 .ok_or_else(|| AppError::Validation("invalid coupon".into()))?,
         );
@@ -136,19 +134,20 @@ pub async fn checkout(
     //    its doc comment for why) and hands back every decremented row,
     //    each already locked by this transaction; step 10b below reuses
     //    those rows instead of re-reading them.
-    let product_lines: Vec<&CheckoutLine> = cart_items
-        .iter()
-        .filter(|item| matches!(item.item_type, CartItemType::Product))
-        .collect();
+    //
+    //    `fulfilment::plan` does the item_type split (product lines to
+    //    reserve, course ids to enrol) in one exhaustive match, replacing the
+    //    two `.filter(matches!)` walks this body used to run. It sits in the
+    //    original filter's position — right after pricing — so a coupon/
+    //    overflow 422 still precedes the (today-unreachable) `Internal` a
+    //    target-less line would raise. Course ids ride along in `plan` until
+    //    step 10a.
+    let plan = fulfilment::plan(&cart_items)?;
 
-    let reserve_lines: Vec<(Uuid, i32, &str)> = product_lines
+    let reserve_lines: Vec<(Uuid, i32, &str)> = plan
+        .products
         .iter()
-        .map(|item| {
-            let product_id = item
-                .product_id
-                .expect("product line always carries product_id");
-            (product_id, item.quantity, item.name.as_str())
-        })
+        .map(|p| (p.product_id, p.quantity, p.name.as_str()))
         .collect();
     let reserved = product_service::reserve_stock_tx(&mut tx, &reserve_lines).await?;
 
@@ -194,30 +193,19 @@ pub async fn checkout(
     repository::create_order_items(&mut tx, order.id, &items_data).await?;
 
     // 10. Artifacts.
-    // 10a. Enrolments — course lines, sorted by course_id (deterministic
-    //      global lock order: `enrol_from_purchase_tx` takes `FOR UPDATE`
-    //      on the course row, and two concurrent checkouts sharing two
-    //      courses could otherwise lock them in opposite orders and
-    //      deadlock — same lock-ordering discipline
-    //      `products::service::reserve_stock_tx` now applies internally to
-    //      product lines in step 6; course lines have no equivalent batch
-    //      deep function yet, so checkout still does this sort directly).
-    //      A full course or a duplicate active enrolment rolls back the
-    //      *entire* checkout (order, order_items, stock decrement — all of
-    //      it), which is correct: partially fulfilling a cart is not an
-    //      acceptable outcome.
-    let mut course_lines: Vec<&CheckoutLine> = cart_items
-        .iter()
-        .filter(|item| matches!(item.item_type, CartItemType::Course))
-        .collect();
-    course_lines.sort_by_key(|line| line.course_id);
-
-    for line in &course_lines {
-        let course_id = line
-            .course_id
-            .expect("course line always carries course_id");
-        enrolments_service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order.id).await?;
-    }
+    // 10a. Enrolments — course lines. `enrol_batch_from_purchase_tx` owns the
+    //      course-line lock-ordering discipline now (sorts by course_id
+    //      before taking any `FOR UPDATE` on a course row, so two concurrent
+    //      checkouts sharing two courses can't lock them in opposite orders
+    //      and deadlock — the same discipline
+    //      `products::service::reserve_stock_tx` applies to product lines in
+    //      step 6, course lines' batch deep function at last, so this body no
+    //      longer sorts them itself). A full course or a duplicate active
+    //      enrolment rolls back the *entire* checkout (order, order_items,
+    //      stock decrement — all of it), which is correct: partially
+    //      fulfilling a cart is not an acceptable outcome.
+    enrolments_service::enrol_batch_from_purchase_tx(&mut tx, user_id, &plan.course_ids, order.id)
+        .await?;
 
     // 10b. Subscriptions — product lines whose product_type is
     //      entitlement-eligible. `grant_from_purchase_tx` itself returns
@@ -230,19 +218,16 @@ pub async fn checkout(
     //      and the fields `grant_from_purchase_tx` reads
     //      (product_type/session_count/valid_days) are untouched by the
     //      stock decrement.
-    for item in &product_lines {
-        let product_id = item
-            .product_id
-            .expect("product line always carries product_id");
+    for p in &plan.products {
         let product = reserved
-            .get(&product_id)
+            .get(&p.product_id)
             .expect("product line was reserved in step 6");
         subscriptions_service::grant_from_purchase_tx(
             &mut tx,
             user_id,
             product,
-            item.quantity,
-            item.price_cents,
+            p.quantity,
+            p.price_cents,
             order.id,
         )
         .await?;
@@ -272,7 +257,7 @@ pub async fn checkout(
     }
 
     // 11. Clear the cart within the same transaction.
-    cart_repo::clear_cart_tx(&mut tx, user_id).await?;
+    cart_service::clear_cart_tx(&mut tx, user_id).await?;
 
     // 12. Record the idempotency key inside the same tx so a concurrent
     //     retry sees either nothing (and races for the lock) or the
@@ -338,16 +323,8 @@ async fn fetch_artifacts(
     db: &PgPool,
     order_id: Uuid,
 ) -> Result<(Vec<EnrolmentResponse>, Vec<SubscriptionResponse>), AppError> {
-    let enrolments = enrolments_repo::find_by_order(db, order_id)
-        .await?
-        .into_iter()
-        .map(EnrolmentResponse::from)
-        .collect();
-    let subscriptions = subscriptions_repo::find_by_order(db, order_id)
-        .await?
-        .into_iter()
-        .map(SubscriptionResponse::from)
-        .collect();
+    let enrolments = enrolments_service::list_by_order(db, order_id).await?;
+    let subscriptions = subscriptions_service::list_by_order(db, order_id).await?;
     Ok((enrolments, subscriptions))
 }
 
