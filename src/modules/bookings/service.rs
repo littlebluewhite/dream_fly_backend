@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ use super::repository;
 pub async fn create_booking(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     user_id: Uuid,
     req: CreateBookingRequest,
     correlation_id: Option<String>,
@@ -41,7 +42,7 @@ pub async fn create_booking(
     // Utc::now.
     studio_clock::require_not_started(
         tz,
-        Utc::now(),
+        now,
         slot.date,
         slot.start_time,
         "time slot",
@@ -89,6 +90,7 @@ pub async fn create_booking(
 pub async fn cancel_booking(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     auth: &AuthUser,
     booking_id: Uuid,
     correlation_id: Option<String>,
@@ -125,7 +127,7 @@ pub async fn cancel_booking(
 
         let slot_utc = studio_clock::to_utc_checked(tz, slot.date, slot.start_time, "time slot")?;
 
-        let hours_until = (slot_utc - Utc::now()).num_hours();
+        let hours_until = (slot_utc - now).num_hours();
         if hours_until < 24 {
             return Err(AppError::BadRequest(
                 "cannot cancel within 24 hours of the scheduled time".into(),

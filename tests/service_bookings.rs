@@ -27,6 +27,7 @@ async fn create_booking_increments_slot_booked(db: PgPool) {
     let booking = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -57,6 +58,7 @@ async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
     service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -70,6 +72,7 @@ async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
     let err = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -97,6 +100,7 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
     service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user_a,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -110,6 +114,7 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
     let err = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user_b,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -132,6 +137,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
     let booking = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -144,7 +150,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
 
     assert_eq!(common::slot_booked(&db, slot).await, 1);
 
-    service::cancel_booking(&db, &server, &auth, booking.id, None)
+    service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
         .await
         .expect("first cancel");
     assert_eq!(common::slot_booked(&db, slot).await, 0);
@@ -157,7 +163,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
 
     // Second cancel of the same booking should fail cleanly (not underflow
     // the slot's booked counter).
-    let err = service::cancel_booking(&db, &server, &auth, booking.id, None)
+    let err = service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
         .await
         .expect_err("second cancel should fail");
     // Either BadRequest("booking is already cancelled") or Conflict, both
@@ -191,6 +197,7 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     let booking = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -201,7 +208,7 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     .await
     .expect("create booking");
 
-    let err = service::cancel_booking(&db, &server, &auth, booking.id, None)
+    let err = service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
         .await
         .expect_err("within 24h should be rejected");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
@@ -233,6 +240,7 @@ async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) 
     let booking = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -281,6 +289,7 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
     let booking = service::create_booking(
         &db,
         &server,
+        Utc::now(),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -292,7 +301,7 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
     .expect("create booking");
     assert_eq!(booking.price_cents, 12_345);
 
-    let cancelled = service::cancel_booking(&db, &server, &auth, booking.id, None)
+    let cancelled = service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
         .await
         .expect("cancel booking");
     assert_eq!(
@@ -319,6 +328,7 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
         service::create_booking(
             db_a.as_ref(),
             server_a.as_ref(),
+            Utc::now(),
             user_a,
             CreateBookingRequest {
                 time_slot_id: slot,
@@ -332,6 +342,7 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
         service::create_booking(
             db_b.as_ref(),
             server_b.as_ref(),
+            Utc::now(),
             user_b,
             CreateBookingRequest {
                 time_slot_id: slot,
