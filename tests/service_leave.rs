@@ -34,6 +34,7 @@ async fn attempt_makeup(
     service::book_makeup(
         &db,
         &server,
+        Utc::now(),
         &auth,
         leave_id,
         MakeupRequest { session_id: target_session_id },

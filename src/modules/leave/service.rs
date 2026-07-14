@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -28,6 +28,7 @@ use super::repository;
 pub async fn create_leave_request(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     auth: &AuthUser,
     req: CreateLeaveRequestRequest,
 ) -> Result<LeaveRequestResponse, AppError> {
@@ -41,7 +42,7 @@ pub async fn create_leave_request(
 
     studio_clock::require_not_started(
         studio_clock::studio_tz(server),
-        Utc::now(),
+        now,
         session.session_date,
         session.start_time,
         "session time",
@@ -259,6 +260,7 @@ pub async fn decide_leave_request(
 pub async fn book_makeup(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     auth: &AuthUser,
     id: Uuid,
     req: MakeupRequest,
@@ -288,7 +290,7 @@ pub async fn book_makeup(
 
     studio_clock::require_not_started(
         tz,
-        Utc::now(),
+        now,
         target.session_date,
         target.start_time,
         "session time",
