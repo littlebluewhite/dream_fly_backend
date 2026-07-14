@@ -14,7 +14,7 @@ mod common;
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
     seed_coach, seed_course, seed_course_session, seed_course_with_capacity, seed_enrolment,
-    seed_leave_request, seed_leave_scene,
+    seed_leave_request, seed_leave_scene, set_makeup_session,
 };
 use common::http::spawn_test_app;
 use serde_json::json;
@@ -635,12 +635,7 @@ async fn makeup_already_booked_returns_409(db: PgPool) {
     let enrolment_id =
         seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
-    sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
-        .bind(leave_id)
-        .bind(first_target_id)
-        .execute(&app.db)
-        .await
-        .expect("preset makeup_session_id");
+    set_makeup_session(&app.db, leave_id, first_target_id).await;
 
     let resp = app
         .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
@@ -776,12 +771,7 @@ async fn makeup_rejected_when_prior_makeups_fill_remaining_seats(db: PgPool) {
         if i < 2 {
             let other_leave =
                 seed_leave_request(&app.db, other_enrolment, original_session, "approved").await;
-            sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
-                .bind(other_leave)
-                .bind(target_session)
-                .execute(&app.db)
-                .await
-                .expect("preset makeup_session_id");
+            set_makeup_session(&app.db, other_leave, target_session).await;
         }
     }
 
@@ -853,12 +843,7 @@ async fn makeup_booked_by_cancelled_enrolment_occupies_no_seat(db: PgPool) {
         seed_enrolment(&app.db, quitter, course_id, "cancelled", Utc::now()).await;
     let quitter_leave =
         seed_leave_request(&app.db, quitter_enrolment, original_session, "approved").await;
-    sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
-        .bind(quitter_leave)
-        .bind(target_session)
-        .execute(&app.db)
-        .await
-        .expect("preset makeup_session_id");
+    set_makeup_session(&app.db, quitter_leave, target_session).await;
 
     let resp = app
         .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))

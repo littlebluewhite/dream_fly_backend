@@ -783,6 +783,18 @@ pub async fn seed_leave_request(
     id
 }
 
+/// Directly set a leave request's `makeup_session_id` (bypassing the makeup
+/// booking service and its seat/state checks) so tests can preset an existing
+/// makeup link before exercising rebook and seat-model scenarios.
+pub async fn set_makeup_session(db: &PgPool, leave_id: Uuid, makeup_session_id: Uuid) {
+    sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
+        .bind(leave_id)
+        .bind(makeup_session_id)
+        .execute(db)
+        .await
+        .expect("set makeup_session_id");
+}
+
 /// Insert a `messages` row directly (bypassing
 /// `messages::service::send_message`), so tests can control `sender_id`,
 /// `read_at`, and `created_at` precisely — needed for unread-count,
@@ -983,12 +995,7 @@ pub async fn seed_leave_scene(
     let enrolment = seed_enrolment(db, user_id, course_id, "active", Utc::now()).await;
     let leave = seed_leave_request(db, enrolment, session, status).await;
     if let Some(makeup_id) = makeup_session_id {
-        sqlx::query("UPDATE leave_requests SET makeup_session_id = $2 WHERE id = $1")
-            .bind(leave)
-            .bind(makeup_id)
-            .execute(db)
-            .await
-            .expect("set makeup_session_id");
+        set_makeup_session(db, leave, makeup_id).await;
     }
     LeaveScene { member: user_id, course: course_id, session, enrolment, leave }
 }
