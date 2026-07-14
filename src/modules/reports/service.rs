@@ -1,4 +1,4 @@
-use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -64,8 +64,8 @@ fn safe_ratio(numerator: i64, denominator: i64) -> Option<f64> {
 pub async fn admin_report(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
 ) -> Result<AdminReportResponse, AppError> {
-    let now = Utc::now();
     let tz_name = server.studio_timezone.as_str();
 
     let trend_rows = repository::revenue_trend(db, now, tz_name).await?;
@@ -296,13 +296,14 @@ fn studio_month_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
 pub async fn coach_report(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     auth: &AuthUser,
 ) -> Result<CoachReportResponse, AppError> {
     let coach = coaches_service::resolve(db, auth)
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
-    let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
+    let today = studio_clock::today(studio_clock::studio_tz(server), now);
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
     let mat = sessions_repository::materialize_range(db, &course_ids, today, today).await?;
 
@@ -329,9 +330,10 @@ pub async fn coach_report(
 pub async fn member_report(
     db: &PgPool,
     server: &ServerConfig,
+    now: DateTime<Utc>,
     user_id: Uuid,
 ) -> Result<MemberReportResponse, AppError> {
-    let today = studio_clock::today(studio_clock::studio_tz(server), Utc::now());
+    let today = studio_clock::today(studio_clock::studio_tz(server), now);
 
     let (present, absent) = repository::member_attendance(db, user_id).await?;
     let points_balance = repository::points_balance(db, user_id).await?;

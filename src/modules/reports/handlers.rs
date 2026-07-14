@@ -13,7 +13,8 @@ pub async fn admin_report(
     State(state): State<AppState>,
     _auth: AuthUser,
 ) -> Result<Json<AdminReportResponse>, AppError> {
-    let report = service::admin_report(&state.db, &state.config.server).await?;
+    let now = state.clock.now();
+    let report = service::admin_report(&state.db, &state.config.server, now).await?;
     Ok(Json(report))
 }
 
@@ -24,7 +25,8 @@ pub async fn coach_report(
     auth: AuthUser,
 ) -> Result<Json<CoachReportResponse>, AppError> {
     auth.require_role("coach")?;
-    let report = service::coach_report(&state.db, &state.config.server, &auth).await?;
+    let now = state.clock.now();
+    let report = service::coach_report(&state.db, &state.config.server, now, &auth).await?;
     Ok(Json(report))
 }
 
@@ -34,7 +36,8 @@ pub async fn member_report(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<MemberReportResponse>, AppError> {
-    let report = service::member_report(&state.db, &state.config.server, auth.user_id).await?;
+    let now = state.clock.now();
+    let report = service::member_report(&state.db, &state.config.server, now, auth.user_id).await?;
     Ok(Json(report))
 }
 
