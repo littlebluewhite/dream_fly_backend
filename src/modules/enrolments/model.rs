@@ -68,10 +68,12 @@ pub struct MyEnrolmentRow {
     pub schedule_text: Option<String>,
     pub status: EnrolmentStatus,
     pub enrolled_at: DateTime<Utc>,
-    /// Count of this enrolment's `attendance_records` with `status = 'present'`.
+    /// Count of this enrolment's `countable_attendance` rows with
+    /// `is_present` (i.e. `status = 'present'`).
     pub attended: i64,
-    /// Count of this enrolment's `attendance_records` total (i.e. how many
-    /// sessions have been marked for it so far, regardless of status).
+    /// Count of this enrolment's `countable_attendance` rows total — i.e.
+    /// `present` + `absent`; `leave` and never-marked sessions are excluded
+    /// from both fields.
     pub total: i64,
 }
 

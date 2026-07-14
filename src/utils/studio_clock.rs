@@ -6,7 +6,10 @@
 //! instants), and the derived questions every scheduling module asks: "has
 //! this instant passed?", "what date/month is it at the studio right now?",
 //! and — the shape that used to be hand-copied at four call sites — "reject
-//! this local (date, time) if it's already started".
+//! this local (date, time) if it's already started" (`require_not_started`),
+//! plus its polarity-mirrored inverse "reject this local (date, time) if it
+//! hasn't started yet" (`require_started` — attendance marking requires a
+//! session already underway, the opposite of leave/booking's "not yet").
 //!
 //! `now` and `tz` are always parameters (never `Utc::now()` internally) so
 //! day-boundary and DST edge cases are unit-testable with fixed instants.
@@ -105,6 +108,37 @@ pub fn require_not_started(
 ) -> Result<(), AppError> {
     if to_utc_checked(tz, date, time, noun)? <= now {
         return Err(started);
+    }
+    Ok(())
+}
+
+/// Reject a studio-local (date, time) that hasn't started yet — its UTC
+/// instant is after `now` (`>`) — returning `not_started` verbatim when it
+/// hasn't. The polarity-mirrored inverse of [`require_not_started`]: its
+/// strict complement (`>` here vs. `<=` there), so the start instant itself
+/// is already allowed — the same inclusive boundary as [`has_started`],
+/// just approached from the other side (attendance marking becomes allowed
+/// the moment a session starts, rather than becoming disallowed).
+///
+/// DST ambiguity is still a `BadRequest` via [`to_utc_checked`], not a
+/// `not_started` — but note an asymmetry with [`require_not_started`]'s
+/// ambiguous case: there the *caller* picks the local time being checked
+/// (a new leave/booking request), so they can simply resubmit against a
+/// different instant; here the local time is the *session's own fixed
+/// schedule*, so an ambiguous session start would permanently 400 every
+/// attendance-marking attempt for that session, with no retry able to
+/// change the outcome. Purely theoretical under `Asia/Taipei` (no DST) —
+/// documented here, not special-cased.
+pub fn require_started(
+    tz: Tz,
+    now: DateTime<Utc>,
+    date: NaiveDate,
+    time: NaiveTime,
+    noun: &str,
+    not_started: AppError,
+) -> Result<(), AppError> {
+    if to_utc_checked(tz, date, time, noun)? > now {
+        return Err(not_started);
     }
     Ok(())
 }
@@ -411,6 +445,110 @@ mod tests {
                 t(9, 0),
                 "time slot",
                 AppError::BadRequest("cannot book a time slot that has already started".into()),
+            )
+            .is_ok()
+        );
+    }
+
+    // --- require_started (polarity-mirrored inverse of require_not_started) ---
+
+    #[test]
+    fn require_started_returns_not_started_error_verbatim_when_not_yet_started() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 8, 0, 0).unwrap();
+        let err = require_started(
+            chrono_tz::UTC,
+            now,
+            d(2026, 7, 5),
+            t(9, 0),
+            "session time",
+            AppError::Validation("場次尚未開始，無法點名".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(ref m) if m == "場次尚未開始，無法點名"));
+    }
+
+    #[test]
+    fn require_started_allows_at_exact_boundary_but_not_before() {
+        // `>`: `now` exactly equal to the start instant is already
+        // allowed — `require_not_started`'s strict complement, and mirrors
+        // `has_started_true_when_now_is_at_or_after_start`'s boundary.
+        let start = d(2026, 7, 5);
+        let at_start = Utc.with_ymd_and_hms(2026, 7, 5, 9, 0, 0).unwrap();
+        assert!(
+            require_started(
+                chrono_tz::UTC,
+                at_start,
+                start,
+                t(9, 0),
+                "session time",
+                AppError::Validation("not started".into()),
+            )
+            .is_ok()
+        );
+
+        let before_start = Utc.with_ymd_and_hms(2026, 7, 5, 8, 59, 59).unwrap();
+        let err = require_started(
+            chrono_tz::UTC,
+            before_start,
+            start,
+            t(9, 0),
+            "session time",
+            AppError::Validation("not started".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(ref m) if m == "not started"));
+    }
+
+    #[test]
+    fn require_started_ambiguous_local_time_returns_bad_request() {
+        // Nonexistent local time (spring forward) — mirrors
+        // `to_utc_none_on_nonexistent_spring_forward_time`. DST ambiguity is
+        // still a 400 under this inverse gate too — see the function doc's
+        // note on why that's a *permanent* block for a session's fixed
+        // schedule (unlike `require_not_started`, where the caller picks
+        // the local time and can simply avoid the ambiguous instant).
+        let now = Utc.with_ymd_and_hms(2026, 3, 8, 12, 0, 0).unwrap();
+        let err = require_started(
+            new_york(),
+            now,
+            d(2026, 3, 8),
+            t(2, 30),
+            "session time",
+            AppError::Validation("not started".into()),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m == "session time falls on an ambiguous local time")
+        );
+    }
+
+    #[test]
+    fn require_started_uses_studio_local_wall_clock_not_utc_date() {
+        // 23:30 UTC on the 5th = 07:30 Taipei on the 6th (UTC+8). A session
+        // dated the 6th at 08:00 Taipei-local has NOT started yet at that
+        // instant, even though the UTC calendar date is still the 5th.
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 23, 30, 0).unwrap();
+        let err = require_started(
+            taipei(),
+            now,
+            d(2026, 7, 6),
+            t(8, 0),
+            "session time",
+            AppError::Validation("not started".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation(ref m) if m == "not started"));
+
+        // 23:30 UTC on the 5th = 07:30 Taipei on the 6th — a session dated
+        // the 6th at 07:00 Taipei-local HAS already started.
+        assert!(
+            require_started(
+                taipei(),
+                now,
+                d(2026, 7, 6),
+                t(7, 0),
+                "session time",
+                AppError::Validation("not started".into()),
             )
             .is_ok()
         );

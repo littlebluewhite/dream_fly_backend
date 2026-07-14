@@ -33,8 +33,16 @@ pub async fn bulk_upsert_attendance(
     ValidatedJson(req): ValidatedJson<BulkUpsertAttendanceRequest>,
 ) -> Result<Json<Vec<RosterEntryResponse>>, AppError> {
     auth.require_any_role(&["admin", "coach"])?;
-    let roster =
-        service::bulk_upsert_attendance(&state.db, &auth, session_id, req.records).await?;
+    let now = state.clock.now();
+    let roster = service::bulk_upsert_attendance(
+        &state.db,
+        &state.config.server,
+        now,
+        &auth,
+        session_id,
+        req.records,
+    )
+    .await?;
     Ok(Json(roster))
 }
 

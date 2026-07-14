@@ -15,6 +15,10 @@ fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
 }
 
+fn yesterday() -> chrono::NaiveDate {
+    (Utc::now() - Duration::days(1)).date_naive()
+}
+
 async fn attendance_records_count(db: &PgPool, session_id: Uuid) -> i64 {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM attendance_records WHERE session_id = $1")
         .bind(session_id)
@@ -192,8 +196,7 @@ async fn attendance_put_cross_course_enrolment_rejects_whole_batch_with_no_write
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Course A", None).await;
     let other_course_id = seed_course(&app.db, "Attendance Course B", None).await;
-    let session_id =
-        seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
 
     let member_in = app.register_member("att-cross-in@example.com", "Password!234").await;
     let member_out = app.register_member("att-cross-out@example.com", "Password!234").await;
@@ -223,8 +226,7 @@ async fn attendance_put_cancelled_enrolment_rejects_whole_batch(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Cancelled Course", None).await;
-    let session_id =
-        seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-cancelled-member@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&app.db, member.user_id, course_id, "cancelled", Utc::now()).await;
@@ -243,8 +245,7 @@ async fn attendance_put_invalid_status_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Invalid Status Course", None).await;
-    let session_id =
-        seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-invalid-status@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
@@ -279,8 +280,7 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
         .await;
     let coach_id = seed_coach(&app.db, coach_user_id, "Idem Coach").await;
     let course_id = seed_course(&app.db, "Idempotent Course", Some(coach_id)).await;
-    let session_id =
-        seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
 
     let member_a = app.register_member("att-idem-a@example.com", "Password!234").await;
     let member_b = app.register_member("att-idem-b@example.com", "Password!234").await;
@@ -506,6 +506,65 @@ async fn future_session_still_appears_in_roster(db: PgPool) {
     let resp = app
         .get(&format!("/api/v1/sessions/{session_id}/roster"))
         .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+}
+
+// ---------------------------------------------------------------------------
+// PUT /sessions/{id}/attendance — "session already started" gate
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn attendance_put_future_session_returns_422_and_writes_nothing(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Attendance Future Course", None).await;
+    let session_id = seed_course_session(
+        &app.db,
+        course_id,
+        (Utc::now() + Duration::days(1)).date_naive(),
+        t(9, 0),
+        t(10, 0),
+    )
+    .await;
+    let member = app.register_member("att-future-member@example.com", "Password!234").await;
+    let enrolment_id =
+        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+
+    let resp = app
+        .put(&format!("/api/v1/sessions/{session_id}/attendance"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "present"}]}))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+    assert_eq!(attendance_records_count(&app.db, session_id).await, 0);
+}
+
+#[sqlx::test]
+async fn attendance_put_at_exact_start_boundary_returns_200(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Attendance Boundary Course", None).await;
+    let today = Utc::now().date_naive();
+    let session_id = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
+    let member = app.register_member("att-boundary-member@example.com", "Password!234").await;
+    let enrolment_id =
+        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+
+    // studio_timezone is pinned to UTC in the test harness (see
+    // common::http::test_app_config), so "today 09:00 studio-local" is
+    // exactly "today 09:00 UTC" — no zone conversion needed here. Pin the
+    // clock to the session's exact start instant: `require_started`'s
+    // boundary is inclusive (rejects only `> now`), mirroring
+    // `has_started`'s `<=` semantics — the moment a session starts, marking
+    // it must already be allowed. Real wall-clock time never enters into
+    // it, so this is deterministic at any hour the suite runs.
+    app.clock.set(today.and_time(t(9, 0)).and_utc());
+
+    let resp = app
+        .put(&format!("/api/v1/sessions/{session_id}/attendance"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "present"}]}))
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 }

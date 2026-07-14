@@ -1,11 +1,14 @@
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::coaches::service as coaches_service;
+use crate::utils::studio_clock;
 
 use super::dto::{AttendanceRecordEntry, MyStudentResponse, RosterEntryResponse};
 use super::model::AttendanceStatus;
@@ -33,13 +36,19 @@ pub async fn get_roster(
     Ok(rows.into_iter().map(RosterEntryResponse::from).collect())
 }
 
-/// `PUT /sessions/{id}/attendance`. Validates every record's `status` and
-/// enrolment ownership *before* writing anything: an invalid status string,
-/// or any enrolment that doesn't belong to this session's course and isn't
+/// `PUT /sessions/{id}/attendance`. Requires the session to have already
+/// started (studio-local wall clock via `studio_clock::require_started` —
+/// the polarity-mirrored inverse of `leave`'s "not yet started" gate),
+/// rejected with 422 *before* validating anything else — even an empty
+/// `records` batch. Then validates every record's `status` and enrolment
+/// ownership *before* writing anything: an invalid status string, or any
+/// enrolment that doesn't belong to this session's course and isn't
 /// active, rejects the whole batch with zero writes (422). Otherwise upserts
 /// each record in one transaction and returns the updated roster.
 pub async fn bulk_upsert_attendance(
     db: &PgPool,
+    server: &ServerConfig,
+    now: DateTime<Utc>,
     auth: &AuthUser,
     session_id: Uuid,
     records: Vec<AttendanceRecordEntry>,
@@ -54,6 +63,15 @@ pub async fn bulk_upsert_attendance(
         "not the coach for this course",
     )
     .await?;
+
+    studio_clock::require_started(
+        studio_clock::studio_tz(server),
+        now,
+        session_course.session_date,
+        session_course.start_time,
+        "session time",
+        AppError::Validation("場次尚未開始，無法點名".into()),
+    )?;
 
     let mut parsed: Vec<(Uuid, AttendanceStatus)> = Vec::with_capacity(records.len());
     for r in &records {

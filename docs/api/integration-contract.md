@@ -655,7 +655,7 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 }
 ```
 
-`attended`/`total` 為即時計算（單一 LEFT JOIN `attendance_records` 聚合，非儲存欄位）：`attended` 為該 enrolment 被標記 `status='present'` 的筆數；`total` 為該 enrolment 的 `attendance_records` 總筆數（即「已點名場次數」，不論該次狀態為何）。**出勤統計以已點名場次為準**——尚未點名的場次不計入 `total`（也就是說 `total` 不是「該課程至今已上過幾堂」，而是「教練/admin 已經對這個 enrolment 點過名的場次數」）。無任何點名紀錄時兩者皆為 `0`。詳見 §3.19 Attendance。
+`attended`/`total` 為即時計算（單一 LEFT JOIN `countable_attendance` 聚合，非儲存欄位）：`attended` 為該 enrolment 被標記 `status='present'` 的筆數；`total` 為該 enrolment 的 `present`+`absent` 筆數之和——view 的成員資格本身即為分母。**`leave` 與尚未點名的場次一律不計入 `total`**（也就是說 `total` 不是「該課程至今已上過幾堂」，也不是「已點名場次數」，而是「present+absent 的場次數」；純請假、從未點名的場次皆不影響這兩個統計）。無 `present`/`absent` 紀錄時兩者皆為 `0`（即使該 enrolment 有請假紀錄）。詳見 §3.19 Attendance。
 
 #### `PATCH /enrolments/{id}/cancel` — 需登入（本人或 admin）
 無 body。回應：更新後的 `EnrolmentResponse`（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。
@@ -847,6 +847,7 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 1. 權限採「該課教練或 admin」：`courses.coach_id` 指向的 `coaches` 列之 `user_id` 等於呼叫者，才算「該課教練」；非本課教練（含掛 `coach` 角色但教的是別堂課）一律 403。呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列（資料異常）同樣視為非本課教練 → 403（與 `GET /sessions/today` 查無資料時「降級為空陣列」不同——這裡是存取單一場次資源，403 才是正確語意）。
 2. `PUT /sessions/{id}/attendance` 的驗證發生在任何寫入之前：先驗證每筆 `status` 是合法值、每筆 `enrolment_id` 都屬於該場次所在課程且狀態為 `active`；只要有一筆不符合，**整批 422 拒絕，零寫入**（即使批次中其餘筆數本身合法有效）。
 3. `GET /coaches/me/students` 僅限 `coach` 角色（無 admin 例外）。「我的 active 課程」＝ `courses.coach_id` 指向呼叫者的課程且 `is_active = true`；「active enrolments」＝該課程 `enrolments.status = 'active'`。同一學員在此教練名下多堂課皆有效報名時只會出現一筆，`courses` 欄位彙整該學員在這位教練名下的所有課程，每筆課程條目皆帶該學員在該課程的 `enrolment_id`（供前端「寫評語」呼叫 `POST /report-cards` 使用）。
+4. `PUT /sessions/{id}/attendance` 要求場次已經開始才能點名（與 §3.20 請假「開課前皆可申請」極性相反）：「已開始」的判定與 §3.18 裁決 2 一致，以 `studio_timezone` 當地牆鐘時間比較 `session_date`+`start_time` 與呼叫當下，開始瞬間本身即視為已開始（含界，同 `has_started`）；尚未開始 → 422（訊息「場次尚未開始，無法點名」）。此檢查發生在裁決 1 的教練/admin 權限驗證之後、裁決 2 的批次內容驗證之前——**即使 `records` 為空陣列，未開始場次一樣回 422**（空批次不再是恆成功的 no-op；行為變更，舊版無此檢查恆回 200）。
 
 #### `GET /sessions/{id}/roster` — admin 或該課教練
 該場次名冊：課程的 active enrolments JOIN `users`，並 LEFT JOIN 這個場次自己的出勤紀錄（尚未點名的學員該欄位為 `null`）。404：場次不存在。403：非本課教練。
@@ -863,7 +864,7 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 #### `PUT /sessions/{id}/attendance` — admin 或該課教練
 Body：`{ "records": [ { "enrolment_id": "uuid", "status": "present|absent|leave" }, ... ] }`。批次 upsert（`ON CONFLICT (session_id, enrolment_id) DO UPDATE`）——重複呼叫同樣的 body 冪等、不會產生重複紀錄；同一 enrolment 再次點名會覆寫先前狀態，不影響 `created_at`。回應：更新後的完整名冊（`RosterEntryResponse[]`，與 `GET /sessions/{id}/roster` 同形狀）。
 
-錯誤：404（場次不存在）；403（非本課教練）；422（`status` 不是 `present`/`absent`/`leave` 之一，或任何 `enrolment_id` 不屬於該場次所在課程／狀態非 `active`——**整批拒絕，零寫入**，見上方裁決 2）。
+錯誤：404（場次不存在）；403（非本課教練）；422（場次尚未開始，訊息「場次尚未開始，無法點名」，見上方裁決 4——**此檢查先於下方這條，即使 `records` 為空陣列也會觸發**）；422（`status` 不是 `present`/`absent`/`leave` 之一，或任何 `enrolment_id` 不屬於該場次所在課程／狀態非 `active`——**整批拒絕，零寫入**，見上方裁決 2）。
 
 #### `GET /coaches/me/students` — coach
 呼叫者（教練）「active 課程」的「active enrolments」，去重後的學員清單。回應（`MyStudentResponse[]`，純陣列，依學員姓名排序）：

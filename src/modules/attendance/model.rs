@@ -1,3 +1,4 @@
+use chrono::{NaiveDate, NaiveTime};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,14 +36,19 @@ impl std::str::FromStr for AttendanceStatus {
     }
 }
 
-/// `course_sessions` JOINed with its course's `coach_id` — used only for the
+/// `course_sessions` JOINed with its course's `coach_id` — used for the
 /// coach-ownership authorization check on `GET /sessions/{id}/roster` and
 /// `PUT /sessions/{id}/attendance` (a session's course never changes, so
-/// this is a cheap single-row lookup, not a listing query).
+/// this is a cheap single-row lookup, not a listing query), plus
+/// `session_date`/`start_time` feeding `PUT /sessions/{id}/attendance`'s
+/// "session already started" gate (`studio_clock::require_started`) — `GET
+/// .../roster` doesn't gate, so it just ignores these two fields.
 #[derive(Debug, sqlx::FromRow)]
 pub struct SessionCourseRow {
     pub course_id: Uuid,
     pub coach_id: Option<Uuid>,
+    pub session_date: NaiveDate,
+    pub start_time: NaiveTime,
 }
 
 /// One row of `GET /sessions/{id}/roster` — a course's active enrolments

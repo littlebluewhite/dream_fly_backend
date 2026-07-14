@@ -30,7 +30,9 @@ impl From<EnrolmentWithCourse> for EnrolmentResponse {
 }
 
 /// `GET /enrolments/me` response entry — `EnrolmentResponse`'s fields plus
-/// `attended`/`total` attendance stats (contract §3.12: 出勤統計以已點名場次為準).
+/// `attended`/`total` attendance stats (contract §3.12: `countable_attendance`
+/// caliber — `present`/`absent` count toward `total`, `leave` and
+/// never-marked sessions don't; `attended` is the `present` subset).
 #[derive(Debug, Serialize)]
 pub struct MyEnrolmentResponse {
     pub id: Uuid,

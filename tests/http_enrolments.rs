@@ -3,7 +3,9 @@
 mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
-use common::fixtures::{seed_course_session, seed_course_with_capacity, seed_enrolment};
+use common::fixtures::{
+    seed_attendance, seed_course_session, seed_course_with_capacity, seed_enrolment,
+};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -166,12 +168,16 @@ async fn me_attendance_stats_present_2_absent_1_gives_attended_2_total_3(db: PgP
     let enrolment_id =
         seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
 
+    // Seeded in the past (-3/-2/-1 days): `PUT .../attendance` now gates on
+    // the session having already started, so a `today`/future seed here
+    // would 422 instead of marking successfully.
     let today = Utc::now().date_naive();
-    let session_1 = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
+    let session_1 =
+        seed_course_session(&app.db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
     let session_2 =
-        seed_course_session(&app.db, course_id, today + Duration::days(1), t(9, 0), t(10, 0)).await;
+        seed_course_session(&app.db, course_id, today - Duration::days(2), t(9, 0), t(10, 0)).await;
     let session_3 =
-        seed_course_session(&app.db, course_id, today + Duration::days(2), t(9, 0), t(10, 0)).await;
+        seed_course_session(&app.db, course_id, today - Duration::days(1), t(9, 0), t(10, 0)).await;
 
     for (session_id, status) in
         [(session_1, "present"), (session_2, "present"), (session_3, "absent")]
@@ -220,6 +226,56 @@ async fn me_attendance_stats_with_no_marks_is_zero_zero(db: PgPool) {
         .expect("enrolment present in /enrolments/me");
     assert_eq!(entry["attended"], 0);
     assert_eq!(entry["total"], 0);
+}
+
+/// `countable_attendance` view regression: `leave` must not inflate `total`.
+/// Seeded straight via `seed_attendance` (bypasses `PUT .../attendance`
+/// entirely, so the "session already started" gate never applies here) —
+/// this test is about the read-side aggregation caliber, not the write-side
+/// gate. Old semantics (`COUNT(attendance_records.id)`, no status filter)
+/// would give `total=4`; the `countable_attendance` view excludes `leave`
+/// from its membership, so `total` must be `3` (present+absent only).
+#[sqlx::test]
+async fn me_attendance_stats_present_2_absent_1_leave_1_excludes_leave_from_total(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("enr-me-leave-excl@example.com", "Password!234").await;
+    let (admin_id, _admin_token) = app.seed_admin().await;
+    let course_id =
+        seed_course_with_capacity(&app.db, "Attendance Leave Excl Course", None, 10).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+
+    let today = Utc::now().date_naive();
+    let session_present_1 = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
+    let session_present_2 =
+        seed_course_session(&app.db, course_id, today + Duration::days(1), t(9, 0), t(10, 0)).await;
+    let session_absent =
+        seed_course_session(&app.db, course_id, today + Duration::days(2), t(9, 0), t(10, 0)).await;
+    let session_leave =
+        seed_course_session(&app.db, course_id, today + Duration::days(3), t(9, 0), t(10, 0)).await;
+
+    seed_attendance(&app.db, session_present_1, enrolment_id, "present", admin_id).await;
+    seed_attendance(&app.db, session_present_2, enrolment_id, "present", admin_id).await;
+    seed_attendance(&app.db, session_absent, enrolment_id, "absent", admin_id).await;
+    seed_attendance(&app.db, session_leave, enrolment_id, "leave", admin_id).await;
+
+    let resp = app
+        .get("/api/v1/enrolments/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let arr = body.as_array().expect("plain array, not an envelope");
+    let entry = arr
+        .iter()
+        .find(|e| e["id"] == enrolment_id.to_string())
+        .expect("enrolment present in /enrolments/me");
+    assert_eq!(entry["attended"], 2, "present-count must be 2, got {entry:?}");
+    assert_eq!(
+        entry["total"], 3,
+        "countable total must be present+absent=3, excluding the leave record \
+         (old attendance_records-count semantics would wrongly give 4), got {entry:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -297,13 +353,20 @@ async fn attendance_owner_sees_marked_sessions_oldest_to_newest_with_full_fields
 
     let today = Utc::now().date_naive();
     // Seed/mark out of chronological order to prove the endpoint sorts by
-    // session date rather than echoing insertion or marking order.
+    // session date rather than echoing insertion or marking order. Marked
+    // sessions are seeded in the past (-3/-2/-1 days) so `PUT
+    // .../attendance`'s "session already started" gate doesn't reject the
+    // marking calls below; the unmarked session stays in the future to
+    // prove exclusion still works (it's never PUT, so the gate never
+    // applies to it).
     let session_newest =
-        seed_course_session(&app.db, course_id, today + Duration::days(2), t(9, 0), t(10, 0))
+        seed_course_session(&app.db, course_id, today - Duration::days(1), t(9, 0), t(10, 0))
             .await;
-    let session_oldest = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
+    let session_oldest =
+        seed_course_session(&app.db, course_id, today - Duration::days(3), t(9, 0), t(10, 0))
+            .await;
     let session_middle =
-        seed_course_session(&app.db, course_id, today + Duration::days(1), t(9, 0), t(10, 0))
+        seed_course_session(&app.db, course_id, today - Duration::days(2), t(9, 0), t(10, 0))
             .await;
     // An unmarked session for the same enrolment — must not appear.
     seed_course_session(&app.db, course_id, today + Duration::days(3), t(9, 0), t(10, 0)).await;
@@ -329,11 +392,11 @@ async fn attendance_owner_sees_marked_sessions_oldest_to_newest_with_full_fields
     assert_eq!(arr.len(), 3, "only marked sessions must appear, got {arr:?}");
 
     // Oldest to newest.
-    assert_eq!(arr[0]["session_date"], today.to_string());
+    assert_eq!(arr[0]["session_date"], (today - Duration::days(3)).to_string());
     assert_eq!(arr[0]["status"], "absent");
-    assert_eq!(arr[1]["session_date"], (today + Duration::days(1)).to_string());
+    assert_eq!(arr[1]["session_date"], (today - Duration::days(2)).to_string());
     assert_eq!(arr[1]["status"], "leave");
-    assert_eq!(arr[2]["session_date"], (today + Duration::days(2)).to_string());
+    assert_eq!(arr[2]["session_date"], (today - Duration::days(1)).to_string());
     assert_eq!(arr[2]["status"], "present");
 
     // Field completeness on one entry.

@@ -77,9 +77,11 @@ pub async fn cancel_if_active_tx(
 
 /// This user's enrolments JOINed with course info, newest first, plus
 /// per-enrolment attendance stats aggregated with a single `LEFT JOIN
-/// attendance_records` (no N+1 — one query for the whole list). `attended`
-/// counts that enrolment's `present` records; `total` counts all of its
-/// attendance_records regardless of status (i.e. sessions marked so far).
+/// countable_attendance` (no N+1 — one query for the whole list; view
+/// membership is `present`/`absent` only, `leave` excluded). `attended`
+/// counts that enrolment's `present` rows; `total` counts `present` +
+/// `absent` (the view's membership itself is the denominator) — `leave`
+/// and never-marked sessions count toward neither.
 pub async fn find_by_user_with_course(
     db: &PgPool,
     user_id: Uuid,
@@ -87,11 +89,11 @@ pub async fn find_by_user_with_course(
     sqlx::query_as::<_, MyEnrolmentRow>(
         "SELECT e.id, e.course_id, c.name AS course_name, c.level AS course_level, \
                 c.schedule_text, e.status, e.enrolled_at, \
-                COUNT(CASE WHEN ar.status = 'present'::attendance_status THEN 1 END) AS attended, \
-                COUNT(ar.id) AS total \
+                COUNT(*) FILTER (WHERE ca.is_present) AS attended, \
+                COUNT(ca.id) AS total \
          FROM enrolments e \
          JOIN courses c ON c.id = e.course_id \
-         LEFT JOIN attendance_records ar ON ar.enrolment_id = e.id \
+         LEFT JOIN countable_attendance ca ON ca.enrolment_id = e.id \
          WHERE e.user_id = $1 \
          GROUP BY e.id, c.name, c.level, c.schedule_text, e.status, e.enrolled_at \
          ORDER BY e.enrolled_at DESC",

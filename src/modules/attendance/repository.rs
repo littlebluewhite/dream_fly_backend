@@ -12,7 +12,7 @@ pub async fn find_session_course(
     session_id: Uuid,
 ) -> Result<Option<SessionCourseRow>, sqlx::Error> {
     sqlx::query_as::<_, SessionCourseRow>(
-        "SELECT cs.course_id, c.coach_id \
+        "SELECT cs.course_id, c.coach_id, cs.session_date, cs.start_time \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
          WHERE cs.id = $1",
