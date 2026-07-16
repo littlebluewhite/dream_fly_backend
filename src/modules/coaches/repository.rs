@@ -2,7 +2,6 @@ use chrono::NaiveTime;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::dto::ScheduleEntry;
 use super::model::{ClockRecord, Coach, CoachSchedule};
 
 pub async fn find_all_active(db: &PgPool) -> Result<Vec<Coach>, sqlx::Error> {
@@ -165,10 +164,15 @@ pub async fn find_schedules(
     .await
 }
 
+/// Replace all of a coach's weekly schedule rows (delete + insert within one
+/// transaction). Each tuple is `(day_of_week, start_time, end_time,
+/// is_available)` — already parsed/validated by the caller
+/// (`coaches::service::parse_schedule_entries`). Mirrors
+/// `sessions::repository::replace_slots_tx`'s pre-parsed-row contract.
 pub async fn replace_schedules(
     db: &PgPool,
     coach_id: Uuid,
-    schedules: &[ScheduleEntry],
+    schedules: &[(i16, NaiveTime, NaiveTime, bool)],
 ) -> Result<Vec<CoachSchedule>, sqlx::Error> {
     let mut tx = db.begin().await?;
 
@@ -177,23 +181,16 @@ pub async fn replace_schedules(
         .execute(&mut *tx)
         .await?;
 
-    for entry in schedules {
-        let start_time = NaiveTime::parse_from_str(&entry.start_time, "%H:%M")
-            .or_else(|_| NaiveTime::parse_from_str(&entry.start_time, "%H:%M:%S"))
-            .map_err(|e| sqlx::Error::Protocol(format!("invalid start_time: {}", e)))?;
-        let end_time = NaiveTime::parse_from_str(&entry.end_time, "%H:%M")
-            .or_else(|_| NaiveTime::parse_from_str(&entry.end_time, "%H:%M:%S"))
-            .map_err(|e| sqlx::Error::Protocol(format!("invalid end_time: {}", e)))?;
-
+    for (day_of_week, start_time, end_time, is_available) in schedules {
         sqlx::query(
             "INSERT INTO coach_schedules (id, coach_id, day_of_week, start_time, end_time, is_available, created_at) \
              VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW())",
         )
         .bind(coach_id)
-        .bind(entry.day_of_week)
+        .bind(day_of_week)
         .bind(start_time)
         .bind(end_time)
-        .bind(entry.is_available)
+        .bind(is_available)
         .execute(&mut *tx)
         .await?;
     }

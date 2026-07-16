@@ -1,3 +1,4 @@
+use chrono::NaiveTime;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -5,6 +6,7 @@ use crate::error::{AppError, constraint_name};
 use crate::extractors::auth::{AuthUser, invalidate_role_cache};
 use crate::modules::auth::repository as auth_repository;
 use crate::modules::users::repository as users_repository;
+use crate::utils::studio_clock;
 
 use super::dto::{
     ClockRecordResponse, CoachDetailResponse, CoachResponse, CoachScheduleResponse,
@@ -184,6 +186,34 @@ pub async fn get_schedules(
     Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())
 }
 
+/// Parse+validate `ScheduleEntry` request rows into the tuple shape
+/// `repository::replace_schedules` takes. `AppError::Validation` (422) on an
+/// unparseable time or `end_time <= start_time` — the per-field bounds
+/// (day_of_week 0-6, string length) are already enforced by `ValidatedJson`
+/// via `ScheduleEntry`'s own `Validate` derive before the service layer ever
+/// sees this. Template: `courses::service::parse_schedule_slots`.
+fn parse_schedule_entries(
+    entries: &[ScheduleEntry],
+) -> Result<Vec<(i16, NaiveTime, NaiveTime, bool)>, AppError> {
+    entries
+        .iter()
+        .map(|e| {
+            let start = studio_clock::parse_time_of_day(&e.start_time).ok_or_else(|| {
+                AppError::Validation(format!("invalid start_time: {}", e.start_time))
+            })?;
+            let end = studio_clock::parse_time_of_day(&e.end_time).ok_or_else(|| {
+                AppError::Validation(format!("invalid end_time: {}", e.end_time))
+            })?;
+            if end <= start {
+                return Err(AppError::Validation(
+                    "schedule end_time must be after start_time".into(),
+                ));
+            }
+            Ok((e.day_of_week, start, end, e.is_available))
+        })
+        .collect()
+}
+
 pub async fn update_schedules(
     db: &PgPool,
     auth: &AuthUser,
@@ -192,7 +222,9 @@ pub async fn update_schedules(
 ) -> Result<Vec<CoachScheduleResponse>, AppError> {
     require_own_coach_profile(db, auth, coach_id).await?;
 
-    let schedules = repository::replace_schedules(db, coach_id, entries)
+    let parsed_entries = parse_schedule_entries(entries)?;
+
+    let schedules = repository::replace_schedules(db, coach_id, &parsed_entries)
         .await
         .map_err(|e| AppError::conflict_on_exclusion(e, "教練班表時段重疊"))?;
     Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())

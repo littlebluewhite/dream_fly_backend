@@ -6,6 +6,8 @@
 //! - `get_schedules` returns entries in day_of_week order
 //! - `update_schedules` by the owning user succeeds; by a stranger → Forbidden
 //! - `update_schedules` by an admin on someone else's coach profile succeeds
+//! - `update_schedules` with an unparseable time string → Validation (422)
+//! - `update_schedules` with `end_time <= start_time` → Validation (422)
 //! - `clock_in` twice without `clock_out` in between → Conflict
 //!   (defends the `uq_clock_records_open` partial unique index)
 //! - `clock_out` with no active clock-in → NotFound
@@ -116,6 +118,103 @@ async fn update_schedules_by_admin_on_other_coach_succeeds(db: PgPool) {
     )
     .await
     .expect("admin may edit any coach's schedule");
+}
+
+#[sqlx::test]
+async fn update_schedules_invalid_time_returns_422(db: PgPool) {
+    // "99:99" / "aa:bb" are legal length (5 chars, passes ScheduleEntry's
+    // `#[validate(length(min = 5, max = 8))]`) but an illegal time format —
+    // before the service-layer parse, these reached the DB unparsed and
+    // surfaced as a bare 500 (sqlx::Error::Protocol wrapped as
+    // AppError::Database, not Validation).
+    let user_id = common::seed_member(&db, "badtime@example.com", "hunter22-secret").await;
+    let coach_id = common::fixtures::seed_coach(&db, user_id, "Owner").await;
+    let auth = common::auth_with_roles(user_id, &["member", "coach"]);
+
+    let err = service::update_schedules(
+        &db,
+        &auth,
+        coach_id,
+        &[ScheduleEntry {
+            day_of_week: 1,
+            start_time: "99:99".into(),
+            end_time: "10:00".into(),
+            is_available: true,
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(_)),
+        "expected Validation for invalid start_time, got {err:?}"
+    );
+
+    let err = service::update_schedules(
+        &db,
+        &auth,
+        coach_id,
+        &[ScheduleEntry {
+            day_of_week: 1,
+            start_time: "09:00".into(),
+            end_time: "aa:bb".into(),
+            is_available: true,
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(_)),
+        "expected Validation for invalid end_time, got {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn update_schedules_end_not_after_start_returns_422(db: PgPool) {
+    // Both entries parse fine individually, so before the service-layer
+    // `end <= start` check they reached the DB and tripped the
+    // `coach_schedules_time_order CHECK (end_time > start_time)` constraint
+    // — surfacing as a bare 500 (AppError::Database) instead of Validation.
+    let user_id = common::seed_member(&db, "badrange@example.com", "hunter22-secret").await;
+    let coach_id = common::fixtures::seed_coach(&db, user_id, "Owner").await;
+    let auth = common::auth_with_roles(user_id, &["member", "coach"]);
+
+    // end_time == start_time
+    let err = service::update_schedules(
+        &db,
+        &auth,
+        coach_id,
+        &[ScheduleEntry {
+            day_of_week: 1,
+            start_time: "10:00".into(),
+            end_time: "10:00".into(),
+            is_available: true,
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(_)),
+        "expected Validation for end_time == start_time, got {err:?}"
+    );
+
+    // end_time before start_time
+    let err = service::update_schedules(
+        &db,
+        &auth,
+        coach_id,
+        &[ScheduleEntry {
+            day_of_week: 1,
+            start_time: "11:00".into(),
+            end_time: "10:00".into(),
+            is_available: true,
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(_)),
+        "expected Validation for end_time < start_time, got {err:?}"
+    );
 }
 
 #[sqlx::test]
