@@ -11,6 +11,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 use dream_fly_backend::config::AppConfig;
 use dream_fly_backend::kafka;
+use dream_fly_backend::kafka::producer::KafkaPublisher;
 use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::{Clock, SystemClock};
@@ -321,12 +322,12 @@ async fn main() -> anyhow::Result<()> {
     let outbox_handle = match (&state.kafka_producer, config_arc.kafka.enabled) {
         (Some(producer), true) => {
             let dispatcher_db = state.db.clone();
-            let dispatcher_producer = (**producer).clone();
+            let dispatcher_publisher = Arc::new(KafkaPublisher((**producer).clone()));
             let dispatcher_shutdown = shutdown_rx.clone();
             let handle = tokio::spawn(async move {
                 kafka::outbox::start_dispatcher(
                     dispatcher_db,
-                    dispatcher_producer,
+                    dispatcher_publisher,
                     dispatcher_shutdown,
                 )
                 .await;

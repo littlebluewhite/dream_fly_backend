@@ -41,15 +41,16 @@
 //! The dispatcher is started once at process boot — see
 //! [`start_dispatcher`], wired in `main.rs`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use rdkafka::producer::FutureProducer;
 use serde::Serialize;
 use sqlx::PgPool;
 use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::events::{DomainEvent, KafkaEvent};
+use super::producer::EventPublisher;
 
 /// Poll interval for the dispatcher tick loop. Short enough that an event
 /// published to the outbox is typically on Kafka within a second, long
@@ -130,7 +131,7 @@ pub async fn insert_domain_event_tx<E: DomainEvent>(
 /// Enabling Kafka and restarting the process will drain the backlog.
 pub async fn start_dispatcher(
     db: PgPool,
-    producer: FutureProducer,
+    publisher: Arc<dyn EventPublisher>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     tracing::info!("Kafka outbox dispatcher started");
@@ -148,7 +149,7 @@ pub async fn start_dispatcher(
             }
 
             _ = ticker.tick() => {
-                if let Err(e) = drain_once(&db, &producer).await {
+                if let Err(e) = drain_once(&db, publisher.as_ref()).await {
                     // Transient DB errors are normal during restarts; log
                     // and keep the loop alive. The next tick will retry.
                     tracing::warn!(error = %e, "outbox drain tick failed");
@@ -161,7 +162,11 @@ pub async fn start_dispatcher(
 /// Drain up to [`BATCH_SIZE`] pending rows. Each row is claimed with
 /// `FOR UPDATE SKIP LOCKED` so running multiple dispatchers (for
 /// horizontal scale) produces disjoint work partitions without conflict.
-async fn drain_once(db: &PgPool, producer: &FutureProducer) -> Result<(), sqlx::Error> {
+///
+/// `pub` so integration tests can drive it directly against a
+/// [`super::producer::EventPublisher`] fake, exercising the retry/bookkeeping
+/// logic (attempts, last_error, published_at) without a Kafka broker.
+pub async fn drain_once(db: &PgPool, publisher: &dyn EventPublisher) -> Result<(), sqlx::Error> {
     // Phase 1: claim a batch of unpublished rows with row locks held for
     // the duration of the transaction. `SKIP LOCKED` lets concurrent
     // dispatchers pick different rows rather than blocking on each other.
@@ -203,7 +208,7 @@ async fn drain_once(db: &PgPool, producer: &FutureProducer) -> Result<(), sqlx::
             }
         };
 
-        match super::producer::publish(producer, &topic, &key, &body).await {
+        match publisher.publish(&topic, &key, &body).await {
             Ok(()) => successes.push(id),
             Err(e) => failures.push((id, format!("kafka: {e}"))),
         }

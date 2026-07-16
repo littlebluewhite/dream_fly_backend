@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::error::KafkaError;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -21,27 +22,38 @@ pub fn create_producer(brokers: &str) -> Result<FutureProducer, KafkaError> {
         .create()
 }
 
-pub async fn publish(
-    producer: &FutureProducer,
-    topic: &str,
-    key: &str,
-    payload: &str,
-) -> Result<(), KafkaError> {
-    let record = FutureRecord::to(topic).key(key).payload(payload);
+/// Trait-object facade for outbound Kafka publishing so the outbox
+/// dispatcher can hold a `&dyn EventPublisher` / `Arc<dyn EventPublisher>`.
+/// In production this is backed by `KafkaPublisher` (a real `FutureProducer`);
+/// integration tests substitute an in-memory fake that never touches a
+/// broker, so the dispatcher's retry/bookkeeping logic (attempts,
+/// last_error, published_at) can be exercised without Kafka running.
+#[async_trait]
+pub trait EventPublisher: Send + Sync {
+    async fn publish(&self, topic: &str, key: &str, payload: &str) -> Result<(), KafkaError>;
+}
 
-    match producer.send(record, Duration::from_secs(5)).await {
-        Ok(delivery) => {
-            tracing::debug!(
-                topic,
-                partition = delivery.partition,
-                offset = delivery.offset,
-                "Kafka message delivered"
-            );
-            Ok(())
-        }
-        Err((err, _)) => {
-            tracing::error!("Kafka delivery failed: {err}");
-            Err(err)
+pub struct KafkaPublisher(pub FutureProducer);
+
+#[async_trait]
+impl EventPublisher for KafkaPublisher {
+    async fn publish(&self, topic: &str, key: &str, payload: &str) -> Result<(), KafkaError> {
+        let record = FutureRecord::to(topic).key(key).payload(payload);
+
+        match self.0.send(record, Duration::from_secs(5)).await {
+            Ok(delivery) => {
+                tracing::debug!(
+                    topic,
+                    partition = delivery.partition,
+                    offset = delivery.offset,
+                    "Kafka message delivered"
+                );
+                Ok(())
+            }
+            Err((err, _)) => {
+                tracing::error!("Kafka delivery failed: {err}");
+                Err(err)
+            }
         }
     }
 }
