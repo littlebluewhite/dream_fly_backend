@@ -94,6 +94,32 @@ pub async fn checkout(
     let cart_items = cart_service::find_cart_items_for_checkout_tx(&mut tx, user_id).await?;
 
     if cart_items.is_empty() {
+        // A concurrent request carrying the *same* idempotency key may have
+        // already won this cart: it locked these same rows first, ran the
+        // whole checkout, cleared the cart, and committed (steps 11/12/`tx.
+        // commit()` below) while we were blocked on the row lock
+        // `find_cart_items_for_checkout_tx` just took above — so by the time
+        // we see the empty cart, the winner is guaranteed to have already
+        // committed too (cart-clear and idempotency-insert share that one
+        // transaction). Failing outright here, before ever checking
+        // idempotency, breaks the "same key replay returns the first order"
+        // contract. `drop(tx)` first — mirrors the discipline at `:319` below
+        // (a pool query issued while still holding this tx's connection can
+        // self-deadlock under a low-connection pool) — then re-check
+        // idempotency before giving up.
+        if let Some(key) = &idempotency_key {
+            drop(tx);
+            if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
+                let existing_order = repository::find_by_id(db, existing_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Internal(anyhow::anyhow!(
+                            "idempotency row referenced missing order {existing_id}"
+                        ))
+                    })?;
+                return assemble_response(db, existing_order).await;
+            }
+        }
         return Err(AppError::BadRequest("cart is empty".into()));
     }
 

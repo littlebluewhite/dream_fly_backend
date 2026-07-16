@@ -594,6 +594,90 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgPool) {
+    // The empty-cart idempotency race (codex r2 gap): two requests carrying
+    // the SAME idempotency key check out the SAME user's cart concurrently
+    // (double-click / client retry). Both lock attempts land on the same
+    // `cart_items` row (`find_cart_items_for_checkout_tx`'s `FOR UPDATE OF
+    // ci`), so one blocks until the other commits (order created + cart
+    // cleared + idempotency row inserted, all in that one transaction). Once
+    // unblocked, the loser's re-read always finds an empty cart — before the
+    // fix, `orders/service.rs:96-98` returned `400 cart is empty` right there,
+    // never consulting idempotency. Stock is plentiful (this is not the
+    // last-unit race); the only contested resource is the cart row lock, so
+    // both requests must resolve to the SAME order.
+    let product = common::seed_product(&db, "prod-1", 1000, Some(5)).await;
+    let user = seed_carted_member(
+        &db,
+        "concurrent-replay@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        0,
+    )
+    .await;
+
+    let key = Some("concurrent-idempotency-key".to_string());
+    let key_a = key.clone();
+    let key_b = key;
+
+    let db_a = Arc::new(db.clone());
+    let db_b = Arc::new(db.clone());
+
+    // `#[sqlx::test]` drives this test on a single-threaded Tokio runtime
+    // (sqlx hard-codes `Builder::new_current_thread()` for its test harness),
+    // and a fresh local test DB answers each query fast enough that a plain
+    // `tokio::spawn` task's checkout resolves every internal `.await`
+    // synchronously and runs to `commit` in one uninterrupted poll — the
+    // second task never gets a turn until the first is entirely done, so the
+    // cart's row lock never actually contends (verified: 16/16 tokio::spawn
+    // trials during development never hit the race). `spawn_blocking` +
+    // `Handle::block_on` hands each checkout call to a genuine OS thread
+    // against the same runtime's reactor, so both calls make real
+    // independent progress and the cart row lock becomes the actual arbiter.
+    let handle_a = tokio::runtime::Handle::current();
+    let handle_b = handle_a.clone();
+
+    let task_a = tokio::task::spawn_blocking(move || {
+        let server = common::test_server_config();
+        handle_a.block_on(service::checkout(
+            db_a.as_ref(),
+            user,
+            key_a,
+            CheckoutRequest::default(),
+            None,
+            &server,
+            chrono::Utc::now(),
+        ))
+    });
+    let task_b = tokio::task::spawn_blocking(move || {
+        let server = common::test_server_config();
+        handle_b.block_on(service::checkout(
+            db_b.as_ref(),
+            user,
+            key_b,
+            CheckoutRequest::default(),
+            None,
+            &server,
+            chrono::Utc::now(),
+        ))
+    });
+
+    let (res_a, res_b) = tokio::join!(task_a, task_b);
+    let res_a = res_a.expect("task a panicked");
+    let res_b = res_b.expect("task b panicked");
+
+    let order_a = res_a.expect("task a should succeed (same key must replay, not 400)");
+    let order_b = res_b.expect("task b should succeed (same key must replay, not 400)");
+
+    assert_eq!(
+        order_a.order_number, order_b.order_number,
+        "both concurrent requests must converge on the same order"
+    );
+
+    let order_count = common::order_count(&db, user).await;
+    assert_eq!(order_count, 1, "exactly one order must exist despite two concurrent checkouts");
+}
+
+#[sqlx::test]
 async fn my_orders_lists_items_per_order_without_cross_contamination(db: PgPool) {
     // Two separate orders, each with a different single product line. The
     // items aggregate (json_agg correlated subquery keyed on order_id) must
