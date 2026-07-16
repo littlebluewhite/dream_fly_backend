@@ -9,6 +9,7 @@
 mod common;
 
 use common::http::{spawn_test_app, spawn_test_app_with};
+use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
 use wiremock::matchers::{method, path};
@@ -276,6 +277,18 @@ async fn otp_send_authenticated_records_sms(db: PgPool) {
     // last_otp_code returns the 6-digit code stashed in the mock.
     let code = app.sms.last_otp_code().expect("otp code recorded");
     assert_eq!(code.len(), 6);
+
+    // Refactor regression (Step 1): the per-user rate-limit key must still
+    // carry a TTL, now set by `redis_counter::incr_with_ttl` instead of the
+    // deleted `rate_limit::bump_count`. Read via TestApp's own Redis
+    // connection (DB 15) — `common::test_redis()` is DB 0 and would never
+    // see a key the app itself wrote.
+    let mut redis = app.redis_conn().await;
+    let ttl: i64 = redis
+        .ttl(format!("otp_rate:{}", user.user_id))
+        .await
+        .expect("ttl");
+    assert!(ttl > 0, "expected otp_rate TTL > 0, got {ttl}");
 }
 
 // ---------------- /auth/otp/verify ----------------

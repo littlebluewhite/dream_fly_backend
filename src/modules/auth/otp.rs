@@ -32,7 +32,12 @@ pub(super) async fn send_otp(
 
     // 1. Per-user rate limit — costs money if unbounded.
     let rate_key = format!("otp_rate:{}", auth_user_id);
-    let count = rate_limit::bump_count(redis, &rate_key, rate_limit::OTP_RATE_LIMIT_TTL).await?;
+    let count = crate::utils::redis_counter::incr_with_ttl(
+        redis,
+        &rate_key,
+        rate_limit::OTP_RATE_LIMIT_TTL,
+    )
+    .await?;
     if count > rate_limit::OTP_REQUESTS_PER_HOUR {
         return Err(AppError::BadRequest(
             "too many verification requests, try again later".into(),
@@ -84,7 +89,12 @@ pub(super) async fn verify_otp(
 
     // 1. Bump the per-user attempt counter first — fail-closed on brute force.
     let attempts_key = format!("otp_attempts:{}", auth_user_id);
-    let attempts = rate_limit::bump_count(redis, &attempts_key, rate_limit::OTP_TTL_SECONDS).await?;
+    let attempts = crate::utils::redis_counter::incr_with_ttl(
+        redis,
+        &attempts_key,
+        rate_limit::OTP_TTL_SECONDS,
+    )
+    .await?;
     if attempts > rate_limit::OTP_MAX_ATTEMPTS {
         // Invalidate the live OTP on too many attempts.
         let otp_key = format!("otp:{}", auth_user_id);

@@ -17,7 +17,6 @@
 
 use redis::AsyncCommands;
 
-use crate::error::AppError;
 use crate::utils::redis_counter::incr_with_ttl;
 
 /// Max failed login attempts per email before temporary lockout.
@@ -54,21 +53,6 @@ pub(super) async fn read_count(redis: &mut redis::aio::ConnectionManager, key: &
 /// a counter is a best-effort cleanup, not a correctness requirement.
 pub(super) async fn clear_count(redis: &mut redis::aio::ConnectionManager, key: &str) {
     let _: Result<(), _> = redis.del::<_, ()>(key).await;
-}
-
-/// INCR the counter at `key`, setting a `ttl_seconds` expiry the first time
-/// it is created, and return the post-increment count. Errors propagate to
-/// the caller.
-pub(super) async fn bump_count(
-    redis: &mut redis::aio::ConnectionManager,
-    key: &str,
-    ttl_seconds: i64,
-) -> Result<i64, AppError> {
-    let count: i64 = redis.incr(key, 1).await?;
-    if count == 1 {
-        let _: () = redis.expire(key, ttl_seconds).await?;
-    }
-    Ok(count)
 }
 
 /// Atomic INCR + EXPIRE (same shape as `bump_login_failure`) that returns
