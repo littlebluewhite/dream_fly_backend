@@ -10,7 +10,7 @@ use crate::utils::slug::slugify;
 use super::dto::{
     CreateProductRequest, ProductListResponse, ProductResponse, UpdateProductRequest,
 };
-use super::model::Product;
+use super::model::{Product, ProductType};
 use super::repository::{self, ProductCreate, ProductUpdate};
 
 /// Attach the `sold` aggregate to a single product. Used by the
@@ -77,9 +77,8 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
 
     // Validate product_type
     let pt = &req.product_type;
-    if !["ticket", "course_package", "membership", "merchandise"].contains(&pt.as_str()) {
-        return Err(AppError::Validation(format!("invalid product_type: {}", pt)));
-    }
+    pt.parse::<ProductType>()
+        .map_err(|_| AppError::Validation(format!("invalid product_type: {}", pt)))?;
 
     // Rely on the DB unique index for slug uniqueness — avoids TOCTOU race
     // between a SELECT check and the INSERT.
@@ -113,9 +112,8 @@ pub async fn update(
 ) -> Result<ProductResponse, AppError> {
     // Validate product_type if provided
     if let Some(ref pt) = req.product_type {
-        if !["ticket", "course_package", "membership", "merchandise"].contains(&pt.as_str()) {
-            return Err(AppError::Validation(format!("invalid product_type: {}", pt)));
-        }
+        pt.parse::<ProductType>()
+            .map_err(|_| AppError::Validation(format!("invalid product_type: {}", pt)))?;
     }
 
     let product = repository::update(

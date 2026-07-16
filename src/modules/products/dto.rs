@@ -42,12 +42,7 @@ impl ProductResponse {
     /// `order_items`/`orders` that callers batch across a whole page (see
     /// `service::list`) rather than repeat per row.
     pub fn from_product(p: Product, sold: i64) -> Self {
-        let product_type = match p.product_type {
-            super::model::ProductType::Ticket => "ticket",
-            super::model::ProductType::CoursePackage => "course_package",
-            super::model::ProductType::Membership => "membership",
-            super::model::ProductType::Merchandise => "merchandise",
-        };
+        let product_type = p.product_type.as_str();
         Self {
             id: p.id,
             name: p.name,

@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::error::AppError;
+
 /// Discriminates whether a cart (or checkout) line targets a product or a
 /// course. Maps to the Postgres `cart_item_type` enum.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
@@ -45,6 +47,33 @@ impl CartItemType {
             Self::Product => "product",
             Self::Course => "course",
         }
+    }
+
+    /// Single owner of the per-type quantity rule: `Product` allows
+    /// `1..=999`, `Course` allows only `1`. Error variant/message are
+    /// unchanged from the call sites this replaces (`cart::service`'s
+    /// `add_product_item`, `add_course_item`, and the two post-lookup
+    /// branches of `update_quantity`).
+    ///
+    /// `update_quantity`'s pre-lookup guard is a separate, deliberately
+    /// duplicated inline check — see the comment there for why it isn't
+    /// just a call to this method.
+    pub fn validate_quantity(&self, qty: i32) -> Result<(), AppError> {
+        match self {
+            Self::Product => {
+                if !(1..=999).contains(&qty) {
+                    return Err(AppError::BadRequest(
+                        "quantity must be between 1 and 999".into(),
+                    ));
+                }
+            }
+            Self::Course => {
+                if qty != 1 {
+                    return Err(AppError::Validation("course quantity must be 1".into()));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -106,4 +135,51 @@ pub struct CheckoutLine {
 /// 行小計的溢位安全乘法——pricing 與 CartResponse 共用,溢位文案各自保留。
 pub fn checked_line_subtotal(price_cents: i64, quantity: i32) -> Option<i64> {
     price_cents.checked_mul(quantity as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- validate_quantity: Product (1..=999) ---
+
+    #[test]
+    fn product_quantity_within_1_to_999_is_ok() {
+        assert!(CartItemType::Product.validate_quantity(1).is_ok());
+        assert!(CartItemType::Product.validate_quantity(500).is_ok());
+        assert!(CartItemType::Product.validate_quantity(999).is_ok());
+    }
+
+    #[test]
+    fn product_quantity_outside_1_to_999_is_bad_request() {
+        for qty in [i32::MIN, -1, 0, 1000, i32::MAX] {
+            let err = CartItemType::Product
+                .validate_quantity(qty)
+                .expect_err("must reject");
+            assert!(
+                matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+                "got: {err:?} for qty={qty}"
+            );
+        }
+    }
+
+    // --- validate_quantity: Course (== 1) ---
+
+    #[test]
+    fn course_quantity_of_one_is_ok() {
+        assert!(CartItemType::Course.validate_quantity(1).is_ok());
+    }
+
+    #[test]
+    fn course_quantity_other_than_one_is_validation_error() {
+        for qty in [i32::MIN, -1, 0, 2, 999, 1000, i32::MAX] {
+            let err = CartItemType::Course
+                .validate_quantity(qty)
+                .expect_err("must reject");
+            assert!(
+                matches!(err, AppError::Validation(ref m) if m == "course quantity must be 1"),
+                "got: {err:?} for qty={qty}"
+            );
+        }
+    }
 }

@@ -35,11 +35,7 @@ async fn add_product_item(
     product_id: Uuid,
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
-    if !(1..=999).contains(&quantity) {
-        return Err(AppError::BadRequest(
-            "quantity must be between 1 and 999".into(),
-        ));
-    }
+    CartItemType::Product.validate_quantity(quantity)?;
 
     // Verify product exists and is active
     let product = crate::modules::products::repository::find_by_id(db, product_id)
@@ -72,9 +68,7 @@ async fn add_course_item(
     course_id: Uuid,
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
-    if quantity != 1 {
-        return Err(AppError::Validation("course quantity must be 1".into()));
-    }
+    CartItemType::Course.validate_quantity(quantity)?;
 
     // Verify course exists and is active
     let course = crate::modules::courses::repository::find_by_id(db, course_id)
@@ -99,6 +93,13 @@ pub async fn update_quantity(
     item_id: Uuid,
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
+    // Wire-compat guard — kept in place ahead of the item lookup, not
+    // deferred into `CartItemType::validate_quantity` below. The *semantic*
+    // owner of this `1..=999` range is still `validate_quantity`'s `Product`
+    // branch; this inline copy exists only to preserve error-code priority
+    // (codex r2). Moving it entirely after the lookup would change observable
+    // behavior: "qty out of range + item doesn't exist" would flip 400->404,
+    // and "course qty outside 1..=999" would flip 400->422.
     if !(1..=999).contains(&quantity) {
         return Err(AppError::BadRequest(
             "quantity must be between 1 and 999".into(),
@@ -111,11 +112,11 @@ pub async fn update_quantity(
 
     match item.item_type {
         CartItemType::Course => {
-            if quantity != 1 {
-                return Err(AppError::Validation("course quantity must be 1".into()));
-            }
+            item.item_type.validate_quantity(quantity)?;
         }
         CartItemType::Product => {
+            item.item_type.validate_quantity(quantity)?;
+
             // Re-check product active + stock on quantity updates; without
             // this, a user could ratchet a cart item past the available
             // stock after a restock/inactivation.
