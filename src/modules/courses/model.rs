@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -66,4 +66,19 @@ pub struct Course {
     /// Computed via a correlated subquery against `waitlist_entries` (not a
     /// table column) — inlined at each query site in `repository.rs`.
     pub waitlist_count: i64,
+}
+
+/// A course's structured weekly meeting pattern — one row per (day_of_week,
+/// start_time). Mirrors `coach_schedules`' shape. `day_of_week` is 0=Sunday
+/// .. 6=Saturday (PostgreSQL `EXTRACT(DOW)` convention — see
+/// `repository::materialize_range`).
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct CourseScheduleSlot {
+    pub id: Uuid,
+    pub course_id: Uuid,
+    pub day_of_week: i16,
+    pub start_time: NaiveTime,
+    pub end_time: NaiveTime,
+    pub venue: Option<String>,
+    pub created_at: DateTime<Utc>,
 }

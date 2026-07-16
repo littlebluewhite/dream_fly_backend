@@ -1,62 +1,8 @@
 use chrono::{NaiveDate, NaiveTime};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::{CourseScheduleSlot, CourseSession, MyScheduleRow, TodaySessionRow};
-
-/// `(day_of_week, start_time, end_time, venue)` — pre-parsed input row for
-/// [`replace_slots_tx`]. Aliased for readability, mirroring
-/// `schedule::repository::SlotRow`.
-pub type CourseSlotRow = (i16, NaiveTime, NaiveTime, Option<String>);
-
-pub async fn find_slots_by_course(
-    db: &PgPool,
-    course_id: Uuid,
-) -> Result<Vec<CourseScheduleSlot>, sqlx::Error> {
-    sqlx::query_as::<_, CourseScheduleSlot>(
-        "SELECT id, course_id, day_of_week, start_time, end_time, venue, created_at \
-         FROM course_schedule_slots \
-         WHERE course_id = $1 \
-         ORDER BY day_of_week, start_time",
-    )
-    .bind(course_id)
-    .fetch_all(db)
-    .await
-}
-
-/// Replace all of a course's weekly slots within an already-open
-/// transaction (delete + insert), so the caller (`courses::service`) can
-/// commit this atomically alongside the course row's own INSERT/UPDATE.
-/// Each tuple is `(day_of_week, start_time, end_time, venue)` — already
-/// parsed/validated by the caller.
-pub async fn replace_slots_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    course_id: Uuid,
-    slots: &[CourseSlotRow],
-) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM course_schedule_slots WHERE course_id = $1")
-        .bind(course_id)
-        .execute(&mut **tx)
-        .await?;
-
-    for (day_of_week, start_time, end_time, venue) in slots {
-        sqlx::query(
-            "INSERT INTO course_schedule_slots \
-             (id, course_id, day_of_week, start_time, end_time, venue, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())",
-        )
-        .bind(Uuid::now_v7())
-        .bind(course_id)
-        .bind(day_of_week)
-        .bind(start_time)
-        .bind(end_time)
-        .bind(venue.as_deref())
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    Ok(())
-}
+use super::model::{CourseSession, MyScheduleRow, TodaySessionRow};
 
 /// Proof that `materialize_range(db, course_ids, from, to)` has already run
 /// for this exact `(course_ids, from, to)` — collapses the "materialize

@@ -2,20 +2,18 @@ use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::sessions::dto::{CourseScheduleSlotEntry, CourseScheduleSlotResponse};
-use crate::modules::sessions::repository::{self as sessions_repository, CourseSlotRow};
 use crate::utils::slug::slugify;
 use crate::utils::studio_clock;
 
 use super::dto::{
-    CourseDetailResponse, CourseListResponse, CourseResponse, CreateCourseRequest,
-    UpdateCourseRequest,
+    CourseDetailResponse, CourseListResponse, CourseResponse, CourseScheduleSlotEntry,
+    CourseScheduleSlotResponse, CreateCourseRequest, UpdateCourseRequest,
 };
 use super::model::CourseLevel;
-use super::repository;
+use super::repository::{self, CourseSlotRow};
 
 /// Parse+validate `schedule_slots` request entries into the tuple shape
-/// `sessions_repository::replace_slots_tx` takes. `AppError::Validation`
+/// `repository::replace_slots_tx` takes. `AppError::Validation`
 /// (422) on an unparseable time or `end_time <= start_time` — the per-field
 /// bounds (day_of_week 0-6, string length) are already enforced by
 /// `ValidatedJson` via `CourseScheduleSlotEntry`'s own `Validate` derive
@@ -43,7 +41,7 @@ fn parse_schedule_slots(
 }
 
 async fn slots_response(db: &PgPool, course_id: uuid::Uuid) -> Result<Vec<CourseScheduleSlotResponse>, AppError> {
-    let slots = sessions_repository::find_slots_by_course(db, course_id).await?;
+    let slots = repository::find_slots_by_course(db, course_id).await?;
     Ok(slots.into_iter().map(CourseScheduleSlotResponse::from).collect())
 }
 
@@ -136,7 +134,7 @@ pub async fn create_course(
     .await?;
 
     if let Some(slots) = &parsed_slots {
-        sessions_repository::replace_slots_tx(&mut tx, course.id, slots).await?;
+        repository::replace_slots_tx(&mut tx, course.id, slots).await?;
     }
 
     tx.commit().await?;
@@ -204,7 +202,7 @@ pub async fn update_course(
     .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
     if let Some(slots) = &parsed_slots {
-        sessions_repository::replace_slots_tx(&mut tx, course.id, slots).await?;
+        repository::replace_slots_tx(&mut tx, course.id, slots).await?;
     }
 
     tx.commit().await?;

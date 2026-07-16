@@ -1,50 +1,8 @@
 use chrono::{NaiveDate, NaiveTime};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use validator::Validate;
 
-use super::model::{CourseScheduleSlot, CourseSession, MyScheduleRow, SessionStatus, TodaySessionRow};
-
-// ---------------------------------------------------------------------------
-// course_schedule_slots — request (courses' Create/UpdateCourseRequest embed
-// `Option<Vec<CourseScheduleSlotEntry>>`) and response.
-// ---------------------------------------------------------------------------
-
-/// One weekly-slot entry in a `POST /courses` / `PATCH /courses/{id}` body.
-/// Mirrors `coaches::dto::ScheduleEntry` (day_of_week + "HH:MM" strings),
-/// plus an optional `venue`.
-#[derive(Debug, Clone, Deserialize, Serialize, Validate)]
-pub struct CourseScheduleSlotEntry {
-    #[validate(range(min = 0, max = 6))]
-    pub day_of_week: i16,
-    #[validate(length(min = 5, max = 8))]
-    pub start_time: String,
-    #[validate(length(min = 5, max = 8))]
-    pub end_time: String,
-    #[validate(length(max = 100))]
-    pub venue: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CourseScheduleSlotResponse {
-    pub id: Uuid,
-    pub day_of_week: i16,
-    pub start_time: NaiveTime,
-    pub end_time: NaiveTime,
-    pub venue: Option<String>,
-}
-
-impl From<CourseScheduleSlot> for CourseScheduleSlotResponse {
-    fn from(s: CourseScheduleSlot) -> Self {
-        Self {
-            id: s.id,
-            day_of_week: s.day_of_week,
-            start_time: s.start_time,
-            end_time: s.end_time,
-            venue: s.venue,
-        }
-    }
-}
+use super::model::{CourseSession, MyScheduleRow, SessionStatus, TodaySessionRow};
 
 // ---------------------------------------------------------------------------
 // course_sessions — GET /courses/{id}/sessions

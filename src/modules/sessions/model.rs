@@ -5,21 +5,6 @@ use uuid::Uuid;
 
 use crate::utils::studio_clock;
 
-/// A course's structured weekly meeting pattern — one row per (day_of_week,
-/// start_time). Mirrors `coach_schedules`' shape. `day_of_week` is 0=Sunday
-/// .. 6=Saturday (PostgreSQL `EXTRACT(DOW)` convention — see
-/// `repository::materialize_range`).
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
-pub struct CourseScheduleSlot {
-    pub id: Uuid,
-    pub course_id: Uuid,
-    pub day_of_week: i16,
-    pub start_time: NaiveTime,
-    pub end_time: NaiveTime,
-    pub venue: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
 /// A session's back-end-derived lifecycle stage — see [`SessionStatus::derive`].
 /// Not a database column and not a state machine: every read recomputes it
 /// from the current wall-clock time, so it can never go stale or need a
