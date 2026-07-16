@@ -142,6 +142,7 @@
 | Schedule | GET | `/schedule?year=&month=` | 公開 |
 | Schedule | GET | `/schedule/availability?date=` | 公開 |
 | Schedule | POST | `/schedule/slots` | 需登入（實務為 admin，見備註） |
+| Schedule | PATCH | `/schedule/slots/{id}` | admin |
 | Products | GET | `/products` | 公開 |
 | Products | GET | `/products/{slugOrId}` | 公開 |
 | Products | POST | `/products` | admin |
@@ -439,6 +440,10 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, descri
 #### `POST /schedule/slots` — 需登入
 Body：`{ slots: [{ date, start_time, end_time, venue_id?, course_id?, capacity, price_cents? }] }`。`price_cents` 選填，省略預設 `0`（§1.5）。回應：建立後的時段列表（`TimeSlotResponse[]`）。
 錯誤：409（場地時段與既有時段重疊）。
+
+#### `PATCH /schedule/slots/{id}` — admin
+Body：`{ is_closed: boolean }`。admin 手動關閉／重新開放單一時段——`is_closed` 是落地儲存的管理意圖旗標，`status` 本身不落地，讀取時依 `booked`/`capacity`/`is_closed` 即時推導（見 CONTEXT.md「時段狀態」詞條）。設為 `true` 後，回應與後續任何讀取（`GET /schedule`、`GET /schedule/availability`）該時段的 `status` 立即變為 `"closed"`——優先於 booked/capacity 判斷，即使該時段仍有空位。`POST /bookings` 對已關閉時段的新預約會被拒絕（400，訊息 `"time slot is full or closed"`，與滿位共用同一分支、同一狀態碼）；關閉不影響該時段既有的預約，取消既有預約仍正常運作。回應：更新後的 `TimeSlotResponse`。
+錯誤：404（時段不存在）。
 
 #### Bookings（場租預約）— `price_cents` 快照語意
 

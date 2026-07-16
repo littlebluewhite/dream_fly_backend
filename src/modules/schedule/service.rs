@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::error::AppError;
@@ -7,6 +8,7 @@ use crate::utils::studio_clock;
 
 use super::dto::{
     AvailabilityQuery, CreateSlotsRequest, DaySchedule, ScheduleQuery, TimeSlotResponse,
+    UpdateSlotRequest,
 };
 use super::repository;
 
@@ -116,4 +118,20 @@ pub async fn create_slots(
         .await
         .map_err(|e| AppError::conflict_on_exclusion(e, "場地時段與既有時段重疊"))?;
     Ok(slots.into_iter().map(TimeSlotResponse::from).collect())
+}
+
+/// `PATCH /schedule/slots/{id}` — admin only (checked by the handler via
+/// `admin_router()`). Sets/clears the `is_closed` intent flag; the derived
+/// `status` in the response reflects it immediately (`closed` takes
+/// priority over the booked/capacity computation — see
+/// `SlotStatus::derive`).
+pub async fn update_slot(
+    db: &PgPool,
+    id: Uuid,
+    req: &UpdateSlotRequest,
+) -> Result<TimeSlotResponse, AppError> {
+    let slot = repository::set_closed(db, id, req.is_closed)
+        .await?
+        .ok_or_else(|| AppError::NotFound("time slot not found".into()))?;
+    Ok(TimeSlotResponse::from(slot))
 }

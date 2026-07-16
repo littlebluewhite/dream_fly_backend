@@ -34,7 +34,10 @@ pub async fn create_booking(
     let slot = schedule::repository::increment_booked_tx(&mut tx, req.time_slot_id).await?;
     let slot = match slot {
         Some(s) => s,
-        None => return Err(AppError::BadRequest("time slot is full".into())),
+        // `increment_booked_tx`'s WHERE clause folds two causes into one
+        // `None` — already at capacity, or admin-closed (`is_closed`) — so
+        // the message covers both; codex 抓到現行是 400 非 409,狀態碼不變。
+        None => return Err(AppError::BadRequest("time slot is full or closed".into())),
     };
 
     // Reject bookings for slots that have already started. We interpret the

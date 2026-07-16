@@ -700,7 +700,6 @@ struct TimeSlotSeed {
     capacity: i32,
     price_cents: i64,
     booked: i32,
-    status: &'static str,
 }
 
 /// Insert a rental slot (idempotent by existence check on
@@ -709,8 +708,8 @@ struct TimeSlotSeed {
 /// belt) and return its id either way.
 ///
 /// A slot inserted as future/unbooked on one run can cross into the past by
-/// a later run, so the caller recomputes `seed.booked`/`seed.status` as
-/// occupied — but the existence check below short-circuits before that
+/// a later run, so the caller recomputes `seed.booked` as occupied — but
+/// the existence check below short-circuits before that
 /// recomputation ever reaches the row. When this run wants a booking on it
 /// (`seed.booked > 0`), sync the existing row with one idempotent UPDATE
 /// guarded by `booked = 0`: that guard only ever matches a slot no real user
@@ -733,12 +732,11 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     if let Some(id) = existing {
         if seed.booked > 0 {
             sqlx::query(
-                "UPDATE time_slots SET booked = $2, status = $3::slot_status, updated_at = NOW() \
+                "UPDATE time_slots SET booked = $2, updated_at = NOW() \
                  WHERE id = $1 AND booked = 0",
             )
             .bind(id)
             .bind(seed.booked)
-            .bind(seed.status)
             .execute(db)
             .await
             .with_context(|| {
@@ -751,8 +749,8 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9::slot_status, NOW(), NOW())
+        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, NOW(), NOW())
         ON CONFLICT DO NOTHING
         "#,
     )
@@ -764,7 +762,6 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     .bind(seed.capacity)
     .bind(seed.price_cents)
     .bind(seed.booked)
-    .bind(seed.status)
     .execute(db)
     .await
     .with_context(|| format!("insert time_slot {} {}", seed.date, seed.start_time))?;
@@ -1655,7 +1652,6 @@ async fn main() -> anyhow::Result<()> {
                         capacity: 1,
                         price_cents: venue_prices[v],
                         booked: if occupies { 1 } else { 0 },
-                        status: if occupies { "full" } else { "available" },
                     },
                 )
                 .await?;

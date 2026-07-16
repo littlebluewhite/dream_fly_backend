@@ -168,8 +168,8 @@ pub async fn seed_time_slot_on_with_start(
 
     sqlx::query(
         r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, capacity, booked, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, 0, 'available'::slot_status, NOW(), NOW())
+        INSERT INTO time_slots (id, date, start_time, end_time, capacity, booked, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW())
         "#,
     )
     .bind(id)

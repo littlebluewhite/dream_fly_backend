@@ -79,3 +79,7 @@ _Avoid_: 把 `studio_clock` 也算進這層 seam(它的函式簽章未變,只是
 **週課表(Weekly Schedule)**:
 `course_schedule_slots` 表(型別 + CRUD)的單一 owner 是 `courses`(`courses::model::CourseScheduleSlot`、`courses::repository::find_slots_by_course`/`replace_slots_tx`),courses 的 create/update/get 是唯一消費端。`sessions::repository` 以原生 SQL 直接讀這張表做物化(`materialize_range`)、今日場次(`find_today_sessions_in`)、我的課表(`find_my_weekly_schedule`)——三者皆不碰這組 Rust 型別,是記錄在案的跨模組讀表慣例(與 `find_all_course_ids` 直接讀 `courses` 表同款)。
 _Avoid_: 把 `time_slots`(場租,見『場租(Venue Rental)』詞條)也稱作 schedule——兩者是完全不同的表。
+
+**時段狀態(Slot Status)**:
+`schedule::model::SlotStatus::derive`;依 `booked`/`capacity`/`is_closed` 純函式即時推導的四態(`available`/`limited`/`full`/`closed`),讀取時計算、不落地儲存——比照「場次狀態」詞條的裁決,`time_slots` 表已無 `status` 欄(migration `20260717000001` 收掉欄位與背後的 `slot_status` enum 型別)。`is_closed` 是管理意圖旗標(`PATCH /schedule/slots/{id}`,admin only),優先於 booked/capacity 的判斷;gate 於 `schedule::repository::increment_booked_tx` 的 WHERE 子句(`AND is_closed = false`)——closed 時段無法再被新預約增量,但既有預約仍可正常取消(`decrement_booked_tx` 不設 gate)。
+_Avoid_: 把 `bookings.status`(`BookingStatus`,`confirmed`/`cancelled`/`completed`/`no_show`,仍落地儲存的預約狀態機)與本詞條混為一談——兩者是不同表、不同語意的「狀態」。

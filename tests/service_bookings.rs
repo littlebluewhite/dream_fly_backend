@@ -127,6 +127,41 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
 }
 
+/// Step 8: an admin-closed slot (`is_closed`) rejects new bookings the same
+/// way a full one does — `increment_booked_tx`'s WHERE guard folds both
+/// causes into the same `None` branch, so the message names both.
+#[sqlx::test]
+async fn closed_slot_rejects_new_booking(db: PgPool) {
+    let server = common::test_server_config();
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let slot = common::seed_time_slot(&db, 5).await;
+    sqlx::query("UPDATE time_slots SET is_closed = true WHERE id = $1")
+        .bind(slot)
+        .execute(&db)
+        .await
+        .expect("close slot");
+
+    let err = service::create_booking(
+        &db,
+        &server,
+        Utc::now(),
+        user,
+        CreateBookingRequest {
+            time_slot_id: slot,
+            note: None,
+        },
+        None,
+    )
+    .await
+    .expect_err("closed slot should reject booking");
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m == "time slot is full or closed"),
+        "got: {err:?}"
+    );
+    // The rejected attempt must not have touched the counter.
+    assert_eq!(common::slot_booked(&db, slot).await, 0);
+}
+
 #[sqlx::test]
 async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
     let server = common::test_server_config();

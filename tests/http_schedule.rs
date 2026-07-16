@@ -153,3 +153,61 @@ async fn create_slots_overlapping_existing_venue_slot_returns_409(db: PgPool) {
     assert_eq!(resp.status_code(), 409, "body={}", resp.text());
 }
 
+// ---------------------------------------------------------------------
+// Step 8: SlotStatus 讀時推導 + closed gate
+// ---------------------------------------------------------------------
+
+/// Admin sets `is_closed=true` via `PATCH /schedule/slots/{id}` — the
+/// monthly schedule immediately reads it back as `status="closed"` (derived
+/// at read time, no separate stored-status sync step to forget).
+#[sqlx::test]
+async fn admin_closes_slot_then_monthly_shows_closed_status(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    // `seed_time_slot_full` always seeds today + 2 days, 10:00-11:00.
+    let slot_id = seed_time_slot_full(&app.db, None, None, 10).await;
+
+    let patch_resp = app
+        .patch(&format!("/api/v1/schedule/slots/{slot_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "is_closed": true }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+    assert_eq!(patch_resp.json::<serde_json::Value>()["status"], "closed");
+
+    let target_date = (Utc::now() + Duration::days(2)).date_naive();
+    let resp = app
+        .get(&format!(
+            "/api/v1/schedule?year={}&month={}",
+            target_date.year(),
+            target_date.month()
+        ))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let slot = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|d| d["slots"].as_array().unwrap())
+        .find(|s| s["id"].as_str().unwrap() == slot_id.to_string())
+        .expect("closed slot present in monthly schedule");
+    assert_eq!(slot["status"], "closed");
+}
+
+/// Non-admin members can't flip the closed flag — same `admin_router()` gate
+/// as `create_slots_as_member_returns_403` above.
+#[sqlx::test]
+async fn update_slot_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("smem2@example.com", "Password!234").await;
+    let slot_id = seed_time_slot_full(&app.db, None, None, 10).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/schedule/slots/{slot_id}"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "is_closed": true }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}
+

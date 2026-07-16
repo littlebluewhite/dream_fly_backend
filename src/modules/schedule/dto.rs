@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::model::TimeSlot;
+use super::model::{SlotStatus, TimeSlot};
 
 #[derive(Debug, Deserialize)]
 pub struct ScheduleQuery {
@@ -33,6 +33,9 @@ pub struct TimeSlotResponse {
 
 impl From<TimeSlot> for TimeSlotResponse {
     fn from(ts: TimeSlot) -> Self {
+        // Wire format unchanged (`status: String`) — only the source moves
+        // from a stored column to this read-time derivation.
+        let status = SlotStatus::derive(ts.booked, ts.capacity, ts.is_closed);
         Self {
             id: ts.id,
             date: ts.date,
@@ -42,7 +45,7 @@ impl From<TimeSlot> for TimeSlotResponse {
             course_id: ts.course_id,
             capacity: ts.capacity,
             booked: ts.booked,
-            status: ts.status.as_str().to_string(),
+            status: status.as_str().to_string(),
             price_cents: ts.price_cents,
         }
     }
@@ -78,4 +81,13 @@ pub struct SlotEntry {
     /// sanity cap as `products::dto::CreateProductRequest.price_cents`.
     #[validate(range(min = 0, max = 100_000_000))]
     pub price_cents: Option<i64>,
+}
+
+/// `PATCH /schedule/slots/{id}` body — admin sets/clears the closed intent
+/// flag (see `SlotStatus::derive`; CONTEXT.md「時段狀態」詞條). No
+/// field-level constraint needed on a single bool; `Validate` is still
+/// derived (as a no-op) so this type satisfies `ValidatedJson<T>`'s bound.
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateSlotRequest {
+    pub is_closed: bool,
 }

@@ -1,7 +1,8 @@
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
 };
+use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
@@ -10,6 +11,7 @@ use crate::utils::validation::ValidatedJson;
 
 use super::dto::{
     AvailabilityQuery, CreateSlotsRequest, DaySchedule, ScheduleQuery, TimeSlotResponse,
+    UpdateSlotRequest,
 };
 use super::service;
 
@@ -40,4 +42,15 @@ pub async fn create_slots(
     let now = state.clock.now();
     let slots = service::create_slots(&state.db, &state.config.server, now, req).await?;
     Ok(Json(slots))
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn update_slot(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(id): Path<Uuid>,
+    ValidatedJson(req): ValidatedJson<UpdateSlotRequest>,
+) -> Result<Json<TimeSlotResponse>, AppError> {
+    let slot = service::update_slot(&state.db, id, &req).await?;
+    Ok(Json(slot))
 }

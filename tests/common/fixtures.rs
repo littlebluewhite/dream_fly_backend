@@ -263,8 +263,8 @@ pub async fn seed_time_slot_full(
     let end = chrono::NaiveTime::from_hms_opt(11, 0, 0).unwrap();
     sqlx::query(
         r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, booked, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 'available'::slot_status, NOW(), NOW())
+        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, booked, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW(), NOW())
         "#,
     )
     .bind(id)
