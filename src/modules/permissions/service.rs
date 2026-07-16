@@ -2,7 +2,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::invalidate_role_cache;
 
 use super::dto::{PermissionResponse, RoleResponse, RoleWithPermissionsResponse};
 use super::repository;
@@ -79,10 +78,10 @@ pub async fn assign_role_to_user(
         .await?
         .ok_or_else(|| AppError::NotFound("role not found".into()))?;
 
-    repository::assign_role_to_user(db, user_id, role_id).await?;
+    let dirty = repository::assign_role_to_user(db, user_id, role_id).await?;
 
     // Invalidate the Redis role cache so the next request reloads from DB.
-    invalidate_role_cache(redis, user_id).await;
+    dirty.flush(redis).await;
     Ok(())
 }
 
@@ -92,9 +91,9 @@ pub async fn remove_role_from_user(
     user_id: Uuid,
     role_id: Uuid,
 ) -> Result<(), AppError> {
-    repository::remove_role_from_user(db, user_id, role_id).await?;
+    let dirty = repository::remove_role_from_user(db, user_id, role_id).await?;
 
     // Invalidate the Redis role cache so the next request reloads from DB.
-    invalidate_role_cache(redis, user_id).await;
+    dirty.flush(redis).await;
     Ok(())
 }

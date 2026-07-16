@@ -113,7 +113,11 @@ pub async fn get_user(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppErr
 /// failure can never leave an orphaned user row — but skips the
 /// tokens/outbox/welcome-notification side effects register does, since an
 /// admin-created account has no session of its own to hand back.
-pub async fn create_user(db: &PgPool, req: CreateUserRequest) -> Result<UserResponse, AppError> {
+pub async fn create_user(
+    db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
+    req: CreateUserRequest,
+) -> Result<UserResponse, AppError> {
     let email = req.email.to_lowercase();
 
     let hashed = password::hash_password(req.password.clone())
@@ -133,11 +137,13 @@ pub async fn create_user(db: &PgPool, req: CreateUserRequest) -> Result<UserResp
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "Email 已被使用"))?;
 
-    auth_repository::assign_role_tx(&mut tx, user.id, "member").await?;
+    let dirty = auth_repository::assign_role_tx(&mut tx, user.id, "member").await?;
 
     let roles = permissions_repository::find_role_names_by_user_tx(&mut tx, user.id).await?;
 
     tx.commit().await?;
+
+    dirty.flush(redis).await;
 
     Ok(UserResponse {
         roles,

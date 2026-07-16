@@ -20,9 +20,11 @@ use dream_fly_backend::utils::jwt;
 #[sqlx::test]
 async fn register_creates_user_with_hashed_password(db: PgPool) {
     let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
 
     let resp = service::register(
         &db,
+        &mut redis,
         &cfg,
         RegisterRequest {
             email: "alice@example.com".into(),
@@ -79,9 +81,11 @@ async fn register_creates_user_with_hashed_password(db: PgPool) {
 #[sqlx::test]
 async fn register_duplicate_email_returns_conflict(db: PgPool) {
     let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
 
     service::register(
         &db,
+        &mut redis,
         &cfg,
         RegisterRequest {
             email: "bob@example.com".into(),
@@ -95,6 +99,7 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
 
     let err = service::register(
         &db,
+        &mut redis,
         &cfg,
         RegisterRequest {
             // Different case, same email — lowercase normalization must still
@@ -156,9 +161,11 @@ async fn login_nonexistent_email_returns_unauthorized(db: PgPool) {
 #[sqlx::test]
 async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
     let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
 
     let r1 = service::register(
         &db,
+        &mut redis,
         &cfg,
         RegisterRequest {
             email: "dave@example.com".into(),
@@ -209,9 +216,11 @@ async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
 #[sqlx::test]
 async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
     let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
 
     let r1 = service::register(
         &db,
+        &mut redis,
         &cfg,
         RegisterRequest {
             email: "eve@example.com".into(),

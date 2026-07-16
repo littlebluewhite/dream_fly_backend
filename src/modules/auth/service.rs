@@ -80,6 +80,7 @@ async fn build_auth_response_tx(
 
 pub async fn register(
     db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
     config: &AuthConfig,
     req: RegisterRequest,
     correlation_id: Option<String>,
@@ -105,7 +106,7 @@ pub async fn register(
         .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
 
     // Assign "member" role
-    repository::assign_role_tx(&mut tx, user.id, "member").await?;
+    let dirty = repository::assign_role_tx(&mut tx, user.id, "member").await?;
 
     // Build tokens before publishing: if token generation fails the entire
     // transaction rolls back — no phantom user row.
@@ -127,6 +128,8 @@ pub async fn register(
     .await?;
 
     tx.commit().await?;
+
+    dirty.flush(redis).await;
 
     // Welcome notification is written synchronously after commit.
     notify::user_welcomed(db, user.id).await;
@@ -205,6 +208,7 @@ struct GoogleTokenResponse {
 
 pub async fn google_auth(
     db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
     config: &AppConfig,
     http_client: &reqwest::Client,
     req: GoogleAuthRequest,
@@ -314,7 +318,7 @@ pub async fn google_auth(
     };
 
     // 4. Assign "member" role (idempotent)
-    repository::assign_role_tx(&mut tx, user.id, "member").await?;
+    let dirty = repository::assign_role_tx(&mut tx, user.id, "member").await?;
 
     // 5. Update last_login
     repository::update_last_login_tx(&mut tx, user.id).await?;
@@ -338,6 +342,8 @@ pub async fn google_auth(
     }
 
     tx.commit().await?;
+
+    dirty.flush(redis).await;
 
     // Deliberate asymmetry: the user_registered event above fires for BOTH a
     // freshly-created user and a Google-link of an existing account (the

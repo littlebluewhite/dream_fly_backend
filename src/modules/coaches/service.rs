@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{AppError, constraint_name};
-use crate::extractors::auth::{AuthUser, invalidate_role_cache};
+use crate::extractors::auth::AuthUser;
 use crate::modules::auth::repository as auth_repository;
 use crate::modules::users::repository as users_repository;
 use crate::utils::studio_clock;
@@ -129,11 +129,11 @@ pub async fn create_coach(
         _ => AppError::Database(e),
     })?;
 
-    auth_repository::assign_role_tx(&mut tx, req.user_id, "coach").await?;
+    let dirty = auth_repository::assign_role_tx(&mut tx, req.user_id, "coach").await?;
 
     tx.commit().await?;
 
-    invalidate_role_cache(redis, req.user_id).await;
+    dirty.flush(redis).await;
 
     Ok(CoachResponse::from(coach))
 }

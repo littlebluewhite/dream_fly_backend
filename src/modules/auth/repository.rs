@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::extractors::auth::RoleCacheDirty;
+
 use super::model::{RefreshToken, User};
 
 pub async fn create_user(
@@ -265,30 +267,15 @@ pub async fn update_phone_verified(
     Ok(())
 }
 
-pub async fn assign_role(
-    db: &PgPool,
-    user_id: Uuid,
-    role_name: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        INSERT INTO user_roles (user_id, role_id)
-        SELECT $1, id FROM roles WHERE name = $2
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(user_id)
-    .bind(role_name)
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
+/// Assign `role_name` to `user_id` inside an already-open transaction.
+/// Returns a [`RoleCacheDirty`] witness — the caller MUST `.flush(redis)` it
+/// after `tx.commit()` so the next request doesn't keep serving the user's
+/// pre-assignment role set out of the Redis cache.
 pub async fn assign_role_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     role_name: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<RoleCacheDirty, sqlx::Error> {
     sqlx::query(
         r#"
         INSERT INTO user_roles (user_id, role_id)
@@ -300,7 +287,7 @@ pub async fn assign_role_tx(
     .bind(role_name)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(RoleCacheDirty::new(user_id))
 }
 
 pub async fn update_password_tx(

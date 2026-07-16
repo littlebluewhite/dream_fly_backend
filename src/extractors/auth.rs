@@ -57,6 +57,43 @@ pub async fn revoke_user(redis: &mut redis::aio::ConnectionManager, user_id: Uui
     }
 }
 
+/// Witness that a `user_roles` write has not yet been reflected in the Redis
+/// role cache. Every repository function that INSERTs/DELETEs a `user_roles`
+/// row returns this instead of `()`, so "forgot to invalidate the cache
+/// after a role change" — previously a convention a caller had to remember —
+/// becomes a `#[must_use]` compiler warning instead of a silent stale-cache
+/// bug (this happened once for real).
+///
+/// Call [`flush`](Self::flush) AFTER the writing transaction commits, never
+/// before: invalidating pre-commit would let a request racing between the
+/// DEL and the commit re-populate the cache with the pre-write value.
+///
+/// Known residual race (out of scope for this type): a concurrent request
+/// can read the DB for the old role set and `SET EX` it back into the cache
+/// *after* this type's `flush()` has already run its DEL (see the
+/// read-then-refill branch in [`FromRequestParts for AuthUser`](AuthUser),
+/// below). The stale entry then lives out its full TTL
+/// (`ROLE_CACHE_TTL_SECONDS`, 900s) before self-correcting. This type only
+/// closes the "nobody invalidated at all" class of bug, not that
+/// read-refill window.
+#[must_use]
+pub struct RoleCacheDirty(Uuid);
+
+impl RoleCacheDirty {
+    /// Construct the witness. `pub(crate)` (not private) — `RoleCacheDirty`
+    /// is returned by repository functions in sibling modules
+    /// (`auth::repository`, `permissions::repository`), which need to build
+    /// one after a successful `user_roles` write.
+    pub(crate) fn new(user_id: Uuid) -> Self {
+        Self(user_id)
+    }
+
+    /// Consume the witness and perform the actual cache invalidation.
+    pub async fn flush(self, redis: &mut redis::aio::ConnectionManager) {
+        invalidate_role_cache(redis, self.0).await;
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,

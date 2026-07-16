@@ -1,6 +1,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::extractors::auth::RoleCacheDirty;
+
 use super::model::{Permission, Role};
 
 pub async fn find_all_roles(db: &PgPool) -> Result<Vec<Role>, sqlx::Error> {
@@ -49,11 +51,14 @@ pub async fn find_permissions_for_role(
     .await
 }
 
+/// Returns a [`RoleCacheDirty`] witness — the caller MUST `.flush(redis)` it
+/// so the next request doesn't keep serving the user's pre-assignment role
+/// set out of the Redis cache.
 pub async fn assign_role_to_user(
     db: &PgPool,
     user_id: Uuid,
     role_id: Uuid,
-) -> Result<(), sqlx::Error> {
+) -> Result<RoleCacheDirty, sqlx::Error> {
     sqlx::query(
         "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
@@ -61,20 +66,21 @@ pub async fn assign_role_to_user(
     .bind(role_id)
     .execute(db)
     .await?;
-    Ok(())
+    Ok(RoleCacheDirty::new(user_id))
 }
 
+/// Returns a [`RoleCacheDirty`] witness — see [`assign_role_to_user`].
 pub async fn remove_role_from_user(
     db: &PgPool,
     user_id: Uuid,
     role_id: Uuid,
-) -> Result<(), sqlx::Error> {
+) -> Result<RoleCacheDirty, sqlx::Error> {
     sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
         .bind(user_id)
         .bind(role_id)
         .execute(db)
         .await?;
-    Ok(())
+    Ok(RoleCacheDirty::new(user_id))
 }
 
 pub async fn find_user_roles(db: &PgPool, user_id: Uuid) -> Result<Vec<Role>, sqlx::Error> {

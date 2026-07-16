@@ -81,7 +81,8 @@ async fn upsert_user(
         .with_context(|| format!("fetch id for user {email}"))
 }
 
-/// Attach a role to a user (idempotent — mirrors `auth::repository::assign_role`).
+/// Attach a role to a user (idempotent — same ON CONFLICT DO NOTHING pattern
+/// as `auth::repository::assign_role_tx`).
 async fn assign_role(db: &PgPool, user_id: Uuid, role_name: &str) -> anyhow::Result<()> {
     sqlx::query(
         r#"

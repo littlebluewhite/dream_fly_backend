@@ -18,7 +18,9 @@ pub async fn register(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<RegisterRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let response = service::register(&state.db, &state.config.auth, req, request_id.0).await?;
+    let mut redis = state.redis.clone();
+    let response = service::register(&state.db, &mut redis, &state.config.auth, req, request_id.0)
+        .await?;
     Ok(Json(response))
 }
 
@@ -38,8 +40,10 @@ pub async fn google_auth(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<GoogleAuthRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
+    let mut redis = state.redis.clone();
     let response = service::google_auth(
         &state.db,
+        &mut redis,
         &state.config,
         &state.http_client,
         req,
