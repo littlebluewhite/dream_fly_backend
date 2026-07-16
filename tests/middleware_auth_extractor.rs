@@ -165,3 +165,19 @@ async fn member_token_against_admin_endpoint_returns_403(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 403);
 }
+
+#[sqlx::test]
+async fn member_token_against_staff_endpoint_returns_403(db: PgPool) {
+    // Mirrors `member_token_against_admin_endpoint_returns_403` above, but
+    // for the `require_staff` (admin-or-coach) gate wired onto `staff_api`
+    // in `startup.rs`. `GET /sessions/today` is one representative
+    // staff-gated endpoint; per-handler role coverage for every moved site
+    // lives in each module's own `tests/http_*.rs`.
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("m-staff@example.com", "Password!234").await;
+    let resp = app
+        .get("/api/v1/sessions/today")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 403);
+}

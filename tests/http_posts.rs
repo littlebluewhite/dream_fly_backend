@@ -98,6 +98,27 @@ async fn create_post_as_admin_succeeds(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn create_post_as_coach_succeeds(db: PgPool) {
+    // staff gate (admin-or-coach) parity — `create_post_as_admin_succeeds`
+    // above already covers admin; this was the only moved staff-gate site
+    // across the six Step 9 modules without a coach-passes-the-gate test.
+    let app = spawn_test_app(db).await;
+    let (_coach_user, token) = app.seed_user_with_roles("p-coach@example.com", &["coach"]).await;
+
+    let resp = app
+        .post("/api/v1/posts")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "title": "Coach Post",
+            "content": "Body",
+            "category": "article",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    assert_eq!(resp.json::<serde_json::Value>()["title"], "Coach Post");
+}
+
+#[sqlx::test]
 async fn delete_post_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let author = app.register_member("auth3@example.com", "Password!234").await;

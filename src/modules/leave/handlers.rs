@@ -60,7 +60,6 @@ pub async fn list(
     Query(query): Query<LeaveRequestQuery>,
     Query(pagination): Query<PaginationParams>,
 ) -> Result<Json<LeaveRequestListResponse>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let result = service::list_leave_requests(&state.db, &auth, query, &pagination).await?;
     Ok(Json(result))
 }
@@ -73,7 +72,6 @@ pub async fn decide(
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<DecideLeaveRequestRequest>,
 ) -> Result<Json<LeaveRequestResponse>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let updated = service::decide_leave_request(&state.db, &auth, id, &req.status).await?;
     Ok(Json(updated))
 }

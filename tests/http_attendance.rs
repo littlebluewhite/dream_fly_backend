@@ -163,6 +163,20 @@ async fn attendance_put_without_auth_returns_401(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn attendance_put_as_member_returns_403(db: PgPool) {
+    // staff gate (admin-or-coach) parity — mirrors `roster_as_member_returns_403`
+    // above for the PUT sibling, which had no dedicated member-role test.
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("att-put-member-403@example.com", "Password!234").await;
+    let resp = app
+        .put(&format!("/api/v1/sessions/{}/attendance", Uuid::now_v7()))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"records": []}))
+        .await;
+    assert_eq!(resp.status_code(), 403, "body={}", resp.text());
+}
+
+#[sqlx::test]
 async fn attendance_put_as_non_course_coach_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (owner_user_id, _owner_token) = app

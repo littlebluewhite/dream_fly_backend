@@ -17,7 +17,6 @@ pub async fn create_report_card(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateReportCardRequest>,
 ) -> Result<Json<ReportCardResponse>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let created = service::create_report_card(&state.db, &auth, req).await?;
     Ok(Json(created))
 }
@@ -39,7 +38,6 @@ pub async fn create_certificate(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateCertificateRequest>,
 ) -> Result<Json<CertificateResponse>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let created = service::create_certificate(&state.db, &auth, req).await?;
     Ok(Json(created))
 }

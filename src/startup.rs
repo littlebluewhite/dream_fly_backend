@@ -20,6 +20,7 @@ use tower_http::{
 use crate::middleware::cors::cors_layer;
 use crate::middleware::rate_limit::rate_limit_middleware;
 use crate::middleware::require_admin::require_admin;
+use crate::middleware::require_staff::require_staff;
 use crate::modules;
 use crate::state::AppState;
 
@@ -101,6 +102,23 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::posts::routes::admin_router())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
+    // Staff 半邊:6 個模組的 `staff_router()` 合併後,單點掛上 `require_staff`
+    // route_layer——coach 層級(admin 或 coach)授權從 ~9 份 handler 首行儀式
+    // 收斂為此一層,設計對稱於上方的 admin_api。Request-data-dependent 的細
+    // 粒度檢查(`require_course_coach`、`is_admin()` 分支)不在此列,留在
+    // service。三個例外原地保留、不併入此閘門(各自 handler 已加註解):
+    // `rewards::list` 的條件式 `?all=true` 閘門依賴 query 參數;
+    // `attendance::my_students`、`reports::coach_report` 是 coach-only
+    // carve-out(admin 刻意排除)。
+    let staff_api = Router::new()
+        .merge(modules::leave::routes::staff_router())
+        .merge(modules::sessions::routes::staff_router())
+        .merge(modules::attendance::routes::staff_router())
+        .merge(modules::certificates::routes::staff_router())
+        .merge(modules::subscriptions::routes::staff_router())
+        .merge(modules::posts::routes::staff_router())
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_staff));
+
     let api_v1 = Router::new()
         .route("/health", get(health_check))
         .merge(modules::auth::routes::router())
@@ -128,7 +146,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::points::routes::router())
         .merge(modules::rewards::routes::router())
         .merge(modules::reports::routes::router())
-        .merge(admin_api);
+        .merge(admin_api)
+        .merge(staff_api);
 
     // Basic security headers. The API is JSON-only so CSP isn't critical, but
     // sniffing/referrer leaks and clickjacking protection are cheap to add.

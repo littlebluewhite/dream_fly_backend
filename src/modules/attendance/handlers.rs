@@ -19,7 +19,6 @@ pub async fn get_roster(
     auth: AuthUser,
     Path(session_id): Path<Uuid>,
 ) -> Result<Json<Vec<RosterEntryResponse>>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let roster = service::get_roster(&state.db, &auth, session_id).await?;
     Ok(Json(roster))
 }
@@ -32,7 +31,6 @@ pub async fn bulk_upsert_attendance(
     Path(session_id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<BulkUpsertAttendanceRequest>,
 ) -> Result<Json<Vec<RosterEntryResponse>>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let now = state.clock.now();
     let roster = service::bulk_upsert_attendance(
         &state.db,
@@ -46,7 +44,11 @@ pub async fn bulk_upsert_attendance(
     Ok(Json(roster))
 }
 
-/// `GET /coaches/me/students` — coach only.
+/// `GET /coaches/me/students` — coach only; admin is deliberately excluded
+/// (an admin has no "own" students to look up). Stays a handler-level
+/// `require_role("coach")` check instead of joining `staff_router()`'s
+/// admin-or-coach gate — building a third single-role gate for this one call
+/// site (plus `reports::handlers::coach_report`) isn't worth it.
 #[tracing::instrument(skip_all)]
 pub async fn my_students(
     State(state): State<AppState>,

@@ -25,10 +25,9 @@ pub async fn me(
 #[tracing::instrument(skip_all)]
 pub async fn redeem(
     State(state): State<AppState>,
-    auth: AuthUser,
+    _auth: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<SubscriptionResponse>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let id: Uuid = id
         .parse()
         .map_err(|_| AppError::BadRequest("invalid subscription id".into()))?;

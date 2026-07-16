@@ -44,7 +44,6 @@ pub async fn create(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreatePostRequest>,
 ) -> Result<Json<PostDetailResponse>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let post = service::create_post(&state.db, auth.user_id, req).await?;
     Ok(Json(post))
 }

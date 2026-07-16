@@ -34,7 +34,6 @@ pub async fn today(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<TodaySessionResponse>>, AppError> {
-    auth.require_any_role(&["admin", "coach"])?;
     let now = state.clock.now();
     let sessions = service::today_sessions(&state.db, &state.config.server, now, &auth).await?;
     Ok(Json(sessions))

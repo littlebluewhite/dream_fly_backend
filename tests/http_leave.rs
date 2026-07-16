@@ -368,6 +368,21 @@ async fn decide_without_auth_returns_401(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn decide_as_member_returns_403(db: PgPool) {
+    // staff gate (admin-or-coach) parity: a plain member is rejected before
+    // the handler ever looks up the (here nonexistent) leave request id —
+    // 403 from the route-layer gate, not 404 from the service.
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-decide-member-403@example.com", "Password!234").await;
+    let resp = app
+        .patch(&format!("/api/v1/leave-requests/{}", Uuid::now_v7()))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"status": "approved"}))
+        .await;
+    assert_eq!(resp.status_code(), 403, "body={}", resp.text());
+}
+
+#[sqlx::test]
 async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (coach_user_id, coach_token) =
