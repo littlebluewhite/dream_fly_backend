@@ -34,7 +34,10 @@ use super::repository;
 /// attempt with the same (user_id, key) returns the original order instead
 /// of creating a duplicate (double-click, network retry, mobile 502 retry).
 ///
-/// Rule order: coupon load -> points-balance lock -> `pricing::price`
+/// Rule order: points-balance lock (unconditional, tx-first — the unified
+/// lock ordering that keeps refund/cancel compensation mutually exclusive
+/// with checkout for the same buyer; see the body) -> coupon load ->
+/// `pricing::price`
 /// (subtotal -> coupon clamp -> points cap -> total -> points earned; see
 /// that module for the arithmetic itself) -> `fulfilment::plan` (item_type
 /// split: product lines to reserve, course ids to enrol) -> stock decrement
@@ -88,6 +91,30 @@ pub async fn checkout(
     // consistent and serialized.
     let mut tx = db.begin().await?;
 
+    // Lock the buyer's points-balance row FIRST — unconditionally, even when
+    // `use_points=false`. This is the checkout half of a unified lock order
+    // that keeps refund/cancel compensation (Step 10e) fully mutually
+    // exclusive with checkout for the same buyer:
+    //   checkout: users -> cart_items/products/courses (SHARE, the cart read
+    //             below; its second SQL also takes FOR SHARE on courses) ->
+    //             products (UPDATE, product_id asc) -> courses (asc) ->
+    //             enrolments -> subscriptions
+    //   refund:   orders -> users (explicit unconditional lock_balance_tx,
+    //             Step 10e) -> products (UPDATE, asc) -> enrolments ->
+    //             subscriptions
+    // Making the lock merely *unconditional* is not enough — it must be taken
+    // BEFORE the cart read. `find_cart_items_for_checkout_tx` already takes
+    // `FOR SHARE` on the product/course rows, so if it ran first checkout
+    // would hold products-SHARE while waiting on users, and refund holds
+    // users while waiting on products-UPDATE: a deadlock cycle. Taking
+    // `users` first on both paths makes it the unconditional first lock, so
+    // no cycle can form. An empty cart is harmless: the empty-cart branch
+    // just below drops the tx and the rollback releases this lock.
+    // (Pre-existing, neither introduced nor fixed here: two checkouts racing
+    // a SHARE->UPDATE upgrade on the same product can still deadlock — PG's
+    // detector aborts one.)
+    let locked_points_balance = points_service::lock_balance_tx(&mut tx, user_id).await?;
+
     // 2. Lock and read cart items + current product/course prices. Course
     //    lines are now first-class (the Task-3 "not yet supported" guard is
     //    gone).
@@ -103,7 +130,7 @@ pub async fn checkout(
         // committed too (cart-clear and idempotency-insert share that one
         // transaction). Failing outright here, before ever checking
         // idempotency, breaks the "same key replay returns the first order"
-        // contract. `drop(tx)` first — mirrors the discipline at `:319` below
+        // contract. `drop(tx)` first — mirrors the discipline at `:344` below
         // (a pool query issued while still holding this tx's connection can
         // self-deadlock under a low-connection pool) — then re-check
         // idempotency before giving up.
@@ -143,19 +170,17 @@ pub async fn checkout(
         );
     }
 
-    // 4. Points redemption (optional). Balance is read with `FOR UPDATE`
-    //    inside this transaction so a second concurrent checkout by the
-    //    same user cannot compute `points_used` against the same
-    //    now-stale balance (double spend) — it blocks on this lock until
-    //    we commit or roll back. `use_points=false` never takes this lock;
-    //    `pricing::price` gets a 0 balance instead, which is exactly what
-    //    "no redemption" needs.
+    // 4. Resolve the balance `pricing::price` will see. The `FOR UPDATE` lock
+    //    on this user's balance was already taken unconditionally at the top
+    //    of the tx (see the lock-ordering note there), so a second concurrent
+    //    checkout by the same user blocks until we commit or roll back — no
+    //    double-spend against a now-stale balance. Here we only choose the
+    //    value to price against: the locked balance when redeeming, or `0`
+    //    when not. `use_points=false` still prices bit-for-bit as before —
+    //    `pricing::price` reads the balance only inside its `use_points`
+    //    branch.
     let use_points = req.use_points.unwrap_or(false);
-    let points_balance = if use_points {
-        points_service::lock_balance_tx(&mut tx, user_id).await?
-    } else {
-        0
-    };
+    let points_balance = if use_points { locked_points_balance } else { 0 };
 
     // 5. Price the cart — subtotal, coupon clamp, points cap, total, and
     //    points earned, all in one pure call now that the coupon is loaded
