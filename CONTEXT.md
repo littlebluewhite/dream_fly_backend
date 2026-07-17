@@ -83,3 +83,7 @@ _Avoid_: 把 `time_slots`(場租,見『場租(Venue Rental)』詞條)也稱作 s
 **時段狀態(Slot Status)**:
 `schedule::model::SlotStatus::derive`;依 `booked`/`capacity`/`is_closed` 純函式即時推導的四態(`available`/`limited`/`full`/`closed`),讀取時計算、不落地儲存——比照「場次狀態」詞條的裁決,`time_slots` 表已無 `status` 欄(migration `20260717000001` 收掉欄位與背後的 `slot_status` enum 型別)。`is_closed` 是管理意圖旗標(`PATCH /schedule/slots/{id}`,admin only),優先於 booked/capacity 的判斷;gate 於 `schedule::repository::increment_booked_tx` 的 WHERE 子句(`AND is_closed = false`)——closed 時段無法再被新預約增量,但既有預約仍可正常取消(`decrement_booked_tx` 不設 gate)。
 _Avoid_: 把 `bookings.status`(`BookingStatus`,`confirmed`/`cancelled`/`completed`/`no_show`,仍落地儲存的預約狀態機)與本詞條混為一談——兩者是不同表、不同語意的「狀態」。
+
+**退款(Refund)**:
+訂單從計入營收的狀態(`OrderStatus::is_revenue`——paid/processing/completed)轉往終態 cancelled 或 refunded 時的補償語意,`orders::service::update_order_status` 內的私有步驟 `compensate_order_artifacts_tx`,由 `orders::refund::compensation_required` 判斷是否觸發。**Cancelled 與 Refunded 是同一補償語意的兩個終態標籤,不是兩種不同的補償**。補償一律讀「結帳當下的痕跡」而非現況推測——`order_items.stock_decremented` 快照決定要不要回補庫存、`point_ledger` 的 `checkout_earn`/`checkout_redeem` 實錄決定點數反轉幅度(方向依序 `refund_restore` 先、`refund_clawback` 後,契約 §1.6),報名/訂閱依 `order_id` 整批取消。是**整單**語意:不論已核銷/使用多少,一律全額反轉,不按使用比例折算。餘額不足時整筆回滾(409「點數不足」),不 clamp——修復迴路是 admin 補點端點(`POST /points/adjustments`,§3.14)。十個決策點的完整論證見 ADR-0007。
+_Avoid_: 沖銷(那是點數反轉裡「收回已賺點數」單一方向的動作 `refund_clawback`,不是整套補償語意的統稱)、退貨(本系統無實體物流退貨流程,這裡指的是撤銷結帳建立的內部副作用——庫存/點數/entitlement,不涉及商品寄還)、刪單(`orders`/`order_items` 從不刪除,退款是狀態機轉移到終態,原始下單紀錄永久可查)

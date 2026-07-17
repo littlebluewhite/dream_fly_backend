@@ -83,7 +83,8 @@
 - **1 點 = NT$1**（消費時每 100 元折抵 1 點，即 `points_used * 100 <= 折扣後金額`）。
 - **賺點**：結帳成功時，依「折扣與點數折抵後的實際應付金額」的 **5%** 無條件四捨五入計算（`round(total_nt * 0.05)`，`total_nt = total_cents / 100`）。例：實付 NT$1000 → 賺 50 點；實付 NT$730 → 賺 37 點（36.5 四捨五入）。
 - **兌換**：`POST /rewards/{id}/redeem` 成功會扣點，寫入一筆 `point_ledger`，`reason = "redeem"`（`delta = -points_cost`）——與結帳的 `checkout_redeem` 是不同 reason，前端可用此欄位區分「結帳折抵」與「兌換獎勵」兩種扣點來源。見 §3.23。
-- 點數餘額與明細見 `GET /points/me`。`reason` 目前有 `checkout_earn`/`checkout_redeem`/`admin_adjust`/`redeem` 四種。
+- **退款/取消補償**：訂單從已計入營收的狀態（`paid`/`processing`/`completed`）轉入 `cancelled`/`refunded` 時（見 §3.10），結帳當下的點數流會被反轉，寫入 `point_ledger` 兩個新 reason：`refund_restore`（沖回 `checkout_redeem` 扣掉的點數，`delta` 恆為正）、`refund_clawback`（沖回 `checkout_earn` 賺到的點數，`delta` 恆為負）——與其他 reason 一樣遵守「一個 reason ⇒ 固定正負號」的慣例。沒有點數流的訂單（全額折抵、未使用 `use_points`）退款時不會寫入這兩種列。
+- 點數餘額與明細見 `GET /points/me`。`reason` 目前有 `checkout_earn`/`checkout_redeem`/`admin_adjust`/`redeem`/`refund_restore`/`refund_clawback` 六種。
 
 ### 1.7 Idempotency-Key（`POST /orders`）
 
@@ -99,6 +100,7 @@
 - 沒有「付款中」「等待付款」的中介狀態，也沒有 webhook 回呼流程。
 - 若購物車包含課程或方案（membership/ticket）商品，對應的報名（enrolment）與訂閱（subscription）會在**同一個交易**內立即建立完成（見 §3.10）。
 - 後續狀態流轉（`paid → processing → completed / refunded / cancelled`）僅能由 admin 透過 `PATCH /orders/{id}/status` 手動觸發，代表出貨、完成、退款等後續營運操作，與「付款」本身無關。
+- 轉入 `cancelled`/`refunded` 時，若訂單當下狀態計入營收（`paid`/`processing`/`completed`），會觸發**補償**：回補該訂單有實際扣減庫存的商品行、反轉結帳當下的點數流、取消該訂單產生的報名與訂閱——兩個目標狀態的補償語意相同，詳見 §3.10。`pending → cancelled`（從未成交）與同狀態重複 PATCH 都不會觸發補償。
 - `payment_method`（Round 4 Task P4-B1，報表基礎欄位）記錄本筆訂單的付款方式，值域：`credit_card`（預設）/ `line_pay` / `atm` / `jkopay` / `cash`；純應用層值域，非 DB enum。`POST /orders` 不帶此欄時預設 `credit_card`；帶入值域外的字串回 422。此欄位新增前建立的歷史訂單為 `null`。
 
 ---
@@ -619,6 +621,14 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunded" }`。回應：更新後的 `OrderResponse`。
 狀態機（非法轉換回 400）：`pending→paid|cancelled`；`paid→processing|refunded|cancelled`；`processing→completed|refunded`；`completed→refunded`；同狀態原地不動視為合法（幂等）。**Seed 出來的訂單一律已是 `paid`**（見 §1.8），實務上前端幾乎不會看到 `pending`。
 
+**補償語意（轉入 `cancelled`/`refunded`）**：當轉入前的狀態計入營收（`paid`/`processing`/`completed`）且目標是 `cancelled` 或 `refunded` 時（兩者補償語意相同，無差異——ADR-0007 決策 1），同一個交易內會依序：反轉該訂單結帳當下的點數流（ledger 實錄為準，不是抄訂單彙總欄——`checkout_redeem` 反轉為 `refund_restore`、`checkout_earn` 反轉為 `refund_clawback`，順序 restore 先、clawback 後，見 §1.6）→ 回補該訂單有實際扣減庫存的商品行（沒有扣減過的行，例如結帳當下是無限庫存，不會被回補，即使商品後來被改成有限庫存）→ 取消該訂單產生的報名與訂閱（`status` 一併轉為 `cancelled`，見 §3.11/§3.12）。**是整單語意**：不論訂單此刻已經核銷/使用多少，一律全額反轉，不按使用比例折算。優惠券使用不會被反轉（優惠券本身無使用次數計數），`paid_at` 也維持原值不清空。
+
+`pending → cancelled`（訂單從未成交）與**同狀態重複 PATCH** 都不觸發任何補償——前者沒有東西可撤銷，後者直接回傳既有訂單（200，不 UPDATE、無新的 outbox 事件或通知，可觀測地冪等，不會重複補償）。
+
+**409 情境**：反轉點數流時若導致餘額為負（買家已把賺到的點數花在別處），回 409「點數不足」，**整筆 PATCH 連同狀態變更一起回滾**（訂單狀態、庫存、報名、訂閱皆維持轉換前的原狀，不會半套用）。修復方式：admin 透過 `POST /points/adjustments`（見 §3.14）幫買家補點至足額，再重試同一次 PATCH。
+
+十個相關邊界決策（單一入口、`REVENUE_STATUSES` 耦合風險、鎖序、痕跡導向補償、遺留資料政策等）完整論證見 ADR-0007。
+
 ---
 
 ### 3.11 Subscriptions（方案/票券 entitlement）
@@ -638,7 +648,7 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 }
 ```
 
-`status` 為**讀取當下即時計算**：DB 裡的 `cancelled` 直接回傳；否則若 `expires_at` 已過或 `remaining_sessions == 0` 回 `"expired"`；都沒有才回 `"active"`（DB 儲存值本身不會因為到期而被動改寫）。
+`status` 為**讀取當下即時計算**：DB 裡的 `cancelled` 直接回傳；否則若 `expires_at` 已過或 `remaining_sessions == 0` 回 `"expired"`；都沒有才回 `"active"`（DB 儲存值本身不會因為到期而被動改寫）。**`cancelled` 目前唯一的寫入來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——本模組沒有任何端點可以直接把一筆訂閱標記為 `cancelled`（`POST /subscriptions/{id}/redeem` 只會遞減堂數，不改變 `status`）。
 
 #### `POST /subscriptions/{id}/redeem` — admin 或 coach
 無 body。核銷一堂課（`remaining_sessions -= 1`，原子操作）。回應：更新後的 `SubscriptionResponse`。
@@ -664,7 +674,7 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 `attended`/`total` 為即時計算（單一 LEFT JOIN `countable_attendance` 聚合，非儲存欄位）：`attended` 為該 enrolment 被標記 `status='present'` 的筆數；`total` 為該 enrolment 的 `present`+`absent` 筆數之和——view 的成員資格本身即為分母。**`leave` 與尚未點名的場次一律不計入 `total`**（也就是說 `total` 不是「該課程至今已上過幾堂」，也不是「已點名場次數」，而是「present+absent 的場次數」；純請假、從未點名的場次皆不影響這兩個統計）。無 `present`/`absent` 紀錄時兩者皆為 `0`（即使該 enrolment 有請假紀錄）。詳見 §3.19 Attendance。
 
 #### `PATCH /enrolments/{id}/cancel` — 需登入（本人或 admin）
-無 body。回應：更新後的 `EnrolmentResponse`（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。
+無 body。回應：更新後的 `EnrolmentResponse`（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。**`cancelled` 另一個來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——與本端點的自助/admin 取消是同一個 `status` 值，`EnrolmentResponse` 本身無法分辨這筆報名是被使用者自己取消還是因為訂單整筆退款而取消。已經自助取消過的報名再被訂單退款觸及是安全的 no-op，不會報錯。
 
 #### `GET /enrolments/{id}/attendance` — 需登入（本人或 admin）
 這筆報名的逐堂出勤紀錄：`attendance_records` JOIN `course_sessions`，只回**已點名**的場次(未點名場次不出現)，依 `session_date`(次要鍵 `start_time`)**舊到新**排序。回應（`AttendanceEntryResponse[]`，純陣列）：
@@ -722,7 +732,7 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
 `delta` 可正可負（`checkout_redeem`/`redeem` 恆為負、`checkout_earn` 恆為正）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
 
 #### `POST /points/adjustments` — admin
-Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位皆必填；`delta` 不可為 `0`）。admin 手動調整任一使用者的點數餘額，用途是關閉退款/取消補償流程中「點數不足」409 的修復迴路：補點後即可重試先前失敗的退款。呼叫前須先取得該使用者當下的餘額（`GET /users/{id}` 的 `points_balance`，見 §3.2——`GET /points/me` 僅回呼叫者本人餘額，無法查他人）填入 `expected_balance`；後端於交易內鎖列讀取實際餘額並比對，不符即拒絕。**注意：`expected_balance` 是樂觀鎖（CAS），非嚴格冪等**——呼叫逾時後原樣重試，若第一次已成功、餘額已變，重試會收到 409 而非重放原本的成功結果；此時應重新查詢該使用者當下的 `points_balance`（`GET /users/{id}`）比對是否已反映預期變化，而非盲目重試——本端點目前沒有供 admin 查詢他人 `point_ledger` 明細的介面，逐列確認需直接查資料表。回應：`{ user_id: uuid, balance: number }`（調整後餘額）。寫入的 `point_ledger` 列：`reason = "admin_adjust"`、`order_id` 恆為 `null`。
+Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位皆必填；`delta` 不可為 `0`）。admin 手動調整任一使用者的點數餘額，用途是關閉退款/取消補償流程中「點數不足」409 的修復迴路：補點後即可重試先前失敗的退款。呼叫前須先取得該使用者當下的餘額（`GET /users/{id}` 的 `points_balance`，見 §3.2——`GET /points/me` 僅回呼叫者本人餘額，無法查他人）填入 `expected_balance`；後端於交易內鎖列讀取實際餘額並比對，不符即拒絕。**注意：`expected_balance` 是樂觀鎖（CAS），非嚴格冪等**——呼叫逾時後原樣重試，若第一次已成功、餘額已變，重試會收到 409 而非重放原本的成功結果；此時應重新查詢該使用者當下的 `points_balance`（`GET /users/{id}`）比對是否已反映預期變化，而非盲目重試——本端點目前沒有供 admin 查詢他人 `point_ledger` 明細的介面，逐列確認需直接查資料表。**殘餘風險（ABA）**：若第三方在重試視窗內恰好把餘額改回精確等於 `expected_balance` 的值，該次重試會被誤判為未變而通過，悄悄套用一次不該重放的調整——這是本端點目前接受的殘餘風險（admin 手動低頻操作 + 每筆調整皆有 `AdminAdjust` ledger 列可稽核），若未來出現自動化呼叫端需升級為 request-id 去重鍵；完整論證見 ADR-0007 決策 10。回應：`{ user_id: uuid, balance: number }`（調整後餘額）。寫入的 `point_ledger` 列：`reason = "admin_adjust"`、`order_id` 恆為 `null`。
 錯誤：404（`user_id` 查無此使用者）；409（`expected_balance` 與實際餘額不符；或扣點後餘額將為負，訊息「點數不足」）；422（`delta` 為 `0`，或欄位缺漏）。
 
 ---
