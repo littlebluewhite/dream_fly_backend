@@ -1,0 +1,22 @@
+-- =============================================================================
+-- Step 10a(arch-deepening-r5)— order_items 加成交當下的庫存模式快照。
+--
+-- 退款補償(10c/10d)要回補結帳當下實際扣掉的庫存,但「退款當下這個
+-- product 的 stock 是否為 NULL」不能拿來倒推「結帳當下有沒有扣過」——
+-- `stock IS NULL` 代表無限庫存、不參與扣減(`products::repository::
+-- try_decrement_stock_tx` 的 CASE 保 NULL 性),但無限庫存是可變的現況欄
+-- 位:admin 事後把某商品從無限庫存改成有限庫存,不會回頭幫歷史訂單的
+-- order_items 補一筆「當初其實沒扣過」的事實,退款時若只看現況 stock 是否
+-- NULL 就會誤判成「當初有扣」而回補從未被預留過的庫存。
+--
+-- 因此把「結帳當下是否真的扣減了庫存」當成成交事實落地在行上,與
+-- `unit_price_cents`(結帳當下的價格快照,不隨商品後續改價漂移)同一哲學
+-- ——checkout(10c)寫入這一行時,直接用 `try_decrement_stock_tx` 回傳列的
+-- `stock.is_some()` 判斷是否真的扣過。
+--
+-- Legacy 列(本欄位新增前既有的 order_items)一律 default false:沒有「當初
+-- 是否扣過庫存」的痕跡可查,保守選擇「不回補」而非誤猜——與退款的痕跡
+-- 導向政策(10e)一致:缺痕跡的舊資料自然 no-op,不需要額外特判。
+-- =============================================================================
+
+ALTER TABLE order_items ADD COLUMN stock_decremented BOOLEAN NOT NULL DEFAULT false;
