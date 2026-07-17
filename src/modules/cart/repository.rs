@@ -137,10 +137,38 @@ pub async fn clear_cart_tx(
 /// any branch of a set operation ("FOR UPDATE is not allowed with
 /// UNION/INTERSECT/EXCEPT"). Each query preserves the original locking
 /// shape (`FOR UPDATE OF ci`, `FOR SHARE OF` the priced table).
+///
+/// The product `FOR SHARE` locks are acquired by a dedicated pre-lock query
+/// in `product_id` ASCENDING order — see the comment on it below.
 pub async fn find_cart_items_for_checkout_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
 ) -> Result<Vec<CheckoutLine>, sqlx::Error> {
+    // Cross-path lock-order discipline: pre-lock the cart's product rows
+    // `FOR SHARE` in `product_id` ascending order before the join below
+    // reads (and re-locks) them in cart-creation order. Checkout's own
+    // `reserve_stock_tx` and refund's `restore_stock_tx` take per-row
+    // UPDATE locks ascending, and the users-first lock only serializes
+    // same-buyer paths — without this pre-lock, a cross-buyer refund
+    // (UPDATE ascending) and this read (SHARE in cart order) can acquire
+    // the same two products in opposite orders and deadlock (regression
+    // test: `checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`).
+    // Deliberately not filtered by `is_active`: locking a superset is
+    // harmless and leaves no window for a mid-checkout activation to enter
+    // the join unordered. Courses are not pre-locked — no compensation path
+    // takes multi-row course UPDATE locks, so no cross-path course cycle
+    // exists.
+    sqlx::query(
+        "SELECT id FROM products \
+         WHERE id IN (SELECT product_id FROM cart_items \
+                      WHERE user_id = $1 AND item_type = 'product'::cart_item_type) \
+         ORDER BY id \
+         FOR SHARE",
+    )
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+
     let mut lines = sqlx::query_as::<_, CheckoutLine>(
         "SELECT 'product'::cart_item_type AS item_type, ci.product_id, NULL::uuid AS course_id, \
          ci.quantity, p.price_cents, p.name \

@@ -23,6 +23,7 @@ use common::fixtures::{
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::cart::repository as cart_repository;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
 use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
@@ -748,6 +749,91 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
 }
 
 #[sqlx::test]
+async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db: PgPool) {
+    // Cross-buyer lock-order regression (codex branch-review P1): the cart
+    // checkout read takes product `FOR SHARE` locks, while checkout's
+    // `reserve_stock_tx` and refund's `restore_stock_tx` take per-row
+    // `FOR UPDATE` locks in `product_id` ASCENDING order. The users-first
+    // lock (Step 10b) only serializes SAME-buyer paths — for different
+    // buyers, a cart read acquiring SHARE locks in cart-creation order can
+    // interleave with another order's refund in the opposite order and
+    // deadlock. `find_cart_items_for_checkout_tx` therefore pre-locks the
+    // cart's products ascending, joining the same global product order.
+    //
+    // Adversarial construction (UUIDv7 is time-ordered, so seeding order ≈
+    // ascending ids — same trap as the plan_refund input-order test): sort
+    // the two ids explicitly and build the cart in DESCENDING id order, the
+    // exact shape that deadlocked before the pre-lock.
+    let a = common::seed_product(&db, "lock-order-a", 1000, Some(5)).await;
+    let b = common::seed_product(&db, "lock-order-b", 1000, Some(5)).await;
+    let (p_low, p_high) = if a < b { (a, b) } else { (b, a) };
+
+    let user = seed_carted_member(
+        &db,
+        "cross-buyer-lock-order@example.com",
+        &[
+            SeedCartLine::Product { product_id: p_high, quantity: 1 },
+            SeedCartLine::Product { product_id: p_low, quantity: 1 },
+        ],
+        0,
+    )
+    .await;
+
+    // Refund-shaped locker: another buyer's refund holding its FIRST
+    // ascending product lock (UPDATE on p_low), exactly like
+    // `products::service::restore_stock_tx` mid-flight.
+    let mut refund_tx = db.begin().await.unwrap();
+    sqlx::query("SELECT id FROM products WHERE id = $1 FOR UPDATE")
+        .bind(p_low)
+        .execute(&mut *refund_tx)
+        .await
+        .unwrap();
+
+    // Checkout-shaped reader on a real OS thread (same single-threaded
+    // runtime rationale as the test above).
+    let db_reader = Arc::new(db.clone());
+    let handle = tokio::runtime::Handle::current();
+    let reader = tokio::task::spawn_blocking(move || {
+        handle.block_on(async move {
+            let mut tx = db_reader.begin().await?;
+            let lines = cart_repository::find_cart_items_for_checkout_tx(&mut tx, user).await?;
+            tx.commit().await?;
+            Ok::<usize, sqlx::Error>(lines.len())
+        })
+    });
+
+    // Let the reader reach its first product lock. With the ascending
+    // pre-lock it blocks on p_low while holding NO product lock; before the
+    // fix it grabbed SHARE(p_high) first (cart-creation order) and then
+    // blocked on p_low — holding exactly what the refund side needs next.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!reader.is_finished(), "reader must be blocked behind the held p_low lock");
+
+    // The refund side takes its SECOND ascending lock. Post-fix the blocked
+    // reader holds no product lock, so this returns immediately — no cycle.
+    // Pre-fix the reader held SHARE(p_high), closing the cycle, and
+    // PostgreSQL's deadlock detector aborted one side (SQLSTATE 40P01) —
+    // this expect or the reader join below failed.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sqlx::query("SELECT id FROM products WHERE id = $1 FOR UPDATE")
+            .bind(p_high)
+            .execute(&mut *refund_tx),
+    )
+    .await
+    .expect("refund-side second ascending lock must not block: the waiting cart read may hold no product lock")
+    .expect("refund-side second ascending lock must not deadlock");
+
+    refund_tx.commit().await.unwrap();
+
+    let lines = reader
+        .await
+        .expect("reader task panicked")
+        .expect("cart read must succeed once the refund-shaped locker commits");
+    assert_eq!(lines, 2, "both cart lines survive the ordered locking");
+}
+
+#[sqlx::test]
 async fn my_orders_lists_items_per_order_without_cross_contamination(db: PgPool) {
     // Two separate orders, each with a different single product line. The
     // items aggregate (json_agg correlated subquery keyed on order_id) must
@@ -1150,14 +1236,16 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
         "stock untouched (still post-checkout value)"
     );
     let active_enrolments: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM enrolments WHERE order_id = $1 AND status = 'active'")
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM enrolments WHERE order_id = $1 AND status = 'active'::enrolment_status",
+        )
             .bind(order.id)
             .fetch_one(&db)
             .await
             .unwrap();
     assert_eq!(active_enrolments, 1, "enrolment stays active");
     let active_subs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM subscriptions WHERE order_id = $1 AND status = 'active'",
+        "SELECT COUNT(*) FROM subscriptions WHERE order_id = $1 AND status = 'active'::subscription_status",
     )
     .bind(order.id)
     .fetch_one(&db)
