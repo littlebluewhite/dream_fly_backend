@@ -21,9 +21,11 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use common::fixtures::{seed_entitlement_product, seed_subscription};
+use common::fixtures::{SeedCartLine, seed_carted_member, seed_entitlement_product, seed_subscription};
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::repository as orders_repo;
+use dream_fly_backend::modules::orders::service as orders_service;
 use dream_fly_backend::modules::products::repository as products_repo;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::subscriptions::repository as subscriptions_repo;
@@ -489,4 +491,48 @@ async fn derived_status_matches_expected_shape(db: PgPool) {
             case.name, case.expected, row.derived_status
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Step 10e row 11: refunding the order that granted a subscription cancels it,
+// so a later redeem must 409. The subscription is created by a REAL checkout
+// (only checkout writes `subscriptions.order_id`, which the refund reverses
+// by `order_id`).
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn redeem_after_refund_is_conflict(db: PgPool) {
+    let ticket =
+        seed_entitlement_product(&db, "refund-redeem-ticket", "ticket", 5_000, None, Some(5)).await;
+    let user = seed_carted_member(
+        &db,
+        "refund-redeem@example.com",
+        &[SeedCartLine::Product { product_id: ticket, quantity: 1 }],
+        0,
+    )
+    .await;
+    let order = orders_service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout");
+    assert_eq!(order.subscriptions.len(), 1, "a ticket grants a subscription");
+    let sub_id = order.subscriptions[0].id;
+
+    // Refund the order → cancels the subscription (order-scoped).
+    orders_service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("refund");
+
+    // Redeem now must conflict — a cancelled subscription is not redeemable.
+    let err = service::redeem(&db, sub_id)
+        .await
+        .expect_err("a cancelled subscription must not redeem");
+    assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
 }

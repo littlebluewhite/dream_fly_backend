@@ -3,6 +3,7 @@
 mod common;
 
 use chrono::{Duration, TimeZone, Utc};
+use common::fixtures::{seed_course_with_capacity, seed_entitlement_product};
 use common::http::{spawn_test_app, spawn_test_app_with, TestApp};
 use serde_json::json;
 use sqlx::PgPool;
@@ -408,4 +409,61 @@ async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: P
         .await
         .unwrap();
     assert_eq!(order_count, 1, "replay must not create a second order");
+}
+
+// ---------------------------------------------------------------------
+// Step 10e row 12: admin refund over HTTP returns the cancelled artifacts —
+// `fetch_artifacts` re-reads the latest enrolment/subscription rows, and the
+// response DTOs are unchanged (their `status` fields simply now read
+// `cancelled`).
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn update_status_refund_via_http_returns_cancelled_artifacts(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app
+        .register_member("refund-http@example.com", "Password!234")
+        .await;
+    let course = seed_course_with_capacity(&app.db, "HTTP Refund Course", None, 12).await;
+    let membership =
+        seed_entitlement_product(&app.db, "http-refund-membership", "membership", 8_000, None, None)
+            .await;
+
+    // Build a cart with a course (→ enrolment) and a membership (→ subscription).
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "course", "item_id": course }))
+        .await;
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": membership, "quantity": 1 }))
+        .await;
+
+    let order: serde_json::Value = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .await
+        .json();
+    let order_id = order["id"].as_str().unwrap().to_string();
+    assert_eq!(order["enrolments"].as_array().unwrap().len(), 1);
+    assert_eq!(order["subscriptions"].as_array().unwrap().len(), 1);
+
+    // Admin refunds the order.
+    let (_admin, admin_token) = app.seed_admin().await;
+    let resp = app
+        .patch(&format!("/api/v1/orders/{order_id}/status"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "status": "refunded" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "refunded");
+    assert_eq!(
+        body["enrolments"][0]["status"], "cancelled",
+        "enrolment artifact reads cancelled"
+    );
+    assert_eq!(
+        body["subscriptions"][0]["status"], "cancelled",
+        "subscription artifact reads cancelled"
+    );
 }

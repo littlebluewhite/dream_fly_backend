@@ -14,17 +14,19 @@ mod common;
 
 use sqlx::PgPool;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use common::add_course_to_cart;
 use common::fixtures::{
     SeedCartLine, seed_carted_member, seed_course_with_capacity, seed_coupon,
-    seed_entitlement_product, seed_full_course, set_points_balance,
+    seed_entitlement_product, seed_full_course, seed_order_with_item, set_points_balance,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
 use dream_fly_backend::modules::coupons::service as coupons_service;
-use dream_fly_backend::modules::orders::dto::CheckoutRequest;
+use dream_fly_backend::modules::enrolments::service as enrolments_service;
+use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::service;
 
 #[sqlx::test]
@@ -915,4 +917,588 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
         .await
         .expect("order_created outbox row");
     assert!(!has_key, "correlation_id key must be absent when None");
+}
+
+// ---------------------------------------------------------------------
+// Step 10e: refund/cancel compensation orchestration
+// (`update_order_status` → `compensate_order_artifacts_tx`).
+// ---------------------------------------------------------------------
+
+/// Shared setup for the two full-compensation tests (rows 1-2): a mixed cart
+/// — finite-stock product + course + membership — checked out with a points
+/// balance, so a later refund/cancel has stock to restore, an enrolment AND a
+/// subscription to cancel, and BOTH a `checkout_redeem` and a `checkout_earn`
+/// ledger row to reverse. Artifacts must be built by a REAL checkout (the
+/// `seed_*` fixtures never write `order_id`, so a directly-built order carries
+/// no traces to compensate). Returns `(user, order, finite_product_id)`.
+async fn checkout_mixed_with_points(db: &PgPool, email: &str) -> (Uuid, OrderResponse, Uuid) {
+    let course = seed_course_with_capacity(db, "Compensation Course", None, 12).await;
+    let limited = common::seed_product(db, "comp-limited", 10_000, Some(5)).await;
+    let membership =
+        seed_entitlement_product(db, "comp-membership", "membership", 8_000, None, None).await;
+    let user = seed_carted_member(
+        db,
+        email,
+        &[
+            SeedCartLine::Product { product_id: limited, quantity: 1 },
+            SeedCartLine::Course { course_id: course },
+            SeedCartLine::Product { product_id: membership, quantity: 1 },
+        ],
+        500,
+    )
+    .await;
+
+    let req = CheckoutRequest {
+        coupon_code: None,
+        use_points: Some(true),
+        payment_method: None,
+    };
+    let order = service::checkout(
+        db,
+        user,
+        None,
+        req,
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout");
+
+    // The scenario must actually move points BOTH ways, else the
+    // restore/clawback assertions below would be vacuous.
+    assert!(order.points_used > 0, "scenario must redeem points");
+    assert!(order.points_earned > 0, "scenario must earn points");
+
+    (user, order, limited)
+}
+
+/// The full-compensation assertion set shared by refund (row 1) and cancel
+/// (row 2) — the brief pins them to be identical. `outcome` is the response
+/// the terminal transition returned (its artifacts are re-read fresh, so they
+/// reflect the just-applied cancellation).
+async fn assert_fully_compensated(
+    db: &PgPool,
+    user: Uuid,
+    order: &OrderResponse,
+    outcome: &OrderResponse,
+    finite_product: Uuid,
+) {
+    // Stock restored to its pre-checkout value (5).
+    assert_eq!(
+        common::product_stock(db, finite_product).await,
+        Some(5),
+        "finite stock restored"
+    );
+
+    // Enrolment + subscription cancelled (the response re-reads the latest
+    // artifact rows).
+    assert_eq!(outcome.enrolments.len(), 1);
+    assert_eq!(outcome.enrolments[0].status, "cancelled", "enrolment cancelled");
+    assert_eq!(outcome.subscriptions.len(), 1);
+    assert_eq!(
+        outcome.subscriptions[0].status, "cancelled",
+        "subscription cancelled"
+    );
+
+    // paid_at is retained (§1.8) — a refund/cancel doesn't erase the payment
+    // timestamp.
+    assert!(outcome.paid_at.is_some(), "paid_at retained");
+
+    // Balance fully restored to the original 500 (redeemed points returned,
+    // earned points clawed back).
+    assert_eq!(
+        common::points_balance_of(db, user).await,
+        500,
+        "balance fully restored"
+    );
+
+    // Exactly one refund_restore (+redeemed) and one refund_clawback
+    // (-earned), both carrying the correct order_id.
+    let restore: (i64, Option<Uuid>) = sqlx::query_as(
+        "SELECT delta, order_id FROM point_ledger \
+         WHERE order_id = $1 AND reason = 'refund_restore'::point_reason",
+    )
+    .bind(order.id)
+    .fetch_one(db)
+    .await
+    .expect("one refund_restore row");
+    assert_eq!(restore.0, order.points_used, "restore reverses the redeemed magnitude");
+    assert_eq!(restore.1, Some(order.id));
+
+    let clawback: (i64, Option<Uuid>) = sqlx::query_as(
+        "SELECT delta, order_id FROM point_ledger \
+         WHERE order_id = $1 AND reason = 'refund_clawback'::point_reason",
+    )
+    .bind(order.id)
+    .fetch_one(db)
+    .await
+    .expect("one refund_clawback row");
+    assert_eq!(clawback.0, -order.points_earned, "clawback reverses the earned magnitude");
+    assert_eq!(clawback.1, Some(order.id));
+
+    let refund_ledger_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger \
+         WHERE order_id = $1 AND reason IN ('refund_restore'::point_reason, 'refund_clawback'::point_reason)",
+    )
+    .bind(order.id)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    assert_eq!(refund_ledger_count, 2, "exactly one restore + one clawback");
+}
+
+/// Row 1: paid→refunded reverses stock, enrolment, subscription, and points;
+/// exactly one restore + one clawback ledger row; paid_at retained; a
+/// refunded notification is written.
+#[sqlx::test]
+async fn refund_reverses_stock_enrolment_subscription_and_points(db: PgPool) {
+    let (user, order, limited) = checkout_mixed_with_points(&db, "refund-buyer@example.com").await;
+
+    let refunded = service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("refund");
+    assert_eq!(refunded.status, "refunded");
+
+    assert_fully_compensated(&db, user, &order, &refunded, limited).await;
+
+    let (_title, message) = common::latest_notification(&db, user, "order_status")
+        .await
+        .expect("refund notification");
+    assert!(message.contains("refunded"), "message={message}");
+}
+
+/// Row 2: target=cancelled compensates identically to refunded (裁決: same
+/// semantics).
+#[sqlx::test]
+async fn cancel_compensates_identically_to_refund(db: PgPool) {
+    let (user, order, limited) = checkout_mixed_with_points(&db, "cancel-buyer@example.com").await;
+
+    let cancelled = service::update_order_status(&db, order.id, "cancelled", None)
+        .await
+        .expect("cancel");
+    assert_eq!(cancelled.status, "cancelled");
+
+    assert_fully_compensated(&db, user, &order, &cancelled, limited).await;
+
+    let (_title, message) = common::latest_notification(&db, user, "order_status")
+        .await
+        .expect("cancel notification");
+    assert!(message.contains("cancelled"), "message={message}");
+}
+
+/// Row 3: an earned-points order whose balance is later wiped can't satisfy
+/// the clawback — the `users_points_balance_check` violation surfaces as
+/// `Conflict("點數不足")` and rolls the WHOLE compensation back (status,
+/// stock, enrolment, subscription untouched; no refund ledger row).
+#[sqlx::test]
+async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: PgPool) {
+    let course = seed_course_with_capacity(&db, "Clawback Course", None, 12).await;
+    let limited = common::seed_product(&db, "clawback-limited", 10_000, Some(5)).await;
+    let membership =
+        seed_entitlement_product(&db, "clawback-membership", "membership", 8_000, None, None).await;
+    // No points balance → no redeem, only an earn ledger row; restore will be
+    // 0, so it can't cover the clawback.
+    let user = seed_carted_member(
+        &db,
+        "clawback-buyer@example.com",
+        &[
+            SeedCartLine::Product { product_id: limited, quantity: 1 },
+            SeedCartLine::Course { course_id: course },
+            SeedCartLine::Product { product_id: membership, quantity: 1 },
+        ],
+        0,
+    )
+    .await;
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout");
+    assert!(order.points_earned > 0, "must earn points to have a clawback");
+
+    // Member spent the earned points elsewhere — wipe the balance to 0.
+    set_points_balance(&db, user, 0).await;
+
+    let err = service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect_err("clawback against a zero balance must conflict");
+    match err {
+        AppError::Conflict(msg) => assert_eq!(msg, "點數不足"),
+        other => panic!("expected Conflict(點數不足), got {other:?}"),
+    }
+
+    // WHOLE compensation rolled back.
+    let status: String = sqlx::query_scalar("SELECT status::text FROM orders WHERE id = $1")
+        .bind(order.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(status, "paid", "status untouched by the rolled-back refund");
+    // Stock stays at its post-checkout value (5 - 1 = 4).
+    assert_eq!(
+        common::product_stock(&db, limited).await,
+        Some(4),
+        "stock untouched (still post-checkout value)"
+    );
+    let active_enrolments: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM enrolments WHERE order_id = $1 AND status = 'active'")
+            .bind(order.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(active_enrolments, 1, "enrolment stays active");
+    let active_subs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM subscriptions WHERE order_id = $1 AND status = 'active'",
+    )
+    .bind(order.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(active_subs, 1, "subscription stays active");
+    let refund_ledger: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger \
+         WHERE order_id = $1 AND reason IN ('refund_restore'::point_reason, 'refund_clawback'::point_reason)",
+    )
+    .bind(order.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(refund_ledger, 0, "no refund ledger row survives the rollback");
+}
+
+/// Row 4: re-PATCHing the same terminal status is an observable idempotent
+/// no-op — the ledger still has exactly the two rows from the first pass, and
+/// NO new outbox row / notification is written.
+#[sqlx::test]
+async fn refunded_same_status_noop_does_not_compensate_twice(db: PgPool) {
+    let (user, order, _limited) = checkout_mixed_with_points(&db, "noop-buyer@example.com").await;
+
+    // First refund compensates.
+    service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("first refund");
+
+    let outbox_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events_outbox")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let notif_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND type = 'order_status'::notification_type",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Second PATCH refunded → same-status no-op: returns Ok, writes nothing.
+    let again = service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("same-status noop is Ok");
+    assert_eq!(again.status, "refunded");
+
+    let refund_ledger: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger \
+         WHERE order_id = $1 AND reason IN ('refund_restore'::point_reason, 'refund_clawback'::point_reason)",
+    )
+    .bind(order.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(refund_ledger, 2, "no second compensation");
+
+    let outbox_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events_outbox")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(outbox_after, outbox_before, "no new outbox row");
+
+    let notif_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND type = 'order_status'::notification_type",
+    )
+    .bind(user)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(notif_after, notif_before, "no new notification");
+}
+
+/// Row 5: terminal states have no outgoing edges — refunded→processing and
+/// cancelled→refunded both 400 (before any compensation is considered).
+#[sqlx::test]
+async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
+    // Refund, then try to move on → 400.
+    let product_a = common::seed_product(&db, "terminal-a", 1_000, Some(5)).await;
+    let user_a = seed_carted_member(
+        &db,
+        "terminal-a@example.com",
+        &[SeedCartLine::Product { product_id: product_a, quantity: 1 }],
+        0,
+    )
+    .await;
+    let order_a = service::checkout(
+        &db,
+        user_a,
+        None,
+        CheckoutRequest::default(),
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout a");
+    service::update_order_status(&db, order_a.id, "refunded", None)
+        .await
+        .expect("refund a");
+    let err = service::update_order_status(&db, order_a.id, "processing", None)
+        .await
+        .expect_err("refunded is terminal");
+    assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
+
+    // Cancel a different order, then cancelled→refunded → 400.
+    let product_b = common::seed_product(&db, "terminal-b", 1_000, Some(5)).await;
+    let user_b = seed_carted_member(
+        &db,
+        "terminal-b@example.com",
+        &[SeedCartLine::Product { product_id: product_b, quantity: 1 }],
+        0,
+    )
+    .await;
+    let order_b = service::checkout(
+        &db,
+        user_b,
+        None,
+        CheckoutRequest::default(),
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout b");
+    service::update_order_status(&db, order_b.id, "cancelled", None)
+        .await
+        .expect("cancel b");
+    let err_b = service::update_order_status(&db, order_b.id, "refunded", None)
+        .await
+        .expect_err("cancelled is terminal");
+    assert!(matches!(err_b, AppError::BadRequest(_)), "got: {err_b:?}");
+}
+
+/// Row 6: pending→cancelled never compensates — Pending isn't a revenue
+/// status, so cancelling a directly-built pending order is a pure status
+/// flip (stock untouched, no ledger row).
+#[sqlx::test]
+async fn pending_to_cancelled_does_not_compensate(db: PgPool) {
+    let user = common::seed_member(&db, "pending-buyer@example.com", "Password!234").await;
+    let product = common::seed_product(&db, "pending-prod", 1_000, Some(5)).await;
+    let order_id =
+        seed_order_with_item(&db, user, product, "Pending Prod", 1, 1_000, "pending").await;
+
+    let resp = service::update_order_status(&db, order_id, "cancelled", None)
+        .await
+        .expect("cancel pending");
+    assert_eq!(resp.status, "cancelled");
+
+    assert_eq!(
+        common::product_stock(&db, product).await,
+        Some(5),
+        "stock untouched (pending never decremented it)"
+    );
+    let ledger: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE order_id = $1")
+        .bind(order_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(ledger, 0, "no ledger row for a pending cancel");
+}
+
+/// Row 7: an unlimited-stock (NULL) product line records
+/// `stock_decremented=false`, so refunding it restores nothing — the column
+/// stays NULL.
+#[sqlx::test]
+async fn refund_keeps_unlimited_stock_null(db: PgPool) {
+    let product = common::seed_product(&db, "unlimited-refund", 500, None).await;
+    let user = seed_carted_member(
+        &db,
+        "unlimited-refund@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 3 }],
+        0,
+    )
+    .await;
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout");
+
+    service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("refund");
+    assert_eq!(
+        common::product_stock(&db, product).await,
+        None,
+        "unlimited stock stays NULL"
+    );
+}
+
+/// Row 8: sold while unlimited (snapshot false), then an admin switches the
+/// product to finite stock. Refund honors the checkout-time snapshot, not the
+/// current stock mode — no restock, stock stays 5.
+#[sqlx::test]
+async fn refund_skips_restock_when_sold_unlimited_then_stock_set(db: PgPool) {
+    let product = common::seed_product(&db, "snapshot-refund", 500, None).await;
+    let user = seed_carted_member(
+        &db,
+        "snapshot-refund@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 2 }],
+        0,
+    )
+    .await;
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout");
+
+    // Admin flips the product to finite stock AFTER the sale.
+    sqlx::query("UPDATE products SET stock = 5 WHERE id = $1")
+        .bind(product)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("refund");
+    assert_eq!(
+        common::product_stock(&db, product).await,
+        Some(5),
+        "snapshot false ⇒ no restock; stock stays 5"
+    );
+}
+
+/// Row 9: a directly-built PAID order carries none of the three checkout
+/// traces (no stock_decremented, no ledger, no artifacts). Refunding it is a
+/// pure status flip — the legacy-data policy: missing traces ⇒ natural no-op.
+#[sqlx::test]
+async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
+    let user = common::seed_member(&db, "direct-paid@example.com", "Password!234").await;
+    set_points_balance(&db, user, 100).await;
+    let product = common::seed_product(&db, "direct-paid-prod", 1_000, Some(5)).await;
+    let order_id =
+        seed_order_with_item(&db, user, product, "Direct Paid", 2, 1_000, "paid").await;
+
+    let resp = service::update_order_status(&db, order_id, "refunded", None)
+        .await
+        .expect("refund directly-built paid order");
+    assert_eq!(resp.status, "refunded");
+
+    assert_eq!(
+        common::points_balance_of(&db, user).await,
+        100,
+        "balance untouched (no ledger trace)"
+    );
+    assert_eq!(
+        common::product_stock(&db, product).await,
+        Some(5),
+        "stock untouched (no stock_decremented trace)"
+    );
+    let refund_ledger: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE order_id = $1")
+            .bind(order_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(refund_ledger, 0, "no refund ledger row for a zero-trace order");
+}
+
+/// Row 10: member self-cancels the enrolment first, then the whole order is
+/// refunded. The order-scoped cancel is naturally idempotent (the already-
+/// cancelled enrolment is a 0-row no-op), and the points are still reversed
+/// in FULL — whole-order semantics don't depend on the enrolment's state.
+#[sqlx::test]
+async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
+    let course = seed_course_with_capacity(&db, "Self-Cancel Course", None, 12).await;
+    let limited = common::seed_product(&db, "self-cancel-limited", 10_000, Some(5)).await;
+    let user = seed_carted_member(
+        &db,
+        "self-cancel-buyer@example.com",
+        &[
+            SeedCartLine::Course { course_id: course },
+            SeedCartLine::Product { product_id: limited, quantity: 1 },
+        ],
+        500,
+    )
+    .await;
+    let req = CheckoutRequest {
+        coupon_code: None,
+        use_points: Some(true),
+        payment_method: None,
+    };
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        &common::test_server_config(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout");
+    assert!(
+        order.points_used > 0 && order.points_earned > 0,
+        "scenario must move points both ways"
+    );
+    assert_eq!(order.enrolments.len(), 1);
+
+    // Member self-cancels the enrolment before the refund.
+    let auth = common::member_auth(user);
+    enrolments_service::cancel_enrolment(&db, &auth, order.enrolments[0].id)
+        .await
+        .expect("self-cancel enrolment");
+
+    // Now refund the whole order — must still succeed.
+    let refunded = service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("refund after self-cancel");
+    assert_eq!(refunded.status, "refunded");
+    assert_eq!(
+        refunded.enrolments[0].status, "cancelled",
+        "enrolment stays cancelled"
+    );
+
+    // Points reversed in full: balance back to the original 500.
+    assert_eq!(
+        common::points_balance_of(&db, user).await,
+        500,
+        "full points reversal despite prior self-cancel"
+    );
+    let refund_ledger: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger \
+         WHERE order_id = $1 AND reason IN ('refund_restore'::point_reason, 'refund_clawback'::point_reason)",
+    )
+    .bind(order.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(refund_ledger, 2, "both directions reversed");
 }

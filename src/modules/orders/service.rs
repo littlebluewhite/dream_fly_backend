@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::config::ServerConfig;
@@ -28,6 +28,7 @@ use super::dto::{
 use super::fulfilment;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
+use super::refund;
 use super::repository;
 
 /// Checkout the user's cart. When an `idempotency_key` is supplied, a second
@@ -487,14 +488,32 @@ pub async fn update_order_status(
         .parse()
         .map_err(|_| AppError::Validation(format!("invalid order status: {status_str}")))?;
 
-    // Everything in a single tx: read current status → check transition →
-    // single atomic UPDATE with conditional `paid_at`. No more split
-    // UPDATE+UPDATE+SELECT that could leave `status='paid' AND paid_at=NULL`.
+    // Everything in a single tx: read+lock current status → (same-status
+    // early-return) → check transition → compensate → single atomic UPDATE
+    // with conditional `paid_at` → outbox. Reading `current` under `FOR
+    // UPDATE` is also the `orders`-row lock that opens the refund lock order
+    // (orders → users → products → enrolments → subscriptions, see
+    // `compensate_order_artifacts_tx`). No split UPDATE+UPDATE+SELECT that
+    // could leave `status='paid' AND paid_at=NULL`.
     let mut tx = db.begin().await?;
 
     let current = repository::find_by_id_tx(&mut tx, order_id)
         .await?
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
+
+    // Same-status no-op: return the order unchanged — no UPDATE, no outbox, no
+    // notification, no compensation — so a retried webhook/admin PATCH is an
+    // *observable* idempotent no-op (the old path re-UPDATEd + re-queued the
+    // outbox + re-notified on every same-status call; and re-running here
+    // would try to compensate a second time). `drop(tx)` FIRST, before
+    // `assemble_response`: that runs pool queries (`fetch_artifacts`), and
+    // issuing one while this tx still holds its pooled connection can
+    // self-deadlock under a low-connection pool — mirrors the discipline at
+    // the empty-cart idempotency replay in `checkout` above.
+    if current.status.as_str() == target.as_str() {
+        drop(tx);
+        return assemble_response(db, current).await;
+    }
 
     if !current.status.can_transition_to(&target) {
         return Err(AppError::BadRequest(format!(
@@ -502,6 +521,16 @@ pub async fn update_order_status(
             current.status.as_str(),
             target.as_str()
         )));
+    }
+
+    // Refund/cancel compensation: undo the checkout side effects when a
+    // revenue order moves into a terminal cancelled/refunded state, BEFORE the
+    // status UPDATE and in this same tx. A `users_points_balance_check`
+    // violation on the clawback surfaces as `Conflict("點數不足")` and rolls
+    // the WHOLE transaction back — status flip included — so there is no
+    // half-applied refund (Cancelled ≡ Refunded compensation semantics).
+    if refund::compensation_required(&current.status, &target) {
+        compensate_order_artifacts_tx(&mut tx, &current).await?;
     }
 
     let updated = repository::update_status_and_paid_at_tx(&mut tx, order_id, &target)
@@ -534,4 +563,96 @@ pub async fn update_order_status(
     .await;
 
     assemble_response(db, updated).await
+}
+
+/// Undo a paid order's checkout side effects as part of moving it into a
+/// terminal cancelled/refunded state (Cancelled ≡ Refunded). Runs inside
+/// `update_order_status`'s transaction, BEFORE the status UPDATE, so the whole
+/// thing — points reversal, restock, artifact cancellation, and the status
+/// flip itself — commits atomically or (on the 409 clawback path) rolls back
+/// together. Not a standalone `refund_order` entry point: reusing
+/// `update_order_status` avoids re-implementing its parse / lock / transition
+/// check / outbox / notify.
+///
+/// Order of operations (ADR-0007), sibling reads/writes all through the
+/// service seams (ADR-0005 — `orders` never touches a sibling repository):
+/// 1. Lock the buyer's points-balance row UNCONDITIONALLY — even a
+///    zero-points order takes it. This is the refund half of the unified lock
+///    order (orders → users → products → enrolments → subscriptions) that
+///    keeps a same-buyer checkout and refund mutually exclusive; it also lets
+///    the ledger flow-sum read below observe a consistent snapshot under the
+///    same lock (a `use_points=false`/zero-flow refund would otherwise lock
+///    `users` only implicitly, via a points UPDATE that never happens).
+/// 2. Read the checkout *traces* — line items (each carrying its checkout-time
+///    `stock_decremented` snapshot) and the order's `checkout_earn`/
+///    `checkout_redeem` ledger flow sums, both keyed by `order_id`. A seed /
+///    history / directly-built order that never went through checkout carries
+///    none of these, so `plan_refund` computes an all-zero plan and the whole
+///    body no-ops (the legacy-data policy — no special-casing).
+/// 3. Points reversal — RESTORE (positive, reverses `checkout_redeem`) FIRST,
+///    then CLAWBACK (negative, reverses `checkout_earn`). Under this one tx
+///    the `users_points_balance_check` CHECK is evaluated per statement, so
+///    applying the positive restore before the negative clawback relaxes the
+///    success condition from `balance ≥ earned` to `balance + restored ≥
+///    earned` (a deliberate deviation from strict reverse order — ADR-0007).
+///    Each direction is skipped when its magnitude is 0 (`apply_delta_tx`
+///    rejects a zero delta); both carry `order_id`, so the partial unique
+///    index `uniq_point_ledger_refund_once` caps each direction at one row per
+///    order.
+/// 4. Restock — only the `stock_decremented=true` lines (`plan_refund` already
+///    filtered); `restore_stock_tx` owns the ascending-`product_id` write-lock
+///    ordering.
+/// 5. Cancel the order's enrolments + subscriptions (order-scoped batch
+///    UPDATEs, naturally idempotent via `status <> 'cancelled'`, so a buyer
+///    who already self-cancelled an enrolment is a harmless 0-row no-op).
+async fn compensate_order_artifacts_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order: &Order,
+) -> Result<(), AppError> {
+    // 1. Lock the buyer's balance unconditionally.
+    points_service::lock_balance_tx(tx, order.user_id).await?;
+
+    // 2. Read the checkout traces.
+    let items = repository::find_items_by_order_tx(tx, order.id).await?;
+    let flow = points_service::find_order_flow_sums_tx(tx, order.id).await?;
+
+    // 3. Pure plan.
+    let plan = refund::plan_refund(order, &items, flow)?;
+
+    // 4. Points reversal — restore first, clawback second.
+    if plan.restore_points > 0 {
+        points_service::apply_delta_tx(
+            tx,
+            order.user_id,
+            plan.restore_points,
+            PointReason::RefundRestore,
+            Some(order.id),
+        )
+        .await?;
+    }
+    if plan.clawback_points > 0 {
+        points_service::apply_delta_tx(
+            tx,
+            order.user_id,
+            -plan.clawback_points,
+            PointReason::RefundClawback,
+            Some(order.id),
+        )
+        .await?;
+    }
+
+    // 5. Restock the decremented product lines (already filtered by the plan).
+    let restocks: Vec<(Uuid, i32)> = plan
+        .restocks
+        .iter()
+        .map(|r| (r.product_id, r.quantity))
+        .collect();
+    product_service::restore_stock_tx(tx, &restocks).await?;
+
+    // 6. Cancel the order's enrolments + subscriptions (order-scoped,
+    //    idempotent).
+    enrolments_service::cancel_by_order_tx(tx, order.id).await?;
+    subscriptions_service::cancel_by_order_tx(tx, order.id).await?;
+
+    Ok(())
 }
