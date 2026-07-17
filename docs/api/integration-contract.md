@@ -193,6 +193,7 @@
 | Waitlist | GET | `/waitlist?course_id=` | admin |
 | Waitlist | DELETE | `/waitlist/{id}` | 需登入（本人或 admin） |
 | Points | GET | `/points/me` | 需登入 |
+| Points | POST | `/points/adjustments` | admin |
 | Rewards | GET | `/rewards?all=` | 需登入（`all=true` 需 admin） |
 | Rewards | POST | `/rewards/{id}/redeem` | 需登入 |
 | Rewards | GET | `/rewards/redemptions/me` | 需登入 |
@@ -719,6 +720,10 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
 ```
 
 `delta` 可正可負（`checkout_redeem`/`redeem` 恆為負、`checkout_earn` 恆為正）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
+
+#### `POST /points/adjustments` — admin
+Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位皆必填；`delta` 不可為 `0`）。admin 手動調整任一使用者的點數餘額，用途是關閉退款/取消補償流程中「點數不足」409 的修復迴路：補點後即可重試先前失敗的退款。呼叫前須先取得該使用者當下的餘額（`GET /users/{id}` 的 `points_balance`，見 §3.2——`GET /points/me` 僅回呼叫者本人餘額，無法查他人）填入 `expected_balance`；後端於交易內鎖列讀取實際餘額並比對，不符即拒絕。**注意：`expected_balance` 是樂觀鎖（CAS），非嚴格冪等**——呼叫逾時後原樣重試，若第一次已成功、餘額已變，重試會收到 409 而非重放原本的成功結果；此時應重新查詢該使用者當下的 `points_balance`（`GET /users/{id}`）比對是否已反映預期變化，而非盲目重試——本端點目前沒有供 admin 查詢他人 `point_ledger` 明細的介面，逐列確認需直接查資料表。回應：`{ user_id: uuid, balance: number }`（調整後餘額）。寫入的 `point_ledger` 列：`reason = "admin_adjust"`、`order_id` 恆為 `null`。
+錯誤：404（`user_id` 查無此使用者）；409（`expected_balance` 與實際餘額不符；或扣點後餘額將為負，訊息「點數不足」）；422（`delta` 為 `0`，或欄位缺漏）。
 
 ---
 

@@ -4,7 +4,9 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
 
-use super::dto::{LedgerEntryResponse, PointsMeResponse};
+use super::dto::{
+    AdjustPointsRequest, LedgerEntryResponse, PointsAdjustmentResponse, PointsMeResponse,
+};
 use super::model::PointReason;
 use super::repository;
 
@@ -132,5 +134,71 @@ pub async fn get_my_points(
         balance,
         ledger: entries.into_iter().map(LedgerEntryResponse::from).collect(),
         meta: pagination.meta(total),
+    })
+}
+
+/// `POST /points/adjustments` (admin-only, Step 10f) — the minimal repair
+/// tool that closes the loop on refund/cancel compensation's clawback step
+/// 409ing with `Conflict("點數不足")` (`orders::service::compensate_order_artifacts_tx`,
+/// 10e): an admin restores the member's balance here, then retries the
+/// refund PATCH. Consumes `PointReason::AdminAdjust`, previously a
+/// zero-call-site variant.
+///
+/// Owns its own transaction (pool-in, unlike `apply_delta_tx`/
+/// `lock_balance_tx`, which compose into a caller's transaction) — this is
+/// a leaf operation, not a step inside a larger orchestrated write.
+///
+/// **CAS, not idempotency** (ADR-0007, Step 10h, has the full write-up —
+/// this doc comment is the summary it's referenced from). Comparing the
+/// locked balance against `req.expected_balance` before writing guards
+/// against *re-applying the same adjustment twice*; it is not a
+/// replay-safe idempotency key. A client that times out waiting for the
+/// first call's response and retries with the same body will find the
+/// balance it just changed, so the retry gets `Conflict` instead of
+/// replaying the original success — the retry is *rejected*, not
+/// replayed. That's an accepted tradeoff here: this endpoint is
+/// admin-driven and low-frequency, and every application is independently
+/// auditable via its `AdminAdjust` ledger row, so an admin who hits 409 on
+/// retry re-checks the target user's current `points_balance` (via
+/// `GET /users/{id}` — `GET /points/me` is self-only, bound to the
+/// caller's own `auth.user_id`, so it can't look up someone else's
+/// balance) and decides from there whether the adjustment already landed,
+/// rather than blindly retrying; confirming the exact `AdminAdjust` ledger
+/// row still means a direct `point_ledger` query, since no admin-facing
+/// per-user ledger endpoint exists yet. The narrower residual risk is
+/// ABA: a third party could
+/// restore the balance to exactly `expected_balance` again inside the
+/// retry window, letting a stale retry through unnoticed — accepted as
+/// residual risk for a manual, low-frequency admin tool. If this endpoint
+/// ever gains an automated (non-human) caller, upgrade to a request-id
+/// dedup key or a partial unique index at that point; not added now.
+pub async fn adjust_points(
+    db: &PgPool,
+    req: &AdjustPointsRequest,
+) -> Result<PointsAdjustmentResponse, AppError> {
+    let mut tx = db.begin().await?;
+
+    let current_balance = lock_balance_tx(&mut tx, req.user_id).await?;
+    if current_balance != req.expected_balance {
+        return Err(AppError::Conflict(format!(
+            "balance mismatch: expected {}, actual {}",
+            req.expected_balance, current_balance
+        )));
+    }
+
+    let balance = apply_delta_tx(
+        &mut tx,
+        req.user_id,
+        req.delta,
+        PointReason::AdminAdjust,
+        None,
+    )
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(PointsAdjustmentResponse {
+        user_id: req.user_id,
+        balance,
     })
 }

@@ -19,6 +19,7 @@ use uuid::Uuid;
 use common::fixtures::set_points_balance;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::points::dto::AdjustPointsRequest;
 use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::points::repository as points_repo;
 use dream_fly_backend::modules::points::service;
@@ -388,4 +389,179 @@ async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
     .expect("get_my_points");
 
     assert_eq!(resp.meta.per_page, 100, "per_page should clamp to 100");
+}
+
+// ---------------------------------------------------------------------
+// Step 10f: `POST /points/adjustments` (admin) — service::adjust_points
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn adjust_points_positive_delta_increases_balance_and_writes_admin_adjust_ledger_row(
+    db: PgPool,
+) {
+    let user_id = common::seed_member(&db, "pts-adj-pos@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 100).await;
+
+    let result = service::adjust_points(
+        &db,
+        &AdjustPointsRequest {
+            user_id,
+            delta: 50,
+            expected_balance: 100,
+        },
+    )
+    .await
+    .expect("adjustment should succeed");
+
+    assert_eq!(result.user_id, user_id);
+    assert_eq!(result.balance, 150);
+
+    let balance = points_repo::find_balance(&db, user_id)
+        .await
+        .expect("query balance")
+        .expect("user exists");
+    assert_eq!(balance, 150, "users.points_balance must match the response");
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].delta, 50);
+    assert_eq!(ledger[0].balance_after, 150);
+    assert_eq!(ledger[0].reason, PointReason::AdminAdjust);
+    assert_eq!(ledger[0].order_id, None);
+}
+
+#[sqlx::test]
+async fn adjust_points_negative_delta_decreases_balance_and_writes_admin_adjust_ledger_row(
+    db: PgPool,
+) {
+    let user_id = common::seed_member(&db, "pts-adj-neg@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 100).await;
+
+    let result = service::adjust_points(
+        &db,
+        &AdjustPointsRequest {
+            user_id,
+            delta: -30,
+            expected_balance: 100,
+        },
+    )
+    .await
+    .expect("adjustment should succeed");
+
+    assert_eq!(result.user_id, user_id);
+    assert_eq!(result.balance, 70);
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].delta, -30);
+    assert_eq!(ledger[0].balance_after, 70);
+    assert_eq!(ledger[0].reason, PointReason::AdminAdjust);
+    assert_eq!(ledger[0].order_id, None);
+}
+
+/// CAS mismatch (Step 10f's core new behaviour): `expected_balance` doesn't
+/// match the actual locked balance → `Conflict`, nothing persisted. The
+/// message names both sides so an admin can immediately re-judge from the
+/// response without a follow-up query.
+#[sqlx::test]
+async fn adjust_points_balance_mismatch_returns_conflict_and_does_not_persist(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-adj-cas@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 100).await;
+
+    let err = service::adjust_points(
+        &db,
+        &AdjustPointsRequest {
+            user_id,
+            delta: 50,
+            expected_balance: 999, // stale/incorrect caller expectation
+        },
+    )
+    .await
+    .expect_err("balance mismatch must be rejected");
+
+    match err {
+        AppError::Conflict(msg) => {
+            assert!(
+                msg.contains("999") && msg.contains("100"),
+                "message should surface both expected and actual balances, got {msg:?}"
+            );
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    let balance = points_repo::find_balance(&db, user_id)
+        .await
+        .expect("query balance")
+        .expect("user exists");
+    assert_eq!(
+        balance, 100,
+        "balance must be unchanged after a CAS mismatch"
+    );
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert!(ledger.is_empty(), "no ledger row should have been written");
+}
+
+/// CAS passes (the caller's `expected_balance` is accurate), but the
+/// deduction itself would drive the balance negative — distinct failure
+/// mode from the CAS mismatch above, surfaced via `apply_delta_tx`'s
+/// existing `users_points_balance_check` mapping.
+#[sqlx::test]
+async fn adjust_points_negative_delta_exceeding_balance_returns_conflict_and_does_not_persist(
+    db: PgPool,
+) {
+    let user_id = common::seed_member(&db, "pts-adj-poor@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 20).await;
+
+    let err = service::adjust_points(
+        &db,
+        &AdjustPointsRequest {
+            user_id,
+            delta: -50,
+            expected_balance: 20, // CAS matches; the deduction itself is what fails
+        },
+    )
+    .await
+    .expect_err("insufficient balance must be rejected");
+
+    match err {
+        AppError::Conflict(msg) => assert_eq!(msg, "點數不足"),
+        other => panic!("expected Conflict(\"點數不足\"), got {other:?}"),
+    }
+
+    let balance = points_repo::find_balance(&db, user_id)
+        .await
+        .expect("query balance")
+        .expect("user exists");
+    assert_eq!(balance, 20, "balance must be unchanged");
+
+    let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
+        .await
+        .expect("query ledger");
+    assert!(ledger.is_empty(), "no ledger row should have been written");
+}
+
+#[sqlx::test]
+async fn adjust_points_nonexistent_user_returns_not_found(db: PgPool) {
+    let err = service::adjust_points(
+        &db,
+        &AdjustPointsRequest {
+            user_id: Uuid::now_v7(),
+            delta: 10,
+            expected_balance: 0,
+        },
+    )
+    .await
+    .expect_err("nonexistent user must 404");
+
+    assert!(
+        matches!(err, AppError::NotFound(ref m) if m == "user not found"),
+        "got {err:?}"
+    );
 }

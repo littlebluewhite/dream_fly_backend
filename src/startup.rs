@@ -77,7 +77,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let cors = cors_layer(&state.config.server);
 
-    // Admin 半邊:16 個模組的 `admin_router()` 合併後,單點掛上 `require_admin`
+    // Admin 半邊:17 個模組的 `admin_router()` 合併後,單點掛上 `require_admin`
     // route_layer——admin 授權從 34 份 handler 首行儀式收斂為此一層。route_layer
     // 只包住 admin 方法(及其 per-path 405 fallback),與公開 router 帶入同路徑的
     // sibling 方法互不影響(共用路徑按 method 拆;見 `middleware::require_admin`
@@ -100,6 +100,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::coaches::routes::admin_router())
         .merge(modules::rewards::routes::admin_router())
         .merge(modules::posts::routes::admin_router())
+        .merge(modules::points::routes::admin_router())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     // Staff 半邊:6 個模組的 `staff_router()` 合併後,單點掛上 `require_staff`

@@ -5,6 +5,7 @@ mod common;
 use chrono::{Duration, Utc};
 use common::fixtures::{seed_point_ledger_entry, set_points_balance};
 use common::http::spawn_test_app;
+use serde_json::json;
 use sqlx::PgPool;
 
 #[sqlx::test]
@@ -129,4 +130,85 @@ async fn me_paginates_newest_first(db: PgPool) {
         ids[0].to_string(),
         "oldest entry lands on page 2 of a newest-first, per_page=2 listing"
     );
+}
+
+// ---------------------------------------------------------------------
+// Step 10f: `POST /points/adjustments` (admin)
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn adjust_points_as_admin_succeeds(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let member = app
+        .register_member("pts-adjust-target@example.com", "Password!234")
+        .await;
+    set_points_balance(&app.db, member.user_id, 100).await;
+
+    let resp = app
+        .post("/api/v1/points/adjustments")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "user_id": member.user_id,
+            "delta": 25,
+            "expected_balance": 100,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["user_id"], member.user_id.to_string());
+    assert_eq!(body["balance"], 125);
+}
+
+/// `delta: 0` is rejected by `AdjustPointsRequest`'s `validate_nonzero_delta`
+/// custom validator, via the `ValidatedJson` extractor — before the handler
+/// body (and therefore before any lock/compare against the DB) ever runs.
+#[sqlx::test]
+async fn adjust_points_zero_delta_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let member = app
+        .register_member("pts-adjust-zero@example.com", "Password!234")
+        .await;
+    set_points_balance(&app.db, member.user_id, 100).await;
+
+    let resp = app
+        .post("/api/v1/points/adjustments")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "user_id": member.user_id,
+            "delta": 0,
+            "expected_balance": 100,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+
+    // Untouched — the request never reached the lock/compare/apply step.
+    let balance =
+        dream_fly_backend::modules::points::repository::find_balance(&app.db, member.user_id)
+            .await
+            .expect("query balance")
+            .expect("user exists");
+    assert_eq!(balance, 100);
+}
+
+/// Same `admin_router()` gate as the schedule/coupons/etc. admin endpoints
+/// (`update_slot_as_member_returns_403` is the closest precedent).
+#[sqlx::test]
+async fn adjust_points_as_member_returns_403(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app
+        .register_member("pts-adjust-member@example.com", "Password!234")
+        .await;
+
+    let resp = app
+        .post("/api/v1/points/adjustments")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({
+            "user_id": user.user_id,
+            "delta": 10,
+            "expected_balance": 0,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 403);
 }
