@@ -369,15 +369,18 @@ async fn decide_without_auth_returns_401(db: PgPool) {
 
 #[sqlx::test]
 async fn decide_as_member_returns_403(db: PgPool) {
-    // staff gate (admin-or-coach) parity: a plain member is rejected before
-    // the handler ever looks up the (here nonexistent) leave request id —
-    // 403 from the route-layer gate, not 404 from the service.
+    // staff gate (admin-or-coach) parity: a plain member is rejected even
+    // when the body is malformed. `status: ""` fails
+    // `DecideLeaveRequestRequest`'s `length(min = 1)` validator, so under
+    // the old handler-first-line gate this would have 422'd out of
+    // `ValidatedJson` before the role check ever ran. The route-layer gate
+    // now runs ahead of extraction, so the member still gets 403.
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-decide-member-403@example.com", "Password!234").await;
     let resp = app
         .patch(&format!("/api/v1/leave-requests/{}", Uuid::now_v7()))
         .authorization_bearer(&user.access_token)
-        .json(&json!({"status": "approved"}))
+        .json(&json!({"status": ""}))
         .await;
     assert_eq!(resp.status_code(), 403, "body={}", resp.text());
 }

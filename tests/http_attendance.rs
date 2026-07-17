@@ -166,10 +166,17 @@ async fn attendance_put_without_auth_returns_401(db: PgPool) {
 async fn attendance_put_as_member_returns_403(db: PgPool) {
     // staff gate (admin-or-coach) parity — mirrors `roster_as_member_returns_403`
     // above for the PUT sibling, which had no dedicated member-role test.
+    // The path segment is deliberately not a UUID: `records: []` alone is
+    // legal (`BulkUpsertAttendanceRequest`'s `#[validate(nested)]` passes
+    // vacuously on an empty vec, so it can't stand in for malformed input).
+    // Under the old handler-first-line gate this would have 400'd out of
+    // `Path<Uuid>` extraction before the role check ever ran. The
+    // route-layer gate now runs ahead of extraction, so the member still
+    // gets 403.
     let app = spawn_test_app(db).await;
     let user = app.register_member("att-put-member-403@example.com", "Password!234").await;
     let resp = app
-        .put(&format!("/api/v1/sessions/{}/attendance", Uuid::now_v7()))
+        .put("/api/v1/sessions/not-a-uuid/attendance")
         .authorization_bearer(&user.access_token)
         .json(&json!({"records": []}))
         .await;
