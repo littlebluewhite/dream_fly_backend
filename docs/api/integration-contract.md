@@ -83,7 +83,7 @@
 - **1 點 = NT$1**（消費時每 100 元折抵 1 點，即 `points_used * 100 <= 折扣後金額`）。
 - **賺點**：結帳成功時，依「折扣與點數折抵後的實際應付金額」的 **5%** 無條件四捨五入計算（`round(total_nt * 0.05)`，`total_nt = total_cents / 100`）。例：實付 NT$1000 → 賺 50 點；實付 NT$730 → 賺 37 點（36.5 四捨五入）。
 - **兌換**：`POST /rewards/{id}/redeem` 成功會扣點，寫入一筆 `point_ledger`，`reason = "redeem"`（`delta = -points_cost`）——與結帳的 `checkout_redeem` 是不同 reason，前端可用此欄位區分「結帳折抵」與「兌換獎勵」兩種扣點來源。見 §3.23。
-- **退款/取消補償**：訂單從已計入營收的狀態（`paid`/`processing`/`completed`）轉入 `cancelled`/`refunded` 時（見 §3.10），結帳當下的點數流會被反轉，寫入 `point_ledger` 兩個新 reason：`refund_restore`（沖回 `checkout_redeem` 扣掉的點數，`delta` 恆為正）、`refund_clawback`（沖回 `checkout_earn` 賺到的點數，`delta` 恆為負）——與其他 reason 一樣遵守「一個 reason ⇒ 固定正負號」的慣例。沒有點數流的訂單（全額折抵、未使用 `use_points`）退款時不會寫入這兩種列。
+- **退款/取消補償**：訂單從已計入營收的狀態（`paid`/`processing`/`completed`）轉入 `cancelled`/`refunded` 時（見 §3.10），結帳當下的點數流會被反轉，寫入 `point_ledger` 兩個新 reason：`refund_restore`（沖回 `checkout_redeem` 扣掉的點數，`delta` 恆為正）、`refund_clawback`（沖回 `checkout_earn` 賺到的點數，`delta` 恆為負）——與其他 reason 一樣遵守「一個 reason ⇒ 固定正負號」的慣例。沒有點數流的訂單退款時不會寫入這兩種列——「沒有點數流」指結帳當下 earn 與 redeem 皆為 0（例如全額折抵至總額 0、或總額低於 10 元 earn 四捨五入為 0 的單），**不等於**「未使用 `use_points`」：earn 是對結帳總額計算的，未折抵點數的一般訂單仍有 `checkout_earn` 列，退款時仍會寫入 `refund_clawback`（會員點數若已花用、不足以沖回 → 409，見 §3.10）。
 - 點數餘額與明細見 `GET /points/me`。`reason` 目前有 `checkout_earn`/`checkout_redeem`/`admin_adjust`/`redeem`/`refund_restore`/`refund_clawback` 六種。
 
 ### 1.7 Idempotency-Key（`POST /orders`）
@@ -722,14 +722,14 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
   "balance": "number",
   "ledger": [
     { "id": "uuid", "delta": "number", "balance_after": "number",
-      "reason": "checkout_earn|checkout_redeem|admin_adjust|redeem",
+      "reason": "checkout_earn|checkout_redeem|admin_adjust|redeem|refund_restore|refund_clawback",
       "order_id": "uuid|null", "created_at": "ISO8601" }
   ],
   "total": "number", "page": "number", "per_page": "number"
 }
 ```
 
-`delta` 可正可負（`checkout_redeem`/`redeem` 恆為負、`checkout_earn` 恆為正）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
+`delta` 可正可負（`checkout_redeem`/`redeem`/`refund_clawback` 恆為負、`checkout_earn`/`refund_restore` 恆為正——完整值域與符號慣例見 §1.6）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
 
 #### `POST /points/adjustments` — admin
 Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位皆必填；`delta` 不可為 `0`）。admin 手動調整任一使用者的點數餘額，用途是關閉退款/取消補償流程中「點數不足」409 的修復迴路：補點後即可重試先前失敗的退款。呼叫前須先取得該使用者當下的餘額（`GET /users/{id}` 的 `points_balance`，見 §3.2——`GET /points/me` 僅回呼叫者本人餘額，無法查他人）填入 `expected_balance`；後端於交易內鎖列讀取實際餘額並比對，不符即拒絕。**注意：`expected_balance` 是樂觀鎖（CAS），非嚴格冪等**——呼叫逾時後原樣重試，若第一次已成功、餘額已變，重試會收到 409 而非重放原本的成功結果；此時應重新查詢該使用者當下的 `points_balance`（`GET /users/{id}`）比對是否已反映預期變化，而非盲目重試——本端點目前沒有供 admin 查詢他人 `point_ledger` 明細的介面，逐列確認需直接查資料表。**殘餘風險（ABA）**：若第三方在重試視窗內恰好把餘額改回精確等於 `expected_balance` 的值，該次重試會被誤判為未變而通過，悄悄套用一次不該重放的調整——這是本端點目前接受的殘餘風險（admin 手動低頻操作 + 每筆調整皆有 `AdminAdjust` ledger 列可稽核），若未來出現自動化呼叫端需升級為 request-id 去重鍵；完整論證見 ADR-0007 決策 10。回應：`{ user_id: uuid, balance: number }`（調整後餘額）。寫入的 `point_ledger` 列：`reason = "admin_adjust"`、`order_id` 恆為 `null`。

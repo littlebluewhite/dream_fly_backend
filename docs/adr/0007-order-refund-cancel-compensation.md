@@ -5,8 +5,9 @@
 結帳（`orders::service::checkout`）在一個交易內產生一叢耦合的副作用：依購物車行項扣減商品庫存
 （`products::repository::try_decrement_stock_tx`）、寫入點數 ledger（`checkout_earn`/
 `checkout_redeem`）、建立報名（`enrolments`）與訂閱（`subscriptions`）。訂單狀態機
-（`OrderStatus::can_transition_to`）在本輪之前就已經允許 `paid|processing|completed →
-cancelled|refunded` 這幾條邊，但 `PATCH /orders/{id}/status` 走到這幾條邊時只翻轉 `status`
+（`OrderStatus::can_transition_to`）在本輪之前就已經允許 `paid → cancelled|refunded` 與
+`processing|completed → refunded` 這幾條營收態出邊（`cancelled` 只從 `pending`/`paid` 可達，
+完整矩陣見契約 §3.10），但 `PATCH /orders/{id}/status` 走到這幾條邊時只翻轉 `status`
 欄位——結帳當下建立的庫存扣減、點數異動、報名、訂閱全部原封不動留著。換言之，「退款/取消」這個
 詞在 API 層面早就存在，但它的補償語意（該撤銷什麼、撤銷多少、怎麼撤銷才不會跟結帳本身互相踩
 踏）一直是空白。
@@ -99,9 +100,10 @@ clamp 會讓沖銷金額與原始賺點金額對不上，之後無法從 ledger 
 
 checkout 與退款現在共用同一條鎖序骨架的前半段：
 
-- checkout：`users`（無條件、購物車讀取之前）→ `cart_items`/`products`/`courses`（SHARE，購物
-  車讀取本身帶的鎖）→ `products`（UPDATE，`product_id` 升序）→ `courses`（升序）→ `enrolments`
-  → `subscriptions`
+- checkout：`users`（無條件、購物車讀取之前）→ `products`（SHARE，`product_id` 升序**預鎖**——
+  `find_cart_items_for_checkout_tx` 開頭的專用查詢；隨後的購物車 join 對命中列重複取得同一
+  SHARE 鎖，先後順序已不影響）→ `cart_items`/`courses`（購物車讀取本身帶的鎖）→ `products`
+  （UPDATE，`product_id` 升序）→ `courses`（升序）→ `enrolments` → `subscriptions`
 - 退款：`orders`（`update_order_status` 的 `FOR UPDATE` 讀取）→ `users`（顯式無條件
   `lock_balance_tx`）→ `products`（UPDATE，升序）→ `enrolments` → `subscriptions`
 
@@ -115,19 +117,30 @@ products-SHARE 再等 users，而退款先拿到 users 再等 products-UPDATE，
 有的鎖——一個死鎖環。把 users 排到兩條路徑最前面，同一時刻只有一個買家的操作能往下走，環無法
 形成。回歸測試：`concurrent_checkout_last_unit_only_succeeds_once`。
 
-**既有風險，本輪不修**：兩個併發的 checkout 對同一商品從 SHARE 升級到 UPDATE 的死鎖拓撲，是本
-輪之前就存在的既有狀態（PostgreSQL 的死鎖偵測器會擇一中止並回傳錯誤，不會真的卡死）——本輪的
-鎖序前移解決的是「checkout 與 refund 之間」的死鎖環，不觸碰「兩個 checkout 之間」這個獨立的既
-有風險，兩者是不同的鎖圖。
+**跨買家維度**：users 鎖只序列化**同一買家**的兩條路徑；不同買家的 checkout 與退款各持不同
+users 列，序列化不會發生。這個維度靠 products 鎖的**全域升序**保證——購物車讀取的 SHARE 預鎖
+（上列第二站）、`reserve_stock_tx` 與 `restore_stock_tx` 的逐列 UPDATE 全部依 `product_id` 升
+序取得，反向持鎖的環無從形成。預鎖加入前，「A 買家的退款持升序第一列、B 買家的購物車讀取依建
+立序持第二列」可穩定重現 PostgreSQL `40P01` deadlock；回歸測試
+`checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock` 固定住這個構形。
+
+**既有風險，本輪不修**：兩個併發的 checkout 對**同一列商品**從 SHARE 升級到 UPDATE 的死鎖拓撲
+（升序救不了它——雙方持同一列的 SHARE、互等對方釋放才能升級），是本輪之前就存在的既有狀態
+（PostgreSQL 的死鎖偵測器會擇一中止並回傳錯誤，不會真的卡死）——本輪的鎖序工作（users 前移、
+products 全域升序）關閉的是「checkout 與 refund 之間」同買家與跨買家的死鎖環，不觸碰這個同列
+升級的獨立既有風險，兩者是不同的鎖圖。
 
 **併發安全論證（退款 vs 自助操作）**：`subscriptions::repository::redeem_one_session` 與
 `enrolments::repository::cancel_if_active_tx` 都不參與上述鎖序——各自是單一原子
 `UPDATE ... WHERE ... RETURNING`（前者的 WHERE 查
 `subscription_derived_status(...) = 'active' AND remaining_sessions > 0`，後者查
 `status <> 'cancelled'`），沒有「先鎖列、再檢查、再寫」的兩步式 TOCTOU 空窗。這讓它們與退款的
-交錯天然安全，不需要被納入上面的鎖序骨架：任一方先取得該列的隱式 UPDATE 鎖，另一方阻塞等待時
-不持有其他任何鎖（它就是一條單陳述句交易，等待時手上空無一物），不可能與退款持有的多鎖鏈形成
-循環——它只會是單純的等待者。等到先手交易 commit，後手交易的 UPDATE 重新對已提交的新值求值
+交錯天然安全，不需要被納入上面的鎖序骨架：任一方先取得該列的列鎖，另一方阻塞等待時不持有其他
+任何鎖，不可能與退款持有的多鎖鏈形成循環——它只會是單純的等待者。（精確地說：redeem 是真正的
+單陳述句交易，等待時手上空無一物；會員自助取消的公開路徑則是同交易兩步——
+`enrolments::repository::find_by_id_tx` 先 `FOR UPDATE` 鎖列做擁有權檢查、`cancel_if_active_tx`
+再對**同一列**做條件 UPDATE——等待只發生在第一步取鎖時、此刻手上無鎖，取得後到 commit 為止不
+再碰任何其他列，同樣構不成環。）等到先手交易 commit，後手交易的 UPDATE 重新對已提交的新值求值
 WHERE 子句，自然得到 0 rows，對應服務層映成衝突（`redeem_one_session` 回 `None` 後再查明確原
 因、`cancel_if_active_tx` 回 `None` 映成 `Conflict("enrolment already cancelled")`）。三種交錯
 結果都安全：退款先 commit，自助操作重新評估後 0 rows、409；自助操作先 commit，退款讀到已經是
@@ -156,8 +169,10 @@ partial unique index on `point_ledger(order_id, reason) WHERE reason IN ('refund
 補償的第二道防線。
 
 **侷限**：這個 index 只保護「結帳當下真的寫過 `checkout_earn`/`checkout_redeem` ledger 列」的
-訂單。全額優惠券折抵、`use_points=false`、或純商品且未涉及點數的訂單，結帳當下就不會寫任何點
-數 ledger 列；退款時 `find_order_flow_sums_tx` 讀回 `(0, 0)`，`plan_refund` 算出的幅度是 0，
+訂單。注意 earn 是對結帳總額計算的（`pricing.rs`，與 `use_points` 無關）——真正零點數流的單只
+有兩類：結帳當下 earn 四捨五入為 0 且未折抵點數的單（全額優惠券折抵至總額 0，或總額低於 10 元），
+以及未經結帳流程直建的歷史/fixture 單；退款時 `find_order_flow_sums_tx` 讀回 `(0, 0)`，
+`plan_refund` 算出的幅度是 0，
 `apply_delta_tx` 對零 delta 直接拒絕（見其 doc comment），整個點數反轉步驟被跳過——沒有 ledger
 insert 嘗試，這個 unique index 完全沒有機會介入。它是「本來就有點數流的單」的後盾，不能當作
 「這張單是否已經補償過」的通用判準。
