@@ -223,16 +223,26 @@ mod tests {
     fn plan_refund_preserves_input_order() {
         // Not sorted here — see the module doc on why ordering is the write
         // lock owner's job (`products::service::restore_stock_tx`).
+        //
+        // Adversarial construction: UUIDv7 is time-ordered, so two
+        // back-to-back `now_v7()` calls would almost always already satisfy
+        // id_a <= id_b — making "preserves input order" and "sorts by
+        // product_id ascending" produce the *same* `[id_a, id_b]` output,
+        // so this test wouldn't catch a future
+        // `restocks.sort_by_key(|r| r.product_id)` regression. Force the
+        // larger id into items[0] instead: "preserves order" then outputs
+        // [larger, smaller] while "sorts ascending" would output [smaller,
+        // larger] — the two behaviors become distinguishable.
         let order = order_fixture();
-        let id_a = Uuid::now_v7();
-        let id_b = Uuid::now_v7();
+        let (x, y) = (Uuid::now_v7(), Uuid::now_v7());
+        let (id_a, id_b) = (x.max(y), x.min(y));
         let items = [
             product_item(Some(id_a), 1, true),
             product_item(Some(id_b), 1, true),
         ];
         let plan = plan_refund(&order, &items, (0, 0)).expect("plans");
-        assert_eq!(plan.restocks[0].product_id, id_a, "first stays first");
-        assert_eq!(plan.restocks[1].product_id, id_b, "second stays second");
+        assert_eq!(plan.restocks[0].product_id, id_a, "first (larger id) stays first");
+        assert_eq!(plan.restocks[1].product_id, id_b, "second (smaller id) stays second");
     }
 
     #[test]
