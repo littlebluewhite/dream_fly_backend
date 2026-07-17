@@ -106,6 +106,19 @@ pub struct OrderItem {
     pub course_id: Option<Uuid>,
     pub quantity: i32,
     pub unit_price_cents: i64,
+    /// Whether this line actually decremented `products.stock` at checkout
+    /// time — a snapshot of that checkout-time fact, not a read of the
+    /// product's *current* stock mode (Step 10a, migration
+    /// `20260717000004_order_items_stock_decremented.sql`). `true` only for
+    /// product lines whose product had finite stock at checkout; `false`
+    /// for course lines (never touch stock) and for product lines whose
+    /// product had `stock IS NULL` (unlimited) at checkout time. Refund/
+    /// cancel compensation (Step 10d/10e) reads this instead of the
+    /// product's current `stock` nullability, since an admin can change a
+    /// product's stock mode after the sale and the snapshot must not drift
+    /// with that later edit. Deliberately excluded from `OrderItemResponse`
+    /// (`dto.rs`) — internal compensation bookkeeping, not buyer-facing.
+    pub stock_decremented: bool,
     pub created_at: DateTime<Utc>,
 }
 

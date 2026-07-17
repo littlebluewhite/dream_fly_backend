@@ -75,6 +75,31 @@ pub async fn cancel_if_active_tx(
     .await
 }
 
+/// Cancel every non-cancelled enrolment tied to `order_id` in one UPDATE —
+/// refund/cancel compensation's (Step 10e) order-scoped counterpart to
+/// [`cancel_if_active_tx`]'s single-enrolment cancel. `status <>
+/// 'cancelled'` makes the UPDATE naturally idempotent (a same-status retry,
+/// or a second compensation attempt, affects zero rows instead of
+/// erroring), and also covers the case where the buyer already
+/// self-cancelled via `service::cancel_enrolment` before the whole order
+/// was refunded. Seats are view-derived (`active_enrolments`), so
+/// cancelling releases the seat as a side effect of this UPDATE — no
+/// separate seat-release step needed. Returns the number of rows actually
+/// flipped.
+pub async fn cancel_by_order_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE enrolments SET status = 'cancelled'::enrolment_status, updated_at = NOW() \
+         WHERE order_id = $1 AND status <> 'cancelled'::enrolment_status",
+    )
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// This user's enrolments JOINed with course info, newest first, plus
 /// per-enrolment attendance stats aggregated with a single `LEFT JOIN
 /// countable_attendance` (no N+1 — one query for the whole list; view

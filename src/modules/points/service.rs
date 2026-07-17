@@ -101,6 +101,18 @@ pub async fn try_spend_tx(
     apply_delta_tx(tx, user_id, -cost, reason, order_id).await
 }
 
+/// Passthrough to `repository::find_order_flow_sums_tx` — the ADR-0005 seam
+/// `orders::service`'s refund/cancel compensation (Step 10e) reads through,
+/// so `orders` never imports this module's repository directly.
+pub async fn find_order_flow_sums_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<(i64, i64), AppError> {
+    repository::find_order_flow_sums_tx(tx, order_id)
+        .await
+        .map_err(AppError::Database)
+}
+
 /// Current balance + paginated ledger (newest first) for `/points/me`.
 pub async fn get_my_points(
     db: &PgPool,

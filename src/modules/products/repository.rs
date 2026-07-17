@@ -139,6 +139,36 @@ pub async fn try_decrement_stock_tx(
     .await
 }
 
+/// Reverses `try_decrement_stock_tx` — restores `quantity` back onto
+/// `stock`. Refund/cancel compensation's (Step 10e) mirror of the
+/// checkout-time decrement; same belt-and-suspenders NULL-preserving CASE
+/// (a NULL-stock — unlimited — product's `stock` stays NULL, never gets a
+/// concrete value handed to it by a restore).
+///
+/// Returns `Ok(None)` only if `product_id` doesn't exist in `products` —
+/// unreachable in practice, since every caller's `product_id` comes from an
+/// `order_items` row whose `product_id` FK guarantees the product still
+/// exists; `service::restore_stock_tx` maps `None` to `AppError::Internal`.
+/// No lower/upper bound check is needed the way `try_decrement_stock_tx`
+/// needs `stock >= quantity` — addition can't drive a finite `stock`
+/// negative.
+pub async fn restore_stock_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    product_id: Uuid,
+    quantity: i32,
+) -> Result<Option<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
+        "UPDATE products \
+         SET stock = CASE WHEN stock IS NULL THEN NULL ELSE stock + $2 END \
+         WHERE id = $1 \
+         RETURNING *",
+    )
+    .bind(product_id)
+    .bind(quantity)
+    .fetch_optional(&mut **tx)
+    .await
+}
+
 /// Sum of `order_items.quantity` per product across "paid-class" orders
 /// (`paid`/`processing`/`completed` — a `pending`/`cancelled`/`refunded`
 /// order never counts toward sold units), computed in one GROUP BY query

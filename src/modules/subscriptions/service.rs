@@ -99,6 +99,18 @@ pub async fn list_by_order(
     Ok(rows.into_iter().map(SubscriptionResponse::from).collect())
 }
 
+/// Passthrough to `repository::cancel_by_order_tx` — the ADR-0005 seam
+/// `orders::service`'s refund/cancel compensation (Step 10e) calls, so
+/// `orders` never imports this module's repository directly.
+pub async fn cancel_by_order_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<u64, AppError> {
+    repository::cancel_by_order_tx(tx, order_id)
+        .await
+        .map_err(AppError::Database)
+}
+
 /// Redeem (consume) one session from a subscription. The decrement is a
 /// single atomic `UPDATE ... RETURNING`, and the response is built from the
 /// exact row that UPDATE returned — re-reading the subscription here could

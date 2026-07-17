@@ -128,6 +128,72 @@ async fn checkout_empty_cart_fails(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
+    // Step 10c: `order_items.stock_decremented` must reflect each line's
+    // own checkout-time fate, not "did this order touch stock at all" — a
+    // mixed cart (finite-stock product, NULL-stock/unlimited product,
+    // course) exercises all three outcomes in one checkout. The response
+    // DTO deliberately doesn't expose this column (wire safety), so this
+    // reads `order_items` directly.
+    let course = seed_course_with_capacity(&db, "Snapshot Course", None, 12).await;
+    let limited = common::seed_product(&db, "snapshot-limited", 1000, Some(5)).await;
+    let unlimited = common::seed_product(&db, "snapshot-unlimited", 500, None).await;
+    let user = seed_carted_member(
+        &db,
+        "snapshot-buyer@example.com",
+        &[
+            SeedCartLine::Product { product_id: limited, quantity: 1 },
+            SeedCartLine::Product { product_id: unlimited, quantity: 1 },
+            SeedCartLine::Course { course_id: course },
+        ],
+        0,
+    )
+    .await;
+
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+        .await
+        .expect("checkout");
+
+    let rows: Vec<(Option<uuid::Uuid>, Option<uuid::Uuid>, bool)> = sqlx::query_as(
+        "SELECT oi.product_id, oi.course_id, oi.stock_decremented \
+         FROM order_items oi JOIN orders o ON o.id = oi.order_id \
+         WHERE o.user_id = $1",
+    )
+    .bind(user)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 3);
+
+    let limited_row = rows
+        .iter()
+        .find(|(pid, _, _)| *pid == Some(limited))
+        .expect("limited product line");
+    assert!(
+        limited_row.2,
+        "finite-stock product line must record stock_decremented = true"
+    );
+
+    let unlimited_row = rows
+        .iter()
+        .find(|(pid, _, _)| *pid == Some(unlimited))
+        .expect("unlimited product line");
+    assert!(
+        !unlimited_row.2,
+        "NULL-stock product line must record stock_decremented = false"
+    );
+
+    let course_row = rows
+        .iter()
+        .find(|(_, cid, _)| *cid == Some(course))
+        .expect("course line");
+    assert!(
+        !course_row.2,
+        "course line must record stock_decremented = false"
+    );
+}
+
+#[sqlx::test]
 async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
     let course = seed_course_with_capacity(&db, "Mixed Cart Course", None, 12).await;
     let product = seed_entitlement_product(&db, "membership-mix", "membership", 8000, None, None).await;

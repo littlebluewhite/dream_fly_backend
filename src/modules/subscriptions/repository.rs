@@ -91,6 +91,29 @@ pub async fn find_by_order(
     .await
 }
 
+/// Cancel every non-cancelled subscription tied to `order_id` in one
+/// UPDATE — refund/cancel compensation's (Step 10e) mirror of
+/// `enrolments::repository::cancel_by_order_tx`. `cancelled` here is a real
+/// persisted `status` value, unlike `expired`, which
+/// `subscription_derived_status` derives at read time and never writes
+/// back (ADR-0003) — so this is a genuine state transition, not a derived
+/// read. `status <> 'cancelled'` makes it naturally idempotent (a
+/// same-status retry, or a second compensation attempt, affects zero rows
+/// instead of erroring). Returns the number of rows actually flipped.
+pub async fn cancel_by_order_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE subscriptions SET status = 'cancelled'::subscription_status, updated_at = NOW() \
+         WHERE order_id = $1 AND status <> 'cancelled'::subscription_status",
+    )
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Product name for response assembly after a redeem.
 /// `subscriptions.product_id` is a NOT NULL FK into `products` (which has no
 /// cascading delete), so the row always exists; if that invariant somehow

@@ -80,6 +80,41 @@ pub async fn adjust_balance_tx(
     .await
 }
 
+/// Sum of one order's `checkout_earn`/`checkout_redeem` `point_ledger`
+/// rows, returned as two non-negative magnitudes — `(earned, redeemed)`.
+/// Refund/cancel compensation (Step 10d/10e) reverses these ledger sums
+/// rather than reading `orders.points_earned`/`points_used`: a seed/
+/// fixture-built order (or one predating the points ledger) can carry
+/// non-zero values in those denormalized columns with no backing ledger
+/// row, and reversing against the columns would claw back or restore
+/// points that were never actually moved. Reading the ledger itself means
+/// an order with no matching rows naturally sums to `(0, 0)` — no
+/// legacy-data special case needed.
+///
+/// `checkout_redeem` rows are written with a *negative* `delta`
+/// (`orders::service::checkout` calls `apply_delta_tx` with
+/// `-outcome.points_used`) — this negates the summed `checkout_redeem`
+/// delta before returning it, so both halves of the tuple come back
+/// `>= 0`; the caller (`refund::plan_refund`, Step 10d) assigns the sign
+/// itself. `COALESCE(..., 0)` covers the "no matching rows" case: an
+/// unconditional `SUM(...) FILTER (...)` over zero rows is `NULL`, not `0`.
+pub async fn find_order_flow_sums_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<(i64, i64), sqlx::Error> {
+    let (earned, redeemed): (i64, i64) = sqlx::query_as(
+        "SELECT \
+            COALESCE(SUM(delta) FILTER (WHERE reason = 'checkout_earn'::point_reason), 0)::bigint AS earned, \
+            COALESCE(-(SUM(delta) FILTER (WHERE reason = 'checkout_redeem'::point_reason)), 0)::bigint AS redeemed \
+         FROM point_ledger \
+         WHERE order_id = $1",
+    )
+    .bind(order_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok((earned, redeemed))
+}
+
 /// Insert the ledger row recording an applied delta, in the same
 /// transaction as the balance update.
 pub async fn insert_ledger_tx(

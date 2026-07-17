@@ -249,16 +249,30 @@ pub async fn checkout(
     // 9. order_items from the (locked) cart snapshot — both product and
     //     course lines. `ci.name` becomes the order_items snapshot column,
     //     so later reads (OrderSummary/AdminOrderSummary `items`) never need
-    //     to join the live product/course catalog.
-    let items_data: Vec<(Option<Uuid>, Option<Uuid>, i32, i64, String)> = cart_items
+    //     to join the live product/course catalog. `stock_decremented`
+    //     (Step 10a/10c) snapshots whether this line actually decremented
+    //     `products.stock` — read off `reserved`'s post-decrement row
+    //     (`stock.is_some()` means the product had finite stock, so it
+    //     really was decremented; `None` means the product was
+    //     unlimited-stock and untouched — `try_decrement_stock_tx`'s
+    //     NULL-preserving CASE, `products/repository.rs`). Always `false`
+    //     for course lines, which never have a `product_id` and so never
+    //     reach `reserved` at all.
+    let items_data: Vec<(Option<Uuid>, Option<Uuid>, i32, i64, String, bool)> = cart_items
         .iter()
         .map(|ci| {
+            let stock_decremented = ci
+                .product_id
+                .and_then(|pid| reserved.get(&pid))
+                .map(|p| p.stock.is_some())
+                .unwrap_or(false);
             (
                 ci.product_id,
                 ci.course_id,
                 ci.quantity,
                 ci.price_cents,
                 ci.name.clone(),
+                stock_decremented,
             )
         })
         .collect();

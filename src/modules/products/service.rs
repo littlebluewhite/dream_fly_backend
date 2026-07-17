@@ -186,3 +186,42 @@ pub async fn reserve_stock_tx(
 
     Ok(reserved)
 }
+
+/// Reverse a batch of stock reservations inside the caller's transaction —
+/// refund/cancel compensation's (Step 10e) mirror of `reserve_stock_tx`.
+/// Sorts by `product_id` ascending before touching any row, the same
+/// lock-ordering discipline `reserve_stock_tx` applies (see its doc comment
+/// above) — a concurrent reservation and a concurrent restore touching the
+/// same two products can't take their per-row UPDATE locks in opposite
+/// orders and deadlock.
+///
+/// Contract: callers must pass only `(product_id, quantity)` pairs whose
+/// `order_items.stock_decremented` was `true` at checkout time —
+/// `refund::plan_refund` (Step 10d) is what produces that already-filtered
+/// list. This function does not itself check the flag (it has no access to
+/// `order_items` at all); handing it an unfiltered `lines` would restore
+/// stock into a product that was never actually decremented.
+///
+/// A product id that doesn't resolve maps to `AppError::Internal` — every
+/// caller's `lines` come from `order_items.product_id`, an FK into
+/// `products`, so a miss here signals a data-integrity bug, not a
+/// legitimate business-rule rejection.
+pub async fn restore_stock_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    lines: &[(Uuid, i32)],
+) -> Result<(), AppError> {
+    let mut sorted = lines.to_vec();
+    sorted.sort_by_key(|(product_id, _)| *product_id);
+
+    for (product_id, quantity) in sorted {
+        repository::restore_stock_tx(tx, product_id, quantity)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "restore_stock_tx: product {product_id} not found"
+                ))
+            })?;
+    }
+
+    Ok(())
+}

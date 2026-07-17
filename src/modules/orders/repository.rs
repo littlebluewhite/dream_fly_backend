@@ -40,16 +40,20 @@ pub async fn create_order(
 
 /// Insert order_items for both product and course lines in one bulk
 /// INSERT. Each tuple is `(product_id, course_id, quantity,
-/// unit_price_cents, name)` with exactly one of `product_id`/`course_id`
-/// set; `item_type` is derived server-side from which one is present
-/// (rather than passed as a separate value) so the column can never
-/// disagree with the ids that actually got stored. `name` is the
-/// checkout-time display name (from the cart snapshot) — stored verbatim so
-/// later reads never need to join the live product/course catalog.
+/// unit_price_cents, name, stock_decremented)` with exactly one of
+/// `product_id`/`course_id` set; `item_type` is derived server-side from
+/// which one is present (rather than passed as a separate value) so the
+/// column can never disagree with the ids that actually got stored. `name`
+/// is the checkout-time display name (from the cart snapshot) — stored
+/// verbatim so later reads never need to join the live product/course
+/// catalog. `stock_decremented` is the checkout-time fact of whether this
+/// line actually decremented `products.stock` (Step 10a/10c) — the caller
+/// (`service::checkout`) computes it per line from `reserve_stock_tx`'s
+/// returned rows; always `false` for course lines.
 pub async fn create_order_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     order_id: Uuid,
-    items: &[(Option<Uuid>, Option<Uuid>, i32, i64, String)],
+    items: &[(Option<Uuid>, Option<Uuid>, i32, i64, String, bool)],
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     let len = items.len();
     let mut ids: Vec<Uuid> = Vec::with_capacity(len);
@@ -58,25 +62,28 @@ pub async fn create_order_items(
     let mut quantities: Vec<i32> = Vec::with_capacity(len);
     let mut prices: Vec<i64> = Vec::with_capacity(len);
     let mut names: Vec<String> = Vec::with_capacity(len);
+    let mut stock_decremented: Vec<bool> = Vec::with_capacity(len);
 
-    for (product_id, course_id, quantity, unit_price_cents, name) in items {
+    for (product_id, course_id, quantity, unit_price_cents, name, decremented) in items {
         ids.push(Uuid::now_v7());
         product_ids.push(*product_id);
         course_ids.push(*course_id);
         quantities.push(*quantity);
         prices.push(*unit_price_cents);
         names.push(name.clone());
+        stock_decremented.push(*decremented);
     }
 
     sqlx::query_as::<_, OrderItem>(
         "INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, \
-         unit_price_cents, name, created_at) \
+         unit_price_cents, name, stock_decremented, created_at) \
          SELECT u.id, $2, \
                 CASE WHEN u.product_id IS NOT NULL THEN 'product'::cart_item_type \
                      ELSE 'course'::cart_item_type END, \
-                u.product_id, u.course_id, u.quantity, u.unit_price_cents, u.name, NOW() \
-         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[], $7::text[]) \
-              AS u(id, product_id, course_id, quantity, unit_price_cents, name) \
+                u.product_id, u.course_id, u.quantity, u.unit_price_cents, u.name, \
+                u.stock_decremented, NOW() \
+         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[], $7::text[], $8::bool[]) \
+              AS u(id, product_id, course_id, quantity, unit_price_cents, name, stock_decremented) \
          RETURNING *",
     )
     .bind(&ids)
@@ -86,6 +93,7 @@ pub async fn create_order_items(
     .bind(&quantities)
     .bind(&prices)
     .bind(&names)
+    .bind(&stock_decremented)
     .fetch_all(&mut **tx)
     .await
 }
@@ -159,13 +167,39 @@ pub async fn find_items_by_order(
     order_id: Uuid,
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     sqlx::query_as::<_, OrderItem>(
-        "SELECT id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, created_at \
+        "SELECT id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, \
+         stock_decremented, created_at \
          FROM order_items \
          WHERE order_id = $1 \
          ORDER BY created_at",
     )
     .bind(order_id)
     .fetch_all(db)
+    .await
+}
+
+/// Transactional twin of [`find_items_by_order`] — reads an order's line
+/// items inside the caller's transaction. Refund/cancel compensation (Step
+/// 10e) calls this instead of the pool-backed version so the item read
+/// (including each line's `stock_decremented` snapshot) is part of the same
+/// transaction that already holds the order/user locks, not a separate pool
+/// connection. No row lock of its own: nothing in the compensation flow
+/// writes back to `order_items`, so a plain (unlocked) read is enough — the
+/// consistency guarantee comes from the `orders`/`users` locks the
+/// surrounding transaction already holds.
+pub async fn find_items_by_order_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    order_id: Uuid,
+) -> Result<Vec<OrderItem>, sqlx::Error> {
+    sqlx::query_as::<_, OrderItem>(
+        "SELECT id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, \
+         stock_decremented, created_at \
+         FROM order_items \
+         WHERE order_id = $1 \
+         ORDER BY created_at",
+    )
+    .bind(order_id)
+    .fetch_all(&mut **tx)
     .await
 }
 
