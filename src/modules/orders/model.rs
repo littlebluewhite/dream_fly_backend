@@ -43,6 +43,14 @@ impl OrderStatus {
             _ => false,
         }
     }
+
+    /// 計入營收的狀態(消費 [`REVENUE_STATUSES`] 而非另建一份 match,避免兩
+    /// 份清單漂移)。退款/取消補償(`refund::compensation_required`,Step
+    /// 10d)用它判斷「這筆訂單的*現況*算不算已成交」——只有從一個計入營收的
+    /// 狀態轉往終態,才有東西需要撤銷。
+    pub fn is_revenue(&self) -> bool {
+        REVENUE_STATUSES.contains(&self.as_str())
+    }
 }
 
 impl std::str::FromStr for OrderStatus {
