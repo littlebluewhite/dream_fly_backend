@@ -7,7 +7,8 @@
 //! redirected to a `wiremock` server by overriding `auth.google_token_url`;
 //! the two happy-path tests below additionally override `auth.google_jwks_url`
 //! and sign a real RS256 id_token so `google_oauth::verify_google_id_token`
-//! runs unmodified (see the `GOOGLE_TEST_*` constants near the bottom).
+//! runs unmodified (see the `GOOGLE_TEST_*` constants in the `/auth/google`
+//! section below).
 
 mod common;
 
