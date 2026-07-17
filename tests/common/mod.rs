@@ -51,10 +51,10 @@ pub async fn test_redis() -> redis::aio::ConnectionManager {
 /// Config pinned for tests. A deterministic, long-enough JWT secret so
 /// `jwt::encode_*` and `jwt::decode_*` round-trip cleanly.
 ///
-/// `google_token_url` defaults to a non-routable placeholder; HTTP-level
-/// tests that exercise `/auth/google` override it to a wiremock base URL
-/// via [`crate::common::http::spawn_test_app_with`] before constructing
-/// the router.
+/// `google_token_url`/`google_jwks_url` default to non-routable placeholders;
+/// HTTP-level tests that exercise `/auth/google` override them to a wiremock
+/// base URL via [`crate::common::http::spawn_test_app_with`] before
+/// constructing the router.
 pub fn test_auth_config() -> AuthConfig {
     AuthConfig {
         jwt_secret: "test-secret-at-least-32-chars-long-1234".into(),
@@ -64,6 +64,7 @@ pub fn test_auth_config() -> AuthConfig {
         google_client_secret: "test-secret".into(),
         google_redirect_url: "http://localhost/oauth/callback".into(),
         google_token_url: "http://127.0.0.1:1/oauth/token".into(),
+        google_jwks_url: "http://127.0.0.1:1/certs".into(),
     }
 }
 

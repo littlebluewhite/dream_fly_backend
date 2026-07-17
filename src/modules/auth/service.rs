@@ -252,6 +252,7 @@ pub async fn google_auth(
         http_client,
         &token_data.id_token,
         &config.auth.google_client_id,
+        &config.auth.google_jwks_url,
     )
     .await?;
 

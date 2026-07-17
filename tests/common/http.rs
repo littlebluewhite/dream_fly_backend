@@ -98,6 +98,7 @@ pub fn test_app_config<F: FnOnce(&mut AppConfig)>(adjust: F) -> AppConfig {
             google_client_secret: "test-secret".into(),
             google_redirect_url: "http://localhost/oauth/callback".into(),
             google_token_url: "http://127.0.0.1:1/oauth/token".into(),
+            google_jwks_url: "http://127.0.0.1:1/certs".into(),
         },
         email: EmailConfig {
             smtp_host: "localhost".into(),

@@ -18,7 +18,6 @@ use tokio::sync::{OnceCell, RwLock};
 
 use crate::error::AppError;
 
-const GOOGLE_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 const GOOGLE_ISSUERS: &[&str] = &["https://accounts.google.com", "accounts.google.com"];
 /// Cache JWKS for an hour. Google rotates these roughly daily, so we re-fetch
 /// well inside the key lifetime but without hammering their endpoint.
@@ -70,8 +69,8 @@ async fn cache() -> JwksCache {
         .clone()
 }
 
-async fn fetch_jwks(http: &reqwest::Client) -> Result<Jwks, AppError> {
-    http.get(GOOGLE_JWKS_URL)
+async fn fetch_jwks(jwks_url: &str, http: &reqwest::Client) -> Result<Jwks, AppError> {
+    http.get(jwks_url)
         .send()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to fetch Google JWKS: {e}")))?
@@ -82,7 +81,11 @@ async fn fetch_jwks(http: &reqwest::Client) -> Result<Jwks, AppError> {
         .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to parse Google JWKS: {e}")))
 }
 
-async fn get_jwks(http: &reqwest::Client, force_refresh: bool) -> Result<Jwks, AppError> {
+async fn get_jwks(
+    jwks_url: &str,
+    http: &reqwest::Client,
+    force_refresh: bool,
+) -> Result<Jwks, AppError> {
     let slot = cache().await;
 
     if !force_refresh {
@@ -94,7 +97,7 @@ async fn get_jwks(http: &reqwest::Client, force_refresh: bool) -> Result<Jwks, A
         }
     }
 
-    let fresh = fetch_jwks(http).await?;
+    let fresh = fetch_jwks(jwks_url, http).await?;
     let mut guard = slot.write().await;
     *guard = Some((fresh.clone(), Utc::now()));
     Ok(fresh)
@@ -109,10 +112,14 @@ async fn get_jwks(http: &reqwest::Client, force_refresh: bool) -> Result<Jwks, A
 /// - `exp` is in the future (with 30s leeway to account for clock skew).
 /// - `email_verified` must be true (the caller is usually also checking this,
 ///   but we'd rather fail twice than not at all).
+///
+/// `jwks_url` is configurable (`auth.google_jwks_url`) so integration tests
+/// can redirect it to a `wiremock` server, mirroring `google_token_url`.
 pub async fn verify_google_id_token(
     http: &reqwest::Client,
     id_token: &str,
     expected_audience: &str,
+    jwks_url: &str,
 ) -> Result<GoogleIdTokenClaims, AppError> {
     let header = decode_header(id_token)
         .map_err(|_| AppError::BadRequest("invalid id_token header".into()))?;
@@ -129,13 +136,13 @@ pub async fn verify_google_id_token(
 
     // First pass: look up in cached JWKS. If Google rotated keys and we
     // don't know about the new kid yet, force a refresh and try once more.
-    let jwks = get_jwks(http, false).await?;
+    let jwks = get_jwks(jwks_url, http, false).await?;
     let matched = jwks.keys.iter().find(|k| k.kid == kid).cloned();
 
     let key = match matched {
         Some(k) => k,
         None => {
-            let refreshed = get_jwks(http, true).await?;
+            let refreshed = get_jwks(jwks_url, http, true).await?;
             refreshed
                 .keys
                 .into_iter()
@@ -182,9 +189,14 @@ mod tests {
     #[tokio::test]
     async fn rejects_garbage_token_header() {
         // `decode_header` fails immediately → BadRequest, no network call.
-        let err = verify_google_id_token(&stub_client(), "not-a-jwt", "aud")
-            .await
-            .unwrap_err();
+        let err = verify_google_id_token(
+            &stub_client(),
+            "not-a-jwt",
+            "aud",
+            "http://127.0.0.1:1/certs",
+        )
+        .await
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
                 assert!(msg.contains("invalid id_token header"), "got: {msg}")
@@ -211,9 +223,14 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"1","iss":"x","aud":"y","exp":9999999999}"#);
         let forged = format!("{header}.{payload}.");
 
-        let err = verify_google_id_token(&stub_client(), &forged, "y")
-            .await
-            .unwrap_err();
+        let err = verify_google_id_token(
+            &stub_client(),
+            &forged,
+            "y",
+            "http://127.0.0.1:1/certs",
+        )
+        .await
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
                 assert!(
@@ -236,9 +253,14 @@ mod tests {
         // Signature doesn't matter — we never get that far.
         let forged = format!("{header}.{payload}.sig");
 
-        let err = verify_google_id_token(&stub_client(), &forged, "y")
-            .await
-            .unwrap_err();
+        let err = verify_google_id_token(
+            &stub_client(),
+            &forged,
+            "y",
+            "http://127.0.0.1:1/certs",
+        )
+        .await
+        .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
                 assert!(msg.contains("id_token missing kid"), "got: {msg}")

@@ -173,6 +173,7 @@ mod tests {
             google_client_secret: "csec".into(),
             google_redirect_url: "http://localhost/cb".into(),
             google_token_url: "http://127.0.0.1:1/oauth/token".into(),
+            google_jwks_url: "http://127.0.0.1:1/certs".into(),
         }
     }
 

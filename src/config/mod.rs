@@ -124,10 +124,21 @@ pub struct AuthConfig {
     /// via `APP__AUTH__GOOGLE_TOKEN_URL` to point at a `wiremock` server.
     #[serde(default = "default_google_token_url")]
     pub google_token_url: String,
+    /// Google's published JWKS (public signing keys) endpoint, used to verify
+    /// id_token signatures. Defaults to the real
+    /// `https://www.googleapis.com/oauth2/v3/certs`; integration tests
+    /// override this via `APP__AUTH__GOOGLE_JWKS_URL` to point at a
+    /// `wiremock` server.
+    #[serde(default = "default_google_jwks_url")]
+    pub google_jwks_url: String,
 }
 
 fn default_google_token_url() -> String {
     "https://oauth2.googleapis.com/token".to_string()
+}
+
+fn default_google_jwks_url() -> String {
+    "https://www.googleapis.com/oauth2/v3/certs".to_string()
 }
 
 impl fmt::Debug for AuthConfig {
@@ -140,6 +151,7 @@ impl fmt::Debug for AuthConfig {
             .field("google_client_secret", &"[REDACTED]")
             .field("google_redirect_url", &self.google_redirect_url)
             .field("google_token_url", &self.google_token_url)
+            .field("google_jwks_url", &self.google_jwks_url)
             .finish()
     }
 }

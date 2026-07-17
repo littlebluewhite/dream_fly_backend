@@ -4,14 +4,19 @@
 //! the real axum router + middleware stack against a per-test sqlx pool).
 //! External services — SMTP + Twilio — are replaced by the in-memory
 //! recorders from `common::mocks`. The Google OAuth token endpoint is
-//! redirected to a `wiremock` server by overriding `auth.google_token_url`.
+//! redirected to a `wiremock` server by overriding `auth.google_token_url`;
+//! the two happy-path tests below additionally override `auth.google_jwks_url`
+//! and sign a real RS256 id_token so `google_oauth::verify_google_id_token`
+//! runs unmodified (see the `GOOGLE_TEST_*` constants near the bottom).
 
 mod common;
 
 use common::http::{spawn_test_app, spawn_test_app_with};
+use common::latest_notification;
 use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
+use uuid::Uuid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -243,6 +248,209 @@ async fn google_auth_upstream_error_returns_bad_request(db: PgPool) {
         .await;
 
     assert_eq!(resp.status_code(), 400);
+}
+
+/// `auth::service::google_auth`'s one deliberately asymmetric branch: a
+/// brand-new Google user gets a welcome notification (`created_new_user`
+/// branch), but linking Google to an existing password account does not
+/// resend it (see the comment above `if created_new_user` in
+/// `src/modules/auth/service.rs`). Exercising this for real means the id_token
+/// must pass real RS256 signature verification against a `wiremock`-served
+/// JWKS — not just the token-exchange redirect the test above uses — so
+/// these two tests sign with a fixed, test-only RSA key and serve its public
+/// half from a mocked `auth.google_jwks_url`.
+///
+/// PKCS#1 DER-encoded RSA-2048 test-only private key, base64 (never used for
+/// anything but signing tokens in this file). Must be PKCS#1
+/// (`openssl rsa -traditional -outform DER`), not PKCS#8 — this project's
+/// `jsonwebtoken` dependency is built with `features = ["rust_crypto"]` and
+/// `default-features = false`, which excludes the `use_pem` feature (so no
+/// `EncodingKey::from_rsa_pem`); `EncodingKey::from_rsa_der` expects the
+/// traditional PKCS#1 layout, not PKCS#8's `AlgorithmIdentifier`-wrapped one.
+const GOOGLE_TEST_PRIV_DER_B64: &str = "MIIEowIBAAKCAQEArvNjgLtycikxZlHRKVZHyUtvhgqovSIo0relMN1QNlxvFuo9dUJ8Q089t7suZo/Zz9sbCvKpfMpPA46zZyAmiOYvC5oB4ex7jUxbjhpSU0rAq9+SoO7bfFjo2tWWzPFG/FBwOoz3gzTZkn6RlZpPXnVAo3wK5XprfDbRBO1imBlnnTMDo5GmM46YsZb71VYfp0THOmsE/9mvBB5fUPBWpQl7eT2a06ripUwxCRZEzPHWjjkP303W1oWqr3KNF10yZmMlCkrnxqcKurlyxI2E1w/Fc2K8Hh1D/IZ5dYKt8Pb8s0hwxs1DspvXEL0iPhcMW0BDqxTi8gTNzYPYtZkwdQIDAQABAoIBABvCEb5N33N2Dji4EAnxPtwVHDmGDO5PUm9WhH77ilvJsDWQTlaByUILu1TgvdS3i71TPBfxVwtt9PnxRQ0+eGa9sOa0FYrhUNwjKp6iFgBRqr7KbxMaOthgqfd4rp/PQ25Km/fqQGZAtymra9FzBZdM3sfhqT/uO8oeT20q9fsAP5ulCOak8DU2FDOLILut6DkBQPTGdSXJ65DmBXGsFaie4CoU1vvlqxOeDw1s5UgPYgxuNgkvwDskOmHpMaMjIva8BUrBa2EYHkyzhnjup0xAjbb0yTaa6rHw1GbDCx4QK4qGiDibmna7aVelouZjfpQSv4Ate2KYo9lkq0+fymkCgYEA4SJeybF1rDKv9qXBlTn64nX1XVe6DEn+y1aJXqwFbRG8krLfCvkmW6Qw91obbJoEGUModNX9m1YgVNqXYjSnMnPkaE1y8NKXdNVFP+/cqz8iJ2Eayy0yUJZyqVOQF1MgA3I0f7YoRJnkNb+CWDt3f1REHlBBUse5uF6C8BBxC1kCgYEAxu+06lPzhJ0ikp576H3uv9UH2HnIkKmE3ClH3HFNVUfgrlRFJAIQsXD8iGxd6iETUYac9MoVWcex6316wy4TrkZvi94E9a3QtbpGiyRhkcZEC43gj0J3fXfzV//Wr2GVIEvEYjzPY7h5+yPkr/MqLyt5sP4Perg8jz56Xs41Fn0CgYBTjvInYdoO43Ez1imXPUHEs4sx7dF7pisPRTsPDEGnTaHzwLfP1tFJyhLye1saX7+NsMNfOd06viiZ1dfB91DnBOSNYdF7WG4mStG8/UWluXTvsLbFGi1Gg9Bi0ET2oz+Kh+S8Udt4OrXczQuPu+KKO7hcl+Tm2IIxz8JBX5jVYQKBgA43FLtl0lHYlJ7bekkrroLAqzXZxe4oXtkIjhz/b6I3Z6OtW99t0lmLlE//RlqzkFjUAKUxR4NJ1LnaFoqZ4UgjulbJP5t6lx5VODM7H0m2XChjM/eorTcm+hmAq4uOsoRDRb4rUDp09Spv7yhvfMUwGxr9nIeNYK5vrXjWzU5VAoGBAKiG031/8yxMLVH0rRxFZ+xoCla8fAw135PziT6ZOEABqKvTcaRBedVA3zigiKg8wdH1sBKv7/HjsQc3lXS7BHtoT+KQBa36yvdMaye6XgVg1wA41WgBdLYeBQcSuiAxWkbxjPVSSz0UNe1jMnZqNe+ZMTrrkwuh3X1Yl4Szadba";
+/// Base64url (no padding) RSA modulus of the same test key's public half —
+/// the JWK `n`. Computed once via `openssl rsa -pubin -modulus` piped through
+/// a one-off base64url encode, and independently verified byte-exact by
+/// round-tripping a signed token through `DecodingKey::from_rsa_components`
+/// (the exact function `google_oauth::verify_google_id_token` calls).
+const GOOGLE_TEST_JWK_N: &str = "rvNjgLtycikxZlHRKVZHyUtvhgqovSIo0relMN1QNlxvFuo9dUJ8Q089t7suZo_Zz9sbCvKpfMpPA46zZyAmiOYvC5oB4ex7jUxbjhpSU0rAq9-SoO7bfFjo2tWWzPFG_FBwOoz3gzTZkn6RlZpPXnVAo3wK5XprfDbRBO1imBlnnTMDo5GmM46YsZb71VYfp0THOmsE_9mvBB5fUPBWpQl7eT2a06ripUwxCRZEzPHWjjkP303W1oWqr3KNF10yZmMlCkrnxqcKurlyxI2E1w_Fc2K8Hh1D_IZ5dYKt8Pb8s0hwxs1DspvXEL0iPhcMW0BDqxTi8gTNzYPYtZkwdQ";
+const GOOGLE_TEST_JWK_E: &str = "AQAB";
+
+/// Sign a Google-shaped id_token with the fixed test RSA key above.
+///
+/// `kid` should be unique per test: `google_oauth::verify_google_id_token`'s
+/// JWKS cache is a single process-wide slot, not keyed by URL, so two tests
+/// in this binary sharing a `kid` could observe each other's cached JWKS. A
+/// distinct `kid` per test guarantees a same-request refetch on a miss (the
+/// same fallback path production takes on real Google key rotation) instead
+/// of silently reusing another test's key — deterministic regardless of
+/// `cargo test`'s execution order/parallelism.
+fn sign_google_test_id_token(sub: &str, email: &str, aud: &str, kid: &str) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+
+    #[derive(serde::Serialize)]
+    struct Claims<'a> {
+        sub: &'a str,
+        aud: &'a str,
+        iss: &'a str,
+        exp: i64,
+        iat: i64,
+        email: &'a str,
+        email_verified: bool,
+    }
+
+    let der = STANDARD
+        .decode(GOOGLE_TEST_PRIV_DER_B64)
+        .expect("decode test RSA key DER");
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    let now = chrono::Utc::now().timestamp();
+    let claims = Claims {
+        sub,
+        aud,
+        iss: "https://accounts.google.com",
+        exp: now + 3600,
+        iat: now,
+        email,
+        email_verified: true,
+    };
+    let key = EncodingKey::from_rsa_der(&der);
+    encode(&header, &claims, &key).expect("sign test id_token")
+}
+
+/// JWKS response body for the mocked `auth.google_jwks_url` endpoint: a
+/// single key matching the fixed test private key above under `kid`.
+fn google_test_jwks_body(kid: &str) -> serde_json::Value {
+    json!({
+        "keys": [{
+            "kid": kid,
+            "n": GOOGLE_TEST_JWK_N,
+            "e": GOOGLE_TEST_JWK_E,
+            "kty": "RSA",
+            "alg": "RS256",
+        }]
+    })
+}
+
+#[sqlx::test]
+async fn google_auth_new_user_gets_welcome_notification(db: PgPool) {
+    let kid = "test-kid-google-new-user";
+    let id_token = sign_google_test_id_token(
+        "google-sub-new-user",
+        "newgoogle@example.com",
+        "test-client",
+        kid,
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id_token": id_token })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/certs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(google_test_jwks_body(kid)))
+        .mount(&upstream)
+        .await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.auth.google_token_url = format!("{}/oauth/token", upstream.uri());
+        cfg.auth.google_jwks_url = format!("{}/certs", upstream.uri());
+    })
+    .await;
+
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let body: serde_json::Value = resp.json();
+    let user_id =
+        Uuid::parse_str(body["user"]["id"].as_str().expect("user.id")).expect("parse user id");
+
+    // The genuinely-new-Google-user branch (`created_new_user = true`) fires
+    // a welcome notification.
+    let welcome = latest_notification(&app.db, user_id, "system")
+        .await
+        .expect("welcome notification row");
+    assert_eq!(welcome.0, "Welcome to Dream Fly");
+}
+
+#[sqlx::test]
+async fn google_auth_linking_existing_account_does_not_resend_welcome(db: PgPool) {
+    let kid = "test-kid-google-link-user";
+    let id_token = sign_google_test_id_token(
+        "google-sub-link-user",
+        "linkme@example.com",
+        "test-client",
+        kid,
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id_token": id_token })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/certs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(google_test_jwks_body(kid)))
+        .mount(&upstream)
+        .await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.auth.google_token_url = format!("{}/oauth/token", upstream.uri());
+        cfg.auth.google_jwks_url = format!("{}/certs", upstream.uri());
+    })
+    .await;
+
+    // Register a password account first — this already sends a welcome
+    // notification (see `register_creates_user_with_hashed_password` in
+    // tests/service_auth.rs).
+    let user = app.register_member("linkme@example.com", "Password!234").await;
+
+    let welcome_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications \
+         WHERE user_id = $1 AND type = 'system'::notification_type AND title = 'Welcome to Dream Fly'",
+    )
+    .bind(user.user_id)
+    .fetch_one(&app.db)
+    .await
+    .expect("count welcome notifications before link");
+    assert_eq!(welcome_count_before, 1);
+
+    // Now link Google to that same email — must NOT be treated as a
+    // genuinely new user (`created_new_user` stays false).
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let body: serde_json::Value = resp.json();
+    let returned_id =
+        Uuid::parse_str(body["user"]["id"].as_str().expect("user.id")).expect("parse user id");
+    assert_eq!(
+        returned_id, user.user_id,
+        "google link must resolve to the same existing user"
+    );
+
+    let welcome_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications \
+         WHERE user_id = $1 AND type = 'system'::notification_type AND title = 'Welcome to Dream Fly'",
+    )
+    .bind(user.user_id)
+    .fetch_one(&app.db)
+    .await
+    .expect("count welcome notifications after link");
+    assert_eq!(
+        welcome_count_after, 1,
+        "deliberate asymmetry: linking Google to an existing password account must not resend the welcome notification"
+    );
 }
 
 // ---------------- /auth/otp/send ----------------
