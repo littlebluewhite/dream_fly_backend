@@ -28,7 +28,8 @@ pub async fn list_course_sessions(
     Ok(Json(sessions))
 }
 
-/// `GET /sessions/today` — coach or admin only.
+/// `GET /sessions/today` — coach or admin only. Enforced by the `staff_api`
+/// route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn today(
     State(state): State<AppState>,

@@ -53,6 +53,7 @@ pub async fn cancel(
 }
 
 /// `GET /leave-requests?status=&course_id=` — coach (own courses) or admin.
+/// Enforced by the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn list(
     State(state): State<AppState>,
@@ -64,7 +65,8 @@ pub async fn list(
     Ok(Json(result))
 }
 
-/// `PATCH /leave-requests/{id}` — that course's coach or admin.
+/// `PATCH /leave-requests/{id}` — that course's coach or admin. Enforced by
+/// the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn decide(
     State(state): State<AppState>,

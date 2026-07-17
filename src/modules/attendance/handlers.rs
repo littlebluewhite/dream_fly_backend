@@ -12,7 +12,8 @@ use crate::utils::validation::ValidatedJson;
 use super::dto::{BulkUpsertAttendanceRequest, MyStudentResponse, RosterEntryResponse};
 use super::service;
 
-/// `GET /sessions/{id}/roster` — that course's coach, or admin.
+/// `GET /sessions/{id}/roster` — that course's coach, or admin. Enforced by
+/// the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn get_roster(
     State(state): State<AppState>,
@@ -24,6 +25,7 @@ pub async fn get_roster(
 }
 
 /// `PUT /sessions/{id}/attendance` — that course's coach, or admin.
+/// Enforced by the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn bulk_upsert_attendance(
     State(state): State<AppState>,

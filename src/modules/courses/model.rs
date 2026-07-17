@@ -71,7 +71,7 @@ pub struct Course {
 /// A course's structured weekly meeting pattern — one row per (day_of_week,
 /// start_time). Mirrors `coach_schedules`' shape. `day_of_week` is 0=Sunday
 /// .. 6=Saturday (PostgreSQL `EXTRACT(DOW)` convention — see
-/// `repository::materialize_range`).
+/// `sessions::repository::materialize_range`).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct CourseScheduleSlot {
     pub id: Uuid,

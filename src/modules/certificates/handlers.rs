@@ -10,7 +10,8 @@ use super::dto::{
 };
 use super::service;
 
-/// `POST /report-cards` — coach (own courses only) or admin.
+/// `POST /report-cards` — coach (own courses only) or admin. Enforced by
+/// the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn create_report_card(
     State(state): State<AppState>,
@@ -31,7 +32,8 @@ pub async fn my_report_cards(
     Ok(Json(cards))
 }
 
-/// `POST /certificates` — coach (own students only) or admin.
+/// `POST /certificates` — coach (own students only) or admin. Enforced by
+/// the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn create_certificate(
     State(state): State<AppState>,

@@ -123,15 +123,20 @@ pub async fn checkout(
 
     if cart_items.is_empty() {
         // A concurrent request carrying the *same* idempotency key may have
-        // already won this cart: it locked these same rows first, ran the
-        // whole checkout, cleared the cart, and committed (steps 11/12/`tx.
-        // commit()` below) while we were blocked on the row lock
-        // `find_cart_items_for_checkout_tx` just took above — so by the time
-        // we see the empty cart, the winner is guaranteed to have already
-        // committed too (cart-clear and idempotency-insert share that one
-        // transaction). Failing outright here, before ever checking
-        // idempotency, breaks the "same key replay returns the first order"
-        // contract. `drop(tx)` first — mirrors the discipline at `:344` below
+        // already won this cart. Idempotency is scoped per user_id, so both
+        // requests first contend on the SAME buyer's `users` row: the
+        // unconditional `lock_balance_tx` call taken at `:117` above (Step
+        // 10b moved it ahead of the cart read) is what actually serializes
+        // the two checkouts. The loser blocks there until the winner locks
+        // these same cart rows, runs the whole checkout, clears the cart,
+        // and commits (steps 11/12/`tx.commit()` below) — so by the time the
+        // loser is unblocked and reaches this empty-cart check, the winner
+        // is guaranteed to have already committed too (cart-clear and
+        // idempotency-insert share that one transaction). Failing outright
+        // here, before ever checking idempotency, breaks the "same key
+        // replay returns the first order" contract. `drop(tx)` first —
+        // mirrors the discipline at the same-status no-op check in
+        // `update_order_status` below
         // (a pool query issued while still holding this tx's connection can
         // self-deadlock under a low-connection pool) — then re-check
         // idempotency before giving up.

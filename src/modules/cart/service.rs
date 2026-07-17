@@ -115,6 +115,11 @@ pub async fn update_quantity(
             item.item_type.validate_quantity(quantity)?;
         }
         CartItemType::Product => {
+            // Always `Ok` here — the inline 1..=999 guard above already
+            // rejected out-of-range input — but this is still the semantic
+            // owner's call site (`validate_quantity`'s `Product` arm).
+            // Deliberately kept, not simplified away: removing it would
+            // break the symmetry with the `Course` arm above.
             item.item_type.validate_quantity(quantity)?;
 
             // Re-check product active + stock on quantity updates; without

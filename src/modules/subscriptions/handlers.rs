@@ -21,7 +21,8 @@ pub async fn me(
     Ok(Json(subscriptions))
 }
 
-/// Redeem one session from a subscription (admin or coach only).
+/// Redeem one session from a subscription (admin or coach only). Enforced
+/// by the `staff_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn redeem(
     State(state): State<AppState>,

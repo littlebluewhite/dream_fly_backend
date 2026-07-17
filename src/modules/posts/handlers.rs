@@ -37,7 +37,8 @@ pub async fn get_by_slug_or_id(
     Ok(Json(post))
 }
 
-/// Create a new post (admin or coach)
+/// Create a new post (admin or coach). Enforced by the `staff_api`
+/// route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,

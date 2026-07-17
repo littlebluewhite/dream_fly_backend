@@ -665,14 +665,15 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
 async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgPool) {
     // The empty-cart idempotency race (codex r2 gap): two requests carrying
     // the SAME idempotency key check out the SAME user's cart concurrently
-    // (double-click / client retry). Both lock attempts land on the same
-    // `cart_items` row (`find_cart_items_for_checkout_tx`'s `FOR UPDATE OF
-    // ci`), so one blocks until the other commits (order created + cart
+    // (double-click / client retry). Idempotency is scoped per user_id, so
+    // both lock attempts land on the same `users` row first — the
+    // unconditional `lock_balance_tx` call, taken before the cart read since
+    // Step 10b — so one blocks until the other commits (order created + cart
     // cleared + idempotency row inserted, all in that one transaction). Once
     // unblocked, the loser's re-read always finds an empty cart — before the
     // fix, `orders/service.rs:96-98` returned `400 cart is empty` right there,
     // never consulting idempotency. Stock is plentiful (this is not the
-    // last-unit race); the only contested resource is the cart row lock, so
+    // last-unit race); the only contested resource is the users row lock, so
     // both requests must resolve to the SAME order.
     let product = common::seed_product(&db, "prod-1", 1000, Some(5)).await;
     let user = seed_carted_member(
@@ -695,12 +696,13 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     // and a fresh local test DB answers each query fast enough that a plain
     // `tokio::spawn` task's checkout resolves every internal `.await`
     // synchronously and runs to `commit` in one uninterrupted poll — the
-    // second task never gets a turn until the first is entirely done, so the
-    // cart's row lock never actually contends (verified: 16/16 tokio::spawn
+    // second task never gets a turn until the first is entirely done, so
+    // neither row lock ever actually contends (verified: 16/16 tokio::spawn
     // trials during development never hit the race). `spawn_blocking` +
     // `Handle::block_on` hands each checkout call to a genuine OS thread
     // against the same runtime's reactor, so both calls make real
-    // independent progress and the cart row lock becomes the actual arbiter.
+    // independent progress and the users row lock becomes the actual
+    // arbiter.
     let handle_a = tokio::runtime::Handle::current();
     let handle_b = handle_a.clone();
 

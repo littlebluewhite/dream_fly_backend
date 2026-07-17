@@ -1,11 +1,9 @@
 //! Rate-limit counting primitives — the Redis INCR/EXPIRE/GET/DEL shapes
 //! that `login`, `forgot_password`, and the OTP lifecycle each had inline:
 //! a best-effort atomic bump for the failed-login counter, a plain
-//! read-with-default and a fire-and-forget clear for that same counter, a
-//! bump-and-return-count primitive shared byte-for-byte by the OTP
-//! request-rate check and the OTP verify-attempt counter, and a best-effort
-//! atomic bump-and-return-count for the forgot-password rate limit. Every
-//! TTL/limit constant these flows use lives here too.
+//! read-with-default and a fire-and-forget clear for that same counter, and
+//! a best-effort atomic bump-and-return-count for the forgot-password rate
+//! limit. Every TTL/limit constant these flows use lives here too.
 //!
 //! No policy lives here — "what happens once the count is too high"
 //! (lockout, rejection, silent swallow) stays in the calling flow
