@@ -54,17 +54,15 @@ pub struct LeaveRequest {
     pub updated_at: DateTime<Utc>,
 }
 
-/// A `course_sessions` row JOINed with its course's `name`/`coach_id`/
-/// `max_students` — everything `POST /leave-requests` and the makeup
-/// endpoint's target-session validation need about a session in one query.
+/// A `course_sessions` row JOINed with its course's `name` — everything
+/// `POST /leave-requests` and the makeup target validation need about a
+/// session in one query.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionContext {
     pub course_id: Uuid,
     pub course_name: String,
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
-    pub coach_id: Option<Uuid>,
-    pub max_students: i32,
 }
 
 /// One row of `GET /leave-requests/me` — `leave_requests` JOINed with its

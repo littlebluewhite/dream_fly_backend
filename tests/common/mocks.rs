@@ -31,7 +31,6 @@ pub struct SentEmail {
 pub enum EmailKind {
     Generic,
     PasswordReset { token: String },
-    Welcome { name: String },
 }
 
 pub struct MockEmailClient {
@@ -125,17 +124,6 @@ impl EmailSender for MockEmailClient {
             body: String::new(),
             kind: EmailKind::PasswordReset {
                 token: token.to_string(),
-            },
-        })
-    }
-
-    async fn send_welcome(&self, to: &str, name: &str) -> Result<(), AppError> {
-        self.record(SentEmail {
-            to: to.to_string(),
-            subject: "Welcome to Dream Fly!".into(),
-            body: String::new(),
-            kind: EmailKind::Welcome {
-                name: name.to_string(),
             },
         })
     }

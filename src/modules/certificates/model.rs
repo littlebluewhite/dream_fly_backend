@@ -19,7 +19,7 @@ pub struct ReportCard {
 
 /// The target enrolment's `course_id` plus that course's `coach_id` —
 /// everything `POST /report-cards`'s coach-ownership check needs (mirrors
-/// `leave::model::SessionContext`'s narrow-context-for-authz shape). `None`
+/// `leave::model::SessionContext`'s narrow-context shape). `None`
 /// from the repository lookup means the enrolment doesn't exist.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EnrolmentCourseCoach {

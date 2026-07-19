@@ -6,16 +6,6 @@ use lettre::message::header::ContentType;
 use crate::config::EmailConfig;
 use crate::error::AppError;
 
-/// Escape user-supplied strings before interpolating into HTML email bodies.
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
-
 /// Trait-object facade for outbound email so AppState can hold a
 /// `Arc<dyn EmailSender>`. In production this is backed by `EmailClient`
 /// (lettre SMTP); in integration tests it is backed by `MockEmailClient`
@@ -30,8 +20,6 @@ pub trait EmailSender: Send + Sync {
     ) -> Result<(), AppError>;
 
     async fn send_password_reset(&self, to: &str, token: &str) -> Result<(), AppError>;
-
-    async fn send_welcome(&self, to: &str, name: &str) -> Result<(), AppError>;
 }
 
 pub struct EmailClient {
@@ -102,25 +90,6 @@ impl EmailSender for EmailClient {
 <p><a href="https://dreamfly.com/reset-password?token={token}">Reset Password</a></p>
 <p>If you did not request this, please ignore this email.</p>
 <p>This link will expire in 15 minutes.</p>
-</body>
-</html>"#
-        );
-
-        self.send_email(to, subject, body).await
-    }
-
-    async fn send_welcome(&self, to: &str, name: &str) -> Result<(), AppError> {
-        let subject = "Welcome to Dream Fly!";
-        let safe_name = html_escape(name);
-        let body = format!(
-            r#"<html>
-<body>
-<h2>Welcome, {safe_name}!</h2>
-<p>Thank you for joining Dream Fly.</p>
-<p>We're excited to have you on board. Start exploring our courses, book sessions with expert coaches, and take your skills to the next level.</p>
-<p>If you have any questions, feel free to reach out to our support team.</p>
-<p>Happy flying!</p>
-<p>— The Dream Fly Team</p>
 </body>
 </html>"#
         );
