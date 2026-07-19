@@ -107,7 +107,9 @@ async fn order_placed_writes_exactly_one_correct_row(db: PgPool) {
     let user = seed_member(&db, "on@example.com", "Password!234").await;
     let order_id = Uuid::now_v7();
 
-    service::order_placed(&db, user, order_id, "ORD-123").await;
+    service::order_placed(user, order_id, "ORD-123")
+        .deliver(&db)
+        .await;
 
     let rows: Vec<(String, String, String, Option<serde_json::Value>)> = sqlx::query_as(
         "SELECT type::text, title, message, metadata FROM notifications WHERE user_id = $1",
@@ -132,7 +134,9 @@ async fn booking_confirmed_writes_exactly_one_correct_row(db: PgPool) {
     let user = seed_member(&db, "bn@example.com", "Password!234").await;
     let booking_id = Uuid::now_v7();
 
-    service::booking_confirmed(&db, user, booking_id).await;
+    service::booking_confirmed(user, booking_id)
+        .deliver(&db)
+        .await;
 
     let rows: Vec<(String, String, String, Option<serde_json::Value>)> = sqlx::query_as(
         "SELECT type::text, title, message, metadata FROM notifications WHERE user_id = $1",
@@ -155,7 +159,7 @@ async fn booking_confirmed_writes_exactly_one_correct_row(db: PgPool) {
 async fn user_welcomed_writes_exactly_one_correct_row(db: PgPool) {
     let user = seed_member(&db, "wn@example.com", "Password!234").await;
 
-    service::user_welcomed(&db, user).await;
+    service::user_welcomed(user).deliver(&db).await;
 
     let rows: Vec<(String, String)> =
         sqlx::query_as("SELECT type::text, title FROM notifications WHERE user_id = $1")
@@ -168,4 +172,24 @@ async fn user_welcomed_writes_exactly_one_correct_row(db: PgPool) {
     let (notif_type, title) = &rows[0];
     assert_eq!(notif_type, "system");
     assert_eq!(title, "Welcome to Dream Fly");
+}
+
+#[sqlx::test]
+async fn pending_without_deliver_writes_nothing(db: PgPool) {
+    // Constructing a PendingNotification must be pure IO-wise — only
+    // `.deliver` writes. Build one for a real user (so a wrongly-called
+    // `.deliver` would actually succeed and be visible), drop it without
+    // ever delivering, and confirm the notifications table stays empty.
+    let user = seed_member(&db, "nodeliver@example.com", "Password!234").await;
+    let pending = service::order_placed(user, Uuid::now_v7(), "ORD-999");
+    drop(pending);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "constructing a PendingNotification must not write anything"
+    );
 }

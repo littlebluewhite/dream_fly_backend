@@ -45,6 +45,38 @@ struct NotificationContent {
     metadata: Option<serde_json::Value>,
 }
 
+/// A notification that has been built but not yet written to the database.
+/// `.deliver(db)` is the only IO entry point — constructing one does
+/// nothing on its own.
+///
+/// `#[must_use]` turns "built a notification and forgot to send it" from a
+/// silent bug into a compiler warning. Honesty about what that buys: the
+/// warning fires only when the returned value is discarded directly as a
+/// statement — `let pending = notify::order_placed(...);` followed by never
+/// calling `.deliver` does NOT trigger it. The warning is also not an error
+/// (`cargo build` still succeeds), and it is not a guarantee that the
+/// notification was actually sent.
+///
+/// Nor does this type enforce *when* delivery happens: call `.deliver(db)`
+/// after the writing transaction commits, never before — delivering
+/// pre-commit would leave a ghost notification behind if the transaction
+/// later rolls back. "After commit" remains a call-site convention, same as
+/// before this type existed; what changed is that every call site now
+/// shares one uniform shape. The one write path with no transaction
+/// (`certificates::service`, which writes straight through the pool)
+/// delivers right after its authoritative write.
+#[must_use = "a PendingNotification performs no IO until `.deliver(db)` is awaited — deliver it after the writing transaction commits"]
+pub struct PendingNotification {
+    user_id: Uuid,
+    content: NotificationContent,
+}
+
+impl PendingNotification {
+    pub async fn deliver(self, db: &PgPool) {
+        emit(db, self.user_id, self.content).await
+    }
+}
+
 fn booking_confirmed_content(booking_id: Uuid) -> NotificationContent {
     NotificationContent {
         notif_type: NotificationType::BookingConfirmed,
@@ -143,54 +175,63 @@ async fn emit(db: &PgPool, user_id: Uuid, c: NotificationContent) {
     }
 }
 
-pub async fn booking_confirmed(db: &PgPool, user_id: Uuid, booking_id: Uuid) {
-    emit(db, user_id, booking_confirmed_content(booking_id)).await
+pub fn booking_confirmed(user_id: Uuid, booking_id: Uuid) -> PendingNotification {
+    PendingNotification {
+        user_id,
+        content: booking_confirmed_content(booking_id),
+    }
 }
 
-pub async fn booking_cancelled(db: &PgPool, user_id: Uuid, booking_id: Uuid) {
-    emit(db, user_id, booking_cancelled_content(booking_id)).await
+pub fn booking_cancelled(user_id: Uuid, booking_id: Uuid) -> PendingNotification {
+    PendingNotification {
+        user_id,
+        content: booking_cancelled_content(booking_id),
+    }
 }
 
-pub async fn order_placed(db: &PgPool, user_id: Uuid, order_id: Uuid, order_number: &str) {
-    emit(db, user_id, order_placed_content(order_id, order_number)).await
+pub fn order_placed(user_id: Uuid, order_id: Uuid, order_number: &str) -> PendingNotification {
+    PendingNotification {
+        user_id,
+        content: order_placed_content(order_id, order_number),
+    }
 }
 
-pub async fn order_status_changed(
-    db: &PgPool,
+pub fn order_status_changed(
     user_id: Uuid,
     order_id: Uuid,
     order_number: &str,
     status: &str,
-) {
-    emit(
-        db,
+) -> PendingNotification {
+    PendingNotification {
         user_id,
-        order_status_changed_content(order_id, order_number, status),
-    )
-    .await
+        content: order_status_changed_content(order_id, order_number, status),
+    }
 }
 
-pub async fn user_welcomed(db: &PgPool, user_id: Uuid) {
-    emit(db, user_id, user_welcomed_content()).await
+pub fn user_welcomed(user_id: Uuid) -> PendingNotification {
+    PendingNotification {
+        user_id,
+        content: user_welcomed_content(),
+    }
 }
 
-pub async fn leave_request_decided(
-    db: &PgPool,
+pub fn leave_request_decided(
     user_id: Uuid,
     approved: bool,
     course_name: &str,
     session_date: NaiveDate,
-) {
-    emit(
-        db,
+) -> PendingNotification {
+    PendingNotification {
         user_id,
-        leave_request_decided_content(approved, course_name, session_date),
-    )
-    .await
+        content: leave_request_decided_content(approved, course_name, session_date),
+    }
 }
 
-pub async fn certificate_issued(db: &PgPool, user_id: Uuid, title: &str) {
-    emit(db, user_id, certificate_issued_content(title)).await
+pub fn certificate_issued(user_id: Uuid, title: &str) -> PendingNotification {
+    PendingNotification {
+        user_id,
+        content: certificate_issued_content(title),
+    }
 }
 
 #[cfg(test)]

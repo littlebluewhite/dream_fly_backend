@@ -132,7 +132,7 @@ pub async fn register(
     dirty.flush(redis).await;
 
     // Welcome notification is written synchronously after commit.
-    notify::user_welcomed(db, user.id).await;
+    notify::user_welcomed(user.id).deliver(db).await;
 
     Ok(response)
 }
@@ -352,7 +352,7 @@ pub async fn google_auth(
     // notification fires only for genuinely new users — a linked account was
     // already welcomed at register time.
     if created_new_user {
-        notify::user_welcomed(db, user.id).await;
+        notify::user_welcomed(user.id).deliver(db).await;
     }
 
     Ok(response)

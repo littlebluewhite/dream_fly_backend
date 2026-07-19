@@ -409,7 +409,9 @@ pub async fn checkout(
     // 14. Inline notification — the user expects order confirmation
     //     regardless of whether Kafka is enabled, and even if the
     //     dispatcher hasn't drained the event yet.
-    notify::order_placed(db, order.user_id, order.id, &order.order_number).await;
+    notify::order_placed(order.user_id, order.id, &order.order_number)
+        .deliver(db)
+        .await;
 
     // 15. Assemble the response (items + artifacts, looked up by order_id).
     assemble_response(db, order, released).await
@@ -628,12 +630,12 @@ pub async fn update_order_status(
     // Inline notification — every status change is user-visible and
     // shouldn't wait for the outbox dispatcher tick.
     notify::order_status_changed(
-        db,
         updated.user_id,
         updated.id,
         &updated.order_number,
         target.as_str(),
     )
+    .deliver(db)
     .await;
 
     assemble_response(db, updated, released).await

@@ -85,7 +85,9 @@ pub async fn create_booking(
 
     // Post-commit: write an in-DB notification directly so the user gets
     // feedback without waiting for the outbox dispatcher tick.
-    notify::booking_confirmed(db, booking.user_id, booking.id).await;
+    notify::booking_confirmed(booking.user_id, booking.id)
+        .deliver(db)
+        .await;
 
     Ok(BookingResponse::from(booking))
 }
@@ -162,7 +164,9 @@ pub async fn cancel_booking(
     tx.commit().await?;
 
     // Post-commit inline notification (independent of the outbox).
-    notify::booking_cancelled(db, updated.user_id, updated.id).await;
+    notify::booking_cancelled(updated.user_id, updated.id)
+        .deliver(db)
+        .await;
 
     Ok(BookingResponse::from(updated))
 }

@@ -88,7 +88,9 @@ pub async fn create_certificate(
     )
     .await?;
 
-    notify::certificate_issued(db, req.user_id, &cert.title).await;
+    notify::certificate_issued(req.user_id, &cert.title)
+        .deliver(db)
+        .await;
 
     let row = repository::find_certificate_row(db, cert.id).await?.ok_or_else(|| {
         AppError::Internal(anyhow::anyhow!(

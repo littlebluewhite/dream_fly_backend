@@ -527,6 +527,15 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     // The cart itself is untouched too (checkout never got to clear it).
     let cart_count = common::cart_count(&db, user).await;
     assert_eq!(cart_count, 2);
+
+    // ...and no order_placed notification either: the notify:: call sits
+    // after commit, so a rolled-back checkout must never reach it.
+    assert!(
+        common::latest_notification(&db, user, "order_placed")
+            .await
+            .is_none(),
+        "rollback must not leave a ghost order_placed notification"
+    );
 }
 
 #[sqlx::test]

@@ -217,12 +217,12 @@ pub async fn decide_leave_request(
     tx.commit().await?;
 
     notify::leave_request_decided(
-        db,
         ctx.user_id,
         new_status == LeaveStatus::Approved,
         &ctx.course_name,
         ctx.session_date,
     )
+    .deliver(db)
     .await;
 
     Ok(LeaveRequestResponse {
