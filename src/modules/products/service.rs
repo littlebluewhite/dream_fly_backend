@@ -147,11 +147,10 @@ pub async fn update(
 /// doesn't have to import back into `cart`; the `HashMap` return follows
 /// the same idiom as `repository::find_sold_counts` in this module.
 ///
-/// Sorts `lines` by `product_id` before touching any row (deterministic
-/// global lock order: two concurrent reservations that share two products
-/// added in opposite cart order could otherwise acquire the per-row UPDATE
-/// locks in opposite orders and deadlock) — that sort is this function's
-/// job now, not the caller's.
+/// Sorts `lines` by `product_id` before touching any row — that sort is
+/// this function's job now, not the caller's (deadlock rationale: see the
+/// "Cross-buyer dimension" anchor in `orders::service::checkout`, ADR-0007
+/// 決策 5).
 ///
 /// Each line is then decremented in that sorted order via
 /// `try_decrement_stock_tx`. The first line (post-sort) whose stock is
@@ -189,11 +188,11 @@ pub async fn reserve_stock_tx(
 
 /// Reverse a batch of stock reservations inside the caller's transaction —
 /// refund/cancel compensation's (Step 10e) mirror of `reserve_stock_tx`.
-/// Sorts by `product_id` ascending before touching any row, the same
+/// Sorts by `product_id` ascending before touching any row — the same
 /// lock-ordering discipline `reserve_stock_tx` applies (see its doc comment
-/// above) — a concurrent reservation and a concurrent restore touching the
-/// same two products can't take their per-row UPDATE locks in opposite
-/// orders and deadlock.
+/// above), same owner-per-site rule. Deadlock rationale: see the
+/// "Cross-buyer dimension" anchor in `orders::service::checkout` (ADR-0007
+/// 決策 5).
 ///
 /// Contract: callers must pass only `(product_id, quantity)` pairs whose
 /// `order_items.stock_decremented` was `true` at checkout time —

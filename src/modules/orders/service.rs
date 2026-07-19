@@ -114,6 +114,23 @@ pub async fn checkout(
     // (Pre-existing, neither introduced nor fixed here: two checkouts racing
     // a SHARE->UPDATE upgrade on the same product can still deadlock — PG's
     // detector aborts one.)
+    //
+    // Cross-buyer dimension (single code anchor for this argument; prose
+    // authority remains ADR-0007 決策 5): the users-first lock above only
+    // serializes the SAME buyer's checkout vs refund — two different buyers
+    // hold two different `users` rows, so it does nothing for them. That gap
+    // is closed by a *global* `product_id`-ascending order enforced
+    // independently at every site that ever locks a `products` row, so no
+    // two transactions can hold locks on the same pair of products in
+    // opposite orders, regardless of which buyers or paths are involved:
+    //   1. cart's SHARE pre-lock — dedicated pre-lock query inside
+    //      `find_cart_items_for_checkout_tx` (`cart::repository`)
+    //   2. checkout's UPDATE reservation — `reserve_stock_tx` (step 6, below)
+    //   3. refund's UPDATE restore — `restore_stock_tx` (compensation, Step 10e)
+    // Regression test:
+    // `checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`.
+    // The sort itself is not shared code: each site's write-lock owner sorts
+    // independently — no shared helper (CONTEXT.md「行計畫」詞條裁決).
     let locked_points_balance = points_service::lock_balance_tx(&mut tx, user_id).await?;
 
     // 2. Lock and read cart items + current product/course prices. Course

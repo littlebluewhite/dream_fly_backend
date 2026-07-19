@@ -146,13 +146,9 @@ pub async fn find_cart_items_for_checkout_tx(
 ) -> Result<Vec<CheckoutLine>, sqlx::Error> {
     // Cross-path lock-order discipline: pre-lock the cart's product rows
     // `FOR SHARE` in `product_id` ascending order before the join below
-    // reads (and re-locks) them in cart-creation order. Checkout's own
-    // `reserve_stock_tx` and refund's `restore_stock_tx` take per-row
-    // UPDATE locks ascending, and the users-first lock only serializes
-    // same-buyer paths — without this pre-lock, a cross-buyer refund
-    // (UPDATE ascending) and this read (SHARE in cart order) can acquire
-    // the same two products in opposite orders and deadlock (regression
-    // test: `checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`).
+    // reads (and re-locks) them in cart-creation order. Cross-buyer
+    // deadlock-cycle rationale: see the "Cross-buyer dimension" anchor in
+    // `orders::service::checkout` (ADR-0007 決策 5).
     // Deliberately not filtered by `is_active`: locking a superset is
     // harmless and leaves no window for a mid-checkout activation to enter
     // the join unordered. Courses are not pre-locked — no compensation path
