@@ -30,6 +30,21 @@ impl BookingStatus {
     pub fn is_cancellable(&self) -> bool {
         matches!(self, Self::Pending | Self::Confirmed)
     }
+
+    /// Single owner of the "booked = 非 cancelled bookings 數" invariant:
+    /// whether this booking currently occupies a seat on its time slot.
+    /// `time_slots.booked` is a denormalized read cache of this predicate
+    /// (maintained at runtime by the increment/decrement protocol on
+    /// create/cancel); `src/bin/seed.rs` consumes this same predicate
+    /// instead of hand-picking which literal statuses count as occupied.
+    /// `Completed`/`NoShow` are terminal but still occupy — only
+    /// `Cancelled` frees the seat.
+    pub fn occupies_seat(&self) -> bool {
+        match self {
+            Self::Pending | Self::Confirmed | Self::Completed | Self::NoShow => true,
+            Self::Cancelled => false,
+        }
+    }
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize)]
@@ -95,5 +110,33 @@ mod tests {
         // 不對應任何變體的字串——兩邊集合大小相等,才真正排除這個殘餘可
         // 能性。
         assert_eq!(VENUE_REVENUE_STATUSES.len(), 2);
+    }
+
+    // --- occupies_seat / is_cancellable table (仿 schedule::model::derive_table 款式) ---
+
+    #[test]
+    fn occupies_seat_table() {
+        // (status, occupies_seat, is_cancellable)
+        let cases: [(BookingStatus, bool, bool); 5] = [
+            (BookingStatus::Pending, true, true),
+            (BookingStatus::Confirmed, true, true),
+            // 唯一釋出座位的狀態。
+            (BookingStatus::Cancelled, false, false),
+            // 終局狀態:佔位但不可再取消。
+            (BookingStatus::Completed, true, false),
+            (BookingStatus::NoShow, true, false),
+        ];
+        for (status, occupies_seat, is_cancellable) in cases {
+            assert_eq!(
+                status.occupies_seat(),
+                occupies_seat,
+                "{status:?}.occupies_seat()"
+            );
+            assert_eq!(
+                status.is_cancellable(),
+                is_cancellable,
+                "{status:?}.is_cancellable()"
+            );
+        }
     }
 }

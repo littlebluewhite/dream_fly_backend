@@ -208,6 +208,18 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
         "got: {err:?}"
     );
     assert_eq!(common::slot_booked(&db, slot).await, 0);
+
+    // 對帳:`time_slots.booked` 必須等於同一 slot 下非 cancelled 的 bookings
+    // 列數(`BookingStatus::occupies_seat` 的 runtime 端不變量)。`COUNT(*)::int`
+    // 把 SQL 端型別對齊 `slot_booked` 的 i32,兩者才能直接比較。
+    let non_cancelled: i32 = sqlx::query_scalar(
+        "SELECT COUNT(*)::int FROM bookings WHERE time_slot_id = $1 AND status <> 'cancelled'::booking_status",
+    )
+    .bind(slot)
+    .fetch_one(&db)
+    .await
+    .expect("count non-cancelled bookings");
+    assert_eq!(non_cancelled, common::slot_booked(&db, slot).await);
 }
 
 #[sqlx::test]

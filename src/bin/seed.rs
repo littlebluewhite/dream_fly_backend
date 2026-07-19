@@ -32,6 +32,7 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 use dream_fly_backend::config::AppConfig;
+use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
 use dream_fly_backend::utils::password;
 
@@ -1633,15 +1634,15 @@ async fn main() -> anyhow::Result<()> {
                 let s = date.num_days_from_ce() as usize * 12 + v * 3 + j;
                 let booking_status = if date < today {
                     match s % 20 {
-                        0..=11 => Some("completed"),
-                        12..=13 => Some("cancelled"),
-                        14 => Some("no_show"),
+                        0..=11 => Some(BookingStatus::Completed),
+                        12..=13 => Some(BookingStatus::Cancelled),
+                        14 => Some(BookingStatus::NoShow),
                         _ => None,
                     }
                 } else {
                     None
                 };
-                let occupies = matches!(booking_status, Some("completed" | "no_show"));
+                let occupies = booking_status.as_ref().is_some_and(|s| s.occupies_seat());
                 let slot_id = upsert_time_slot(
                     &db,
                     &TimeSlotSeed {
@@ -1661,7 +1662,7 @@ async fn main() -> anyhow::Result<()> {
                         &db,
                         member_ids[(s * 7) % 24],
                         slot_id,
-                        status,
+                        status.as_str(),
                         venue_prices[v],
                         at_utc(date - Days::new(3), 8),
                     )

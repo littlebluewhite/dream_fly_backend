@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::{Booking, BookingStatus};
+use super::model::Booking;
 
 /// `price_cents` is the slot's price *at booking time* — the caller reads
 /// it off the `TimeSlot` row it already fetched (see
@@ -102,22 +102,6 @@ pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bookings")
         .fetch_one(db)
         .await
-}
-
-pub async fn update_status_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    id: Uuid,
-    status: &BookingStatus,
-) -> Result<Option<Booking>, sqlx::Error> {
-    sqlx::query_as::<_, Booking>(
-        "UPDATE bookings SET status = $2::booking_status, updated_at = NOW() \
-         WHERE id = $1 \
-         RETURNING id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at",
-    )
-    .bind(id)
-    .bind(status.as_str())
-    .fetch_optional(&mut **tx)
-    .await
 }
 
 /// Conditional cancel: only transitions non-cancelled bookings into
