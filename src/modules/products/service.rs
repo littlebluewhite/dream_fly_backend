@@ -147,7 +147,7 @@ pub async fn update(
 /// doesn't have to import back into `cart`; the `HashMap` return follows
 /// the same idiom as `repository::find_sold_counts` in this module.
 ///
-/// Sorts `lines` by `product_id` before touching any row — that sort is
+/// Sorts `lines` by `product_id` ascending before touching any row — that sort is
 /// this function's job now, not the caller's (deadlock rationale: see the
 /// "Cross-buyer dimension" anchor in `orders::service::checkout`, ADR-0007
 /// 決策 5).

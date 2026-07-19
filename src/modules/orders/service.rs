@@ -142,11 +142,11 @@ pub async fn checkout(
         // A concurrent request carrying the *same* idempotency key may have
         // already won this cart. Idempotency is scoped per user_id, so both
         // requests first contend on the SAME buyer's `users` row: the
-        // unconditional `lock_balance_tx` call taken at `:117` above (Step
+        // unconditional `lock_balance_tx` call above (Step
         // 10b moved it ahead of the cart read) is what actually serializes
         // the two checkouts. The loser blocks there until the winner locks
         // these same cart rows, runs the whole checkout, clears the cart,
-        // and commits (steps 11/12/`tx.commit()` below) — so by the time the
+        // and commits (steps 11/12/`TxReleased::commit` below) — so by the time the
         // loser is unblocked and reaches this empty-cart check, the winner
         // is guaranteed to have already committed too (cart-clear and
         // idempotency-insert share that one transaction). Failing outright
