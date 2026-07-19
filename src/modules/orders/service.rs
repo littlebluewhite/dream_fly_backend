@@ -72,7 +72,7 @@ pub async fn checkout(
                         "idempotency row referenced missing order {existing_id}"
                     ))
                 })?;
-            return assemble_response(db, order).await;
+            return assemble_response(db, order, tx_witness::TxReleased::no_open_tx()).await;
         }
     }
 
@@ -134,14 +134,16 @@ pub async fn checkout(
         // is guaranteed to have already committed too (cart-clear and
         // idempotency-insert share that one transaction). Failing outright
         // here, before ever checking idempotency, breaks the "same key
-        // replay returns the first order" contract. `drop(tx)` first —
-        // mirrors the discipline at the same-status no-op check in
-        // `update_order_status` below
-        // (a pool query issued while still holding this tx's connection can
-        // self-deadlock under a low-connection pool) — then re-check
-        // idempotency before giving up.
+        // replay returns the first order" contract. Release the tx first —
+        // the replay's `assemble_response` runs pool queries, so the
+        // connection has to go back before it (the shared self-deadlock
+        // rationale now lives in `TxReleased`) — then re-check idempotency
+        // before giving up. Note the release only happens when a key is
+        // present: with `idempotency_key == None` the `if let` is skipped,
+        // `tx` is never moved, and the `Err` return below drop-rolls-it-back
+        // exactly as before.
         if let Some(key) = &idempotency_key {
-            drop(tx);
+            let released = tx_witness::TxReleased::release(tx);
             if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
                 let existing_order = repository::find_by_id(db, existing_id)
                     .await?
@@ -150,7 +152,7 @@ pub async fn checkout(
                             "idempotency row referenced missing order {existing_id}"
                         ))
                     })?;
-                return assemble_response(db, existing_order).await;
+                return assemble_response(db, existing_order, released).await;
             }
         }
         return Err(AppError::BadRequest("cart is empty".into()));
@@ -359,9 +361,13 @@ pub async fn checkout(
         match repository::insert_idempotency_tx(&mut tx, user_id, key, order.id).await {
             Ok(()) => {}
             Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-                // Concurrent retry beat us. Roll back and let the caller
-                // re-read the winning row.
-                drop(tx);
+                // Concurrent retry beat us. Release the tx first — the replay
+                // path's `assemble_response` runs pool queries (shared
+                // self-deadlock rationale in `TxReleased`) — then let the
+                // caller re-read the winning row. On the fall-through
+                // `Conflict` path `released` simply drops unused (the witness
+                // is a permission, not a `#[must_use]` obligation).
+                let released = tx_witness::TxReleased::release(tx);
                 if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
                     let existing_order = repository::find_by_id(db, existing_id)
                         .await?
@@ -370,7 +376,7 @@ pub async fn checkout(
                                 "idempotency row referenced missing order {existing_id}"
                             ))
                         })?;
-                    return assemble_response(db, existing_order).await;
+                    return assemble_response(db, existing_order, released).await;
                 }
                 return Err(AppError::Conflict("duplicate checkout".into()));
             }
@@ -398,7 +404,7 @@ pub async fn checkout(
     )
     .await?;
 
-    tx.commit().await?;
+    let released = tx_witness::TxReleased::commit(tx).await?;
 
     // 14. Inline notification — the user expects order confirmation
     //     regardless of whether Kafka is enabled, and even if the
@@ -406,7 +412,62 @@ pub async fn checkout(
     notify::order_placed(db, order.user_id, order.id, &order.order_number).await;
 
     // 15. Assemble the response (items + artifacts, looked up by order_id).
-    assemble_response(db, order).await
+    assemble_response(db, order, released).await
+}
+
+/// Self-deadlock discipline for `assemble_response`, lifted out of three
+/// cross-referencing comments into the type system. See `TxReleased`.
+///
+/// A private submodule on purpose: `TxReleased`'s only field is private, so
+/// one can be built solely from *inside this module*. Isolating the type here
+/// means the surrounding `service` functions — the very code this discipline
+/// governs — cannot hand-write `TxReleased(())` to skip the constructors; they
+/// must go through `release` / `commit` / `no_open_tx`. (Same private-field
+/// witness technique as `courses::seats`'s `SessionLock`.)
+mod tx_witness {
+    use sqlx::{Postgres, Transaction};
+
+    /// Proof that the checkout / status-update transaction has already been
+    /// released back to the pool — rolled back via `release` or committed via
+    /// `commit` — *before* `assemble_response` runs.
+    ///
+    /// `assemble_response` re-reads the order's items + artifacts through the
+    /// pool (`fetch_artifacts`). Issuing a pool query while a transaction
+    /// still holds its pooled connection self-deadlocks under a low-connection
+    /// pool: the query waits for a free connection, the only connection is not
+    /// freed until the transaction ends, and the transaction cannot end while
+    /// it is blocked on that query. `assemble_response` takes this witness *by
+    /// value*, so it cannot be reached without proof the tx is already gone —
+    /// the invariant now lives in the signature instead of in a comment every
+    /// caller has to remember.
+    ///
+    /// Deliberately not `#[must_use]`: the witness is *permission* to call
+    /// `assemble_response`, not an obligation to do anything with it — a path
+    /// that releases its tx and then returns an error (e.g. the unique-
+    /// violation branch falling through to a `Conflict`) legitimately drops it
+    /// unused.
+    ///
+    /// Honest residual seam: `no_open_tx` is a caller-attested assertion, not
+    /// a machine-checked fact. The two read-only callers (`checkout`'s
+    /// idempotency pre-check and `get_order`) never open a transaction, so
+    /// there is nothing to release; the witness there records "this path holds
+    /// no open tx" on the caller's word. `release` and `commit` consume a real
+    /// `Transaction`, so those two are machine-checked.
+    pub(super) struct TxReleased(());
+
+    impl TxReleased {
+        pub(super) fn release(tx: Transaction<'_, Postgres>) -> Self {
+            drop(tx);          // sqlx 對被 drop 的交易發 rollback,語意同原呼叫端
+            Self(())
+        }
+        pub(super) async fn commit(tx: Transaction<'_, Postgres>) -> Result<Self, sqlx::Error> {
+            tx.commit().await?;
+            Ok(Self(()))
+        }
+        pub(super) fn no_open_tx() -> Self {
+            Self(())
+        }
+    }
 }
 
 /// Fetch the enrolments/subscriptions a given order produced, mapped to
@@ -423,7 +484,18 @@ async fn fetch_artifacts(
 
 /// Build the full `OrderResponse` for an already-fetched order row: its
 /// items plus its artifacts, both looked up by `order.id`.
-async fn assemble_response(db: &PgPool, order: Order) -> Result<OrderResponse, AppError> {
+///
+/// The `_released` witness proves the caller's checkout/status transaction is
+/// already committed or rolled back before this runs: the item + artifact
+/// reads below go through the pool, and a still-open tx holding the pooled
+/// connection would self-deadlock a low-connection pool (see
+/// `tx_witness::TxReleased`). The value is unused at runtime — its work is
+/// done at the type level, by being impossible to obtain without releasing.
+async fn assemble_response(
+    db: &PgPool,
+    order: Order,
+    _released: tx_witness::TxReleased,
+) -> Result<OrderResponse, AppError> {
     let items = repository::find_items_by_order(db, order.id).await?;
     let (enrolments, subscriptions) = fetch_artifacts(db, order.id).await?;
     Ok(OrderResponse::assemble(order, items, enrolments, subscriptions))
@@ -441,7 +513,7 @@ pub async fn get_order(
     // Check ownership or admin
     auth.owns_or_admin(order.user_id, "not authorized to view this order")?;
 
-    assemble_response(db, order).await
+    assemble_response(db, order, tx_witness::TxReleased::no_open_tx()).await
 }
 
 pub async fn my_orders(
@@ -510,14 +582,11 @@ pub async fn update_order_status(
     // notification, no compensation — so a retried webhook/admin PATCH is an
     // *observable* idempotent no-op (the old path re-UPDATEd + re-queued the
     // outbox + re-notified on every same-status call; and re-running here
-    // would try to compensate a second time). `drop(tx)` FIRST, before
-    // `assemble_response`: that runs pool queries (`fetch_artifacts`), and
-    // issuing one while this tx still holds its pooled connection can
-    // self-deadlock under a low-connection pool — mirrors the discipline at
-    // the empty-cart idempotency replay in `checkout` above.
+    // would try to compensate a second time). Release the tx before
+    // `assemble_response` (shared self-deadlock rationale in `TxReleased`).
     if current.status.as_str() == target.as_str() {
-        drop(tx);
-        return assemble_response(db, current).await;
+        let released = tx_witness::TxReleased::release(tx);
+        return assemble_response(db, current, released).await;
     }
 
     if !current.status.can_transition_to(&target) {
@@ -554,7 +623,7 @@ pub async fn update_order_status(
     )
     .await?;
 
-    tx.commit().await?;
+    let released = tx_witness::TxReleased::commit(tx).await?;
 
     // Inline notification — every status change is user-visible and
     // shouldn't wait for the outbox dispatcher tick.
@@ -567,7 +636,7 @@ pub async fn update_order_status(
     )
     .await;
 
-    assemble_response(db, updated).await
+    assemble_response(db, updated, released).await
 }
 
 /// Undo a paid order's checkout side effects as part of moving it into a

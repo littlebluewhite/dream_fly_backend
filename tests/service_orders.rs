@@ -1592,3 +1592,113 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
     .unwrap();
     assert_eq!(refund_ledger, 2, "both directions reversed");
 }
+
+// ---------------------------------------------------------------------
+// W4 (C6): `TxReleased` witness — release/commit the tx BEFORE
+// `assemble_response` re-acquires from the pool.
+// ---------------------------------------------------------------------
+
+/// The `TxReleased` witness exists so `assemble_response` cannot re-acquire a
+/// pooled connection while the checkout/status transaction still holds one — a
+/// self-deadlock that only bites when connections are scarce. This pins the
+/// discipline on a pool with **exactly one** connection and a short acquire
+/// timeout: every order path must release or commit its tx before assembling
+/// the response, so each `assemble_response` re-acquire finds the lone
+/// connection free. A regression that assembled while still holding the tx
+/// would block on the empty pool and fail fast with `PoolTimedOut` (~2s)
+/// rather than hang the suite.
+///
+/// Three of the witness kinds are exercised directly: `commit` (checkout
+/// happy path + status transition), `release` (same-status no-op), and
+/// `no_open_tx` (the idempotency pre-check on same-key replay). Honest
+/// declaration: the other two `release` sites (empty-cart replay,
+/// unique-violation replay) are concurrency-race branches — guarded by the
+/// existing concurrent tests plus the witness type itself, not re-exercised
+/// here.
+///
+/// The hand-built pool is NOT owned by `#[sqlx::test]`, so it MUST be closed
+/// explicitly: dropping a pool doesn't guarantee the server-side connection is
+/// gone, and a lingering connection would block the throwaway database's
+/// teardown (sqlx-core 0.9 pool docs).
+#[sqlx::test]
+async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
+    // Seed through the harness-provided pool (many connections) so setup never
+    // contends with the single-connection pool under test.
+    let user = common::seed_member(&db, "single-conn-buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "single-conn-prod", 1500, Some(5)).await;
+    common::add_to_cart(&db, user, product, 2).await;
+
+    // A one-connection pool onto the SAME throwaway test database, with a short
+    // acquire timeout so a self-deadlock surfaces as PoolTimedOut in ~2s
+    // instead of hanging. (sqlx 0.9: derive the connect options from the
+    // harness pool and rebuild with max_connections(1).)
+    let connect_opts = db.connect_options().as_ref().clone();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_with(connect_opts)
+        .await
+        .expect("build single-connection pool on the test database");
+
+    let server = common::test_server_config();
+    let key = Some("single-conn-key".to_string());
+
+    // 1. Checkout happy path: commit → assemble. The tx commits (freeing the
+    //    lone connection) before `assemble_response` re-reads items/artifacts.
+    let first = service::checkout(
+        &pool,
+        user,
+        key.clone(),
+        CheckoutRequest::default(),
+        None,
+        &server,
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("checkout must complete on a 1-connection pool (commit→assemble)");
+    assert_eq!(first.status, "paid");
+    assert_eq!(first.items.len(), 1);
+
+    // 2. Same-status no-op: release → assemble. PATCH paid→paid drops the tx
+    //    early, then assembles; on a 1-conn pool this only works if the tx was
+    //    released first.
+    let noop = service::update_order_status(&pool, first.id, "paid", None)
+        .await
+        .expect("same-status no-op must complete on a 1-connection pool (release→assemble)");
+    assert_eq!(noop.status, "paid");
+    assert_eq!(noop.order_number, first.order_number);
+
+    // 3. Status transition: commit → assemble. paid→processing compensates
+    //    nothing, updates, commits, then assembles.
+    let processing = service::update_order_status(&pool, first.id, "processing", None)
+        .await
+        .expect("status transition must complete on a 1-connection pool (commit→assemble)");
+    assert_eq!(processing.status, "processing");
+
+    // 4. Same-key replay: the idempotency pre-check returns the prior order
+    //    without ever opening a tx (`no_open_tx`) — assemble runs with the lone
+    //    connection free.
+    let replay = service::checkout(
+        &pool,
+        user,
+        key,
+        CheckoutRequest::default(),
+        None,
+        &server,
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("same-key replay must complete on a 1-connection pool (no_open_tx pre-check)");
+    assert_eq!(
+        replay.order_number, first.order_number,
+        "replay must return the original order, not a duplicate"
+    );
+
+    // Exactly one order despite checkout + replay.
+    let order_count = common::order_count(&db, user).await;
+    assert_eq!(order_count, 1, "replay must not create a second order");
+
+    // The hand-built pool is not managed by `#[sqlx::test]`; close it so no
+    // server-side connection lingers to block the test database teardown.
+    pool.close().await;
+}
