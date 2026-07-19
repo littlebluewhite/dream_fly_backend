@@ -211,6 +211,7 @@ pub async fn google_auth(
     redis: &mut redis::aio::ConnectionManager,
     config: &AppConfig,
     http_client: &reqwest::Client,
+    jwks_cache: &google_oauth::JwksCache,
     req: GoogleAuthRequest,
     correlation_id: Option<String>,
 ) -> Result<AuthResponse, AppError> {
@@ -249,6 +250,7 @@ pub async fn google_auth(
     //    where the token is not fetched directly from Google, signature
     //    verification is the only thing standing between us and forgery.
     let claims = google_oauth::verify_google_id_token(
+        jwks_cache,
         http_client,
         &token_data.id_token,
         &config.auth.google_client_id,

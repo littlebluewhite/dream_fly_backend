@@ -16,6 +16,7 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::{Clock, SystemClock};
 use dream_fly_backend::utils::email::{EmailClient, EmailSender};
+use dream_fly_backend::utils::google_oauth::JwksCache;
 use dream_fly_backend::utils::sms::{SmsClient, SmsSender};
 
 /// Bound on the total time we'll wait for background tasks and the DB
@@ -265,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
         email_client,
         sms_client,
         clock,
+        jwks_cache: Arc::new(JwksCache::new()),
     };
 
     // Background task: periodically delete expired/revoked refresh tokens

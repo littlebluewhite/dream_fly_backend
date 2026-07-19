@@ -279,13 +279,17 @@ const GOOGLE_TEST_JWK_E: &str = "AQAB";
 
 /// Sign a Google-shaped id_token with the fixed test RSA key above.
 ///
-/// `kid` should be unique per test: `google_oauth::verify_google_id_token`'s
-/// JWKS cache is a single process-wide slot, not keyed by URL, so two tests
-/// in this binary sharing a `kid` could observe each other's cached JWKS. A
-/// distinct `kid` per test guarantees a same-request refetch on a miss (the
-/// same fallback path production takes on real Google key rotation) instead
-/// of silently reusing another test's key — deterministic regardless of
-/// `cargo test`'s execution order/parallelism.
+/// Each test still passes a distinct `kid`. As of W6 the JWKS cache is no
+/// longer a process-wide static: every `spawn_test_app` builds its own
+/// `Arc<JwksCache>` inside `AppState`, so two tests can never observe each
+/// other's cached keys — a shared `kid` would no longer be *unsafe*. We keep
+/// the kids distinct anyway, because sharing one would make these tests a
+/// vacuous proof: a same-`kid` first lookup is served straight from the mocked
+/// JWKS under both the old process-global cache and the new per-app cache, so
+/// it distinguishes nothing. Distinct kids keep each test's JWKS lookup its
+/// own. Dedicated coverage of the kid-miss force-refresh fallback (which the
+/// per-app cache no longer hits incidentally) lives in
+/// `google_auth_refetches_jwks_on_kid_rotation` below.
 fn sign_google_test_id_token(sub: &str, email: &str, aud: &str, kid: &str) -> String {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
@@ -451,6 +455,104 @@ async fn google_auth_linking_existing_account_does_not_resend_welcome(db: PgPool
     assert_eq!(
         welcome_count_after, 1,
         "deliberate asymmetry: linking Google to an existing password account must not resend the welcome notification"
+    );
+}
+
+/// W6 regression: with the JWKS cache moved from a process-global static into
+/// per-app `AppState`, a freshly spawned app starts with an empty cache and its
+/// first Google login populates it. The kid-miss force-refresh fallback — the
+/// path production relies on when Google rotates signing keys between two
+/// logins — therefore needs its own explicit coverage, because it is no longer
+/// incidentally exercised by cross-test cache reuse.
+///
+/// Two phases against ONE app (one `Arc<JwksCache>`) and ONE wiremock server:
+///   1. kid A signs the id_token and `/certs` serves kid A: the login succeeds
+///      and caches kid A's JWKS.
+///   2. `upstream.reset()` drops BOTH mocks (token + certs share the one
+///      server), so we re-mount BOTH — `/oauth/token` now returns a
+///      kid-B-signed token and `/certs` now serves ONLY kid B. A JWKS-only
+///      remount would 404 the token exchange before we ever reached the kid
+///      miss, which is the trap this test is shaped to avoid.
+///
+/// The cached kid A is still within TTL, so the first JWKS lookup misses kid B;
+/// only the force-refresh re-fetch can find it. If that fallback were removed,
+/// phase 2 would 400 — so a green phase 2 pins the kid-miss refresh path.
+#[sqlx::test]
+async fn google_auth_refetches_jwks_on_kid_rotation(db: PgPool) {
+    let kid_a = "test-kid-rotation-a";
+    let kid_b = "test-kid-rotation-b";
+
+    let upstream = MockServer::start().await;
+
+    // Phase 1: kid A end-to-end — token exchange + JWKS both serve kid A.
+    let token_a = sign_google_test_id_token(
+        "google-sub-rotation",
+        "rotation@example.com",
+        "test-client",
+        kid_a,
+    );
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id_token": token_a })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/certs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(google_test_jwks_body(kid_a)))
+        .mount(&upstream)
+        .await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.auth.google_token_url = format!("{}/oauth/token", upstream.uri());
+        cfg.auth.google_jwks_url = format!("{}/certs", upstream.uri());
+    })
+    .await;
+
+    let resp1 = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp1.status_code(), 200, "phase 1 body={}", resp1.text());
+
+    // Phase 2: Google "rotated" its signing key to kid B. reset() tears down
+    // BOTH mocks (they share `upstream`), so re-mount BOTH.
+    upstream.reset().await;
+
+    let token_b = sign_google_test_id_token(
+        "google-sub-rotation",
+        "rotation@example.com",
+        "test-client",
+        kid_b,
+    );
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id_token": token_b })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/certs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(google_test_jwks_body(kid_b)))
+        .mount(&upstream)
+        .await;
+
+    // The per-app cache still holds kid A within TTL, so verification must fall
+    // through the kid miss to a forced JWKS re-fetch to discover kid B.
+    let resp2 = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(
+        resp2.status_code(),
+        200,
+        "phase 2 must succeed via the kid-miss force-refresh; body={}",
+        resp2.text()
+    );
+
+    // Meaningful success: a fresh access token comes back for the same user.
+    let body: serde_json::Value = resp2.json();
+    assert!(
+        !body["access_token"].as_str().expect("access_token").is_empty(),
+        "phase 2 should return a fresh access token"
     );
 }
 

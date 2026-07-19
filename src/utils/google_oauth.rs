@@ -9,12 +9,10 @@
 //! This module fetches Google's JWKS, caches it for an hour, and verifies the
 //! JWT's RS256 signature plus issuer/audience/expiry claims. Fail-closed.
 
-use std::sync::Arc;
-
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::RwLock;
 
 use crate::error::AppError;
 
@@ -55,18 +53,26 @@ struct Jwks {
     keys: Vec<Jwk>,
 }
 
-type JwksCacheEntry = Option<(Jwks, DateTime<Utc>)>;
-type JwksCache = Arc<RwLock<JwksCacheEntry>>;
+/// Per-app JWKS cache: the fetched key set plus its fetch time. Owned by
+/// `AppState` rather than a process-wide static, so each app instance —
+/// including every test — carries its own cache with a naturally isolated
+/// lifecycle. Storage only; the refresh semantics (TTL read-path, single
+/// kid-miss force-refresh, no single-flight, last-writer-wins) live in
+/// `get_jwks` and are unchanged.
+pub struct JwksCache {
+    entry: RwLock<Option<(Jwks, DateTime<Utc>)>>,
+}
 
-/// Process-wide JWKS cache. `OnceCell` lazily builds the `RwLock` the first
-/// time a Google login hits the server, after which the cache is shared.
-static JWKS_CACHE: OnceCell<JwksCache> = OnceCell::const_new();
+impl JwksCache {
+    pub fn new() -> Self {
+        Self { entry: RwLock::new(None) }
+    }
+}
 
-async fn cache() -> JwksCache {
-    JWKS_CACHE
-        .get_or_init(|| async { Arc::new(RwLock::new(None)) })
-        .await
-        .clone()
+impl Default for JwksCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 async fn fetch_jwks(jwks_url: &str, http: &reqwest::Client) -> Result<Jwks, AppError> {
@@ -82,11 +88,12 @@ async fn fetch_jwks(jwks_url: &str, http: &reqwest::Client) -> Result<Jwks, AppE
 }
 
 async fn get_jwks(
+    cache: &JwksCache,
     jwks_url: &str,
     http: &reqwest::Client,
     force_refresh: bool,
 ) -> Result<Jwks, AppError> {
-    let slot = cache().await;
+    let slot = &cache.entry;
 
     if !force_refresh {
         let guard = slot.read().await;
@@ -116,6 +123,7 @@ async fn get_jwks(
 /// `jwks_url` is configurable (`auth.google_jwks_url`) so integration tests
 /// can redirect it to a `wiremock` server, mirroring `google_token_url`.
 pub async fn verify_google_id_token(
+    cache: &JwksCache,
     http: &reqwest::Client,
     id_token: &str,
     expected_audience: &str,
@@ -136,13 +144,13 @@ pub async fn verify_google_id_token(
 
     // First pass: look up in cached JWKS. If Google rotated keys and we
     // don't know about the new kid yet, force a refresh and try once more.
-    let jwks = get_jwks(jwks_url, http, false).await?;
+    let jwks = get_jwks(cache, jwks_url, http, false).await?;
     let matched = jwks.keys.iter().find(|k| k.kid == kid).cloned();
 
     let key = match matched {
         Some(k) => k,
         None => {
-            let refreshed = get_jwks(jwks_url, http, true).await?;
+            let refreshed = get_jwks(cache, jwks_url, http, true).await?;
             refreshed
                 .keys
                 .into_iter()
@@ -189,7 +197,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_garbage_token_header() {
         // `decode_header` fails immediately → BadRequest, no network call.
+        let cache = JwksCache::new();
         let err = verify_google_id_token(
+            &cache,
             &stub_client(),
             "not-a-jwt",
             "aud",
@@ -223,7 +233,9 @@ mod tests {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"1","iss":"x","aud":"y","exp":9999999999}"#);
         let forged = format!("{header}.{payload}.");
 
+        let cache = JwksCache::new();
         let err = verify_google_id_token(
+            &cache,
             &stub_client(),
             &forged,
             "y",
@@ -253,7 +265,9 @@ mod tests {
         // Signature doesn't matter — we never get that far.
         let forged = format!("{header}.{payload}.sig");
 
+        let cache = JwksCache::new();
         let err = verify_google_id_token(
+            &cache,
             &stub_client(),
             &forged,
             "y",

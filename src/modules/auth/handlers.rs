@@ -46,6 +46,7 @@ pub async fn google_auth(
         &mut redis,
         &state.config,
         &state.http_client,
+        &state.jwks_cache,
         req,
         request_id.0,
     )

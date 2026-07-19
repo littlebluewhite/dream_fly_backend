@@ -40,6 +40,7 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
+use dream_fly_backend::utils::google_oauth::JwksCache;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::sms::SmsSender;
 
@@ -322,6 +323,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         email_client: email_state,
         sms_client: sms_state,
         clock: clock_state,
+        jwks_cache: Arc::new(JwksCache::new()),
     };
 
     let router = startup::build_router(state);

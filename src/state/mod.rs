@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use crate::config::AppConfig;
 use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
+use crate::utils::google_oauth::JwksCache;
 use crate::utils::sms::SmsSender;
 
 #[derive(Clone)]
@@ -27,4 +28,10 @@ pub struct AppState {
     /// trait object so integration tests can pin or advance it via
     /// `MockClock` instead of racing the real system clock.
     pub clock: Arc<dyn Clock>,
+    /// Per-app cache of Google's JWKS for id_token signature verification.
+    /// Concrete type (single implementation): each app instance — including
+    /// every test — owns its own cache, so the previous process-global slot's
+    /// cross-instance sharing is gone. Test substitution is per-app: a fresh
+    /// cache plus the `google_jwks_url` config seam pointed at wiremock.
+    pub jwks_cache: Arc<JwksCache>,
 }
