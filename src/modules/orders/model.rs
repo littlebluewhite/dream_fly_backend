@@ -44,12 +44,19 @@ impl OrderStatus {
         }
     }
 
-    /// 計入營收的狀態(消費 [`REVENUE_STATUSES`] 而非另建一份 match,避免兩
-    /// 份清單漂移)。退款/取消補償(`refund::compensation_required`,Step
-    /// 10d)用它判斷「這筆訂單的*現況*算不算已成交」——只有從一個計入營收的
-    /// 狀態轉往終態,才有東西需要撤銷。
+    /// 計入營收的狀態。本謂詞是窮盡 match(無 `_` arm)——新增
+    /// [`OrderStatus`] 變體時編譯器在此強迫決定算不算營收,不會再靜默漏
+    /// 判。[`REVENUE_STATUSES`] 是 SQL 綁定用的攣生陣列(products/reports
+    /// 的查詢綁點),不是本函式讀的來源;兩者的一致性改由交叉測試
+    /// `revenue_predicate_matches_revenue_statuses_array` 錨定。退款/取消
+    /// 補償(`refund::compensation_required`,Step 10d)用它判斷「這筆訂單
+    /// 的*現況*算不算已成交」——只有從一個計入營收的狀態轉往終態,才有東
+    /// 西需要撤銷。
     pub fn is_revenue(&self) -> bool {
-        REVENUE_STATUSES.contains(&self.as_str())
+        match self {
+            Self::Paid | Self::Processing | Self::Completed => true,
+            Self::Pending | Self::Cancelled | Self::Refunded => false,
+        }
     }
 }
 
@@ -69,9 +76,12 @@ impl std::str::FromStr for OrderStatus {
     }
 }
 
-/// 計入營收的訂單狀態(reports 的營收彙總用)。「哪些狀態算營收」的單一
-/// 歸屬點——改這裡,報表跟著變;`products::repository::find_sold_counts`
-/// (售出件數用)直接綁定本常數一併跟著變,不再是另一份手抄的攣生清單。
+/// 計入營收的訂單狀態,SQL 綁定用(reports 的營收彙總查詢、
+/// `products::repository::find_sold_counts` 售出件數查詢皆直接綁定本常
+/// 數)。謂詞 owner 已是 [`OrderStatus::is_revenue`](窮盡 match)——本陣
+/// 列是它的 SQL 綁定攣生面,兩者由交叉測試
+/// `revenue_predicate_matches_revenue_statuses_array` 錨定,不是本陣列反
+/// 向定義 is_revenue。
 pub const REVENUE_STATUSES: [&str; 3] = ["paid", "processing", "completed"];
 
 /// 付款方式值域(應用層,非 DB enum——`orders.payment_method` 只是
@@ -180,6 +190,19 @@ pub struct OrderSummaryRow {
 mod tests {
     use super::*;
 
+    /// 手列全部 6 個變體(repo 無 EnumIter,不為此加依賴)。固定長度的陣列
+    /// 型別本身擋不住「新變體忘了加進來」——真正的防線是下面
+    /// `revenue_predicate_matches_revenue_statuses_array` 內的窮盡 match
+    /// tripwire,新增變體時那裡先編譯錯誤,把人押回這裡補上一行。
+    const ALL_STATUSES: [OrderStatus; 6] = [
+        OrderStatus::Pending,
+        OrderStatus::Paid,
+        OrderStatus::Processing,
+        OrderStatus::Completed,
+        OrderStatus::Cancelled,
+        OrderStatus::Refunded,
+    ];
+
     #[test]
     fn can_transition_pending_to_paid_is_legal() {
         assert!(OrderStatus::Pending.can_transition_to(&OrderStatus::Paid));
@@ -203,19 +226,46 @@ mod tests {
     fn can_transition_same_state_is_legal_for_every_status() {
         // Idempotent no-op: a retried webhook/admin action re-applying the
         // current status must not 422 — covers every variant, not just one.
-        for status in [
-            OrderStatus::Pending,
-            OrderStatus::Paid,
-            OrderStatus::Processing,
-            OrderStatus::Completed,
-            OrderStatus::Cancelled,
-            OrderStatus::Refunded,
-        ] {
+        for status in ALL_STATUSES {
             let same = status.clone();
             assert!(
                 status.can_transition_to(&same),
                 "{status:?} -> itself should be legal"
             );
         }
+    }
+
+    #[test]
+    fn revenue_predicate_matches_revenue_statuses_array() {
+        // 交叉錨定 is_revenue()(窮盡 match,真正的謂詞 owner)與
+        // REVENUE_STATUSES(SQL 綁定攣生面)——逐變體相等 + 長度相等,才是
+        // 真正的集合相等,不只是「看起來一致」。
+        for status in ALL_STATUSES {
+            // Tripwire:窮盡 match、無 `_` arm。新增 OrderStatus 變體時本
+            // 行編譯錯誤——固定長度的 ALL_STATUSES 本身擋不住新變體被漏
+            // 列,靠這裡把人押回本 test mod。
+            match status {
+                OrderStatus::Pending
+                | OrderStatus::Paid
+                | OrderStatus::Processing
+                | OrderStatus::Completed
+                | OrderStatus::Cancelled
+                | OrderStatus::Refunded => {}
+            }
+            assert_eq!(
+                status.is_revenue(),
+                REVENUE_STATUSES.contains(&status.as_str()),
+                "{status:?}: is_revenue() and REVENUE_STATUSES disagree"
+            );
+        }
+        // 長度斷言:逐變體比對防不了 REVENUE_STATUSES 裡混進重複或不對應
+        // 任何變體的字串(這類元素不會讓上面任何一次比對失敗)——兩邊集合
+        // 大小相等,才真正排除這個殘餘可能性。
+        let revenue_variant_count = ALL_STATUSES.into_iter().filter(|s| s.is_revenue()).count();
+        assert_eq!(
+            revenue_variant_count,
+            REVENUE_STATUSES.len(),
+            "REVENUE_STATUSES length should equal the number of is_revenue()==true variants"
+        );
     }
 }

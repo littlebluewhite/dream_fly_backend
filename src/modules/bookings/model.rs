@@ -56,3 +56,44 @@ pub struct Booking {
 /// 場租營收」的單一歸屬點——改這裡,報表跟著變。與 `orders::model::
 /// REVENUE_STATUSES` 是不同狀態機的各自口徑,刻意不共用。
 pub const VENUE_REVENUE_STATUSES: [&str; 2] = ["confirmed", "completed"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn venue_revenue_statuses_track_booking_status_variants() {
+        // 手列全部 5 個變體(repo 無 EnumIter,不為此加依賴)。
+        let all_statuses = [
+            BookingStatus::Pending,
+            BookingStatus::Confirmed,
+            BookingStatus::Cancelled,
+            BookingStatus::Completed,
+            BookingStatus::NoShow,
+        ];
+        for status in all_statuses {
+            // Tripwire:窮盡 match、無 `_` arm。新增 BookingStatus 變體時
+            // 本行編譯錯誤,擋住上面手列的 5 變體清單悄悄過期(同
+            // orders::model 的 ALL_STATUSES 手法)。
+            match status {
+                BookingStatus::Pending
+                | BookingStatus::Confirmed
+                | BookingStatus::Cancelled
+                | BookingStatus::Completed
+                | BookingStatus::NoShow => {}
+            }
+            // 每個常數字串都必須對應到某個變體的 as_str(),且該集合恰為
+            // Confirmed/Completed——本系統沒有 is_venue_revenue() 謂詞,
+            // 這裡直接與字面上的 Confirmed|Completed 比對。
+            assert_eq!(
+                VENUE_REVENUE_STATUSES.contains(&status.as_str()),
+                matches!(status, BookingStatus::Confirmed | BookingStatus::Completed),
+                "{status:?}: VENUE_REVENUE_STATUSES membership should be exactly Confirmed|Completed"
+            );
+        }
+        // 長度斷言:逐變體比對防不了 VENUE_REVENUE_STATUSES 裡混進重複或
+        // 不對應任何變體的字串——兩邊集合大小相等,才真正排除這個殘餘可
+        // 能性。
+        assert_eq!(VENUE_REVENUE_STATUSES.len(), 2);
+    }
+}

@@ -26,7 +26,7 @@ _Avoid_: notification, message
 _Avoid_: 分派/dispatch(那是動作,這裡指切出來的計畫結構)、鎖序/排序(不在此純函式,歸拿寫鎖的深函式)
 
 **營收狀態集(Revenue Statuses)**:
-`orders::model::REVENUE_STATUSES`;products 的「paid-class」售出計數(`find_sold_counts`)直接消費同一常數,不再是另一份攣生清單。
+謂詞 owner 是 `OrderStatus::is_revenue`(窮盡 match),`REVENUE_STATUSES` 是 SQL 綁定攣生面(products/reports 綁點不變),兩者由交叉測試錨定。
 
 **留存(Retention)**:
 `GET /reports/admin` 的 `retention` 段——近 6 個 studio 月的出席 cohort:會員某月有 ≥1 筆 `present` 出勤記錄即該月「活躍」;首次活躍月計入 `new_count`,此後再活躍計入 `returning_count`;`rate` = 上月與本月活躍會員的交集人數 ÷ 上月活躍人數,上月為空集合時為 `null`(undefined,非 0)。量的是「有沒有回來上課」,與 `subscriptions` 的續買/續卡(entitlement 續期,見 ADR-0003)是不同概念。
