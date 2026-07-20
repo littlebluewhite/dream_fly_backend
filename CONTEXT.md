@@ -44,6 +44,10 @@ _Avoid_: 包場、分校營收/campusRevenue(不存在此維度)、訂場(那是
 `BookingStatus::occupies_seat` 是「這筆 booking 佔不佔一個座位」謂詞的單一 owner;`time_slots.booked` 是它的反正規化讀取快取(runtime 由 increment/decrement 協定維護、seed 消費同一謂詞)。
 _Avoid_: 把課程「座位(Seats)」詞條與此混為一談(不同產品線)
 
+**給點(Point Grant)**:
+`points::service::apply_delta_tx` 是「使用者點數餘額變動且同時落一列 `point_ledger`」的唯一路徑——`users.points_balance` 不接受業務端直寫(runtime 由此函式交易內的 UPDATE + INSERT 協定維護、seed 消費同一 owner:`upsert_user`/`upsert_seed_member` 在同一交易內以 `PointReason::AdminAdjust` 呼叫,比照 `occupies_seat` 的 runtime/seed 共用模式)。fixtures 的 `set_points_balance`(`tests/common/fixtures.rs`)是記錄在案的測試 harness bypass——直寫 `points_balance` 略過 ledger,只用於測試佈局階段擺出起始餘額,不是業務路徑,不受此 owner 約束。
+_Avoid_: 把 `set_points_balance` 當成業務可用的授點手段(它是測試專用的佈局捷徑)、把 `apply_delta_tx`「不 commit」誤讀成「不寫 ledger」(它一定寫 ledger,只是不 commit 交易,由呼叫端負責)
+
 **試上預約(Trial Inquiry)**:
 `contact_inquiries` 表 `inquiry_type = 'trial'` 的列——試上(trial class)預約走既有的洽詢資料表,不是獨立的預約表,結構化欄位(類別/學員年齡/偏好日期時段/家長姓名電話/學員姓名/備註)存進 `metadata` JSONB,後端不逐欄驗證。與「場租(Venue Rental)」的 `bookings` 是兩張完全不同的表,不要混為一談——前者是「想試上一堂課」的意向登記,後者是「已確定要用某個場地時段」的預訂。
 _Avoid_: 試聽(啦啦/體操課程用語是「上課」不是「聽課」)、trial booking(容易被誤會是 `bookings` 表的一筆列)、試聽預約

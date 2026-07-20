@@ -21,6 +21,15 @@
 //! attendance / venue-rental slots+bookings / inquiries) is **deterministic**:
 //! every value derives from fixed index formulas over the run date — no
 //! randomness — so re-running on the same day produces the identical set.
+//!
+//! `points_balance` is granted through `points::service::apply_delta_tx`
+//! (`PointReason::AdminAdjust`) in the same transaction as the user INSERT,
+//! never written to the column directly, so `points_balance ==
+//! SUM(point_ledger.delta)` holds for every seeded user — but only on a
+//! freshly migrated database: rows left over from an older run of this seed
+//! (which wrote the column directly, with no backing ledger) are not
+//! backfilled, an accepted legacy shape in the same spirit as the direct
+//! order-insert block's `points_earned` (`insert_order_if_absent`).
 
 use std::collections::HashMap;
 
@@ -33,6 +42,8 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::AppConfig;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
+use dream_fly_backend::modules::points::model::PointReason;
+use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
 use dream_fly_backend::utils::password;
 
@@ -47,7 +58,13 @@ fn vs(items: &[&str]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Insert a user (idempotent on `email`) and return its id whether the row
-/// was just inserted or already existed.
+/// was just inserted or already existed. The INSERT always writes
+/// `points_balance = 0`; when the row is newly inserted (not a conflict)
+/// and `points_balance > 0`, the target balance is granted via
+/// `points_service::apply_delta_tx` (`PointReason::AdminAdjust`) in the same
+/// transaction as the INSERT — user row and `point_ledger` grant land
+/// atomically (a failed grant rolls back the insert too), and a conflict
+/// (already exists) never grants, so re-runs stay idempotent.
 async fn upsert_user(
     db: &PgPool,
     email: &str,
@@ -59,27 +76,54 @@ async fn upsert_user(
         .await
         .map_err(|e| anyhow::anyhow!("hashing password for {email}: {e}"))?;
 
-    sqlx::query(
+    let mut tx = db
+        .begin()
+        .await
+        .with_context(|| format!("begin tx for user {email}"))?;
+
+    let inserted: Option<Uuid> = sqlx::query_scalar(
         r#"
         INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, points_balance, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, $5, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, false, true, 0, NOW(), NOW())
         ON CONFLICT DO NOTHING
+        RETURNING id
         "#,
     )
     .bind(Uuid::now_v7())
     .bind(email)
     .bind(name)
     .bind(&hash)
-    .bind(points_balance)
-    .execute(db)
+    .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert user {email}"))?;
 
-    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-        .bind(email)
-        .fetch_one(db)
+    let user_id = match inserted {
+        Some(id) => {
+            if points_balance > 0 {
+                points_service::apply_delta_tx(
+                    &mut tx,
+                    id,
+                    points_balance,
+                    PointReason::AdminAdjust,
+                    None,
+                )
+                .await
+                .with_context(|| format!("grant seed points to user {email}"))?;
+            }
+            id
+        }
+        None => sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_one(&mut *tx)
+            .await
+            .with_context(|| format!("fetch id for user {email}"))?,
+    };
+
+    tx.commit()
         .await
-        .with_context(|| format!("fetch id for user {email}"))
+        .with_context(|| format!("commit tx for user {email}"))?;
+
+    Ok(user_id)
 }
 
 /// Attach a role to a user (idempotent — same ON CONFLICT DO NOTHING pattern
@@ -454,8 +498,12 @@ fn at_utc(date: NaiveDate, hour: u32) -> DateTime<Utc> {
 /// Insert a reporting-dataset member (idempotent on `email`) and return its
 /// id. Unlike `upsert_user` this takes a precomputed hash (all 24 members
 /// share one dev password — hashing argon2 once instead of 24× per run) and
-/// writes `birth_date` + `points_balance`, which back the age-bracket and
-/// points-tier report buckets.
+/// writes `birth_date`, which backs the age-bracket report bucket. Like
+/// `upsert_user`, `points_balance` is granted (not written directly) via
+/// `points_service::apply_delta_tx` in the same transaction as the INSERT,
+/// only when the row is newly inserted — see `upsert_user`'s doc comment for
+/// the atomicity/idempotency rationale; the points-tier report bucket reads
+/// the granted balance the same as before.
 async fn upsert_seed_member(
     db: &PgPool,
     email: &str,
@@ -464,28 +512,55 @@ async fn upsert_seed_member(
     points_balance: i64,
     birth_date: NaiveDate,
 ) -> anyhow::Result<Uuid> {
-    sqlx::query(
+    let mut tx = db
+        .begin()
+        .await
+        .with_context(|| format!("begin tx for seed member {email}"))?;
+
+    let inserted: Option<Uuid> = sqlx::query_scalar(
         r#"
         INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, points_balance, birth_date, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, $5, $6, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, false, true, 0, $5, NOW(), NOW())
         ON CONFLICT DO NOTHING
+        RETURNING id
         "#,
     )
     .bind(Uuid::now_v7())
     .bind(email)
     .bind(name)
     .bind(password_hash)
-    .bind(points_balance)
     .bind(birth_date)
-    .execute(db)
+    .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert seed member {email}"))?;
 
-    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-        .bind(email)
-        .fetch_one(db)
+    let user_id = match inserted {
+        Some(id) => {
+            if points_balance > 0 {
+                points_service::apply_delta_tx(
+                    &mut tx,
+                    id,
+                    points_balance,
+                    PointReason::AdminAdjust,
+                    None,
+                )
+                .await
+                .with_context(|| format!("grant seed points to seed member {email}"))?;
+            }
+            id
+        }
+        None => sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_one(&mut *tx)
+            .await
+            .with_context(|| format!("fetch id for seed member {email}"))?,
+    };
+
+    tx.commit()
         .await
-        .with_context(|| format!("fetch id for seed member {email}"))
+        .with_context(|| format!("commit tx for seed member {email}"))?;
+
+    Ok(user_id)
 }
 
 /// Fetch a product's id by slug — mirrors `course_id_by_slug`, used to build
