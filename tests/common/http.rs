@@ -129,7 +129,8 @@ pub fn test_app_config<F: FnOnce(&mut AppConfig)>(adjust: F) -> AppConfig {
 
 /// A fully-wired in-process Axum server backed by the given `PgPool`.
 /// Constructed by [`spawn_test_app`] / [`spawn_test_app_with`]. Holds the
-/// mock email & sms clients so tests can assert on outbound messages.
+/// mock email client so tests can assert on outbound password-reset messages;
+/// SMS assertions go through wiremock (see tests/common/twilio.rs).
 pub struct TestApp {
     pub server: TestServer,
     pub db: PgPool,

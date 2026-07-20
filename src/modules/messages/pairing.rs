@@ -9,7 +9,7 @@
 //! (`permissions_repository::find_role_names_by_user` for the target's
 //! roles; the caller's roles are already on the loaded `AuthUser`, no query
 //! needed), and `service::create_conversation` still owns the get-or-create
-//! step and its unique-violation race handling (`:60-85`) — that's DB
+//! step and its unique-violation race handling — that's DB
 //! orchestration, not a pairing decision.
 //!
 //! **Self-rejection is deliberately checked in *two* places.**

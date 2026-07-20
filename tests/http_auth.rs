@@ -619,8 +619,8 @@ async fn otp_send_authenticated_records_sms(db: PgPool) {
     assert!(ttl > 0, "expected otp_rate TTL > 0, got {ttl}");
 }
 
-/// Exercises the real non-2xx branch in `SmsClient::send_sms`
-/// (`src/utils/sms.rs:73-86`) — unreachable through the previous mock
+/// Exercises the real non-2xx branch in `send_sms` (`src/utils/sms.rs`)
+/// — unreachable through the previous mock
 /// seam, whose `fail_next()` switch short-circuited before any HTTP
 /// request was made.
 #[sqlx::test]
