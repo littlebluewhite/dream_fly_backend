@@ -17,7 +17,7 @@ use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::{Clock, SystemClock};
 use dream_fly_backend::utils::email::{EmailClient, EmailSender};
 use dream_fly_backend::utils::google_oauth::JwksCache;
-use dream_fly_backend::utils::sms::{SmsClient, SmsSender};
+use dream_fly_backend::utils::sms::SmsClient;
 
 /// Bound on the total time we'll wait for background tasks and the DB
 /// pool to finish during graceful shutdown. Container orchestrators
@@ -245,9 +245,10 @@ async fn main() -> anyhow::Result<()> {
             .context("failed to build email client — check APP__EMAIL__* settings")?,
     );
 
-    // Same trick for Twilio — reuses the HTTP connection pool.
-    let sms_client: Arc<dyn SmsSender> =
-        Arc::new(SmsClient::new(&config.sms, http_client.clone()));
+    // Twilio client — reuses the HTTP connection pool. Concrete type, not
+    // trait-erased like email: test substitution goes through
+    // `SmsConfig::twilio_base_url` instead (see `AppState::sms_client`).
+    let sms_client: Arc<SmsClient> = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
 
     // Wall-clock source for handler-sampled `now` — production always reads
     // the real system clock; tests substitute `MockClock`.

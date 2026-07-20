@@ -11,7 +11,7 @@
 //! argument.
 //!
 //! Synchronous trait, not `async_trait`: reading the clock is not I/O
-//! (unlike `EmailSender`/`SmsSender`, which perform real network sends and
+//! (unlike `EmailSender`/`SmsClient`, which perform real network sends and
 //! so need `async fn`).
 //!
 //! This seam does **not** cover every wall-clock read in the codebase.

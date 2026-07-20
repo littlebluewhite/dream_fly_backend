@@ -12,9 +12,11 @@
 //!   rate-limit counters, with a per-test prefix flush
 //! - wraps the real production router (`startup::build_router`) so every
 //!   test exercises the entire middleware stack + extractors + handlers
-//! - exposes [`MockEmailClient`] / [`MockSmsClient`] via `app.email` /
-//!   `app.sms` so tests can assert on outbound messages without hitting
-//!   real SMTP / Twilio
+//! - exposes [`MockEmailClient`] via `app.email` so tests can assert on
+//!   outbound email without hitting real SMTP. Outbound SMS has no
+//!   equivalent recorder: tests point `SmsConfig::twilio_base_url` at a
+//!   `wiremock` server directly (see `common::twilio`), the same seam used
+//!   for the Google token/JWKS URLs below
 //!
 //! The harness does NOT mock the database — tests rely on the standard
 //! `#[sqlx::test]` per-test fresh-database isolation, passing the supplied
@@ -42,9 +44,9 @@ use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::google_oauth::JwksCache;
 use dream_fly_backend::utils::password;
-use dream_fly_backend::utils::sms::SmsSender;
+use dream_fly_backend::utils::sms::SmsClient;
 
-use super::mocks::{MockClock, MockEmailClient, MockSmsClient};
+use super::mocks::{MockClock, MockEmailClient};
 
 /// Client IP counter so every `TestApp` gets a unique synthetic source IP.
 /// Combined with `trust_proxy=true`, this gives each test its own rate-limit
@@ -113,6 +115,11 @@ pub fn test_app_config<F: FnOnce(&mut AppConfig)>(adjust: F) -> AppConfig {
             twilio_account_sid: "test-sid".into(),
             twilio_auth_token: "test-token".into(),
             twilio_from_number: "+10000000000".into(),
+            // Reserved loopback port: refuses the connection immediately
+            // instead of hanging if a test forgets to mount a `MockServer`
+            // (see `common::twilio::mount_twilio`). Same convention as
+            // `auth.google_token_url`/`google_jwks_url` above.
+            twilio_base_url: "http://127.0.0.1:1".into(),
         },
     };
     adjust(&mut cfg);
@@ -127,7 +134,6 @@ pub struct TestApp {
     pub db: PgPool,
     pub config: Arc<AppConfig>,
     pub email: Arc<MockEmailClient>,
-    pub sms: Arc<MockSmsClient>,
     pub clock: Arc<MockClock>,
     /// Synthetic source IP used as `X-Forwarded-For` on every request.
     pub client_ip: IpAddr,
@@ -305,13 +311,14 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     }
 
     let email = Arc::new(MockEmailClient::new());
-    let sms = Arc::new(MockSmsClient::new());
     let email_state: Arc<dyn EmailSender> = email.clone();
-    let sms_state: Arc<dyn SmsSender> = sms.clone();
     let clock = Arc::new(MockClock::new());
     let clock_state: Arc<dyn Clock> = clock.clone();
 
     let http_client = reqwest::Client::new();
+    // Real client, not a mock: SMS tests redirect it to a `wiremock` server
+    // via `config.sms.twilio_base_url` (see `common::twilio`).
+    let sms_client = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
 
     let config_arc = Arc::new(config);
     let state = AppState {
@@ -321,7 +328,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         config: config_arc.clone(),
         http_client,
         email_client: email_state,
-        sms_client: sms_state,
+        sms_client,
         clock: clock_state,
         jwks_cache: Arc::new(JwksCache::new()),
     };
@@ -340,7 +347,6 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         db,
         config: config_arc,
         email,
-        sms,
         clock,
         client_ip,
     }

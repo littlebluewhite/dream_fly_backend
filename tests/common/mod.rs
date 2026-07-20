@@ -15,6 +15,7 @@
 pub mod fixtures;
 pub mod http;
 pub mod mocks;
+pub mod twilio;
 
 use chrono::{Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;

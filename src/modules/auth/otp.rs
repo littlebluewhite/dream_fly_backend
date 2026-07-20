@@ -17,14 +17,14 @@ use redis::AsyncCommands;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::utils::sms::SmsSender;
+use crate::utils::sms::SmsClient;
 
 use super::dto::{MessageResponse, OtpSendRequest, OtpVerifyRequest};
 use super::rate_limit;
 
 pub(super) async fn send_otp(
     redis: &mut redis::aio::ConnectionManager,
-    sms_client: &dyn SmsSender,
+    sms_client: &SmsClient,
     auth_user_id: Uuid,
     req: OtpSendRequest,
 ) -> Result<MessageResponse, AppError> {

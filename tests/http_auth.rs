@@ -2,18 +2,20 @@
 //!
 //! Every test spins up a fresh `TestApp` via `spawn_test_app` (which wires
 //! the real axum router + middleware stack against a per-test sqlx pool).
-//! External services — SMTP + Twilio — are replaced by the in-memory
-//! recorders from `common::mocks`. The Google OAuth token endpoint is
-//! redirected to a `wiremock` server by overriding `auth.google_token_url`;
-//! the two happy-path tests below additionally override `auth.google_jwks_url`
-//! and sign a real RS256 id_token so `google_oauth::verify_google_id_token`
-//! runs unmodified (see the `GOOGLE_TEST_*` constants in the `/auth/google`
-//! section below).
+//! SMTP is replaced by the in-memory recorder from `common::mocks`
+//! (`app.email`). Twilio and Google OAuth have no mock: both are redirected
+//! to a `wiremock` server by overriding `sms.twilio_base_url` /
+//! `auth.google_token_url` (see `common::twilio` for the SMS mount/parse
+//! helpers); the two Google happy-path tests below additionally override
+//! `auth.google_jwks_url` and sign a real RS256 id_token so
+//! `google_oauth::verify_google_id_token` runs unmodified (see the
+//! `GOOGLE_TEST_*` constants in the `/auth/google` section below).
 
 mod common;
 
 use common::http::{spawn_test_app, spawn_test_app_with};
 use common::latest_notification;
+use common::twilio::{extract_otp_code, mount_twilio, twilio_sent};
 use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
@@ -571,7 +573,13 @@ async fn otp_send_without_auth_returns_401(db: PgPool) {
 
 #[sqlx::test]
 async fn otp_send_authenticated_records_sms(db: PgPool) {
-    let app = spawn_test_app(db).await;
+    let twilio_server = MockServer::start().await;
+    mount_twilio(&twilio_server).await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.sms.twilio_base_url = twilio_server.uri();
+    })
+    .await;
     let user = app.register_member("otp@example.com", "Password!234").await;
 
     let resp = app
@@ -581,13 +589,22 @@ async fn otp_send_authenticated_records_sms(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 
-    // MockSmsClient should have recorded exactly one OTP message.
-    let sent = app.sms.sent();
+    // SmsClient should have posted exactly one message to Twilio's Messages
+    // endpoint.
+    let sent = twilio_sent(&twilio_server).await;
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].to, "+15551234567");
-    // last_otp_code returns the 6-digit code stashed in the mock.
-    let code = app.sms.last_otp_code().expect("otp code recorded");
+    assert_eq!(sent[0].from, "+10000000000");
+
+    // First full-text coverage of the real production template — the old
+    // mock recorded its own divergent "OTP: {code}" text instead (see
+    // `src/utils/sms.rs::send_otp`).
+    let code = extract_otp_code(&sent[0].body).expect("otp code in sms body");
     assert_eq!(code.len(), 6);
+    assert_eq!(
+        sent[0].body,
+        format!("Your Dream Fly verification code is: {code}. Valid for 5 minutes.")
+    );
 
     // Refactor regression (Step 1): the per-user rate-limit key must still
     // carry a TTL, now set by `redis_counter::incr_with_ttl` instead of the
@@ -602,11 +619,43 @@ async fn otp_send_authenticated_records_sms(db: PgPool) {
     assert!(ttl > 0, "expected otp_rate TTL > 0, got {ttl}");
 }
 
+/// Exercises the real non-2xx branch in `SmsClient::send_sms`
+/// (`src/utils/sms.rs:73-86`) — unreachable through the previous mock
+/// seam, whose `fail_next()` switch short-circuited before any HTTP
+/// request was made.
+#[sqlx::test]
+async fn otp_send_twilio_failure_returns_500(db: PgPool) {
+    let twilio_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&twilio_server)
+        .await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.sms.twilio_base_url = twilio_server.uri();
+    })
+    .await;
+    let user = app.register_member("otpfail@example.com", "Password!234").await;
+
+    let resp = app
+        .post("/api/v1/auth/otp/send")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "phone": "+15551234567" }))
+        .await;
+    assert_eq!(resp.status_code(), 500, "body={}", resp.text());
+}
+
 // ---------------- /auth/otp/verify ----------------
 
 #[sqlx::test]
 async fn otp_verify_round_trip_marks_phone_verified(db: PgPool) {
-    let app = spawn_test_app(db).await;
+    let twilio_server = MockServer::start().await;
+    mount_twilio(&twilio_server).await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.sms.twilio_base_url = twilio_server.uri();
+    })
+    .await;
     let user = app.register_member("otpv@example.com", "Password!234").await;
 
     // Send first to populate Redis with a code for this user.
@@ -614,7 +663,8 @@ async fn otp_verify_round_trip_marks_phone_verified(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .json(&json!({ "phone": "+15551234567" }))
         .await;
-    let code = app.sms.last_otp_code().expect("code");
+    let sent = twilio_sent(&twilio_server).await;
+    let code = extract_otp_code(&sent.last().expect("otp sms sent").body).expect("otp code");
 
     let resp = app
         .post("/api/v1/auth/otp/verify")
@@ -634,7 +684,13 @@ async fn otp_verify_round_trip_marks_phone_verified(db: PgPool) {
 
 #[sqlx::test]
 async fn otp_verify_wrong_code_returns_bad_request(db: PgPool) {
-    let app = spawn_test_app(db).await;
+    let twilio_server = MockServer::start().await;
+    mount_twilio(&twilio_server).await;
+
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.sms.twilio_base_url = twilio_server.uri();
+    })
+    .await;
     let user = app.register_member("otpw@example.com", "Password!234").await;
 
     app.post("/api/v1/auth/otp/send")

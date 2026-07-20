@@ -65,9 +65,9 @@ subtle = "2"
 anyhow = "1"
 thiserror = "2"
 
-# Async trait support — used so AppState can hold `Arc<dyn EmailSender>` /
-# `Arc<dyn SmsSender>` trait objects, allowing integration tests to inject
-# in-memory mocks in place of the real SMTP / Twilio clients.
+# Async trait support — used so AppState can hold an `Arc<dyn EmailSender>`
+# trait object, allowing integration tests to inject an in-memory mock in
+# place of the real SMTP client.
 async-trait = "0.1"
 
 [dev-dependencies]
@@ -80,6 +80,10 @@ http-body-util = "0.1"
 # Mock HTTP server for external-service tests (Google OAuth token endpoint,
 # Twilio API) so we never hit real upstreams from the test suite.
 wiremock = "0.6"
+# Percent-decodes the `application/x-www-form-urlencoded` bodies wiremock
+# captures, so SMS tests can assert on the real Twilio request (To/From/Body)
+# instead of a mock's recorded call.
+url = "2"
 # Fake data generators for test fixtures.
 fake = { version = "5.1", features = ["derive", "chrono"] }
 # Force serial execution for tests that touch shared global state such as the

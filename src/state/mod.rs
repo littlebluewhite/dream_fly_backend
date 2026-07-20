@@ -7,7 +7,7 @@ use crate::config::AppConfig;
 use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
 use crate::utils::google_oauth::JwksCache;
-use crate::utils::sms::SmsSender;
+use crate::utils::sms::SmsClient;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -21,9 +21,12 @@ pub struct AppState {
     /// the TLS stack on every password-reset request. Held as a trait object
     /// so integration tests can substitute an in-memory recorder.
     pub email_client: Arc<dyn EmailSender>,
-    /// Shared outbound SMS sender. Held as a trait object so integration
-    /// tests can substitute an in-memory recorder without touching Twilio.
-    pub sms_client: Arc<dyn SmsSender>,
+    /// Shared outbound SMS client (Twilio via reqwest). Concrete type (single
+    /// implementation): the base URL is a config seam (`SmsConfig::
+    /// twilio_base_url`) that integration tests point at a `wiremock` server
+    /// instead of swapping the implementation — mirrors `AuthConfig::
+    /// google_token_url`/`google_jwks_url`.
+    pub sms_client: Arc<SmsClient>,
     /// Source of "now" for handler-sampled wall-clock decisions. Held as a
     /// trait object so integration tests can pin or advance it via
     /// `MockClock` instead of racing the real system clock.

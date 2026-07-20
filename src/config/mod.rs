@@ -184,6 +184,15 @@ pub struct SmsConfig {
     pub twilio_account_sid: String,
     pub twilio_auth_token: String,
     pub twilio_from_number: String,
+    /// Twilio Messages API base URL. Defaults to the real
+    /// `https://api.twilio.com`; integration tests override this via
+    /// `APP__SMS__TWILIO_BASE_URL` to point at a `wiremock` server.
+    #[serde(default = "default_twilio_base_url")]
+    pub twilio_base_url: String,
+}
+
+fn default_twilio_base_url() -> String {
+    "https://api.twilio.com".to_string()
 }
 
 impl fmt::Debug for SmsConfig {
@@ -192,6 +201,7 @@ impl fmt::Debug for SmsConfig {
             .field("twilio_account_sid", &self.twilio_account_sid)
             .field("twilio_auth_token", &"[REDACTED]")
             .field("twilio_from_number", &self.twilio_from_number)
+            .field("twilio_base_url", &self.twilio_base_url)
             .finish()
     }
 }
@@ -363,5 +373,40 @@ mod tests {
             .expect("SmsConfig should deserialize from injected source");
 
         assert_eq!(parsed.sms.twilio_from_number, "+14155551234");
+    }
+
+    /// Default-value regression: a typo in `default_twilio_base_url()` would
+    /// silently redirect production SMS to the wrong domain, and `serde`
+    /// gives no compile-time or runtime signal when a
+    /// `#[serde(default = ...)]` function's return value is wrong — only an
+    /// explicit assertion catches it.
+    #[test]
+    fn twilio_base_url_defaults_to_real_twilio_api() {
+        let mut source = HashMap::new();
+        source.insert(
+            "APP__SMS__TWILIO_ACCOUNT_SID".to_string(),
+            "AC_test".to_string(),
+        );
+        source.insert(
+            "APP__SMS__TWILIO_AUTH_TOKEN".to_string(),
+            "tok_test".to_string(),
+        );
+        source.insert(
+            "APP__SMS__TWILIO_FROM_NUMBER".to_string(),
+            "+14155551234".to_string(),
+        );
+        // Deliberately no APP__SMS__TWILIO_BASE_URL — exercises the
+        // `#[serde(default = "default_twilio_base_url")]` fallback.
+
+        let config = config::Config::builder()
+            .add_source(env_source().source(Some(source)))
+            .build()
+            .expect("config should build from injected in-memory source");
+
+        let parsed: SmsOnly = config
+            .try_deserialize()
+            .expect("SmsConfig should deserialize from injected source");
+
+        assert_eq!(parsed.sms.twilio_base_url, "https://api.twilio.com");
     }
 }

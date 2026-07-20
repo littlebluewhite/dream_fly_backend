@@ -13,7 +13,7 @@ use crate::utils::email::EmailSender;
 use crate::utils::google_oauth;
 use crate::utils::jwt;
 use crate::utils::password;
-use crate::utils::sms::SmsSender;
+use crate::utils::sms::SmsClient;
 
 use super::dto::{
     AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, LoginRequest, MessageResponse,
@@ -457,7 +457,7 @@ pub async fn logout(db: &PgPool, config: &AuthConfig, req: RefreshRequest) -> Re
 
 pub async fn send_otp(
     redis: &mut redis::aio::ConnectionManager,
-    sms_client: &dyn SmsSender,
+    sms_client: &SmsClient,
     auth_user_id: Uuid,
     req: OtpSendRequest,
 ) -> Result<MessageResponse, AppError> {
