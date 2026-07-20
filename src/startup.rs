@@ -20,6 +20,7 @@ use tower_http::{
 use crate::middleware::cors::cors_layer;
 use crate::middleware::rate_limit::{rate_limit_middleware, strict_rate_limit};
 use crate::middleware::require_admin::require_admin;
+use crate::middleware::require_coach::require_coach;
 use crate::middleware::require_staff::require_staff;
 use crate::modules;
 use crate::state::AppState;
@@ -107,10 +108,10 @@ pub fn build_router(state: AppState) -> Router {
     // route_layer——coach 層級(admin 或 coach)授權從 ~9 份 handler 首行儀式
     // 收斂為此一層,設計對稱於上方的 admin_api。Request-data-dependent 的細
     // 粒度檢查(`require_course_coach`、`is_admin()` 分支)不在此列,留在
-    // service。三個例外原地保留、不併入此閘門(各自 handler 已加註解):
-    // `rewards::list` 的條件式 `?all=true` 閘門依賴 query 參數;
-    // `attendance::my_students`、`reports::coach_report` 是 coach-only
-    // carve-out(admin 刻意排除)。
+    // service。僅剩一個例外原地保留、不併入此閘門(該 handler 已加註解):
+    // `rewards::list` 的條件式 `?all=true` 閘門依賴 query 參數,本質不可
+    // 上移。coach-only carve-out(`attendance::my_students`、
+    // `reports::coach_report`)已獨立收斂至下方的 `coach_api`。
     let staff_api = Router::new()
         .merge(modules::leave::routes::staff_router())
         .merge(modules::sessions::routes::staff_router())
@@ -119,6 +120,17 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::subscriptions::routes::staff_router())
         .merge(modules::posts::routes::staff_router())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_staff));
+
+    // Coach 半邊:兩個模組的 `coach_router()` 合併後,單點掛上 `require_coach`
+    // route_layer,設計對稱於上方的 admin_api/staff_api——差異僅角色集合:
+    // `require_coach` 不含 admin bypass(兩條路徑語意皆為 admin 刻意排除,
+    // 見 `middleware::require_coach` 檔頭)。這是 admin/staff/coach 三層
+    // route_layer 家族補齊的第三個 gate,反轉了先前「第三個單角色 gate 不
+    // 值得」的決定——現況兩條路徑同形,route-table 可信度已判定值得。
+    let coach_api = Router::new()
+        .merge(modules::attendance::routes::coach_router())
+        .merge(modules::reports::routes::coach_router())
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_coach));
 
     let api_v1 = Router::new()
         .route("/health", get(health_check))
@@ -131,7 +143,6 @@ pub fn build_router(state: AppState) -> Router {
                 .route_layer(middleware::from_fn_with_state(state.clone(), strict_rate_limit)),
         )
         .merge(modules::auth::routes::router())
-        .merge(modules::attendance::routes::router())
         .merge(modules::users::routes::router())
         .merge(modules::coaches::routes::router())
         .merge(modules::courses::routes::router())
@@ -156,7 +167,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules::rewards::routes::router())
         .merge(modules::reports::routes::router())
         .merge(admin_api)
-        .merge(staff_api);
+        .merge(staff_api)
+        .merge(coach_api);
 
     // Basic security headers. The API is JSON-only so CSP isn't critical, but
     // sniffing/referrer leaks and clickjacking protection are cheap to add.

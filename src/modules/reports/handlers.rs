@@ -18,16 +18,13 @@ pub async fn admin_report(
     Ok(Json(report))
 }
 
-/// `GET /reports/coach` — coach only (no admin bypass, per task brief).
-/// Deliberate carve-out from `staff_router()`'s admin-or-coach gate (same
-/// pattern as `attendance::handlers::my_students`) — building a third
-/// single-role gate for these two call sites isn't worth it.
+/// `GET /reports/coach` — coach only (no admin bypass). Enforced by the
+/// `coach_api` route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn coach_report(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<CoachReportResponse>, AppError> {
-    auth.require_role("coach")?;
     let now = state.clock.now();
     let report = service::coach_report(&state.db, &state.config.server, now, &auth).await?;
     Ok(Json(report))

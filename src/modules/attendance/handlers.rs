@@ -47,16 +47,13 @@ pub async fn bulk_upsert_attendance(
 }
 
 /// `GET /coaches/me/students` — coach only; admin is deliberately excluded
-/// (an admin has no "own" students to look up). Stays a handler-level
-/// `require_role("coach")` check instead of joining `staff_router()`'s
-/// admin-or-coach gate — building a third single-role gate for this one call
-/// site (plus `reports::handlers::coach_report`) isn't worth it.
+/// (an admin has no "own" students to look up). Enforced by the `coach_api`
+/// route_layer (see `startup.rs`).
 #[tracing::instrument(skip_all)]
 pub async fn my_students(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<MyStudentResponse>>, AppError> {
-    auth.require_role("coach")?;
     let students = service::my_students(&state.db, &auth).await?;
     Ok(Json(students))
 }

@@ -160,10 +160,11 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // 0. 快路徑:`require_admin` 閘門已在 route 層驗證過 token/角色並把
-        //    `AuthUser` 注入 request extensions。命中即 clone 回傳,handler 端
-        //    的 extractor 不再重打一次 Redis/DB(閘門後所有 admin handler 皆
-        //    走此路)。閘門外的端點 extensions 無此值,照常走下方完整流程。
+        // 0. 快路徑:route 層閘門(`require_admin`/`require_staff`/
+        //    `require_coach`)已驗證過 token/角色並把 `AuthUser` 注入 request
+        //    extensions。命中即 clone 回傳,handler 端的 extractor 不再重打
+        //    一次 Redis/DB(閘門後所有已上移端點皆走此路)。閘門外的端點
+        //    extensions 無此值,照常走下方完整流程。
         if let Some(cached) = parts.extensions.get::<AuthUser>() {
             return Ok(cached.clone());
         }

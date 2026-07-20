@@ -399,6 +399,22 @@ async fn my_students_as_member_returns_403(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn my_students_as_admin_without_coach_role_returns_403(db: PgPool) {
+    // Mirrors `coach_report_as_admin_without_coach_role_returns_403` in
+    // http_reports.rs: `require_coach` has no admin bypass (deliberate —
+    // both `my_students` and `coach_report` are coach-only carve-outs), so
+    // an admin who does not also hold the coach role is forbidden here.
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .get("/api/v1/coaches/me/students")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 403, "body={}", resp.text());
+}
+
+#[sqlx::test]
 async fn my_students_as_coach_with_no_coach_row_returns_empty(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_user_id, token) = app

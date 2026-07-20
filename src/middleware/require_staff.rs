@@ -8,9 +8,10 @@
 //! 授權判斷從「每支 handler 各自負責」收斂為掛在 staff 半邊 router 上的
 //! 單一 layer。Request-data-dependent 的細粒度檢查(`require_course_coach`、
 //! `is_admin()` 分支)不屬此類,留在 service;`rewards` 的條件式
-//! `?all=true` 閘門依賴 query 參數,`attendance::my_students`/
-//! `reports::coach_report` 是 coach-only carve-out(admin 刻意排除),三者
-//! 皆不併入此閘門,原地保留並各自加註解(見對應 handler)。
+//! `?all=true` 閘門依賴 query 參數,不併入此閘門,原地保留並加註解(見對應
+//! handler)。`attendance::my_students`/`reports::coach_report` 原為
+//! coach-only carve-out,現已獨立收斂至 `middleware::require_coach`
+//! (`coach_api`),不再是本閘門的例外。
 //!
 //! **Fail-closed**:與 `require_admin` 相同的兩步短路——先
 //! `AuthUser::from_request_parts`(401 平價),再角色判斷(403 平價),任一
