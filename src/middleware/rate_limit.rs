@@ -10,9 +10,9 @@ use serde_json::json;
 use crate::state::AppState;
 use crate::utils::redis_counter::incr_with_ttl;
 
-/// Build a JSON error response for rate-limit rejections. Keeps the four
-/// call-sites in [`rate_limit_middleware`] DRY without pulling in `AppError`
-/// (which lives one layer above middleware).
+/// Build a JSON error response for rate-limit rejections. Keeps the
+/// call-sites in [`rate_limit_middleware`] and [`strict_rate_limit`] DRY
+/// without pulling in `AppError` (which lives one layer above middleware).
 fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error": message}))).into_response()
 }
@@ -57,29 +57,12 @@ fn extract_client_ip(req: &Request, trust_proxy: bool) -> Option<IpAddr> {
         .map(|c| c.0.ip())
 }
 
-/// Auth endpoints that deserve a stricter bucket. Anything matching one of
-/// these prefixes pays both the global AND the auth quota.
-fn is_auth_endpoint(path: &str) -> bool {
-    // All of these take user credentials (or trigger an OTP/email/SMS that
-    // costs us money) and therefore must be throttled hard.
-    path.starts_with("/api/v1/auth/login")
-        || path.starts_with("/api/v1/auth/register")
-        || path.starts_with("/api/v1/auth/refresh")
-        || path.starts_with("/api/v1/auth/password/forgot")
-        || path.starts_with("/api/v1/auth/password/reset")
-        || path.starts_with("/api/v1/auth/otp/send")
-        || path.starts_with("/api/v1/auth/otp/verify")
-        || path.starts_with("/api/v1/auth/google")
-}
-
-pub async fn rate_limit_middleware(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    req: Request,
-    next: Next,
-) -> Result<Response, Response> {
-    let trust_proxy = state.config.server.trust_proxy;
-
-    let identity = match extract_client_ip(&req, trust_proxy) {
+/// Resolve the per-request rate-limit identity: the client IP when
+/// available, else a shared "anon" bucket so unidentified sources still get
+/// throttled. Shared by [`rate_limit_middleware`] and [`strict_rate_limit`]
+/// so both buckets key off the exact same identity for a given request.
+fn client_identity(req: &Request, trust_proxy: bool) -> String {
+    match extract_client_ip(req, trust_proxy) {
         Some(ip) => ip.to_string(),
         None => {
             // No identity available — fall back to a single bucket so bursts
@@ -87,13 +70,26 @@ pub async fn rate_limit_middleware(
             // collapse into one bucket).
             "anon".to_string()
         }
-    };
+    }
+}
 
-    let path = req.uri().path().to_string();
+/// Global per-IP bucket only (`rate_limit:global:{ip}`, 300/min) — mounted
+/// as the sole outer rate-limit layer in `startup.rs`. The stricter
+/// per-route auth bucket used to be checked here too, behind
+/// `is_auth_endpoint` prefix-sniffing; it now lives in
+/// [`strict_rate_limit`], mounted separately via `route_layer` on the auth
+/// throttled route group.
+pub async fn rate_limit_middleware(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, Response> {
+    let trust_proxy = state.config.server.trust_proxy;
+    let identity = client_identity(&req, trust_proxy);
     let mut redis_conn = state.redis.clone();
 
-    // 1. Global per-IP bucket. Keyed by IP only (NOT by path), so an attacker
-    //    cannot fan out across endpoints to circumvent the cap.
+    // Global per-IP bucket. Keyed by IP only (NOT by path), so an attacker
+    // cannot fan out across endpoints to circumvent the cap.
     let global_key = format!("rate_limit:global:{identity}");
     let global_count = incr_with_ttl(&mut redis_conn, &global_key, WINDOW_SECONDS)
         .await
@@ -106,19 +102,54 @@ pub async fn rate_limit_middleware(
         return Err(error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
     }
 
-    // 2. Auth-specific bucket, only for auth endpoints. Layered, not replacing.
-    if is_auth_endpoint(&path) {
-        let auth_key = format!("rate_limit:auth:{identity}");
-        let auth_count = incr_with_ttl(&mut redis_conn, &auth_key, AUTH_WINDOW_SECONDS)
-            .await
-            .map_err(|e| {
-                tracing::error!("Redis auth rate limit error: {e}");
-                error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-            })?;
+    Ok(next.run(req).await)
+}
 
-        if auth_count > AUTH_MAX_REQUESTS_PER_WINDOW {
-            return Err(error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
-        }
+/// Route-layer gate for the auth throttled route group
+/// (`auth::routes::throttled_router`, mounted in `startup.rs` the same
+/// shape as `admin_api`/`staff_api`). Adds the per-IP auth bucket
+/// (`rate_limit:auth:{ip}`, 10/min) ON TOP of [`rate_limit_middleware`]'s
+/// global bucket — this middleware is never mounted on its own, only via
+/// `route_layer` nested inside the outer global layer.
+///
+/// Replaces the old `is_auth_endpoint` prefix-sniffing that used to run
+/// inline in the combined middleware. Equivalent for legitimate traffic —
+/// the 8 routes in `throttled_router` map 1:1 to the old prefix list, none
+/// of them have sub-paths — except two accepted edge deltas (neither is
+/// legitimate traffic, so these are recorded rather than "fixed"):
+///
+/// (a) `route_layer` sits inside the body-limit layer (route_layer is
+///     innermost; body limit is an outer `.layer()` in `startup.rs`). A
+///     >2MB auth request used to charge both buckets before the body-limit
+///     413; now it only charges the global bucket, because 413 fires before
+///     this middleware ever runs — a request that would have seen 429
+///     (bucket already full) now sees 413 instead.
+/// (b) `route_layer` only runs on a route match. A 404 on an auth-prefixed
+///     path that isn't exactly one of the 8 routes below (e.g.
+///     `/api/v1/auth/loginXYZ`) used to charge this bucket via
+///     `starts_with`; it now falls through to the 404 handler without
+///     charging it (the global bucket still charges).
+pub async fn strict_rate_limit(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, Response> {
+    let trust_proxy = state.config.server.trust_proxy;
+    let identity = client_identity(&req, trust_proxy);
+    let mut redis_conn = state.redis.clone();
+
+    // Auth-specific bucket. Layered on top of the global one (checked
+    // separately, upstream, by `rate_limit_middleware`), not replacing it.
+    let auth_key = format!("rate_limit:auth:{identity}");
+    let auth_count = incr_with_ttl(&mut redis_conn, &auth_key, AUTH_WINDOW_SECONDS)
+        .await
+        .map_err(|e| {
+            tracing::error!("Redis auth rate limit error: {e}");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
+
+    if auth_count > AUTH_MAX_REQUESTS_PER_WINDOW {
+        return Err(error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
     }
 
     Ok(next.run(req).await)

@@ -18,7 +18,7 @@ use tower_http::{
 };
 
 use crate::middleware::cors::cors_layer;
-use crate::middleware::rate_limit::rate_limit_middleware;
+use crate::middleware::rate_limit::{rate_limit_middleware, strict_rate_limit};
 use crate::middleware::require_admin::require_admin;
 use crate::middleware::require_staff::require_staff;
 use crate::modules;
@@ -122,6 +122,14 @@ pub fn build_router(state: AppState) -> Router {
 
     let api_v1 = Router::new()
         .route("/health", get(health_check))
+        // auth 的嚴格桶(10/min)透過 route_layer 掛在 throttled_router() 上,
+        // 宣告形狀比照下方 admin_api/staff_api;`/auth/logout` 不吃嚴格桶,
+        // 走旁邊的 router() merge(見 `middleware::rate_limit::strict_rate_limit`)。
+        .merge(
+            Router::new()
+                .merge(modules::auth::routes::throttled_router())
+                .route_layer(middleware::from_fn_with_state(state.clone(), strict_rate_limit)),
+        )
         .merge(modules::auth::routes::router())
         .merge(modules::attendance::routes::router())
         .merge(modules::users::routes::router())
