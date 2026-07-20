@@ -484,6 +484,7 @@ pub async fn forgot_password(
     db: &PgPool,
     redis: &mut redis::aio::ConnectionManager,
     email_client: std::sync::Arc<dyn EmailSender>,
+    background: &tokio_util::task::TaskTracker,
     req: ForgotPasswordRequest,
 ) -> Result<MessageResponse, AppError> {
     let success_msg = MessageResponse {
@@ -551,9 +552,14 @@ pub async fn forgot_password(
     //    latency regardless of whether the email exists. This flattens a
     //    subtle timing oracle: the "user not found" branch returns instantly
     //    while the "user found" branch would otherwise block on SMTP.
+    //    `background` (an `AppState::background_tasks` clone) tracks the
+    //    spawn for shutdown drain and test quiescence; the spawn must stay
+    //    at this layer, synchronously registered before the handler
+    //    returns — moving it into a deeper `async` call would break that
+    //    guarantee.
     let user_email = user.email.clone();
     let client = email_client;
-    tokio::spawn(async move {
+    background.spawn(async move {
         if let Err(e) = client.send_password_reset(&user_email, &token).await {
             tracing::error!(error = ?e, "password-reset email failed to send");
         }

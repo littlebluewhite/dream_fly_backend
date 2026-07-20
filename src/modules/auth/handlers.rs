@@ -103,8 +103,14 @@ pub async fn forgot_password(
     ValidatedJson(req): ValidatedJson<ForgotPasswordRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
     let mut redis = state.redis.clone();
-    let response =
-        service::forgot_password(&state.db, &mut redis, state.email_client.clone(), req).await?;
+    let response = service::forgot_password(
+        &state.db,
+        &mut redis,
+        state.email_client.clone(),
+        &state.background_tasks,
+        req,
+    )
+    .await?;
     Ok(Json(response))
 }
 

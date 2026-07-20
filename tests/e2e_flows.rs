@@ -199,7 +199,8 @@ async fn e2e_password_reset_flow(db: PgPool) {
     assert_eq!(f.status_code(), 200);
 
     // Recover the token from the mock email client.
-    let sent = app.email.wait_for(1, 1000).await;
+    app.drain_background().await;
+    let sent = app.email.sent();
     assert_eq!(sent.len(), 1);
     let token = sent[0].token.clone();
 

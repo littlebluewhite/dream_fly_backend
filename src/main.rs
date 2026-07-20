@@ -7,6 +7,7 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::watch;
+use tokio_util::task::TaskTracker;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use dream_fly_backend::config::AppConfig;
@@ -257,6 +258,11 @@ async fn main() -> anyhow::Result<()> {
     // Wrap the config in Arc once — AppState::clone is per-request.
     let config_arc = Arc::new(config);
 
+    // Independent binding, created before `AppState` so it survives past
+    // `startup::build_router` moving `state` away — see `background_tasks`
+    // teardown below and the doc on `AppState::background_tasks`.
+    let background_tasks = TaskTracker::new();
+
     // Build application state
     let state = AppState {
         db: db.clone(),
@@ -268,6 +274,7 @@ async fn main() -> anyhow::Result<()> {
         sms_client,
         clock,
         jwks_cache: Arc::new(JwksCache::new()),
+        background_tasks: background_tasks.clone(),
     };
 
     // Background task: periodically delete expired/revoked refresh tokens
@@ -376,6 +383,22 @@ async fn main() -> anyhow::Result<()> {
     // otherwise delay exit past the orchestrator's termination grace
     // period, forcing a SIGKILL and leaving resources in an unclean state.
     let teardown = async {
+        // Drain in-flight background tasks (currently: password-reset email
+        // sends) first, under its own 5s sub-budget. lettre's default SMTP
+        // command timeout (60s) exceeds the whole-teardown deadline, so an
+        // unbounded wait here could starve the Kafka joins and DB pool close
+        // below. Email is best-effort: if the budget elapses, log and move
+        // on rather than block shutdown on it.
+        background_tasks.close();
+        if tokio::time::timeout(Duration::from_secs(5), background_tasks.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "background task drain exceeded 5s budget; continuing shutdown with tasks still in flight"
+            );
+        }
+
         if let Some(handle) = consumer_handle {
             if let Err(e) = handle.await {
                 tracing::warn!("Kafka consumer task exited with error: {e}");

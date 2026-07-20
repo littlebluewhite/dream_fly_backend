@@ -722,8 +722,10 @@ async fn forgot_password_for_existing_user_records_email(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200);
 
-    // The email send is spawned as a background task — wait for it.
-    let sent = app.email.wait_for(1, 1000).await;
+    // The email send is spawned as a background task — drain it so the
+    // assertion below is deterministic instead of racing a fixed sleep.
+    app.drain_background().await;
+    let sent = app.email.sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].to, email);
 }
@@ -741,8 +743,13 @@ async fn forgot_password_for_unknown_email_still_returns_200(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200);
 
-    // No email should have been recorded (the user doesn't exist).
-    let sent = app.email.wait_for(1, 200).await;
+    // No email should have been recorded (the user doesn't exist). The
+    // unknown-email branch returns before any spawn (`service.rs`'s
+    // `forgot_password`, early `None` return), so draining first is still
+    // safe and, unlike a fixed sleep, turns deterministically red if a
+    // future regression starts spawning on this branch.
+    app.drain_background().await;
+    let sent = app.email.sent();
     assert!(sent.is_empty());
 }
 

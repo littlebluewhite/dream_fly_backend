@@ -32,6 +32,7 @@ use axum_test::TestServer;
 use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
+use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 use dream_fly_backend::config::{
@@ -137,6 +138,9 @@ pub struct TestApp {
     pub clock: Arc<MockClock>,
     /// Synthetic source IP used as `X-Forwarded-For` on every request.
     pub client_ip: IpAddr,
+    /// Clone of the same `TaskTracker` held by `AppState::background_tasks`
+    /// inside the router this `TestApp` wraps — see `drain_background`.
+    pub background: TaskTracker,
 }
 
 impl TestApp {
@@ -268,6 +272,26 @@ impl TestApp {
             .await
             .expect("connect redis")
     }
+
+    /// Deterministically wait for every background task spawned so far
+    /// (e.g. the password-reset email send in `auth::service::
+    /// forgot_password`) to finish, replacing a fixed `sleep` + poll.
+    ///
+    /// Closes the tracker, awaits `wait()`, then reopens it so the same
+    /// `TestApp` can `drain_background` again later in the same test.
+    ///
+    /// Preconditions (caller's responsibility):
+    /// - Call sequentially within a single test only — `close()` does not
+    ///   prevent new spawns, so a concurrent request against an endpoint
+    ///   that spawns onto `background` while a drain is in flight can race
+    ///   with it.
+    /// - Reopening after each drain is what makes repeated calls within the
+    ///   same test safe.
+    pub async fn drain_background(&self) {
+        self.background.close();
+        self.background.wait().await;
+        self.background.reopen();
+    }
 }
 
 /// Identifying metadata for a user created via `register_member`.
@@ -321,6 +345,16 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     let sms_client = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
 
     let config_arc = Arc::new(config);
+
+    // Independent binding, created before `AppState` so `TestApp` can keep
+    // it after `startup::build_router` moves `state` away — same identity
+    // discipline as `main.rs` (see `AppState::background_tasks` doc). Using
+    // a second `TaskTracker::new()` here instead of a clone would make
+    // `drain_background` wait on an empty tracker while the router's own
+    // tracker (inside `state`) is the one actually accumulating spawns —
+    // silently false-green.
+    let background = TaskTracker::new();
+
     let state = AppState {
         db: db.clone(),
         redis,
@@ -331,6 +365,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         sms_client,
         clock: clock_state,
         jwks_cache: Arc::new(JwksCache::new()),
+        background_tasks: background.clone(),
     };
 
     let router = startup::build_router(state);
@@ -349,5 +384,6 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         email,
         clock,
         client_ip,
+        background,
     }
 }

@@ -40,26 +40,6 @@ impl MockEmailClient {
     pub fn sent(&self) -> Vec<SentPasswordReset> {
         self.sent.lock().unwrap().clone()
     }
-
-    /// Wait up to `max_ms` milliseconds for at least `n` emails to be recorded.
-    /// Used by tests that exercise code paths which spawn the send onto a
-    /// background task (e.g. `forgot_password`) and therefore do not complete
-    /// the send before the handler returns.
-    pub async fn wait_for(&self, n: usize, max_ms: u64) -> Vec<SentPasswordReset> {
-        let step = 10u64;
-        let mut waited = 0u64;
-        while waited < max_ms {
-            {
-                let guard = self.sent.lock().unwrap();
-                if guard.len() >= n {
-                    return guard.clone();
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(step)).await;
-            waited += step;
-        }
-        self.sent.lock().unwrap().clone()
-    }
 }
 
 impl Default for MockEmailClient {

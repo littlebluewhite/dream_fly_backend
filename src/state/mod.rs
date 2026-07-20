@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use rdkafka::producer::FutureProducer;
 use sqlx::PgPool;
+use tokio_util::task::TaskTracker;
 
 use crate::config::AppConfig;
 use crate::utils::clock::Clock;
@@ -37,4 +38,30 @@ pub struct AppState {
     /// cross-instance sharing is gone. Test substitution is per-app: a fresh
     /// cache plus the `google_jwks_url` config seam pointed at wiremock.
     pub jwks_cache: Arc<JwksCache>,
+    /// Tracks fire-and-forget background tasks spawned during request
+    /// handling (currently: the password-reset email send in
+    /// `auth::service::forgot_password`).
+    ///
+    /// - Spawn semantics unchanged: `background_tasks.spawn(..)` is a
+    ///   drop-in replacement for `tokio::spawn(..)` — the task still runs
+    ///   detached from the request/response cycle.
+    /// - Shutdown drain: `main` closes the tracker and awaits `wait()`
+    ///   (under a bounded sub-budget) so an in-flight send gets a chance to
+    ///   finish instead of being silently abandoned at process exit.
+    /// - Test quiescence: `tests/common/http.rs`'s `TestApp::drain_background`
+    ///   closes, awaits `wait()`, then reopens the tracker so a test can
+    ///   deterministically assert on what a background send did (or didn't
+    ///   do) without a fixed `sleep`.
+    /// - Tracker identity: this field holds a **clone** — the original
+    ///   binding is kept by whoever constructs `AppState` (`main` / the test
+    ///   harness), specifically so shutdown/drain code can still reach it
+    ///   after `AppState` itself has been moved into `startup::build_router`.
+    ///   `TaskTracker` is an `Arc`-style handle, so the clone shares the same
+    ///   underlying task set as the original.
+    ///
+    /// Never spawn a long-running/daemon loop (refresh-token cleanup, Kafka
+    /// consumer/outbox dispatcher, ...) on this tracker: `wait()` only
+    /// returns once the tracker is both closed AND empty, so a loop that
+    /// never exits would make shutdown/drain hang forever.
+    pub background_tasks: TaskTracker,
 }
