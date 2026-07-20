@@ -11,42 +11,29 @@ use super::dto::{
     CreateMessageRequest, MessageListResponse, MessageResponse,
 };
 use super::model::ConversationParticipants;
+use super::pairing;
 use super::repository;
 
-/// Domain-validation message for every way a `POST /conversations` role
-/// check can fail — same wording regardless of which side (or both) is
-/// wrong, per contract §3.21.
-const ROLE_VIOLATION: &str = "僅支援教練與會員間的對話";
-
 /// Resolve `(member_id, coach_id)` for a conversation between the caller and
-/// `target_id` — order-independent: the caller may be the coach side or the
-/// member side, so long as the *other* one holds the complementary role.
-/// The caller's roles come from the already-loaded `AuthUser` (no DB round
-/// trip); the target's roles are looked up fresh since they aren't the
-/// authenticated party.
+/// `target_id`. Self-rejection is checked here, before the DB round trip —
+/// see `pairing`'s module doc for why that precedence matters (a self
+/// request must 422 regardless of whether the DB call would succeed, and
+/// must not spend a query on a request that's rejected either way). The
+/// caller's roles come from the already-loaded `AuthUser` (no DB round
+/// trip); the target's roles are the one DB dependency here, since they
+/// aren't the authenticated party.
 async fn resolve_member_coach(
     db: &PgPool,
     auth: &AuthUser,
     target_id: Uuid,
 ) -> Result<(Uuid, Uuid), AppError> {
     if target_id == auth.user_id {
-        return Err(AppError::Validation(ROLE_VIOLATION.into()));
+        return Err(AppError::Validation(pairing::ROLE_VIOLATION.into()));
     }
 
     let target_roles = permissions_repository::find_role_names_by_user(db, target_id).await?;
 
-    let caller_is_coach = auth.roles.iter().any(|r| r == "coach");
-    let caller_is_member = auth.roles.iter().any(|r| r == "member");
-    let target_is_coach = target_roles.iter().any(|r| r == "coach");
-    let target_is_member = target_roles.iter().any(|r| r == "member");
-
-    if caller_is_coach && target_is_member {
-        Ok((target_id, auth.user_id)) // (member_id, coach_id)
-    } else if caller_is_member && target_is_coach {
-        Ok((auth.user_id, target_id)) // (member_id, coach_id)
-    } else {
-        Err(AppError::Validation(ROLE_VIOLATION.into()))
-    }
+    pairing::resolve_pair(auth.user_id, &auth.roles, target_id, &target_roles)
 }
 
 /// `POST /conversations` — get-or-create. Returns the existing conversation

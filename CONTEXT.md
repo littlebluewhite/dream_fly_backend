@@ -64,6 +64,10 @@ _Avoid_: capacity, quota
 `countable_attendance` view(migration `20260710000001`)——出席聚合報表口徑的單一 owner:view 成員資格(`status IN (present, absent)`)= 計入分母、leave 排除,顯式布林欄 `is_present` = 分子,view 內 `NOT is_present` 恆等於 absent。`reports::repository` 的 7 條聚合查詢(`kpis`/`coach_reports`/`attendance_distribution`/`retention`/`weekday_load`/`coach_attendance_in_range`/`member_attendance`)與 `enrolments::repository::find_by_user_with_course`(`GET /enrolments/me` 的 attended/total 統計)皆換底至此 view,不再各自手寫 `status` 判斷;`coach_today_and_pending` 的 `pending_attendance`(任一狀態 EXISTS)是另一個口徑,故意不進這張 view。
 _Avoid_: 出勤率(那是 service 算出的 rate,不是這個口徑本身)、attendance_records(那是底表,口徑 owner 是 view 不是它)
 
+**點名計畫(Marking Plan)**:
+`attendance::marking::{parse, plan}`,純函式(`orders::pricing`/`orders::fulfilment` 的姊妹),`PUT /sessions/{id}/attendance` 批次點名的 parse(status 字串轉 `AttendanceStatus`,無效值 422)+ 成員資格校驗(requested enrolment id 集合與呼叫端已查得的 valid 集合相等判斷,不等 422)兩段驗證的純核 owner;`parse` 必須先於 enrolment DB 查詢執行——現狀無效 status 不觸發查詢,錯誤優先序若反過來,DB 故障時 422 會變 500。DB 查詢(`repository::find_active_enrolment_ids_in`)、空批次跳過查詢的 guard、寫入交易迴圈皆留在 `service::bulk_upsert_attendance`。
+_Avoid_: 與「出席口徑(Countable Attendance)」混同——本核決定的是「這批點名寫入是否合法」,出席口徑決定的是「哪些既有紀錄計入出勤統計分母/分子」,寫入前驗證與讀取聚合是不同層。
+
 **場次物化(Session Materialization)**:
 「先物化、再讀取」呼叫順序 invariant 的單一 owner:`sessions::repository::materialize_range` 回傳 `MaterializedRange` witness(欄位私有,僅該函式能建構;唯讀存取 `course_ids()`/`from_date()`/`to_date()`),兩個 early-return 路徑也回傳 witness。讀取端(`sessions::find_sessions_in`/`find_today_sessions_in`、`reports::venue_usage`/`coach_today_and_pending`/`upcoming_session_count`)改收 `&MaterializedRange`,不再各自靠 doc 前置條件維繫呼叫順序。witness 只擔保「此範圍已物化」,**不**擔保每個讀取端都按 `course_ids` 過濾——`venue_usage`/`coach_today_and_pending` 只用其日期窗(全場館聚合/coach scope 分別由查詢本身或 JOIN 表達),`find_sessions_in`/`find_today_sessions_in`/`upcoming_session_count` 才綁 `course_ids`。
 _Avoid_: 把 witness 當作 course 範圍過濾的保證(它只保證「已物化」)、materialize_range 呼叫順序仍是文件慣例(已收進型別系統)
@@ -91,3 +95,7 @@ _Avoid_: 把 `bookings.status`(`BookingStatus`,`confirmed`/`cancelled`/`complete
 **退款(Refund)**:
 訂單從計入營收的狀態(`OrderStatus::is_revenue`——paid/processing/completed)轉往終態 cancelled 或 refunded 時的補償語意,`orders::service::update_order_status` 內的私有步驟 `compensate_order_artifacts_tx`,由 `orders::refund::compensation_required` 判斷是否觸發。**Cancelled 與 Refunded 是同一補償語意的兩個終態標籤,不是兩種不同的補償**。補償一律讀「結帳當下的痕跡」而非現況推測——`order_items.stock_decremented` 快照決定要不要回補庫存、`point_ledger` 的 `checkout_earn`/`checkout_redeem` 實錄決定點數反轉幅度(方向依序 `refund_restore` 先、`refund_clawback` 後,契約 §1.6),報名/訂閱依 `order_id` 整批取消。是**整單**語意:不論已核銷/使用多少,一律全額反轉,不按使用比例折算。餘額不足時整筆回滾(409「點數不足」),不 clamp——修復迴路是 admin 補點端點(`POST /points/adjustments`,§3.14)。十個決策點的完整論證見 ADR-0007。
 _Avoid_: 沖銷(那是點數反轉裡「收回已賺點數」單一方向的動作 `refund_clawback`,不是整套補償語意的統稱)、退貨(本系統無實體物流退貨流程,這裡指的是撤銷結帳建立的內部副作用——庫存/點數/entitlement,不涉及商品寄還)、刪單(`orders`/`order_items` 從不刪除,退款是狀態機轉移到終態,原始下單紀錄永久可查)
+
+**對話配對(Conversation Pairing)**:
+`messages::pairing::resolve_pair → (member_id, coach_id)`,純函式(`orders::pricing`/`orders::fulfilment` 的姊妹),`POST /conversations` 的 member/coach 配對與自我拒斥純核 owner。自我拒斥在 `service::resolve_member_coach` 與純核各查一次——service 端先查、擋在 DB round trip 之前(自我請求必 422、不多打一次 DB),純核內重複同一檢查只是讓函式自洽,不是兩套優先序。雙角色(coach 且 member)caller 恆落 coach 側(分支順序:caller-is-coach 先判),故雙角色×雙角色的 A→B 與 B→A 是鏡像對(`(B,A)`/`(A,B)`)而非同一對;兩方向仍共享同一 conversation,由 DB 端無序 unique index(`LEAST`/`GREATEST`)保證,非本核職責。唯一 DB 依賴(`permissions_repository::find_role_names_by_user` 取對方角色)與 get-or-create/unique-violation race 收斂留在 `service`。
+_Avoid_: 與 participants 授權(`authorize_participant`,`GET/POST .../messages` 等端點「呼叫者是否為此對話成員」的檢查)混同——那是既存對話的存取控制,配對是「建立/取得哪一個對話」的角色判斷,發生在對話是否存在確定之前。

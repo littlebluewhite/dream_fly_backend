@@ -11,7 +11,7 @@ use crate::modules::coaches::service as coaches_service;
 use crate::utils::studio_clock;
 
 use super::dto::{AttendanceRecordEntry, MyStudentResponse, RosterEntryResponse};
-use super::model::AttendanceStatus;
+use super::marking;
 use super::repository;
 
 /// `GET /sessions/{id}/roster`. 404 if the session doesn't exist; 403 if the
@@ -73,32 +73,22 @@ pub async fn bulk_upsert_attendance(
         AppError::Validation("場次尚未開始，無法點名".into()),
     )?;
 
-    let mut parsed: Vec<(Uuid, AttendanceStatus)> = Vec::with_capacity(records.len());
-    for r in &records {
-        let status: AttendanceStatus = r
-            .status
-            .parse()
-            .map_err(|_| AppError::Validation(format!("invalid attendance status: {}", r.status)))?;
-        parsed.push((r.enrolment_id, status));
-    }
+    let parsed = marking::parse(&records)?;
 
-    if !parsed.is_empty() {
+    let valid: HashSet<Uuid> = if parsed.is_empty() {
+        HashSet::new()
+    } else {
         let requested: HashSet<Uuid> = parsed.iter().map(|(id, _)| *id).collect();
         let ids: Vec<Uuid> = requested.iter().copied().collect();
-        let valid: HashSet<Uuid> =
-            repository::find_active_enrolment_ids_in(db, session_course.course_id, &ids)
-                .await?
-                .into_iter()
-                .collect();
-        if valid != requested {
-            return Err(AppError::Validation(
-                "all enrolments must belong to this session's course and be active".into(),
-            ));
-        }
-    }
+        repository::find_active_enrolment_ids_in(db, session_course.course_id, &ids)
+            .await?
+            .into_iter()
+            .collect()
+    };
+    let plan = marking::plan(parsed, &valid)?;
 
     let mut tx = db.begin().await?;
-    for (enrolment_id, status) in &parsed {
+    for (enrolment_id, status) in &plan.entries {
         repository::upsert_attendance_tx(&mut tx, session_id, *enrolment_id, *status, auth.user_id)
             .await?;
     }
