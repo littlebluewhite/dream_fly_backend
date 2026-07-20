@@ -850,6 +850,7 @@ dependencies = [
  "lettre",
  "oauth2",
  "pretty_assertions",
+ "quoted_printable",
  "rand 0.10.1",
  "rdkafka",
  "redis",

@@ -201,10 +201,7 @@ async fn e2e_password_reset_flow(db: PgPool) {
     // Recover the token from the mock email client.
     let sent = app.email.wait_for(1, 1000).await;
     assert_eq!(sent.len(), 1);
-    let token = match &sent[0].kind {
-        common::mocks::EmailKind::PasswordReset { token } => token.clone(),
-        other => panic!("expected PasswordReset, got {other:?}"),
-    };
+    let token = sent[0].token.clone();
 
     // Reset
     let reset = app

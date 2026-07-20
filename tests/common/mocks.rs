@@ -3,11 +3,10 @@
 //! mock here: `SmsClient` has no trait seam, only a config-URL + `wiremock`
 //! seam — see `common::twilio`.
 //!
-//! Every email send is recorded in a `Mutex<Vec<_>>` the test can inspect.
-//! `MockEmailClient` also exposes a `fail_next()` switch for negative-path
-//! tests that need to simulate an outage — though in practice most
-//! service-layer code spawns the send fire-and-forget and swallows
-//! failures, so the switch is mainly useful for middleware-style coverage.
+//! `EmailSender` is a single-method trait (`send_password_reset`), so every
+//! send recorded in the `Mutex<Vec<_>>` here is just `{to, token}` — the
+//! rendered HTML body lives below the seam, covered by `utils::email`'s own
+//! unit tests, not re-rendered here.
 
 #![allow(dead_code)]
 
@@ -21,34 +20,24 @@ use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
 
 #[derive(Debug, Clone)]
-pub struct SentEmail {
+pub struct SentPasswordReset {
     pub to: String,
-    pub subject: String,
-    pub body: String,
-    pub kind: EmailKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EmailKind {
-    Generic,
-    PasswordReset { token: String },
+    pub token: String,
 }
 
 pub struct MockEmailClient {
-    sent: Mutex<Vec<SentEmail>>,
-    fail: Mutex<bool>,
+    sent: Mutex<Vec<SentPasswordReset>>,
 }
 
 impl MockEmailClient {
     pub fn new() -> Self {
         Self {
             sent: Mutex::new(Vec::new()),
-            fail: Mutex::new(false),
         }
     }
 
     /// Take a snapshot of everything sent so far without clearing.
-    pub fn sent(&self) -> Vec<SentEmail> {
+    pub fn sent(&self) -> Vec<SentPasswordReset> {
         self.sent.lock().unwrap().clone()
     }
 
@@ -56,7 +45,7 @@ impl MockEmailClient {
     /// Used by tests that exercise code paths which spawn the send onto a
     /// background task (e.g. `forgot_password`) and therefore do not complete
     /// the send before the handler returns.
-    pub async fn wait_for(&self, n: usize, max_ms: u64) -> Vec<SentEmail> {
+    pub async fn wait_for(&self, n: usize, max_ms: u64) -> Vec<SentPasswordReset> {
         let step = 10u64;
         let mut waited = 0u64;
         while waited < max_ms {
@@ -71,29 +60,6 @@ impl MockEmailClient {
         }
         self.sent.lock().unwrap().clone()
     }
-
-    pub fn clear(&self) {
-        self.sent.lock().unwrap().clear();
-    }
-
-    pub fn fail_next(&self) {
-        *self.fail.lock().unwrap() = true;
-    }
-
-    fn should_fail(&self) -> bool {
-        let mut g = self.fail.lock().unwrap();
-        let v = *g;
-        *g = false;
-        v
-    }
-
-    fn record(&self, email: SentEmail) -> Result<(), AppError> {
-        if self.should_fail() {
-            return Err(AppError::Internal(anyhow::anyhow!("mock email failure")));
-        }
-        self.sent.lock().unwrap().push(email);
-        Ok(())
-    }
 }
 
 impl Default for MockEmailClient {
@@ -104,29 +70,12 @@ impl Default for MockEmailClient {
 
 #[async_trait]
 impl EmailSender for MockEmailClient {
-    async fn send_email(
-        &self,
-        to: &str,
-        subject: &str,
-        body: String,
-    ) -> Result<(), AppError> {
-        self.record(SentEmail {
-            to: to.to_string(),
-            subject: subject.to_string(),
-            body,
-            kind: EmailKind::Generic,
-        })
-    }
-
     async fn send_password_reset(&self, to: &str, token: &str) -> Result<(), AppError> {
-        self.record(SentEmail {
+        self.sent.lock().unwrap().push(SentPasswordReset {
             to: to.to_string(),
-            subject: "Dream Fly — Password Reset".into(),
-            body: String::new(),
-            kind: EmailKind::PasswordReset {
-                token: token.to_string(),
-            },
-        })
+            token: token.to_string(),
+        });
+        Ok(())
     }
 }
 

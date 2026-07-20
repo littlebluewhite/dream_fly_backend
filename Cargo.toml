@@ -66,8 +66,9 @@ anyhow = "1"
 thiserror = "2"
 
 # Async trait support — used so AppState can hold an `Arc<dyn EmailSender>`
-# trait object, allowing integration tests to inject an in-memory mock in
-# place of the real SMTP client.
+# trait object (integration tests inject an in-memory mock in place of the
+# real SMTP client), and so the Kafka outbox dispatcher can hold a
+# `dyn EventPublisher` (`src/kafka/producer.rs`).
 async-trait = "0.1"
 
 [dev-dependencies]
@@ -86,6 +87,11 @@ wiremock = "0.6"
 url = "2"
 # Fake data generators for test fixtures.
 fake = { version = "5.1", features = ["derive", "chrono"] }
+# Already pulled in transitively by lettre (which only encodes, never
+# decodes). `utils::email`'s unit tests use it to decode the
+# quoted-printable body lettre produces, so assertions check email content
+# rather than transport encoding.
+quoted_printable = "0.5"
 # Force serial execution for tests that touch shared global state such as the
 # Redis db 15 used by the rate-limit middleware test.
 serial_test = "3"
