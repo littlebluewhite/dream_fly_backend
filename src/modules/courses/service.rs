@@ -9,7 +9,7 @@ use super::dto::{
     CourseDetailResponse, CourseListResponse, CourseResponse, CourseScheduleSlotEntry,
     CourseScheduleSlotResponse, CreateCourseRequest, UpdateCourseRequest,
 };
-use super::model::CourseLevel;
+use super::model::{AgeRange, CourseLevel};
 use super::repository::{self, CourseSlotRow};
 
 /// Parse+validate `schedule_slots` request entries into the tuple shape
@@ -86,14 +86,11 @@ pub async fn create_course(
         )
     })?;
 
-    // Cross-field validation: min_age must be <= max_age when both are set.
-    if let (Some(min), Some(max)) = (req.min_age, req.max_age) {
-        if min > max {
-            return Err(AppError::Validation(
-                "min_age must be less than or equal to max_age".into(),
-            ));
-        }
-    }
+    // AgeRange owns the "legal age range" invariant (ordering + 0..=150
+    // bounds). The bounds half is already enforced by
+    // `CreateCourseRequest`'s own `#[validate(range)]` attributes, so this
+    // re-check is idempotent on the create path.
+    let age_range = AgeRange::new(req.min_age, req.max_age)?;
 
     let slug = req.slug.unwrap_or_else(|| slugify(&req.name));
 
@@ -123,8 +120,8 @@ pub async fn create_course(
         req.duration_minutes,
         req.price_cents,
         req.max_students,
-        req.min_age,
-        req.max_age,
+        age_range.min_age(),
+        age_range.max_age(),
         &features,
         req.coach_id,
         req.category.as_deref(),
@@ -180,8 +177,25 @@ pub async fn update_course(
 
     let mut tx = db.begin().await?;
 
+    // Lock the existing row, confirming it exists (404 otherwise), before
+    // merging the tri-state PATCH and validating: holding the lock across
+    // that merge and the write that follows is what serializes two
+    // concurrent single-field PATCHes — without it, both could validate
+    // against the same stale counterpart, and the second would only be
+    // caught by the DB CHECK (23514 → 500).
+    let existing = repository::find_by_id_for_update_tx(&mut tx, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("course not found".into()))?;
+
+    // Merge the tri-state PATCH into its effective post-write value:
+    // `None` (absent) keeps the existing bound, `Some(v)` (including
+    // `Some(None)` — explicit null) overrides it.
+    let effective_min_age = req.min_age.unwrap_or(existing.min_age);
+    let effective_max_age = req.max_age.unwrap_or(existing.max_age);
+    AgeRange::new(effective_min_age, effective_max_age)?;
+
     let course = repository::update(
-        &mut tx,
+        &mut *tx,
         id,
         req.name.as_deref(),
         req.slug.as_deref(),

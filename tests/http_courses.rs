@@ -494,3 +494,69 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     assert_eq!(body4["category"], "韻律");
     assert_eq!(body4["schedule_text"], "週三 19:00-20:00");
 }
+
+// ---------------------------------------------------------------------------
+// Task 5 — AgeRange smart constructor: `update_course` must validate the
+// effective (post-merge) min_age/max_age itself instead of relying on the DB
+// CHECK, which only enforces ordering (not the 0..=150 bounds) and whose
+// violation today surfaces as an unmapped 500.
+// ---------------------------------------------------------------------------
+
+/// Behavior fix: a single-field PATCH that reverses the range against the
+/// *existing* counterpart must 422 via `AgeRange::new`, not fall through to
+/// the DB's `courses_age_range` CHECK (23514 — unmapped, surfaces as 500).
+#[sqlx::test]
+async fn patch_course_min_age_reversed_against_existing_max_age_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let created: serde_json::Value = app
+        .post("/api/v1/courses")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "name": "Age Range Course",
+            "level": "beginner",
+            "duration_minutes": 60,
+            "price_cents": 50000,
+            "max_students": 10,
+            "min_age": 5,
+            "max_age": 10,
+        }))
+        .await
+        .json();
+    let id = created["id"].as_str().unwrap();
+
+    // Only min_age is touched; max_age (10) is left in place by the
+    // tri-state "absent = don't touch" contract, so 20 > 10 is reversed.
+    let resp = app
+        .patch(&format!("/api/v1/courses/{id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "min_age": 20 }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+/// Behavior fix: `UpdateCourseRequest` has no `#[validate]` on the tri-state
+/// age fields (dto.rs) and the DB CHECK only enforces ordering, so
+/// `AgeRange::new` is now the only gate for the 0..=150 bounds on PATCH —
+/// an out-of-bounds `min_age` must 422 and must not reach the row.
+#[sqlx::test]
+async fn patch_course_min_age_below_zero_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Bounds Course", None).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/courses/{course_id}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "min_age": -1 }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+
+    let row: (Option<i32>,) = sqlx::query_as("SELECT min_age FROM courses WHERE id = $1")
+        .bind(course_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert!(row.0.is_none(), "rejected min_age must not reach the row");
+}
