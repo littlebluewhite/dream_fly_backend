@@ -85,8 +85,13 @@ pub struct UserResponse {
     pub roles: Vec<String>,
 }
 
-impl From<User> for UserResponse {
-    fn from(user: User) -> Self {
+impl UserResponse {
+    /// Roles are a required constructor argument rather than a
+    /// `..Default::default()`-style fill-in: forgetting to load them now
+    /// fails to compile instead of silently shipping an empty `roles: []`
+    /// (the failure mode of the old `From<User>` impl, which always
+    /// defaulted to `Vec::new()`).
+    pub fn new(user: User, roles: Vec<String>) -> Self {
         Self {
             id: user.id,
             email: user.email,
@@ -96,10 +101,47 @@ impl From<User> for UserResponse {
             avatar_url: user.avatar_url,
             is_active: user.is_active,
             created_at: user.created_at,
-            roles: Vec::new(),
+            roles,
         }
     }
 }
 
 // Re-export the shared MessageResponse for backwards-compatible imports.
 pub use crate::error::MessageResponse;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_user() -> User {
+        User {
+            id: Uuid::new_v4(),
+            email: "owner-test@example.com".into(),
+            name: "Owner Test".into(),
+            phone: None,
+            phone_verified: false,
+            avatar_url: None,
+            password_hash: None,
+            google_id: None,
+            is_active: true,
+            last_login: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            points_balance: 0,
+            preferences: None,
+            birth_date: None,
+        }
+    }
+
+    /// The invariant this constructor exists to guarantee: roles passed in
+    /// must actually reach the serialized wire output, not just the struct
+    /// field (a JSON-level assertion catches a `#[serde(skip)]`-style bug
+    /// that a struct-field-only assertion would miss).
+    #[test]
+    fn new_puts_roles_into_serialized_output() {
+        let response = UserResponse::new(test_user(), vec!["member".into(), "coach".into()]);
+
+        let json = serde_json::to_value(&response).expect("serialize UserResponse");
+        assert_eq!(json["roles"], serde_json::json!(["member", "coach"]));
+    }
+}

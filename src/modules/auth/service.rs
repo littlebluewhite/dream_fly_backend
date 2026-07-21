@@ -53,10 +53,7 @@ async fn issue_session(
     Ok(AuthResponse {
         access_token,
         refresh_token,
-        user: UserResponse {
-            roles,
-            ..UserResponse::from(user.clone())
-        },
+        user: UserResponse::new(user.clone(), roles),
     })
 }
 

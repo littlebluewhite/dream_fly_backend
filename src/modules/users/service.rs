@@ -21,10 +21,7 @@ pub async fn get_me(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppError
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
 
-    Ok(UserResponse {
-        roles,
-        ..UserResponse::from(user)
-    })
+    Ok(UserResponse::new(user, roles))
 }
 
 pub async fn update_me(
@@ -56,10 +53,7 @@ pub async fn update_me(
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
 
-    Ok(UserResponse {
-        roles,
-        ..UserResponse::from(user)
-    })
+    Ok(UserResponse::new(user, roles))
 }
 
 pub async fn list_users(
@@ -81,10 +75,7 @@ pub async fn list_users(
         .into_iter()
         .map(|u| {
             let roles = roles_by_user.remove(&u.id).unwrap_or_default();
-            UserResponse {
-                roles,
-                ..UserResponse::from(u)
-            }
+            UserResponse::new(u, roles)
         })
         .collect();
 
@@ -101,10 +92,7 @@ pub async fn get_user(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppErr
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
 
-    Ok(UserResponse {
-        roles,
-        ..UserResponse::from(user)
-    })
+    Ok(UserResponse::new(user, roles))
 }
 
 /// `POST /users` (admin). Builds the account the same way
@@ -145,10 +133,7 @@ pub async fn create_user(
 
     dirty.flush(redis).await;
 
-    Ok(UserResponse {
-        roles,
-        ..UserResponse::from(user)
-    })
+    Ok(UserResponse::new(user, roles))
 }
 
 /// `PATCH /users/{id}` (admin). `name`/`phone`/`is_active` only — `email`,
@@ -186,8 +171,5 @@ pub async fn admin_update_user(
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;
 
-    Ok(UserResponse {
-        roles,
-        ..UserResponse::from(user)
-    })
+    Ok(UserResponse::new(user, roles))
 }
