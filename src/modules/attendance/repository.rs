@@ -69,6 +69,26 @@ pub async fn find_active_enrolment_ids_in(
 /// `coaches::repository::replace_schedules`'s per-row loop-in-tx style).
 /// `ON CONFLICT DO UPDATE` never touches `created_at`, so the original
 /// insert time survives repeated re-marking.
+///
+/// The `ON CONFLICT ... WHERE` clause is the self-defending write-point half
+/// of the 核准恆勝 guard (ADR-0008) — it closes the TOCTOU window that
+/// `marking::plan`'s pre-check alone can't (an approval committing between the
+/// batch's approved-set read and this upsert). The update is *skipped* when it
+/// would overwrite a `leave` row that is backed by an `approved` leave request
+/// with a non-`leave` status. Three OR branches, any one allowing the write:
+///  - `EXCLUDED.status = 'leave'` — writing `leave` is always allowed
+///    (`decide_leave_request`'s approval upsert always wins; idempotent
+///    re-marks of `leave` pass);
+///  - `attendance_records.status <> 'leave'` — the existing row isn't a leave,
+///    so normal present/absent overwrites are unaffected;
+///  - `NOT EXISTS (approved leave)` — the existing `leave` row is verbal (no
+///    approved request behind it), so it stays freely overwritable.
+///
+/// The blocked case affects zero rows *without erroring* — callers must not
+/// assert on `rows_affected` (they don't: the result is discarded). Recovery
+/// from the residual snapshot-lag window is a manual re-mark to `leave`. The
+/// `EXISTS` sub-select walks the same `uniq_leave_requests_active` partial
+/// index (enrolment_id-leading, `approved` ∈ its predicate).
 pub async fn upsert_attendance_tx(
     tx: &mut Transaction<'_, Postgres>,
     session_id: Uuid,
@@ -81,7 +101,15 @@ pub async fn upsert_attendance_tx(
          (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
          VALUES ($1, $2, $3, $4::attendance_status, $5, NOW(), NOW()) \
          ON CONFLICT (session_id, enrolment_id) DO UPDATE \
-         SET status = EXCLUDED.status, marked_by = EXCLUDED.marked_by, marked_at = EXCLUDED.marked_at",
+         SET status = EXCLUDED.status, marked_by = EXCLUDED.marked_by, marked_at = EXCLUDED.marked_at \
+         WHERE EXCLUDED.status = 'leave'::attendance_status \
+            OR attendance_records.status <> 'leave'::attendance_status \
+            OR NOT EXISTS ( \
+                SELECT 1 FROM leave_requests lr \
+                WHERE lr.enrolment_id = attendance_records.enrolment_id \
+                  AND lr.session_id = attendance_records.session_id \
+                  AND lr.status = 'approved'::leave_status \
+            )",
     )
     .bind(Uuid::now_v7())
     .bind(session_id)
@@ -91,6 +119,31 @@ pub async fn upsert_attendance_tx(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Of the given `enrolment_ids`, the subset holding an `approved` leave
+/// request for `session_id` — `marking::plan`'s third input (the whole-batch
+/// half of the 核准恆勝 guard, ADR-0008). Read *inside* the write transaction
+/// so `plan`'s verdict and the upserts share one tx; an `Err` from `plan`
+/// then rolls the tx back with zero writes, preserving the "whole batch 422,
+/// zero writes" contract. `$2` is the batch's enrolment ids — the guard and
+/// its 422 only concern in-batch members — and the query walks the
+/// `uniq_leave_requests_active` partial index (enrolment_id-leading,
+/// `approved` ∈ its predicate), so no new migration is needed.
+pub async fn find_approved_leave_enrolment_ids_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    session_id: Uuid,
+    enrolment_ids: &[Uuid],
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT enrolment_id FROM leave_requests \
+         WHERE session_id = $1 AND enrolment_id = ANY($2::uuid[]) \
+           AND status = 'approved'::leave_status",
+    )
+    .bind(session_id)
+    .bind(enrolment_ids)
+    .fetch_all(&mut **tx)
+    .await
 }
 
 /// Distinct students across a coach's active courses' active enrolments,

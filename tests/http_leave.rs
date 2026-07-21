@@ -13,8 +13,8 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
-    seed_coach, seed_course, seed_course_session, seed_course_with_capacity, seed_enrolment,
-    seed_leave_request, seed_leave_scene, set_makeup_session,
+    seed_attendance, seed_coach, seed_course, seed_course_session, seed_course_with_capacity,
+    seed_enrolment, seed_leave_request, seed_leave_scene, set_makeup_session,
 };
 use common::http::spawn_test_app;
 use serde_json::json;
@@ -436,6 +436,48 @@ async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
     .await
     .expect("fetch notification");
     assert!(message.contains("已核准"), "message was: {message}");
+}
+
+/// 核准恆勝 (ADR-0008): approving a leave request overwrites an already-marked
+/// `present` attendance with `leave`, even for an already-started (here:
+/// yesterday) session — a late approval is a legitimate ruling, not a race to
+/// lose. The upsert guard's first branch (`EXCLUDED.status = 'leave'`) lets the
+/// approval win over any prior mark. Sibling of
+/// `attendance_put_present_over_approved_leave_rejects_whole_batch` (the
+/// reverse direction, which the guard *blocks*) in `http_attendance.rs`.
+#[sqlx::test]
+async fn decide_approve_overwrites_existing_present_attendance(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (coach_user_id, coach_token) =
+        app.seed_user_with_roles("leave-approve-over-present-coach@example.com", &["coach"]).await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "Approve Over Present Coach").await;
+    let course_id = seed_course(&app.db, "Approve Over Present Course", Some(coach_id)).await;
+    let member =
+        app.register_member("leave-approve-over-present-member@example.com", "Password!234").await;
+    // Already-started session so the prior `present` mark is realistic; decide
+    // has no time gate, so a late approval still applies.
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+    seed_attendance(&app.db, session_id, enrolment_id, "present", coach_user_id).await;
+    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .authorization_bearer(&coach_token)
+        .json(&json!({"status": "approved"}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let att_status: String = sqlx::query_scalar(
+        "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
+    )
+    .bind(session_id)
+    .bind(enrolment_id)
+    .fetch_one(&app.db)
+    .await
+    .expect("fetch attendance status");
+    assert_eq!(att_status, "leave", "approval must overwrite the prior present with leave");
 }
 
 #[sqlx::test]

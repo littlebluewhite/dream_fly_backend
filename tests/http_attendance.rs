@@ -5,7 +5,10 @@
 mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
-use common::fixtures::{seed_coach, seed_course, seed_course_session, seed_enrolment};
+use common::fixtures::{
+    seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment,
+    seed_leave_request,
+};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -373,6 +376,98 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
         2,
         "overwrite must not create duplicate rows"
     );
+}
+
+// ---------------------------------------------------------------------------
+// PUT /sessions/{id}/attendance — 點名不可覆寫已核准請假 (ADR-0008)
+// ---------------------------------------------------------------------------
+
+/// (核准恆勝, guard 方向二) A batch that marks a member holding an approved
+/// leave request `present`/`absent` is rejected whole (422, zero writes) by
+/// `marking::plan`'s approved-set pre-check — even the other, valid record in
+/// the batch is not written. The approved-leave attendance row (as
+/// decide-approve would have projected it) stays `leave`. RED before this
+/// card: the pre-check didn't exist, so the batch 200'd and overwrote the
+/// leave with present.
+#[sqlx::test]
+async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Approved Leave Guard Course", None).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let member_a = app.register_member("att-approved-leave-a@example.com", "Password!234").await;
+    let member_b = app.register_member("att-approved-leave-b@example.com", "Password!234").await;
+    let enrolment_a =
+        seed_enrolment(&app.db, member_a.user_id, course_id, "active", Utc::now()).await;
+    let enrolment_b =
+        seed_enrolment(&app.db, member_b.user_id, course_id, "active", Utc::now()).await;
+    // A holds an approved leave, already projected to an attendance `leave` row.
+    seed_leave_request(&app.db, enrolment_a, session_id, "approved").await;
+    seed_attendance(&app.db, session_id, enrolment_a, "leave", admin_id).await;
+
+    let resp = app
+        .put(&format!("/api/v1/sessions/{session_id}/attendance"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"records": [
+            {"enrolment_id": enrolment_a, "status": "present"},
+            {"enrolment_id": enrolment_b, "status": "present"},
+        ]}))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+
+    let a_status: String = sqlx::query_scalar(
+        "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
+    )
+    .bind(session_id)
+    .bind(enrolment_a)
+    .fetch_one(&app.db)
+    .await
+    .expect("fetch A status");
+    assert_eq!(a_status, "leave", "approved leave must not be overwritten by present");
+
+    let b_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
+    )
+    .bind(session_id)
+    .bind(enrolment_b)
+    .fetch_one(&app.db)
+    .await
+    .expect("count B");
+    assert_eq!(b_count, 0, "whole batch rejected: the valid record B must not be written either");
+}
+
+/// (idempotent rewrite) Marking `leave` for an approved-leave member is the
+/// one write the guard allows — the approved-set pre-check waves `leave`
+/// through (only present/absent are blocked), and the upsert's
+/// `EXCLUDED.status = 'leave'` branch lets it land. 200, row stays `leave`.
+#[sqlx::test]
+async fn attendance_put_leave_over_approved_leave_is_idempotent(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Approved Leave Idempotent Course", None).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let member = app.register_member("att-approved-leave-idem@example.com", "Password!234").await;
+    let enrolment_id =
+        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+    seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
+    seed_attendance(&app.db, session_id, enrolment_id, "leave", admin_id).await;
+
+    let resp = app
+        .put(&format!("/api/v1/sessions/{session_id}/attendance"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "leave"}]}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let status: String = sqlx::query_scalar(
+        "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
+    )
+    .bind(session_id)
+    .bind(enrolment_id)
+    .fetch_one(&app.db)
+    .await
+    .expect("fetch status");
+    assert_eq!(status, "leave");
 }
 
 // ---------------------------------------------------------------------------

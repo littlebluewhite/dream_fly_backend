@@ -2,15 +2,20 @@
 //! `PUT /sessions/{id}/attendance`'s bulk upsert, pulled out of the service
 //! body into two pure functions: [`parse`] turns each record's raw `status`
 //! string into an [`AttendanceStatus`] (422 on the first invalid value),
-//! [`plan`] checks the parsed batch's enrolment ids against the caller-
-//! resolved active/course-owned set (422 on any mismatch, contract §3.19
-//! 裁決 2). Same shape as `orders::pricing`/`orders::fulfilment`: pure
-//! function, zero DB, zero async — `service::bulk_upsert_attendance` still
-//! owns everything genuinely transactional: session/coach lookup (404/403),
-//! the studio-clock "already started" gate (422, contract §3.19 裁決 4),
-//! the `repository::find_active_enrolment_ids_in` DB round trip (skipped
-//! when the batch is empty), the upsert transaction loop, and the roster
-//! re-read.
+//! [`plan`] checks the parsed batch against two caller-resolved sets — the
+//! active/course-owned enrolments (422 on any mismatch, contract §3.19
+//! 裁決 2) and the enrolments holding an `approved` leave request for this
+//! session (422 if any of them are marked present/absent — 核准恆勝 /
+//! 點名不可覆寫已核准請假, ADR-0008). Same shape as
+//! `orders::pricing`/`orders::fulfilment`: pure function, zero DB, zero async
+//! — `service::bulk_upsert_attendance` still owns everything genuinely
+//! transactional: session/coach lookup (404/403), the studio-clock "already
+//! started" gate (422, contract §3.19 裁決 4), the
+//! `repository::find_active_enrolment_ids_in` and
+//! `find_approved_leave_enrolment_ids_tx` DB round trips (both skipped when
+//! the batch is empty; the latter runs *inside* the write tx so `plan`'s
+//! verdict and the upserts share one transaction), the upsert transaction
+//! loop, and the roster re-read.
 //!
 //! **Error ordering is load-bearing: [`parse`] must run before the
 //! enrolment-id DB query.** Today an invalid `status` string never triggers
@@ -54,23 +59,47 @@ pub fn parse(
     Ok(parsed)
 }
 
-/// Check the parsed batch's enrolment ids against `valid_enrolment_ids` —
-/// the subset the caller already resolved (via
-/// `repository::find_active_enrolment_ids_in`) to belong to this session's
-/// course and be active. Any mismatch — a requested id missing from the
-/// valid set (cross-course, cancelled, or nonexistent all look identical
-/// here) — rejects the whole batch (422). This pure seam deliberately can't
-/// and doesn't distinguish *why* an id is invalid; that finer-grained
-/// distinction belongs to the `active_enrolments` view and the existing
-/// http integration tests, not to this function's unit tests.
+/// Check the parsed batch against two caller-resolved sets, rejecting the
+/// whole batch (422) on any violation — same all-or-nothing semantics for
+/// both checks:
+///
+/// 1. **Membership** (contract §3.19 裁決 2): every requested enrolment id
+///    must be in `valid_enrolment_ids` — the subset the caller already
+///    resolved (via `repository::find_active_enrolment_ids_in`) to belong to
+///    this session's course and be active. Any mismatch — a requested id
+///    missing from the valid set (cross-course, cancelled, or nonexistent all
+///    look identical here) — rejects the batch. This pure seam deliberately
+///    can't and doesn't distinguish *why* an id is invalid; that finer-grained
+///    distinction belongs to the `active_enrolments` view and the existing
+///    http integration tests, not to this function's unit tests.
+/// 2. **Approved-leave guard** (核准恆勝, ADR-0008): no member in
+///    `approved_leave_enrolment_ids` — those holding an `approved` leave
+///    request for this session — may be marked `present`/`absent`; that is the
+///    "點名不可覆寫已核准請假" rule, enforced here as a whole-batch pre-check.
+///    Marking `leave` is always allowed (idempotent rewrite). Members *not* in
+///    this set are wholly unaffected — including verbal leave (a `PUT "leave"`
+///    with no approved request behind it), which stays fully writable and
+///    overwritable. This pre-check is one of two defense layers; the
+///    `ON CONFLICT` guard in `repository::upsert_attendance_tx` closes the
+///    residual TOCTOU window where an approval commits between this check and
+///    the upsert.
 pub fn plan(
     parsed: Vec<(Uuid, AttendanceStatus)>,
     valid_enrolment_ids: &HashSet<Uuid>,
+    approved_leave_enrolment_ids: &HashSet<Uuid>,
 ) -> Result<MarkingPlan, AppError> {
     let requested: HashSet<Uuid> = parsed.iter().map(|(id, _)| *id).collect();
     if requested != *valid_enrolment_ids {
         return Err(AppError::Validation(
             "all enrolments must belong to this session's course and be active".into(),
+        ));
+    }
+    if parsed
+        .iter()
+        .any(|(id, status)| *status != AttendanceStatus::Leave && approved_leave_enrolment_ids.contains(id))
+    {
+        return Err(AppError::Validation(
+            "cannot overwrite an approved leave with present/absent".into(),
         ));
     }
     Ok(MarkingPlan { entries: parsed })
@@ -128,7 +157,7 @@ mod tests {
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
         let parsed = vec![(a, AttendanceStatus::Present), (b, AttendanceStatus::Absent)];
         let valid: HashSet<Uuid> = [a, b].into_iter().collect();
-        let plan = plan(parsed.clone(), &valid).expect("plans");
+        let plan = plan(parsed.clone(), &valid, &HashSet::new()).expect("plans");
         assert_eq!(plan.entries, parsed);
     }
 
@@ -142,7 +171,7 @@ mod tests {
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
         let parsed = vec![(a, AttendanceStatus::Present), (b, AttendanceStatus::Present)];
         let valid: HashSet<Uuid> = [a].into_iter().collect(); // b missing
-        let err = plan(parsed, &valid).expect_err("must reject");
+        let err = plan(parsed, &valid, &HashSet::new()).expect_err("must reject");
         assert!(
             matches!(
                 err,
@@ -161,7 +190,7 @@ mod tests {
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
         let parsed = vec![(a, AttendanceStatus::Present)];
         let valid: HashSet<Uuid> = [a, b].into_iter().collect();
-        let err = plan(parsed, &valid).expect_err("must reject");
+        let err = plan(parsed, &valid, &HashSet::new()).expect_err("must reject");
         assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
     }
 
@@ -170,7 +199,65 @@ mod tests {
         // service.rs's guard: an empty records batch skips the enrolment
         // query entirely and hands `plan` an empty valid set — the
         // vacuously-equal empty sets must still pass.
-        let plan = plan(Vec::new(), &HashSet::new()).expect("plans");
+        let plan = plan(Vec::new(), &HashSet::new(), &HashSet::new()).expect("plans");
         assert!(plan.entries.is_empty());
+    }
+
+    // --- plan: approved-leave guard (核准恆勝 / 點名不可覆寫已核准請假, ADR-0008) ---
+
+    #[test]
+    fn plan_present_for_approved_leave_member_rejects_whole_batch() {
+        // attendance_put_present_over_approved_leave_rejects_whole_batch (http):
+        // marking an approved-leave member present taints the whole batch (422),
+        // even though the batch is otherwise membership-valid.
+        let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+        let parsed = vec![(a, AttendanceStatus::Present), (b, AttendanceStatus::Present)];
+        let valid: HashSet<Uuid> = [a, b].into_iter().collect();
+        let approved: HashSet<Uuid> = [a].into_iter().collect(); // a holds an approved leave
+        let err = plan(parsed, &valid, &approved).expect_err("must reject");
+        assert!(
+            matches!(
+                err,
+                AppError::Validation(ref m)
+                    if m == "cannot overwrite an approved leave with present/absent"
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn plan_absent_for_approved_leave_member_also_rejected() {
+        // Same guard covers `absent`, not just `present` — either non-leave
+        // status over an approved leave is rejected.
+        let a = Uuid::now_v7();
+        let parsed = vec![(a, AttendanceStatus::Absent)];
+        let valid: HashSet<Uuid> = [a].into_iter().collect();
+        let approved: HashSet<Uuid> = [a].into_iter().collect();
+        let err = plan(parsed, &valid, &approved).expect_err("must reject");
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn plan_leave_for_approved_leave_member_passes() {
+        // attendance_put_leave_over_approved_leave_is_idempotent (http): marking
+        // `leave` for an approved-leave member is the allowed idempotent rewrite.
+        let a = Uuid::now_v7();
+        let parsed = vec![(a, AttendanceStatus::Leave)];
+        let valid: HashSet<Uuid> = [a].into_iter().collect();
+        let approved: HashSet<Uuid> = [a].into_iter().collect();
+        let plan = plan(parsed.clone(), &valid, &approved).expect("plans");
+        assert_eq!(plan.entries, parsed);
+    }
+
+    #[test]
+    fn plan_present_for_non_approved_member_is_unaffected() {
+        // A member with no approved leave (incl. verbal leave — a `PUT "leave"`
+        // never approved) is untouched by the guard: present passes. Mirror of
+        // the upsert guard's `NOT EXISTS (approved leave)` branch.
+        let a = Uuid::now_v7();
+        let parsed = vec![(a, AttendanceStatus::Present)];
+        let valid: HashSet<Uuid> = [a].into_iter().collect();
+        let plan = plan(parsed.clone(), &valid, &HashSet::new()).expect("plans");
+        assert_eq!(plan.entries, parsed);
     }
 }

@@ -15,7 +15,7 @@ use crate::utils::studio_clock;
 
 use super::dto::{
     AdminLeaveRequestResponse, CreateLeaveRequestRequest, LeaveRequestListResponse,
-    LeaveRequestQuery, LeaveRequestResponse, MakeupRequest,
+    LeaveRequestQuery, LeaveRequestResponse, MakeupInfo, MakeupRequest,
 };
 use super::model::LeaveStatus;
 use super::repository;
@@ -52,21 +52,19 @@ pub async fn create_leave_request(
     let lr = repository::insert(db, enrolment_id, req.session_id, req.reason.as_deref())
         .await
         .map_err(|e| AppError::conflict_on_unique(e, "此場次已有請假紀錄"))?;
-    Ok(LeaveRequestResponse {
-        id: lr.id,
-        course_id: session.course_id,
-        course_name: session.course_name,
-        session_id: lr.session_id,
-        session_date: session.session_date,
-        start_time: session.start_time,
-        reason: lr.reason,
-        status: lr.status.as_str().to_string(),
-        makeup_session_id: None,
-        makeup_session_date: None,
-        makeup_start_time: None,
-        decided_at: None,
-        created_at: lr.created_at,
-    })
+    Ok(LeaveRequestResponse::new(
+        lr.id,
+        session.course_id,
+        session.course_name,
+        lr.session_id,
+        session.session_date,
+        session.start_time,
+        lr.reason,
+        lr.status.as_str().to_string(),
+        None,
+        None,
+        lr.created_at,
+    ))
 }
 
 /// `GET /leave-requests/me` — plain array, newest first (mirrors
@@ -225,21 +223,24 @@ pub async fn decide_leave_request(
     .deliver(db)
     .await;
 
-    Ok(LeaveRequestResponse {
-        id: updated.id,
-        course_id: ctx.course_id,
-        course_name: ctx.course_name,
-        session_id: ctx.session_id,
-        session_date: ctx.session_date,
-        start_time: ctx.start_time,
-        reason: updated.reason,
-        status: updated.status.as_str().to_string(),
-        makeup_session_id: updated.makeup_session_id,
-        makeup_session_date: None,
-        makeup_start_time: None,
-        decided_at: updated.decided_at,
-        created_at: updated.created_at,
-    })
+    // A just-decided request was `pending`, so it can carry no booked makeup
+    // yet (makeup requires an already-approved request) — `None` here, matching
+    // contract §3.20's "此時 makeup_session_id 等欄位必為 null". The
+    // `Option<MakeupInfo>` constructor makes that null-triple explicit rather
+    // than passing a lone `updated.makeup_session_id` with null date/time.
+    Ok(LeaveRequestResponse::new(
+        updated.id,
+        ctx.course_id,
+        ctx.course_name,
+        ctx.session_id,
+        ctx.session_date,
+        ctx.start_time,
+        updated.reason,
+        updated.status.as_str().to_string(),
+        None,
+        updated.decided_at,
+        updated.created_at,
+    ))
 }
 
 /// `POST /leave-requests/{id}/makeup` — owner only. Two row locks make the
@@ -320,19 +321,21 @@ pub async fn book_makeup(
 
     tx.commit().await?;
 
-    Ok(LeaveRequestResponse {
-        id: updated.id,
-        course_id: leave.course_id,
-        course_name: leave.course_name,
-        session_id: leave.session_id,
-        session_date: leave.session_date,
-        start_time: leave.start_time,
-        reason: updated.reason,
-        status: updated.status.as_str().to_string(),
-        makeup_session_id: updated.makeup_session_id,
-        makeup_session_date: Some(target.session_date),
-        makeup_start_time: Some(target.start_time),
-        decided_at: updated.decided_at,
-        created_at: updated.created_at,
-    })
+    Ok(LeaveRequestResponse::new(
+        updated.id,
+        leave.course_id,
+        leave.course_name,
+        leave.session_id,
+        leave.session_date,
+        leave.start_time,
+        updated.reason,
+        updated.status.as_str().to_string(),
+        Some(MakeupInfo {
+            session_id: req.session_id,
+            session_date: target.session_date,
+            start_time: target.start_time,
+        }),
+        updated.decided_at,
+        updated.created_at,
+    ))
 }

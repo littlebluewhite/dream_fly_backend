@@ -85,9 +85,29 @@ pub async fn bulk_upsert_attendance(
             .into_iter()
             .collect()
     };
-    let plan = marking::plan(parsed, &valid)?;
 
     let mut tx = db.begin().await?;
+
+    // Approved-leave guard, whole-batch pre-check (核准恆勝, ADR-0008): read
+    // the batch's approved-leave enrolments *inside* the write tx, then let
+    // `marking::plan` reject the whole batch (422) if any of them is being
+    // marked present/absent. `plan` is pure, so its `Err` short-circuits via
+    // `?` before any upsert runs — the tx rolls back with zero writes, keeping
+    // the existing "whole batch 422, zero writes" contract. The `ON CONFLICT`
+    // guard in `upsert_attendance_tx` closes the residual TOCTOU window. Gate
+    // order is unchanged: parse (above) precedes both the membership check and
+    // this approved-guard, which `plan` evaluates together.
+    let approved: HashSet<Uuid> = if parsed.is_empty() {
+        HashSet::new()
+    } else {
+        let ids: Vec<Uuid> = parsed.iter().map(|(id, _)| *id).collect();
+        repository::find_approved_leave_enrolment_ids_tx(&mut tx, session_id, &ids)
+            .await?
+            .into_iter()
+            .collect()
+    };
+    let plan = marking::plan(parsed, &valid, &approved)?;
+
     for (enrolment_id, status) in &plan.entries {
         repository::upsert_attendance_tx(&mut tx, session_id, *enrolment_id, *status, auth.user_id)
             .await?;
