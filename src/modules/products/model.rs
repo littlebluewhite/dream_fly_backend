@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::error::AppError;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "product_type", rename_all = "snake_case")]
 pub enum ProductType {
@@ -58,9 +60,108 @@ pub struct Product {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Product {
+    /// Single-request purchasability predicate: can `quantity` units of this
+    /// product be bought *in this one request*? Checks `is_active`, then —
+    /// if the product tracks stock at all (`stock: Some(_)`; `None` means
+    /// unlimited, e.g. tickets/memberships) — that `quantity` doesn't exceed
+    /// it.
+    ///
+    /// This is deliberately not the owner of any cart-wide stock invariant:
+    /// what `quantity` *means* is entirely up to the caller. `cart::service`
+    /// has two call sites that pass different things —
+    /// `add_product_item` passes the increment being added this call (the
+    /// repository accumulates separately via `ON CONFLICT DO UPDATE SET
+    /// quantity = cart_items.quantity + $N`), while `update_quantity` passes
+    /// the item's final quantity. Because of that, repeated `add_item` calls
+    /// can each individually clear this check while the cart's accumulated
+    /// total drifts past `stock` — this method has no way to see that, and
+    /// is not responsible for closing that gap. The authoritative,
+    /// atomic-decrement check lives at checkout in
+    /// `products::service::reserve_stock_tx`; this predicate is only ever a
+    /// lightweight, single-request pre-check ahead of it.
+    ///
+    /// Error strings are load-bearing (asserted on by substring match in
+    /// `tests/service_cart.rs`): `"product is not available"` /
+    /// `BadRequest` (400), `"insufficient stock: only {stock} available"` /
+    /// `Conflict` (409).
+    pub fn ensure_purchasable(&self, quantity: i32) -> Result<(), AppError> {
+        if !self.is_active {
+            return Err(AppError::BadRequest("product is not available".into()));
+        }
+
+        if let Some(stock) = self.stock {
+            if quantity > stock {
+                return Err(AppError::Conflict(format!(
+                    "insufficient stock: only {stock} available"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal fixture for `ensure_purchasable` tests — only `is_active` and
+    /// `stock` are varied per case, everything else is filler.
+    fn fixture_product(is_active: bool, stock: Option<i32>) -> Product {
+        Product {
+            id: Uuid::now_v7(),
+            name: "Test Product".into(),
+            slug: "test-product".into(),
+            product_type: ProductType::Merchandise,
+            description: None,
+            price_cents: 1000,
+            original_price_cents: None,
+            features: vec![],
+            is_highlighted: false,
+            badge: None,
+            stock,
+            valid_days: None,
+            session_count: None,
+            is_active,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // --- ensure_purchasable ---
+
+    #[test]
+    fn ensure_purchasable_rejects_inactive_product() {
+        let product = fixture_product(false, Some(10));
+        let err = product.ensure_purchasable(1).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m == "product is not available"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_purchasable_allows_any_quantity_when_stock_is_untracked() {
+        let product = fixture_product(true, None);
+        assert!(product.ensure_purchasable(1_000_000).is_ok());
+    }
+
+    #[test]
+    fn ensure_purchasable_allows_quantity_within_stock() {
+        let product = fixture_product(true, Some(5));
+        assert!(product.ensure_purchasable(5).is_ok());
+    }
+
+    #[test]
+    fn ensure_purchasable_rejects_quantity_above_stock() {
+        let product = fixture_product(true, Some(3));
+        let err = product.ensure_purchasable(4).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m == "insufficient stock: only 3 available"),
+            "got: {err:?}"
+        );
+    }
 
     #[test]
     fn as_str_matches_the_snake_case_sql_spelling() {

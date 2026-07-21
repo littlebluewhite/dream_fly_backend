@@ -42,20 +42,10 @@ async fn add_product_item(
         .await?
         .ok_or_else(|| AppError::NotFound("product not found".into()))?;
 
-    if !product.is_active {
-        return Err(AppError::BadRequest("product is not available".into()));
-    }
-
-    // Lightweight stock check: if the product tracks stock, reject
-    // additions that obviously exceed it. The authoritative decrement still
-    // happens at checkout inside the transaction.
-    if let Some(stock) = product.stock {
-        if quantity > stock {
-            return Err(AppError::Conflict(format!(
-                "insufficient stock: only {stock} available"
-            )));
-        }
-    }
+    // `quantity` here is this add's increment, not the cart's final total —
+    // see `Product::ensure_purchasable`'s doc comment for the boundary with
+    // `reserve_stock_tx`.
+    product.ensure_purchasable(quantity)?;
 
     repository::add_product_item(db, user_id, product_id, quantity).await?;
 
@@ -124,23 +114,16 @@ pub async fn update_quantity(
 
             // Re-check product active + stock on quantity updates; without
             // this, a user could ratchet a cart item past the available
-            // stock after a restock/inactivation.
+            // stock after a restock/inactivation. `quantity` here is the
+            // item's final value — see `Product::ensure_purchasable`'s doc
+            // comment for the boundary with `reserve_stock_tx`.
             let product_id = item
                 .product_id
                 .ok_or_else(|| AppError::Validation("cart item missing product_id".into()))?;
             let product = crate::modules::products::repository::find_by_id(db, product_id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("product not found".into()))?;
-            if !product.is_active {
-                return Err(AppError::BadRequest("product is not available".into()));
-            }
-            if let Some(stock) = product.stock {
-                if quantity > stock {
-                    return Err(AppError::Conflict(format!(
-                        "insufficient stock: only {stock} available"
-                    )));
-                }
-            }
+            product.ensure_purchasable(quantity)?;
         }
     }
 

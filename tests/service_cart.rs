@@ -69,6 +69,29 @@ async fn add_item_rejects_quantity_above_stock(db: PgPool) {
     );
 }
 
+// Characterization test (Task 7): locks in the *intentional* gap between
+// `add_item`'s per-request increment check and the cart's accumulated
+// total. `add_item` validates only the increment being added on each call
+// (the repository accumulates via `ON CONFLICT DO UPDATE SET quantity =
+// cart_items.quantity + $3`), so two additions that each individually clear
+// the stock check can still push the cart's total past `stock`. This is not
+// a bug to fix here — the authoritative decrement is
+// `products::service::reserve_stock_tx` at checkout — this test exists so
+// the gap is executable documentation instead of a comment someone could
+// silently invalidate.
+#[sqlx::test]
+async fn add_item_repeated_can_accumulate_past_stock_by_design(db: PgPool) {
+    let user = seed_member(&db, "c11@example.com", "Password!234").await;
+    let product = seed_product(&db, "prod-11", 500, Some(3)).await;
+
+    let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
+    assert_eq!(cart.items[0].quantity, 2);
+
+    let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
+    assert_eq!(cart.items.len(), 1);
+    assert_eq!(cart.items[0].quantity, 4, "cart total exceeds stock of 3 by design");
+}
+
 #[sqlx::test]
 async fn add_item_unknown_product_returns_not_found(db: PgPool) {
     let user = seed_member(&db, "c5@example.com", "Password!234").await;
@@ -113,6 +136,23 @@ async fn update_quantity_changes_and_get_cart_reflects(db: PgPool) {
 
     let fetched = service::get_cart(&db, user).await.unwrap();
     assert_eq!(fetched.items[0].quantity, 7);
+}
+
+// Task 7: the update-quantity call site validates the item's *final*
+// quantity (unlike `add_item`'s increment check above) — this had zero
+// direct test coverage before this task.
+#[sqlx::test]
+async fn update_quantity_above_stock_returns_conflict(db: PgPool) {
+    let user = seed_member(&db, "c12@example.com", "Password!234").await;
+    let product = seed_product(&db, "prod-12", 500, Some(5)).await;
+    let cart = service::add_item(&db, user, "product", product, 1).await.unwrap();
+    let item_id = cart.items[0].id;
+
+    let err = service::update_quantity(&db, user, item_id, 6).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::Conflict(ref m) if m.contains("insufficient stock")),
+        "got {err:?}"
+    );
 }
 
 #[sqlx::test]
