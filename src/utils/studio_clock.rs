@@ -197,15 +197,9 @@ pub fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
         .ok()
 }
 
-/// Reject a time window whose `end` is not strictly after `start` — the
-/// single owner of the "end ≤ start" comparison that used to be hand-copied
-/// at three call sites (courses' `parse_schedule_slots`, coaches'
-/// `parse_schedule_entries`, schedule's `create_slots`), each previously
-/// with its own message wording (two prefixed with the entity name) and,
-/// for schedule, a different status code (`BadRequest`/400 vs the other
-/// two's `Validation`/422). Unified here to a single `Validation` (422)
-/// with the unprefixed message, matching all four tables' own
-/// `CHECK (end_time > start_time)` backstop's boundary.
+/// Single owner of the "end ≤ start" rejection shared by the three
+/// schedule-shaped call sites (courses/coaches/schedule); rejects with
+/// `Validation`/422, the same boundary as all four tables' own `CHECK (end_time > start_time)` backstop.
 pub fn validate_time_window(start: NaiveTime, end: NaiveTime) -> Result<(), AppError> {
     if end <= start {
         return Err(AppError::Validation(

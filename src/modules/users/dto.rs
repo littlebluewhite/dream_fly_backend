@@ -131,9 +131,7 @@ pub struct UserResponse {
 impl UserResponse {
     /// Roles are a required constructor argument rather than a
     /// `..Default::default()`-style fill-in: forgetting to load them now
-    /// fails to compile instead of silently shipping an empty `roles: []`
-    /// (the failure mode of the old `From<User>` impl, which always
-    /// defaulted to `Vec::new()`).
+    /// fails to compile instead of silently shipping an empty `roles: []`.
     pub fn new(user: User, roles: Vec<String>) -> Self {
         Self {
             id: user.id,
