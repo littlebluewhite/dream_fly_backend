@@ -197,6 +197,24 @@ pub fn parse_time_of_day(s: &str) -> Option<NaiveTime> {
         .ok()
 }
 
+/// Reject a time window whose `end` is not strictly after `start` — the
+/// single owner of the "end ≤ start" comparison that used to be hand-copied
+/// at three call sites (courses' `parse_schedule_slots`, coaches'
+/// `parse_schedule_entries`, schedule's `create_slots`), each previously
+/// with its own message wording (two prefixed with the entity name) and,
+/// for schedule, a different status code (`BadRequest`/400 vs the other
+/// two's `Validation`/422). Unified here to a single `Validation` (422)
+/// with the unprefixed message, matching all four tables' own
+/// `CHECK (end_time > start_time)` backstop's boundary.
+pub fn validate_time_window(start: NaiveTime, end: NaiveTime) -> Result<(), AppError> {
+    if end <= start {
+        return Err(AppError::Validation(
+            "end_time must be after start_time".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +671,28 @@ mod tests {
         assert_eq!(parse_time_of_day("9am"), None);
         assert_eq!(parse_time_of_day("25:00"), None);
         assert_eq!(parse_time_of_day(""), None);
+    }
+
+    // --- validate_time_window ---
+
+    #[test]
+    fn validate_time_window_ok_when_end_after_start() {
+        assert!(validate_time_window(t(9, 0), t(10, 0)).is_ok());
+    }
+
+    #[test]
+    fn validate_time_window_rejects_end_equal_start() {
+        let err = validate_time_window(t(9, 0), t(9, 0)).unwrap_err();
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m == "end_time must be after start_time")
+        );
+    }
+
+    #[test]
+    fn validate_time_window_rejects_end_before_start() {
+        let err = validate_time_window(t(10, 0), t(9, 0)).unwrap_err();
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m == "end_time must be after start_time")
+        );
     }
 }

@@ -204,11 +204,7 @@ fn parse_schedule_entries(
             let end = studio_clock::parse_time_of_day(&e.end_time).ok_or_else(|| {
                 AppError::Validation(format!("invalid end_time: {}", e.end_time))
             })?;
-            if end <= start {
-                return Err(AppError::Validation(
-                    "schedule end_time must be after start_time".into(),
-                ));
-            }
+            studio_clock::validate_time_window(start, end)?;
             Ok((e.day_of_week, start, end, e.is_available))
         })
         .collect()

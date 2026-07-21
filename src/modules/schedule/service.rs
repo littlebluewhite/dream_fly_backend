@@ -80,9 +80,7 @@ pub async fn create_slots(
             AppError::BadRequest(format!("invalid end_time format: {}", entry.end_time))
         })?;
 
-        if end_time <= start_time {
-            return Err(AppError::BadRequest("end_time must be after start_time".into()));
-        }
+        studio_clock::validate_time_window(start_time, end_time)?;
         if entry.capacity <= 0 || entry.capacity > MAX_SLOT_CAPACITY {
             return Err(AppError::BadRequest(format!(
                 "capacity must be between 1 and {MAX_SLOT_CAPACITY}"

@@ -69,7 +69,7 @@ async fn create_slots_rejects_end_before_start(db: PgPool) {
     };
     let err = service::create_slots(&db, &utc_server(), Utc::now(), req).await.unwrap_err();
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m.contains("end_time")),
+        matches!(err, AppError::Validation(ref m) if m.contains("end_time")),
         "got {err:?}"
     );
     // Nothing should have landed in the DB.
