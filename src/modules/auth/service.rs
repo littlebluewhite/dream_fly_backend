@@ -64,9 +64,9 @@ async fn build_auth_response_tx(
     let expires_at = Utc::now() + Duration::days(config.jwt_refresh_expiration_days as i64);
     let token_hash = jwt::hash_token(&refresh_token);
 
-    repository::save_refresh_token_tx(tx, user.id, &token_hash, expires_at).await?;
+    repository::save_refresh_token(&mut **tx, user.id, &token_hash, expires_at).await?;
 
-    let roles = permissions_repository::find_role_names_by_user_tx(tx, user.id).await?;
+    let roles = permissions_repository::find_role_names_by_user(&mut **tx, user.id).await?;
 
     Ok(AuthResponse {
         access_token,
@@ -290,7 +290,7 @@ pub async fn google_auth(
         // First-time Google login. Check if a password-registered user
         // already owns this email. If so, link the Google account rather
         // than hitting the email UNIQUE constraint with an unhandled 500.
-        if let Some(existing_by_email) = repository::find_user_by_email_tx(&mut tx, &email).await? {
+        if let Some(existing_by_email) = repository::find_user_by_email(&mut *tx, &email).await? {
             if existing_by_email.google_id.is_some() {
                 // Different google_id but same email — conflict.
                 return Err(AppError::Conflict(
@@ -324,7 +324,7 @@ pub async fn google_auth(
     let dirty = repository::assign_role_tx(&mut tx, user.id, "member").await?;
 
     // 5. Update last_login
-    repository::update_last_login_tx(&mut tx, user.id).await?;
+    repository::update_last_login(&mut *tx, user.id).await?;
 
     // 6. Generate tokens (inside the same tx)
     let response = build_auth_response_tx(&mut tx, &config.auth, &user).await?;
@@ -399,7 +399,7 @@ pub async fn refresh_token(
         return Err(AppError::Unauthorized);
     }
 
-    repository::revoke_refresh_token_tx(&mut tx, &token_hash).await?;
+    repository::revoke_refresh_token(&mut *tx, &token_hash).await?;
 
     // 4. Load user from JWT sub
     let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
@@ -427,7 +427,7 @@ pub async fn refresh_token(
     let new_hash = jwt::hash_token(&new_refresh);
     let new_expires = Utc::now() + Duration::days(config.jwt_refresh_expiration_days as i64);
 
-    repository::save_refresh_token_tx(&mut tx, user.id, &new_hash, new_expires).await?;
+    repository::save_refresh_token(&mut *tx, user.id, &new_hash, new_expires).await?;
 
     tx.commit().await?;
 

@@ -100,23 +100,13 @@ pub async fn find_user_roles(db: &PgPool, user_id: Uuid) -> Result<Vec<Role>, sq
 /// `roles` on `UserResponse` (auth and users DTOs). Mirrors the query the
 /// `AuthUser` extractor uses for RBAC so JWT-derived access and response
 /// payloads never disagree on a user's roles.
-pub async fn find_role_names_by_user(db: &PgPool, user_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = $1 ORDER BY r.name"
-    ).bind(user_id).fetch_all(db).await?;
-    Ok(rows.into_iter().map(|(n,)| n).collect())
-}
-
-/// Transactional variant of [`find_role_names_by_user`] — reads roles
-/// assigned earlier in the same transaction (e.g. right after
-/// `assign_role_tx`) without waiting for commit.
-pub async fn find_role_names_by_user_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+pub async fn find_role_names_by_user(
+    executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = $1 ORDER BY r.name"
-    ).bind(user_id).fetch_all(&mut **tx).await?;
+    ).bind(user_id).fetch_all(executor).await?;
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
 

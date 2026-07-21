@@ -139,7 +139,7 @@ pub async fn create_user(
 
     let dirty = auth_repository::assign_role_tx(&mut tx, user.id, "member").await?;
 
-    let roles = permissions_repository::find_role_names_by_user_tx(&mut tx, user.id).await?;
+    let roles = permissions_repository::find_role_names_by_user(&mut *tx, user.id).await?;
 
     tx.commit().await?;
 
