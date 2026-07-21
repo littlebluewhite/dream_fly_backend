@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::{AuthConfig, ServerConfig};
 use dream_fly_backend::extractors::auth::AuthUser;
+use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::utils::password;
 
 /// Pin the server config tests use to UTC so naïve date+time arithmetic
@@ -96,39 +97,30 @@ pub fn admin_auth(user_id: Uuid) -> AuthUser {
 }
 
 /// Insert a member user with a pre-hashed password. Returns the new user's id.
+///
+/// Owner: delegates to `auth::repository::create_user_tx` / `assign_role_tx`
+/// rather than hand-rolling the `INSERT` — see those for the real row shape.
 pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> Uuid {
-    let id = Uuid::now_v7();
     let hash = password::hash_password(plaintext_password.to_string())
         .await
         .expect("hash password");
 
-    sqlx::query(
-        r#"
-        INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(email)
-    .bind("Test Member")
-    .bind(&hash)
-    .execute(db)
-    .await
-    .expect("insert user");
+    let mut tx = db.begin().await.expect("begin tx");
 
-    // Attach the `member` role (seeded by migration 00002).
-    sqlx::query(
-        r#"
-        INSERT INTO user_roles (user_id, role_id)
-        SELECT $1, id FROM roles WHERE name = 'member'
-        "#,
-    )
-    .bind(id)
-    .execute(db)
-    .await
-    .expect("assign member role");
+    let user = repository::create_user_tx(&mut tx, email, "Test Member", &hash)
+        .await
+        .expect("insert user");
 
-    id
+    // Attach the `member` role (seeded by migration 00002). Witness
+    // discarded: this helper has never invalidated the role/active cache
+    // either, so dropping it here is behavior-equivalent to before.
+    let _ = repository::assign_role_tx(&mut tx, user.id, "member")
+        .await
+        .expect("assign member role");
+
+    tx.commit().await.expect("commit seed_member");
+
+    user.id
 }
 
 /// Insert a time slot scheduled for tomorrow at 10:00–11:00.

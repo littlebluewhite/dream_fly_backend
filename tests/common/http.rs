@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use axum_test::TestServer;
-use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
 use tokio_util::task::TaskTracker;
@@ -39,6 +38,8 @@ use dream_fly_backend::config::{
     AppConfig, AuthConfig, DatabaseConfig, EmailConfig, KafkaConfig, RedisConfig, ServerConfig,
     SmsConfig,
 };
+use dream_fly_backend::extractors::auth::revoke_user;
+use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
@@ -197,67 +198,58 @@ impl TestApp {
     /// Delete the role and active-flag cache entries for a single user.
     /// Called from both `register_member` and `seed_user_with_roles` so
     /// every test exit path leaves the cache empty for the users it touched.
+    /// Delegates to the same `revoke_user` the production admin-disable path
+    /// uses, rather than re-deriving the two cache-key literals here.
     async fn clear_user_cache(&self, user_id: Uuid) {
         let mut r = self.redis_conn().await;
-        let _: Result<(), _> = r.del::<_, ()>(format!("user_roles:{user_id}")).await;
-        let _: Result<(), _> = r.del::<_, ()>(format!("user_active:{user_id}")).await;
+        revoke_user(&mut r, user_id).await;
     }
 
     /// Seed a user directly in the DB with the named roles attached, and
     /// return `(user_id, access_token)`. Use this when a test needs an
     /// admin or coach without going through `/auth/register`.
+    ///
+    /// Owner: delegates to `auth::repository::create_user_tx` / `assign_role_tx`
+    /// rather than hand-rolling the `INSERT` — see those for the real row shape.
     pub async fn seed_user_with_roles(
         &self,
         email: &str,
         roles: &[&str],
     ) -> (Uuid, String) {
-        let id = Uuid::now_v7();
         let hashed = password::hash_password("Password!234".to_string())
             .await
             .expect("hash");
-        sqlx::query(
-            r#"
-            INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, false, true, NOW(), NOW())
-            "#,
-        )
-        .bind(id)
-        .bind(email)
-        .bind("Seeded User")
-        .bind(&hashed)
-        .execute(&self.db)
-        .await
-        .expect("insert user");
+
+        let mut tx = self.db.begin().await.expect("begin tx");
+
+        let user = repository::create_user_tx(&mut tx, email, "Seeded User", &hashed)
+            .await
+            .expect("insert user");
 
         for role in roles {
-            sqlx::query(
-                r#"
-                INSERT INTO user_roles (user_id, role_id)
-                SELECT $1, id FROM roles WHERE name = $2
-                ON CONFLICT DO NOTHING
-                "#,
-            )
-            .bind(id)
-            .bind(*role)
-            .execute(&self.db)
-            .await
-            .expect("assign role");
+            // Witness discarded here: `clear_user_cache` (which delegates to
+            // `revoke_user`) runs right after `commit` below and clears the
+            // role + active cache unconditionally, so a per-call flush would
+            // be redundant.
+            let _ = repository::assign_role_tx(&mut tx, user.id, *role)
+                .await
+                .expect("assign role");
         }
+
+        tx.commit().await.expect("commit seed_user_with_roles");
 
         // Invalidate any cached role set under this id (should be empty since
         // the id is freshly generated, but belt + braces).
-        let mut r = self.redis_conn().await;
-        let _: Result<(), _> = r.del::<_, ()>(format!("user_roles:{id}")).await;
-        let _: Result<(), _> = r.del::<_, ()>(format!("user_active:{id}")).await;
+        self.clear_user_cache(user.id).await;
 
         let token = dream_fly_backend::utils::jwt::encode_access_token(
             &self.config.auth,
-            id,
+            user.id,
             email,
         )
         .expect("encode access token");
 
-        (id, token)
+        (user.id, token)
     }
 
     /// Convenience for tests that want a ready-to-use admin account.
