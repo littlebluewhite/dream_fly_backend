@@ -1,5 +1,6 @@
 pub mod dto;
 pub mod handlers;
+pub mod linking;
 pub mod model;
 mod otp;
 mod rate_limit;

@@ -20,6 +20,7 @@ use super::dto::{
     OtpSendRequest, OtpVerifyRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
     UserResponse,
 };
+use super::linking;
 use super::otp;
 use super::rate_limit;
 use super::repository;
@@ -245,54 +246,33 @@ pub async fn google_auth(
     //    never leave orphaned/inconsistent rows.
     let mut tx = db.begin().await?;
 
-    // Check whether the user already exists (by google_id or by email) so
-    // we can decide between create, link, or update — and know whether to
-    // publish a user_registered event afterwards.
+    // Look up the existing user by google_id, then — lazily, only on a
+    // google_id miss — by email, so `linking::plan` can decide between
+    // create, link, and refresh. See `linking`'s module doc for the full
+    // decision and its truth table.
     let existing_by_google = repository::find_user_by_google_id(db, &claims.sub).await?;
-    let existed = existing_by_google.is_some();
-
-    // Set ONLY in the genuinely brand-new branch below. `!existed` is not a
-    // proxy for "new user": it also covers linking Google to a pre-existing
-    // password account (which already got a welcome at register time).
-    let mut created_new_user = false;
-
-    let user = if existing_by_google.is_some() {
-        // Returning Google user — update their profile inside the tx.
-        repository::create_or_update_google_user_tx(
-            &mut tx,
-            &email,
-            &name,
-            &claims.sub,
-            claims.picture.as_deref(),
-        )
-        .await?
+    let existing_by_email = if existing_by_google.is_none() {
+        repository::find_user_by_email(&mut *tx, &email).await?
     } else {
-        // First-time Google login. Check if a password-registered user
-        // already owns this email. If so, link the Google account rather
-        // than hitting the email UNIQUE constraint with an unhandled 500.
-        if let Some(existing_by_email) = repository::find_user_by_email(&mut *tx, &email).await? {
-            if existing_by_email.google_id.is_some() {
-                // Different google_id but same email — conflict.
-                return Err(AppError::Conflict(
-                    "email already associated with another account".into(),
-                ));
-            }
-            // Link Google account to the existing password user — not a new
-            // user, so no welcome.
-            repository::link_google_account_tx(
-                &mut tx,
-                existing_by_email.id,
-                &claims.sub,
-                claims.picture.as_deref(),
-            )
-            .await?
-        } else {
-            // Brand-new user via Google — the only place the flag is set.
-            created_new_user = true;
+        None
+    };
+    let plan = linking::plan(existing_by_google.as_ref(), existing_by_email.as_ref())?;
+
+    let user = match plan.action {
+        linking::LinkAction::Create | linking::LinkAction::Refresh => {
             repository::create_or_update_google_user_tx(
                 &mut tx,
                 &email,
                 &name,
+                &claims.sub,
+                claims.picture.as_deref(),
+            )
+            .await?
+        }
+        linking::LinkAction::Link { user_id } => {
+            repository::link_google_account_tx(
+                &mut tx,
+                user_id,
                 &claims.sub,
                 claims.picture.as_deref(),
             )
@@ -309,9 +289,9 @@ pub async fn google_auth(
     // 6. Generate tokens (inside the same tx)
     let response = issue_session(&mut tx, &config.auth, &user).await?;
 
-    // 7. First-time login only: queue user_registered event atomically
-    //    with the newly-created (or newly-linked) user row.
-    if !existed {
+    // 7. Queue user_registered event atomically with the user row — see
+    //    `linking`'s module doc for why Create and Link both emit it.
+    if plan.emit_registered_event {
         outbox::insert_domain_event_tx(
             &mut tx,
             UserRegisteredPayload {
@@ -328,12 +308,7 @@ pub async fn google_auth(
 
     dirty.flush(redis).await;
 
-    // Deliberate asymmetry: the user_registered event above fires for BOTH a
-    // freshly-created user and a Google-link of an existing account (the
-    // pre-existing wire contract, out of scope to change), but the welcome
-    // notification fires only for genuinely new users — a linked account was
-    // already welcomed at register time.
-    if created_new_user {
+    if plan.send_welcome {
         notify::user_welcomed(user.id).deliver(db).await;
     }
 
