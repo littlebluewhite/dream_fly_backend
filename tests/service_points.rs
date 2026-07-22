@@ -237,6 +237,37 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
     }
 }
 
+// ---------------------------------------------------------------------
+// C3: `lock_balance_tx` returns a `BalanceLock` witness
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn lock_balance_tx_returns_witness_carrying_user_and_locked_balance(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-lock-witness@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 42).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock should succeed for an existing user");
+    tx.rollback().await.expect("rollback");
+
+    assert_eq!(lock.user_id(), user_id);
+    assert_eq!(lock.balance(), 42);
+
+    // NotFound mapping unchanged through the new (witness-returning) signature.
+    let mut tx = db.begin().await.expect("begin tx");
+    let err = service::lock_balance_tx(&mut tx, Uuid::now_v7())
+        .await
+        .expect_err("nonexistent user must 404");
+    tx.rollback().await.expect("rollback");
+
+    assert!(
+        matches!(err, AppError::NotFound(ref m) if m == "user not found"),
+        "got {err:?}"
+    );
+}
+
 /// Attempt a `try_spend_tx` spend inside its own transaction, committing on
 /// success / rolling back on failure — used by the concurrent race test
 /// below. Mirrors `service_rewards.rs`'s `attempt_redeem` helper.

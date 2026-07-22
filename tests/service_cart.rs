@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::cart::service;
+use dream_fly_backend::modules::points::service as points_service;
 
 #[sqlx::test]
 async fn add_item_first_time_creates_cart_item(db: PgPool) {
@@ -261,4 +262,35 @@ async fn update_quantity_on_course_line_rejects_non_one(db: PgPool) {
 
     let err = service::update_quantity(&db, user, item_id, 2).await.unwrap_err();
     assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// C3: `find_cart_items_for_checkout_tx` seam — `&BalanceLock` plumbing
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn checkout_cart_seam_reads_only_the_locked_users_cart(db: PgPool) {
+    let user_a = seed_member(&db, "cart-lock-a@example.com", "Password!234").await;
+    let user_b = seed_member(&db, "cart-lock-b@example.com", "Password!234").await;
+    let product_a = seed_product(&db, "cart-lock-prod-a", 500, Some(10)).await;
+    let product_b = seed_product(&db, "cart-lock-prod-b", 700, Some(10)).await;
+
+    service::add_item(&db, user_a, "product", product_a, 1).await.unwrap();
+    service::add_item(&db, user_b, "product", product_b, 1).await.unwrap();
+
+    // Lock user_a's balance, then read "the" cart through the seam — it must
+    // resolve to user_a's cart (via `lock.user_id()`), never user_b's, even
+    // though both carts exist in the same database at the same time.
+    let mut tx = db.begin().await.expect("begin tx");
+    let lock = points_service::lock_balance_tx(&mut tx, user_a)
+        .await
+        .expect("lock user_a's balance");
+
+    let lines = service::find_cart_items_for_checkout_tx(&mut tx, &lock)
+        .await
+        .expect("checkout read");
+    tx.rollback().await.expect("rollback");
+
+    assert_eq!(lines.len(), 1, "must read only the locked user's own cart line");
+    assert_eq!(lines[0].product_id, Some(product_a));
 }

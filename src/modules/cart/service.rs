@@ -2,6 +2,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::points::service::BalanceLock;
 
 use super::dto::CartResponse;
 use super::model::{CartItemType, CheckoutLine};
@@ -154,11 +155,18 @@ pub async fn clear(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
 /// `repository::find_cart_items_for_checkout_tx` for the exact locking
 /// shape. Strict pass-through with no error mapping, so checkout's error
 /// contract stays exactly the repository's.
+///
+/// Takes `&BalanceLock` (`points::service`) rather than a bare `user_id` —
+/// the caller must already hold that user's points-balance row lock (the
+/// user-first half of ADR-0007 決策 5) before reading their cart, and the
+/// `user_id` used below comes from the lock itself (`lock.user_id()`), so
+/// locking one user's balance and reading a different user's cart cannot
+/// type-check.
 pub async fn find_cart_items_for_checkout_tx(
     tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
+    lock: &BalanceLock,
 ) -> Result<Vec<CheckoutLine>, AppError> {
-    Ok(repository::find_cart_items_for_checkout_tx(tx, user_id).await?)
+    Ok(repository::find_cart_items_for_checkout_tx(tx, lock.user_id()).await?)
 }
 
 /// Clear the cart inside the caller's transaction — checkout's step 11.

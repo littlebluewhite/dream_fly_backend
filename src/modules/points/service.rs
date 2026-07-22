@@ -50,17 +50,84 @@ pub async fn apply_delta_tx(
     Ok(balance_after)
 }
 
-/// Lock + read a user's points balance inside the caller's transaction.
-/// `None` (no matching user) maps to `AppError::NotFound("user not
-/// found")`, the same mapping `get_my_points`'s own (unlocked) balance read
-/// below uses.
+/// Witness that `lock_balance_tx` has taken this user's `users`-row `FOR
+/// UPDATE` lock inside the caller's still-open transaction — the user-first
+/// half of the checkout/refund lock order (ADR-0007 決策 5) collapses from a
+/// doc-comment-only invariant into the type system: `cart::service`'s
+/// `find_cart_items_for_checkout_tx` now takes `&BalanceLock` instead of a
+/// bare `user_id`, so the cart it reads can never be paired with a
+/// different user's lock.
+///
+/// Fields are private; only `lock_balance_tx` can construct one. Read-only
+/// access via `user_id()`/`balance()` — `user_id` is the caller's own
+/// input, `balance` is read under the very `FOR UPDATE` this witness
+/// attests to, so holding one backs both "this user's row is locked" and
+/// "this is that user's balance at lock time" (the same pairing guarantee
+/// `courses::seats`'s `SessionLock` gives `session_id`/`course_id`).
+///
+/// Lives flat in this module rather than behind a private `mod tx_witness`
+/// wrapper (contrast `orders::service`'s `TxReleased`): that extra layer
+/// guards against the *same file*'s other functions hand-building a fake
+/// witness to bypass the constructor. Here the governed caller
+/// (`cart::service`) sits in a different module entirely and simply has no
+/// access to these private fields regardless — plain field privacy is
+/// already the whole defense, exactly as with `SessionLock`.
+///
+/// **Why unconditional and first** — the argument `orders::service::checkout`
+/// and its `compensate_order_artifacts_tx` refund counterpart both point
+/// here for: each locks this row as literally its first statement, even
+/// when the caller doesn't need the balance value itself (`use_points=false`,
+/// a zero-flow refund):
+///   checkout: users -> cart_items/products/courses (SHARE) -> products
+///             (UPDATE, product_id asc) -> courses (asc) -> enrolments ->
+///             subscriptions
+///   refund:   orders -> users -> products (UPDATE, asc) -> enrolments ->
+///             subscriptions
+/// Taking `users` first on both paths is what makes it *the* unconditional
+/// first lock. If either path deferred it, that path could end up holding a
+/// downstream lock (e.g. checkout's cart-read `FOR SHARE` on products)
+/// while waiting on `users`, while the other path simultaneously holds
+/// `users` while waiting on that same downstream lock — a deadlock cycle.
+/// Cross-buyer dimension, the pre-existing SHARE→UPDATE risk, and the full
+/// regression list live in ADR-0007 決策 5 and its Addendum recording this
+/// witness migration.
+///
+/// Deliberately not `#[must_use]`: the witness is permission to reach the
+/// governed seam, not an obligation to consume the balance —
+/// `compensate_order_artifacts_tx` locks purely to hold the row lock for
+/// the refund's duration and legitimately drops the returned witness
+/// unused. Dropping it does NOT release the row lock: the lock lives on the
+/// still-open `tx` until the caller commits or rolls back.
+#[derive(Debug)]
+pub struct BalanceLock {
+    user_id: Uuid,
+    balance: i64,
+}
+
+impl BalanceLock {
+    pub fn user_id(&self) -> Uuid {
+        self.user_id
+    }
+
+    pub fn balance(&self) -> i64 {
+        self.balance
+    }
+}
+
+/// Lock + read a user's points balance inside the caller's transaction,
+/// returning a [`BalanceLock`] witness rather than the bare balance. `None`
+/// (no matching user) maps to `AppError::NotFound("user not found")`, the
+/// same mapping `get_my_points`'s own (unlocked) balance read below uses —
+/// unchanged by the witness wrapping.
 pub async fn lock_balance_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
-) -> Result<i64, AppError> {
-    repository::lock_balance_tx(tx, user_id)
+) -> Result<BalanceLock, AppError> {
+    let balance = repository::lock_balance_tx(tx, user_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("user not found".into()))
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    Ok(BalanceLock { user_id, balance })
 }
 
 /// Lock the balance, compare against `cost`, and spend it atomically: lock
@@ -94,7 +161,7 @@ pub async fn try_spend_tx(
         return Err(AppError::Validation("cost must be positive".into()));
     }
 
-    let balance = lock_balance_tx(tx, user_id).await?;
+    let balance = lock_balance_tx(tx, user_id).await?.balance();
 
     if balance < cost {
         return Err(AppError::Conflict("點數不足".into()));
@@ -178,7 +245,7 @@ pub async fn adjust_points(
 ) -> Result<PointsAdjustmentResponse, AppError> {
     let mut tx = db.begin().await?;
 
-    let current_balance = lock_balance_tx(&mut tx, req.user_id).await?;
+    let current_balance = lock_balance_tx(&mut tx, req.user_id).await?.balance();
     if current_balance != req.expected_balance {
         return Err(AppError::Conflict(format!(
             "balance mismatch: expected {}, actual {}",

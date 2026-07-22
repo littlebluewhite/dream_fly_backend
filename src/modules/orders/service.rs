@@ -93,27 +93,9 @@ pub async fn checkout(
     let mut tx = db.begin().await?;
 
     // Lock the buyer's points-balance row FIRST — unconditionally, even when
-    // `use_points=false`. This is the checkout half of a unified lock order
-    // that keeps refund/cancel compensation (Step 10e) fully mutually
-    // exclusive with checkout for the same buyer:
-    //   checkout: users -> cart_items/products/courses (SHARE, the cart read
-    //             below; its second SQL also takes FOR SHARE on courses) ->
-    //             products (UPDATE, product_id asc) -> courses (asc) ->
-    //             enrolments -> subscriptions
-    //   refund:   orders -> users (explicit unconditional lock_balance_tx,
-    //             Step 10e) -> products (UPDATE, asc) -> enrolments ->
-    //             subscriptions
-    // Making the lock merely *unconditional* is not enough — it must be taken
-    // BEFORE the cart read. `find_cart_items_for_checkout_tx` already takes
-    // `FOR SHARE` on the product/course rows, so if it ran first checkout
-    // would hold products-SHARE while waiting on users, and refund holds
-    // users while waiting on products-UPDATE: a deadlock cycle. Taking
-    // `users` first on both paths makes it the unconditional first lock, so
-    // no cycle can form. An empty cart is harmless: the empty-cart branch
-    // just below drops the tx and the rollback releases this lock.
-    // (Pre-existing, neither introduced nor fixed here: two checkouts racing
-    // a SHARE->UPDATE upgrade on the same product can still deadlock — PG's
-    // detector aborts one.)
+    // `use_points=false` — and BEFORE the cart read below. Checkout half of
+    // the user-first lock order; full rationale now lives on `BalanceLock`'s
+    // doc (`points::service`).
     //
     // Cross-buyer dimension (single code anchor for this argument; prose
     // authority remains ADR-0007 決策 5): the users-first lock above only
@@ -131,12 +113,12 @@ pub async fn checkout(
     // `checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`.
     // The sort itself is not shared code: each site's write-lock owner sorts
     // independently — no shared helper (CONTEXT.md「行計畫」詞條裁決).
-    let locked_points_balance = points_service::lock_balance_tx(&mut tx, user_id).await?;
+    let balance_lock = points_service::lock_balance_tx(&mut tx, user_id).await?;
 
     // 2. Lock and read cart items + current product/course prices. Course
     //    lines are now first-class (the Task-3 "not yet supported" guard is
     //    gone).
-    let cart_items = cart_service::find_cart_items_for_checkout_tx(&mut tx, user_id).await?;
+    let cart_items = cart_service::find_cart_items_for_checkout_tx(&mut tx, &balance_lock).await?;
 
     if cart_items.is_empty() {
         // A concurrent request carrying the *same* idempotency key may have
@@ -205,7 +187,7 @@ pub async fn checkout(
     //    `pricing::price` reads the balance only inside its `use_points`
     //    branch.
     let use_points = req.use_points.unwrap_or(false);
-    let points_balance = if use_points { locked_points_balance } else { 0 };
+    let points_balance = if use_points { balance_lock.balance() } else { 0 };
 
     // 5. Price the cart — subtotal, coupon clamp, points cap, total, and
     //    points earned, all in one pure call now that the coupon is loaded
@@ -704,7 +686,7 @@ async fn compensate_order_artifacts_tx(
     tx: &mut Transaction<'_, Postgres>,
     order: &Order,
 ) -> Result<(), AppError> {
-    // 1. Lock the buyer's balance unconditionally.
+    // 1. Lock the buyer's balance unconditionally; witness discarded (lock-only).
     points_service::lock_balance_tx(tx, order.user_id).await?;
 
     // 2. Read the checkout traces.
