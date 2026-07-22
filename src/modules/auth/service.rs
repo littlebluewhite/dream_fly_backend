@@ -1,5 +1,4 @@
 use chrono::{Duration, Utc};
-use redis::AsyncCommands;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -21,9 +20,11 @@ use super::dto::{
     UserResponse,
 };
 use super::linking;
+use super::model::normalize_email;
 use super::otp;
 use super::rate_limit;
 use super::repository;
+use super::reset_tokens;
 
 // Single session-issuance owner: encodes the access + refresh JWTs, computes
 // the refresh expiry (`now + jwt_refresh_expiration_days` — auth token expiry
@@ -67,7 +68,7 @@ pub async fn register(
 ) -> Result<AuthResponse, AppError> {
     // Normalize email to lowercase to avoid IDOR via case-insensitive
     // duplicates later on.
-    let email = req.email.to_lowercase();
+    let email = normalize_email(&req.email);
 
     // Hash password (on a blocking thread so the Argon2 CPU burst doesn't
     // stall async workers).
@@ -123,7 +124,7 @@ pub async fn login(
     config: &AuthConfig,
     req: LoginRequest,
 ) -> Result<AuthResponse, AppError> {
-    let email = req.email.to_lowercase();
+    let email = normalize_email(&req.email);
 
     // 1. Per-email failed-attempt check. A residential-proxy attacker with
     //    thousands of IPs would sail past the per-IP rate limit, so we
@@ -240,7 +241,7 @@ pub async fn google_auth(
     .await?;
 
     let name = claims.name.clone().unwrap_or_else(|| claims.email.clone());
-    let email = claims.email.to_lowercase();
+    let email = normalize_email(&claims.email);
 
     // 3. Wrap all mutations in a single transaction so partial failures
     //    never leave orphaned/inconsistent rows.
@@ -439,7 +440,7 @@ pub async fn forgot_password(
     };
 
     // 1. Find user by email (return success even if not found - prevents enumeration)
-    let email_lower = req.email.to_lowercase();
+    let email_lower = normalize_email(&req.email);
     let user = repository::find_user_by_email(db, &email_lower).await?;
 
     let user = match user {
@@ -457,45 +458,11 @@ pub async fn forgot_password(
         return Ok(success_msg);
     }
 
-    // 3. Generate a URL-safe random token. URL_SAFE_NO_PAD avoids `=`/`+`/`/`
-    //    which get URL-encoded inconsistently by email clients.
-    use base64::Engine;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use rand::Rng;
+    // 3. Issue a fresh reset token, invalidating any previous outstanding
+    //    one for this user so only the newest link works.
+    let token = reset_tokens::issue(redis, user.id).await?;
 
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-
-    // 4. Invalidate any previous outstanding reset token for this user so
-    //    only the most recent link works.
-    let index_key = format!("password_reset_current:{}", user.id);
-    let previous: Option<String> = redis.get(&index_key).await?;
-    if let Some(prev_token) = previous {
-        let _: () = redis.del(format!("password_reset:{prev_token}")).await?;
-    }
-
-    // 5. Store token -> user_id with 15-minute TTL.
-    let key = format!("password_reset:{token}");
-    redis::cmd("SET")
-        .arg(&key)
-        .arg(user.id.to_string())
-        .arg("EX")
-        .arg(rate_limit::PASSWORD_RESET_TTL_SECONDS)
-        .query_async::<()>(redis)
-        .await?;
-
-    // 6. Track the current token for this user so the next request can
-    //    invalidate it.
-    redis::cmd("SET")
-        .arg(&index_key)
-        .arg(&token)
-        .arg("EX")
-        .arg(rate_limit::PASSWORD_RESET_TTL_SECONDS)
-        .query_async::<()>(redis)
-        .await?;
-
-    // 7. Spawn the SMTP send so the handler returns at a roughly-constant
+    // 4. Spawn the SMTP send so the handler returns at a roughly-constant
     //    latency regardless of whether the email exists. This flattens a
     //    subtle timing oracle: the "user not found" branch returns instantly
     //    while the "user found" branch would otherwise block on SMTP.
@@ -520,29 +487,16 @@ pub async fn reset_password(
     redis: &mut redis::aio::ConnectionManager,
     req: ResetPasswordRequest,
 ) -> Result<MessageResponse, AppError> {
-    // 1. Atomically consume the token: GETDEL returns the old value and
-    //    deletes the key in one round-trip, preventing double-use races.
-    let key = format!("password_reset:{}", req.token);
-    let user_id_str: Option<String> = redis::cmd("GETDEL").arg(&key).query_async(redis).await?;
+    // 1. Atomically consume the token (single-use) and clear the "current
+    //    token" index for this user.
+    let user_id = reset_tokens::consume(redis, &req.token).await?;
 
-    let user_id_str =
-        user_id_str.ok_or_else(|| AppError::BadRequest("invalid or expired token".into()))?;
-
-    let user_id: Uuid = user_id_str
-        .parse()
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid user_id in reset token")))?;
-
-    // 2. Also clear the "current token" index for this user.
-    let _: () = redis
-        .del::<_, ()>(format!("password_reset_current:{}", user_id))
-        .await?;
-
-    // 3. Hash new password
+    // 2. Hash new password
     let hashed = password::hash_password(req.new_password.clone())
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))?;
 
-    // 4. Update password + revoke all tokens atomically so a partial failure
+    // 3. Update password + revoke all tokens atomically so a partial failure
     //    cannot leave old sessions valid after a password change.
     let mut tx = db.begin().await?;
     repository::update_password_tx(&mut tx, user_id, &hashed).await?;

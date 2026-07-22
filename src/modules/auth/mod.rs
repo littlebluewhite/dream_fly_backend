@@ -5,5 +5,6 @@ pub mod model;
 mod otp;
 mod rate_limit;
 pub mod repository;
+mod reset_tokens;
 pub mod routes;
 pub mod service;

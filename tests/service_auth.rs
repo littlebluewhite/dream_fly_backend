@@ -7,15 +7,31 @@
 //! - login with nonexistent email also returns Unauthorized
 //! - refresh rotates tokens and revokes the old one
 //! - refresh token reuse detection revokes the entire token family
+//! - forgot_password reissue invalidates the previous outstanding token
+//! - reset_password tokens are single-use (GETDEL semantics)
+//! - reset_password revokes the entire refresh-token family, not just the
+//!   most recently issued token
+//! - forgot_password's per-account rate limit silently swallows the 4th
+//!   request within the window (still an Ok response, but no email sent)
 
 mod common;
 
+use std::sync::Arc;
+
+use redis::AsyncCommands;
 use sqlx::PgPool;
+use tokio_util::task::TaskTracker;
+use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::modules::auth::dto::{LoginRequest, RefreshRequest, RegisterRequest};
+use dream_fly_backend::modules::auth::dto::{
+    ForgotPasswordRequest, LoginRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
+};
 use dream_fly_backend::modules::auth::service;
+use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::jwt;
+
+use common::mocks::MockEmailClient;
 
 #[sqlx::test]
 async fn register_creates_user_with_hashed_password(db: PgPool) {
@@ -276,4 +292,256 @@ async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
     .await
     .expect("count active tokens");
     assert_eq!(active_count, 0, "all tokens should be revoked");
+}
+
+// ---------------- forgot_password / reset_password token protocol ----------------
+//
+// These 4 pin the reset-token protocol invariants at the `auth::service`
+// boundary — deliberately independent of whether the issue/consume logic
+// lives inline in `service.rs` or behind `reset_tokens::{issue,consume}`.
+
+#[sqlx::test]
+async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let background = TaskTracker::new();
+    let email = format!("reissue-{}@example.com", Uuid::now_v7());
+    let user_id = common::seed_member(&db, &email, "Password!234").await;
+
+    let mock = Arc::new(MockEmailClient::new());
+    let email_client: Arc<dyn EmailSender> = mock.clone();
+
+    service::forgot_password(
+        &db,
+        &mut redis,
+        email_client.clone(),
+        &background,
+        ForgotPasswordRequest {
+            email: email.clone(),
+        },
+    )
+    .await
+    .expect("first forgot_password");
+
+    service::forgot_password(
+        &db,
+        &mut redis,
+        email_client.clone(),
+        &background,
+        ForgotPasswordRequest {
+            email: email.clone(),
+        },
+    )
+    .await
+    .expect("second forgot_password (reissue)");
+
+    background.close();
+    background.wait().await;
+
+    let sent = mock.sent();
+    assert_eq!(sent.len(), 2, "both requests should send an email");
+    let first_token = sent[0].token.clone();
+    let second_token = sent[1].token.clone();
+    assert_ne!(first_token, second_token);
+
+    // Reissuing invalidates the previous token — only the newest one is live.
+    let first_exists: bool = redis
+        .exists(format!("password_reset:{first_token}"))
+        .await
+        .expect("check first token key");
+    assert!(
+        !first_exists,
+        "previous token must be invalidated on reissue"
+    );
+
+    let second_exists: bool = redis
+        .exists(format!("password_reset:{second_token}"))
+        .await
+        .expect("check second token key");
+    assert!(second_exists, "newest token must still be live");
+
+    let index_value: Option<String> = redis
+        .get(format!("password_reset_current:{user_id}"))
+        .await
+        .expect("read index key");
+    assert_eq!(index_value.as_deref(), Some(second_token.as_str()));
+}
+
+#[sqlx::test]
+async fn reset_password_token_is_single_use(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let background = TaskTracker::new();
+    let email = format!("singleuse-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &email, "Password!234").await;
+
+    let mock = Arc::new(MockEmailClient::new());
+    let email_client: Arc<dyn EmailSender> = mock.clone();
+
+    service::forgot_password(
+        &db,
+        &mut redis,
+        email_client,
+        &background,
+        ForgotPasswordRequest {
+            email: email.clone(),
+        },
+    )
+    .await
+    .expect("forgot_password");
+
+    background.close();
+    background.wait().await;
+
+    let token = mock.sent()[0].token.clone();
+
+    service::reset_password(
+        &db,
+        &mut redis,
+        ResetPasswordRequest {
+            token: token.clone(),
+            new_password: "NewPassword!234".into(),
+        },
+    )
+    .await
+    .expect("first reset_password consumes the token");
+
+    // GETDEL already deleted the key — a second attempt with the same token
+    // must fail, not silently succeed again.
+    let err = service::reset_password(
+        &db,
+        &mut redis,
+        ResetPasswordRequest {
+            token,
+            new_password: "AnotherPassword!234".into(),
+        },
+    )
+    .await
+    .expect_err("token must be single-use");
+    assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
+}
+
+#[sqlx::test]
+async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
+    let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
+    let background = TaskTracker::new();
+    let email = format!("family-{}@example.com", Uuid::now_v7());
+
+    let r1 = service::register(
+        &db,
+        &mut redis,
+        &cfg,
+        RegisterRequest {
+            email: email.clone(),
+            name: "Family Test".into(),
+            password: "Password!234".into(),
+        },
+        None,
+    )
+    .await
+    .expect("register");
+
+    // Rotate once so the family has more than one member — proves the
+    // whole family is revoked, not just the most recently issued token.
+    let r2 = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r1.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect("rotate refresh token");
+
+    let mock = Arc::new(MockEmailClient::new());
+    let email_client: Arc<dyn EmailSender> = mock.clone();
+    service::forgot_password(
+        &db,
+        &mut redis,
+        email_client,
+        &background,
+        ForgotPasswordRequest {
+            email: email.clone(),
+        },
+    )
+    .await
+    .expect("forgot_password");
+
+    background.close();
+    background.wait().await;
+    let token = mock.sent()[0].token.clone();
+
+    service::reset_password(
+        &db,
+        &mut redis,
+        ResetPasswordRequest {
+            token,
+            new_password: "BrandNewPassword!234".into(),
+        },
+    )
+    .await
+    .expect("reset_password");
+
+    // r2 — the live token at the moment of reset — must now be dead too, not
+    // just whichever token happened to be current when the password changed.
+    // (Reusing r1 directly would itself trip reuse-detection family-wipe, so
+    // it is deliberately not replayed here — the DB-level count below is the
+    // unconfounded proof that r1's row is also revoked.)
+    let err = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r2.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect_err("entire family should be revoked by reset_password");
+    assert!(matches!(err, AppError::Unauthorized));
+
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked = false",
+    )
+    .bind(r1.user.id)
+    .fetch_one(&db)
+    .await
+    .expect("count active tokens");
+    assert_eq!(
+        active_count, 0,
+        "all tokens (including r1's already-rotated-away row) should be revoked"
+    );
+}
+
+#[sqlx::test]
+async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let background = TaskTracker::new();
+    let email = format!("ratelimit-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &email, "Password!234").await;
+
+    let mock = Arc::new(MockEmailClient::new());
+    let email_client: Arc<dyn EmailSender> = mock.clone();
+
+    for i in 1..=4 {
+        service::forgot_password(
+            &db,
+            &mut redis,
+            email_client.clone(),
+            &background,
+            ForgotPasswordRequest {
+                email: email.clone(),
+            },
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!("request {i} should still return an Ok (200-equivalent): {e:?}")
+        });
+    }
+
+    background.close();
+    background.wait().await;
+
+    assert_eq!(
+        mock.sent().len(),
+        3,
+        "the 4th request must be swallowed silently — no 4th email sent"
+    );
 }

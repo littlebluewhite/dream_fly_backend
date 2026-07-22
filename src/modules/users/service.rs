@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::revoke_user;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::auth::model::normalize_email;
 use crate::modules::auth::repository as auth_repository;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
@@ -106,7 +107,7 @@ pub async fn create_user(
     redis: &mut redis::aio::ConnectionManager,
     req: CreateUserRequest,
 ) -> Result<UserResponse, AppError> {
-    let email = req.email.to_lowercase();
+    let email = normalize_email(&req.email);
 
     let hashed = password::hash_password(req.password.clone())
         .await

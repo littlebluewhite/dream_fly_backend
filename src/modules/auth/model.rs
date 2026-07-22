@@ -48,3 +48,44 @@ pub struct RefreshToken {
     pub revoked: bool,
     pub created_at: DateTime<Utc>,
 }
+
+/// Normalizes an account-identity email for case-insensitive lookup and
+/// storage. Used by every call site where email IS the account identity:
+/// `register`, `login`, `google_auth`, `forgot_password` (all in
+/// `auth::service`), and `create_user` (`users::service`). Deliberately NOT
+/// used by `contact::model` — an inquiry's email is not an account identity
+/// and is left un-normalized on purpose.
+///
+/// Deliberately does NOT trim surrounding whitespace — see
+/// `normalize_email_does_not_trim_whitespace` below for the executable
+/// documentation of that choice.
+pub fn normalize_email(email: &str) -> String {
+    email.to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_email_lowercases_mixed_case() {
+        assert_eq!(normalize_email("User@Example.COM"), "user@example.com");
+    }
+
+    #[test]
+    fn normalize_email_is_idempotent_on_already_normalized_input() {
+        let normalized = normalize_email("already@lower.case");
+        assert_eq!(normalize_email(&normalized), normalized);
+    }
+
+    /// Executable documentation of the "no trim" decision called out in the
+    /// doc comment above: surrounding whitespace survives normalization
+    /// unchanged, matching every call site (none of which trims either).
+    #[test]
+    fn normalize_email_does_not_trim_whitespace() {
+        assert_eq!(
+            normalize_email("  User@Example.com  "),
+            "  user@example.com  "
+        );
+    }
+}

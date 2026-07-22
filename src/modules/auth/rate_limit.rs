@@ -3,7 +3,9 @@
 //! a best-effort atomic bump for the failed-login counter, a plain
 //! read-with-default and a fire-and-forget clear for that same counter, and
 //! a best-effort atomic bump-and-return-count for the forgot-password rate
-//! limit. Every TTL/limit constant these flows use lives here too.
+//! limit. Every TTL/limit constant `login` and the OTP lifecycle use lives
+//! here too — the password-reset token's own TTL lives in `reset_tokens.rs`
+//! instead, next to the issue/consume protocol that owns it.
 //!
 //! No policy lives here — "what happens once the count is too high"
 //! (lockout, rejection, silent swallow) stays in the calling flow
@@ -30,10 +32,6 @@ pub(super) const OTP_MAX_ATTEMPTS: i64 = 5;
 pub(super) const OTP_TTL_SECONDS: i64 = 300;
 /// OTP rate-limit window in seconds.
 pub(super) const OTP_RATE_LIMIT_TTL: i64 = 3600;
-
-/// Lifetime of a password-reset token (seconds). Must match the text in
-/// `send_password_reset` email body.
-pub(super) const PASSWORD_RESET_TTL_SECONDS: i64 = 900; // 15 minutes
 
 /// Atomic INCR + EXPIRE for the failed-login counter. Best-effort: Redis
 /// outages must not prevent authentication entirely.
