@@ -793,8 +793,8 @@ struct TimeSlotSeed {
 /// due, so the guard can't misfire on its own writes), which is exactly what
 /// keeps `insert_booking_if_absent` below from attaching a completed/no_show
 /// booking to a row still reading booked=0/available — the invariant
-/// `schedule::repository::increment_booked_tx` keeps atomic on the real
-/// booking path.
+/// `bookings::occupancy::occupy_slot_tx` keeps atomic on the real booking
+/// path.
 async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uuid> {
     let existing: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM time_slots WHERE venue_id = $1 AND date = $2 AND start_time = $3",
@@ -847,7 +847,8 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
 /// Insert a rental booking (idempotent by existence check on
 /// `(user_id, time_slot_id)` — the partial unique index excludes cancelled
 /// rows, and the seed assigns at most one booking per slot). `price_cents`
-/// is the slot's price snapshot, per `bookings::repository::create_tx`.
+/// is the slot's price snapshot, per
+/// `bookings::occupancy::insert_occupying_booking_tx`.
 async fn insert_booking_if_absent(
     db: &PgPool,
     user_id: Uuid,

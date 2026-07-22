@@ -8,8 +8,8 @@ use uuid::Uuid;
 /// `20260717000001_time_slots_status_read_time_derive`) — every read
 /// recomputes this from `booked`/`capacity`/`is_closed`, so it can never go
 /// stale the way the old stored CASE-expression status could (anything that
-/// touched `booked` without going through `increment_booked_tx`/
-/// `decrement_booked_tx` left the stored status out of sync).
+/// touched `booked` outside `bookings::occupancy`'s `occupy_slot_tx`/
+/// `cancel_and_release_tx` protocol left the stored status out of sync).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotStatus {
     Available,

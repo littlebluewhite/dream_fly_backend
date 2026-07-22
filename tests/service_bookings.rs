@@ -13,6 +13,7 @@ mod common;
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::bookings::dto::CreateBookingRequest;
@@ -128,7 +129,7 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
 }
 
 /// Step 8: an admin-closed slot (`is_closed`) rejects new bookings the same
-/// way a full one does — `increment_booked_tx`'s WHERE guard folds both
+/// way a full one does — `occupy_slot_tx`'s WHERE guard folds both
 /// causes into the same `None` branch, so the message names both.
 #[sqlx::test]
 async fn closed_slot_rejects_new_booking(db: PgPool) {
@@ -417,4 +418,111 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(total_bookings, 1);
+}
+
+// ---------------------------------------------------------------------
+// Pin tests: `bookings::occupancy` 收攏前既有的三個分類/優先序行為——
+// 釘住行為不變,不是新行為。
+// ---------------------------------------------------------------------
+
+/// 現況無測試釘住的分類:佔位 UPDATE 的 `WHERE id = $1 AND booked <
+/// capacity AND is_closed = false` 把「slot 不存在」與「已滿/已關閉」摺
+/// 進同一個 `None`,一律報同一句 400,不升級為 404。
+#[sqlx::test]
+async fn create_booking_missing_slot_maps_to_full_or_closed_bad_request(db: PgPool) {
+    let server = common::test_server_config();
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let missing_slot = Uuid::now_v7();
+
+    let err = service::create_booking(
+        &db,
+        &server,
+        Utc::now(),
+        user,
+        CreateBookingRequest {
+            time_slot_id: missing_slot,
+            note: None,
+        },
+        None,
+    )
+    .await
+    .expect_err("nonexistent slot should reject booking");
+
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m == "time slot is full or closed"),
+        "got: {err:?}"
+    );
+}
+
+/// 錯誤優先序 = 不重排裁決的機器見證:佔位檢查先於已開始檢查執行,一個
+/// 既滿又已開始的 slot 必須報「已滿」,不是「已開始」。
+#[sqlx::test]
+async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPool) {
+    let server = common::test_server_config();
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let past_date = (Utc::now() - Duration::days(1)).date_naive();
+    let past_time = (Utc::now() - Duration::days(1)).time();
+    let slot = common::seed_time_slot_on_with_start(&db, 1, past_date, past_time).await;
+    sqlx::query("UPDATE time_slots SET booked = 1 WHERE id = $1")
+        .bind(slot)
+        .execute(&db)
+        .await
+        .expect("mark slot full");
+
+    let err = service::create_booking(
+        &db,
+        &server,
+        Utc::now(),
+        user,
+        CreateBookingRequest {
+            time_slot_id: slot,
+            note: None,
+        },
+        None,
+    )
+    .await
+    .expect_err("full and already-started slot should reject booking");
+
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m == "time slot is full or closed"),
+        "got: {err:?} (must report full/closed, not 'already started')"
+    );
+}
+
+/// closed 只 gate 新佔位(occupy),不 gate 既有預約的取消釋出——admin
+/// 事後關閉的 slot,既有預約仍必須能正常取消並釋出座位。
+#[sqlx::test]
+async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
+    let server = common::test_server_config();
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let slot = common::seed_time_slot(&db, 5).await;
+    let auth = common::member_auth(user);
+
+    let booking = service::create_booking(
+        &db,
+        &server,
+        Utc::now(),
+        user,
+        CreateBookingRequest {
+            time_slot_id: slot,
+            note: None,
+        },
+        None,
+    )
+    .await
+    .expect("create booking");
+    assert_eq!(common::slot_booked(&db, slot).await, 1);
+
+    // Admin closes the slot *after* the booking already exists.
+    sqlx::query("UPDATE time_slots SET is_closed = true WHERE id = $1")
+        .bind(slot)
+        .execute(&db)
+        .await
+        .expect("close slot");
+
+    service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
+        .await
+        .expect("cancel on closed slot should still succeed");
+
+    assert_eq!(common::slot_booked(&db, slot).await, 0);
 }

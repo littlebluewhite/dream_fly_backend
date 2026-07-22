@@ -139,48 +139,6 @@ pub async fn bulk_create_tx(
     .await
 }
 
-/// Atomically increments `booked` (fails — returns `None` — if the slot is
-/// already full *or* admin-closed). `status` is no longer written here: it's
-/// derived at read time from the resulting `booked`/`capacity`/`is_closed`
-/// (see [`super::model::SlotStatus::derive`]), so this only needs to touch
-/// the facts. `AND is_closed = false` is the gate that makes the admin
-/// `is_closed` flag actually block new bookings — see
-/// `bookings::service::create_booking`'s `None` branch.
-pub async fn increment_booked_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    slot_id: Uuid,
-) -> Result<Option<TimeSlot>, sqlx::Error> {
-    sqlx::query_as::<_, TimeSlot>(
-        "UPDATE time_slots SET \
-         booked = booked + 1, \
-         updated_at = now() \
-         WHERE id = $1 AND booked < capacity AND is_closed = false \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, is_closed, created_at, updated_at",
-    )
-    .bind(slot_id)
-    .fetch_optional(&mut **tx)
-    .await
-}
-
-/// Atomically decrements `booked` (fails — returns `None` — if it's already
-/// zero). No `is_closed` gate: cancelling an existing booking must always be
-/// allowed to release its seat, even on a slot an admin closed afterwards.
-pub async fn decrement_booked_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    slot_id: Uuid,
-) -> Result<Option<TimeSlot>, sqlx::Error> {
-    sqlx::query_as::<_, TimeSlot>(
-        "UPDATE time_slots SET \
-         booked = booked - 1, \
-         updated_at = now() \
-         WHERE id = $1 AND booked > 0 \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, is_closed, created_at, updated_at",
-    )
-    .bind(slot_id)
-    .fetch_optional(&mut **tx)
-    .await
-}
-
 /// `PATCH /schedule/slots/{id}` — admin sets/clears the closed intent flag.
 /// `None` = slot not found.
 pub async fn set_closed(
