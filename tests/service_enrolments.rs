@@ -35,11 +35,13 @@ async fn seed_order(
         tx,
         user_id,
         &format!("TEST-{}", Uuid::now_v7()),
-        total_cents,
-        0,
+        orders_repo::OrderAmounts {
+            total_cents,
+            discount_cents: 0,
+            points_used: 0,
+            points_earned: 0,
+        },
         None,
-        0,
-        0,
         "credit_card",
     )
     .await
@@ -235,11 +237,13 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
             &mut tx,
             user_id,
             &format!("TEST-{}", Uuid::now_v7()),
-            50_000,
-            0,
+            orders_repo::OrderAmounts {
+                total_cents: 50_000,
+                discount_cents: 0,
+                points_used: 0,
+                points_earned: 0,
+            },
             None,
-            0,
-            0,
             "credit_card",
         )
         .await

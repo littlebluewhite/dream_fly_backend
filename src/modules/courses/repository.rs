@@ -13,6 +13,48 @@ use uuid::Uuid;
 
 use super::model::{Course, CourseAgeBounds, CourseLevel, CourseScheduleSlot};
 
+/// Input payload for `create`. Packages the 14 fields that previously
+/// formed a too-large positional argument list.
+pub struct CourseCreate<'a> {
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub level: &'a CourseLevel,
+    pub description: Option<&'a str>,
+    pub duration_minutes: i32,
+    pub price_cents: i64,
+    pub max_students: i32,
+    pub min_age: Option<i32>,
+    pub max_age: Option<i32>,
+    pub features: &'a [String],
+    pub coach_id: Option<Uuid>,
+    pub category: Option<&'a str>,
+    pub schedule_text: Option<&'a str>,
+    pub is_highlighted: bool,
+}
+
+/// Input payload for `update`. Every field is `Option` because this is a
+/// partial (PATCH-style) update. Nullable DB columns use `Option<Option<T>>`
+/// so callers can distinguish "don't touch" (`None`) from "set to NULL"
+/// (`Some(None)`) from "set to value" (`Some(Some(v))`) — same idiom as
+/// `products::repository::ProductUpdate`.
+#[derive(Default)]
+pub struct CourseUpdate<'a> {
+    pub name: Option<&'a str>,
+    pub slug: Option<&'a str>,
+    pub level: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub duration_minutes: Option<i32>,
+    pub price_cents: Option<i64>,
+    pub max_students: Option<i32>,
+    pub min_age: Option<Option<i32>>,
+    pub max_age: Option<Option<i32>>,
+    pub features: Option<&'a [String]>,
+    pub coach_id: Option<Option<Uuid>>,
+    pub category: Option<Option<&'a str>>,
+    pub schedule_text: Option<Option<&'a str>>,
+    pub is_highlighted: Option<bool>,
+}
+
 pub async fn find_all_active(
     db: &PgPool,
     limit: u32,
@@ -93,23 +135,9 @@ pub async fn find_age_bounds_for_update_tx(
 /// `courses::service` can insert the course row and, when the request
 /// carries `schedule_slots`, replace the course's weekly slots
 /// (`replace_slots_tx`) atomically in one commit.
-#[allow(clippy::too_many_arguments)]
 pub async fn create(
     tx: &mut Transaction<'_, Postgres>,
-    name: &str,
-    slug: &str,
-    level: &CourseLevel,
-    description: Option<&str>,
-    duration_minutes: i32,
-    price_cents: i64,
-    max_students: i32,
-    min_age: Option<i32>,
-    max_age: Option<i32>,
-    features: &[String],
-    coach_id: Option<Uuid>,
-    category: Option<&str>,
-    schedule_text: Option<&str>,
-    is_highlighted: bool,
+    input: CourseCreate<'_>,
 ) -> Result<Course, sqlx::Error> {
     sqlx::query_as::<_, Course>(
         "INSERT INTO courses AS c (id, name, slug, level, description, duration_minutes, price_cents, \
@@ -122,20 +150,20 @@ pub async fn create(
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
     )
-    .bind(name)
-    .bind(slug)
-    .bind(level.as_str())
-    .bind(description)
-    .bind(duration_minutes)
-    .bind(price_cents)
-    .bind(max_students)
-    .bind(min_age)
-    .bind(max_age)
-    .bind(features)
-    .bind(coach_id)
-    .bind(category)
-    .bind(schedule_text)
-    .bind(is_highlighted)
+    .bind(input.name)
+    .bind(input.slug)
+    .bind(input.level.as_str())
+    .bind(input.description)
+    .bind(input.duration_minutes)
+    .bind(input.price_cents)
+    .bind(input.max_students)
+    .bind(input.min_age)
+    .bind(input.max_age)
+    .bind(input.features)
+    .bind(input.coach_id)
+    .bind(input.category)
+    .bind(input.schedule_text)
+    .bind(input.is_highlighted)
     .fetch_one(&mut **tx)
     .await
 }
@@ -144,67 +172,53 @@ pub async fn create(
 /// `update_course` can run it inside the same transaction as its
 /// `find_age_bounds_for_update_tx` row lock and, when the request carries
 /// `schedule_slots`, `replace_slots_tx`; callers pass `&mut *tx`.
-#[allow(clippy::too_many_arguments)]
 pub async fn update(
     executor: impl sqlx::PgExecutor<'_>,
     id: Uuid,
-    name: Option<&str>,
-    slug: Option<&str>,
-    level: Option<&str>,
-    description: Option<&str>,
-    duration_minutes: Option<i32>,
-    price_cents: Option<i64>,
-    max_students: Option<i32>,
-    min_age: Option<Option<i32>>,
-    max_age: Option<Option<i32>>,
-    features: Option<&[String]>,
-    coach_id: Option<Option<Uuid>>,
-    category: Option<Option<&str>>,
-    schedule_text: Option<Option<&str>>,
-    is_highlighted: Option<bool>,
+    input: CourseUpdate<'_>,
 ) -> Result<Option<Course>, sqlx::Error> {
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE courses AS c SET updated_at = now()");
 
-    if let Some(v) = name {
+    if let Some(v) = input.name {
         qb.push(", name = ").push_bind(v);
     }
-    if let Some(v) = slug {
+    if let Some(v) = input.slug {
         qb.push(", slug = ").push_bind(v);
     }
-    if let Some(v) = level {
+    if let Some(v) = input.level {
         qb.push(", level = ").push_bind(v).push("::course_level");
     }
-    if let Some(v) = description {
+    if let Some(v) = input.description {
         qb.push(", description = ").push_bind(v);
     }
-    if let Some(v) = duration_minutes {
+    if let Some(v) = input.duration_minutes {
         qb.push(", duration_minutes = ").push_bind(v);
     }
-    if let Some(v) = price_cents {
+    if let Some(v) = input.price_cents {
         qb.push(", price_cents = ").push_bind(v);
     }
-    if let Some(v) = max_students {
+    if let Some(v) = input.max_students {
         qb.push(", max_students = ").push_bind(v);
     }
-    if let Some(v) = min_age {
+    if let Some(v) = input.min_age {
         qb.push(", min_age = ").push_bind(v);
     }
-    if let Some(v) = max_age {
+    if let Some(v) = input.max_age {
         qb.push(", max_age = ").push_bind(v);
     }
-    if let Some(v) = features {
+    if let Some(v) = input.features {
         qb.push(", features = ").push_bind(v);
     }
-    if let Some(v) = coach_id {
+    if let Some(v) = input.coach_id {
         qb.push(", coach_id = ").push_bind(v);
     }
-    if let Some(v) = category {
+    if let Some(v) = input.category {
         qb.push(", category = ").push_bind(v);
     }
-    if let Some(v) = schedule_text {
+    if let Some(v) = input.schedule_text {
         qb.push(", schedule_text = ").push_bind(v);
     }
-    if let Some(v) = is_highlighted {
+    if let Some(v) = input.is_highlighted {
         qb.push(", is_highlighted = ").push_bind(v);
     }
 

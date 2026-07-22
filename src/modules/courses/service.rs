@@ -10,7 +10,7 @@ use super::dto::{
     CourseScheduleSlotResponse, CreateCourseRequest, UpdateCourseRequest,
 };
 use super::model::{AgeRange, CourseLevel};
-use super::repository::{self, CourseSlotRow};
+use super::repository::{self, CourseCreate, CourseSlotRow, CourseUpdate};
 
 /// Parse+validate `schedule_slots` request entries into the tuple shape
 /// `repository::replace_slots_tx` takes. `AppError::Validation`
@@ -109,20 +109,22 @@ pub async fn create_course(
 
     let course = repository::create(
         &mut tx,
-        &req.name,
-        &slug,
-        &level,
-        req.description.as_deref(),
-        req.duration_minutes,
-        req.price_cents,
-        req.max_students,
-        age_range.min_age(),
-        age_range.max_age(),
-        &features,
-        req.coach_id,
-        req.category.as_deref(),
-        req.schedule_text.as_deref(),
-        req.is_highlighted,
+        CourseCreate {
+            name: &req.name,
+            slug: &slug,
+            level: &level,
+            description: req.description.as_deref(),
+            duration_minutes: req.duration_minutes,
+            price_cents: req.price_cents,
+            max_students: req.max_students,
+            min_age: age_range.min_age(),
+            max_age: age_range.max_age(),
+            features: &features,
+            coach_id: req.coach_id,
+            category: req.category.as_deref(),
+            schedule_text: req.schedule_text.as_deref(),
+            is_highlighted: req.is_highlighted,
+        },
     )
     .await?;
 
@@ -189,20 +191,22 @@ pub async fn update_course(
     let course = repository::update(
         &mut *tx,
         id,
-        req.name.as_deref(),
-        req.slug.as_deref(),
-        level_str.as_deref(),
-        req.description.as_deref(),
-        req.duration_minutes,
-        req.price_cents,
-        req.max_students,
-        req.min_age,
-        req.max_age,
-        req.features.as_deref(),
-        req.coach_id,
-        req.category.as_ref().map(|o| o.as_deref()),
-        req.schedule_text.as_ref().map(|o| o.as_deref()),
-        req.is_highlighted,
+        CourseUpdate {
+            name: req.name.as_deref(),
+            slug: req.slug.as_deref(),
+            level: level_str.as_deref(),
+            description: req.description.as_deref(),
+            duration_minutes: req.duration_minutes,
+            price_cents: req.price_cents,
+            max_students: req.max_students,
+            min_age: req.min_age,
+            max_age: req.max_age,
+            features: req.features.as_deref(),
+            coach_id: req.coach_id,
+            category: req.category.as_ref().map(|o| o.as_deref()),
+            schedule_text: req.schedule_text.as_ref().map(|o| o.as_deref()),
+            is_highlighted: req.is_highlighted,
+        },
     )
     .await?
     .ok_or_else(|| AppError::NotFound("course not found".into()))?;

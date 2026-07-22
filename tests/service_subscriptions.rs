@@ -43,11 +43,13 @@ async fn seed_order(
         tx,
         user_id,
         &format!("TEST-{}", Uuid::now_v7()),
-        total_cents,
-        0,
+        orders_repo::OrderAmounts {
+            total_cents,
+            discount_cents: 0,
+            points_used: 0,
+            points_earned: 0,
+        },
         None,
-        0,
-        0,
         "credit_card",
     )
     .await

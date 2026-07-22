@@ -29,7 +29,7 @@ use super::fulfilment;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
 use super::refund;
-use super::repository;
+use super::repository::{self, OrderAmounts};
 
 /// Checkout the user's cart. When an `idempotency_key` is supplied, a second
 /// attempt with the same (user_id, key) returns the original order instead
@@ -262,11 +262,13 @@ pub async fn checkout(
         &mut tx,
         user_id,
         &order_number,
-        outcome.total_cents,
-        outcome.discount_cents,
+        OrderAmounts {
+            total_cents: outcome.total_cents,
+            discount_cents: outcome.discount_cents,
+            points_used: outcome.points_used,
+            points_earned: outcome.points_earned,
+        },
         outcome.applied_coupon_code.as_deref(),
-        outcome.points_used,
-        outcome.points_earned,
         payment_method,
     )
     .await?;

@@ -3,20 +3,28 @@ use uuid::Uuid;
 
 use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus, OrderSummaryRow};
 
+/// The four order-row amount fields that previously formed a run of
+/// same-shaped `i64` positional arguments in `create_order`. Named
+/// `OrderAmounts` rather than `OrderMoney` because `points_used`/
+/// `points_earned` are points, not money.
+#[derive(Clone, Copy)]
+pub struct OrderAmounts {
+    pub total_cents: i64,
+    pub discount_cents: i64,
+    pub points_used: i64,
+    pub points_earned: i64,
+}
+
 /// Create the order row. Checkout in this application has no separate
 /// payment-capture step — succeeding IS the payment — so the row is
 /// inserted already `status = 'paid'` with `paid_at` stamped, rather than
 /// starting `pending` and needing a follow-up transition.
-#[allow(clippy::too_many_arguments)]
 pub async fn create_order(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     order_number: &str,
-    total_cents: i64,
-    discount_cents: i64,
+    amounts: OrderAmounts,
     coupon_code: Option<&str>,
-    points_used: i64,
-    points_earned: i64,
     payment_method: &str,
 ) -> Result<Order, sqlx::Error> {
     sqlx::query_as::<_, Order>(
@@ -28,11 +36,11 @@ pub async fn create_order(
     )
     .bind(user_id)
     .bind(order_number)
-    .bind(total_cents)
-    .bind(discount_cents)
+    .bind(amounts.total_cents)
+    .bind(amounts.discount_cents)
     .bind(coupon_code)
-    .bind(points_used)
-    .bind(points_earned)
+    .bind(amounts.points_used)
+    .bind(amounts.points_earned)
     .bind(payment_method)
     .fetch_one(&mut **tx)
     .await
