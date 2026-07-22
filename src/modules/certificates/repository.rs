@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use super::model::{Certificate, CertificateRow, EnrolmentCourseCoach, ReportCard, ReportCardRow};
@@ -26,11 +26,12 @@ pub async fn find_enrolment_course_coach(
     .await
 }
 
-/// Insert a new `report_cards` row. Duplicate `(enrolment_id, term_label)`
-/// trips the table's UNIQUE constraint — `service` catches that as a 23505
-/// and maps it to a friendly 409.
-pub async fn insert_report_card(
-    db: &PgPool,
+/// Insert a new `report_cards` row within the caller's open transaction.
+/// Duplicate `(enrolment_id, term_label)` trips the table's UNIQUE
+/// constraint — `service` catches that as a 23505 and maps it to a friendly
+/// 409 (rolling the transaction back with zero rows written).
+pub async fn insert_report_card_tx(
+    tx: &mut Transaction<'_, Postgres>,
     enrolment_id: Uuid,
     term_label: &str,
     comment: Option<&str>,
@@ -49,15 +50,16 @@ pub async fn insert_report_card(
     .bind(comment)
     .bind(rating)
     .bind(created_by)
-    .fetch_one(db)
+    .fetch_one(&mut **tx)
     .await
 }
 
 /// One `report_cards` row JOINed with its enrolment's course name and the
-/// issuing user's name — used to build the `POST /report-cards` response
+/// issuing user's name — read back inside the same transaction as
+/// [`insert_report_card_tx`] to build the `POST /report-cards` response
 /// right after insert.
-pub async fn find_report_card_row(
-    db: &PgPool,
+pub async fn find_report_card_row_tx(
+    tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<Option<ReportCardRow>, sqlx::Error> {
     sqlx::query_as::<_, ReportCardRow>(
@@ -70,7 +72,7 @@ pub async fn find_report_card_row(
          WHERE rc.id = $1",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(&mut **tx)
     .await
 }
 
@@ -120,10 +122,10 @@ pub async fn user_has_enrolment_with_coach(
     .await
 }
 
-/// Insert a new `certificates` row.
+/// Insert a new `certificates` row within the caller's open transaction.
 #[allow(clippy::too_many_arguments)]
-pub async fn insert_certificate(
-    db: &PgPool,
+pub async fn insert_certificate_tx(
+    tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     course_id: Option<Uuid>,
     title: &str,
@@ -146,14 +148,15 @@ pub async fn insert_certificate(
     .bind(issued_on)
     .bind(issued_by)
     .bind(note)
-    .fetch_one(db)
+    .fetch_one(&mut **tx)
     .await
 }
 
-/// One `certificates` row JOINed with its (optional) course's name — used to
-/// build the `POST /certificates` response right after insert.
-pub async fn find_certificate_row(
-    db: &PgPool,
+/// One `certificates` row JOINed with its (optional) course's name — read
+/// back inside the same transaction as [`insert_certificate_tx`] to build
+/// the `POST /certificates` response right after insert.
+pub async fn find_certificate_row_tx(
+    tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<Option<CertificateRow>, sqlx::Error> {
     sqlx::query_as::<_, CertificateRow>(
@@ -164,7 +167,7 @@ pub async fn find_certificate_row(
          WHERE ce.id = $1",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(&mut **tx)
     .await
 }
 

@@ -62,9 +62,8 @@ struct NotificationContent {
 /// pre-commit would leave a ghost notification behind if the transaction
 /// later rolls back. "After commit" remains a call-site convention, same as
 /// before this type existed; what changed is that every call site now
-/// shares one uniform shape. The one write path with no transaction
-/// (`certificates::service`, which writes straight through the pool)
-/// delivers right after its authoritative write.
+/// shares one uniform shape — domain write inside a transaction, commit,
+/// then `.deliver(db)`. No call site is exempt from that ordering.
 #[must_use = "a PendingNotification performs no IO until `.deliver(db)` is awaited — deliver it after the writing transaction commits"]
 pub struct PendingNotification {
     user_id: Uuid,
