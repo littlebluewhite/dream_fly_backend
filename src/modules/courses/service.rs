@@ -174,8 +174,8 @@ pub async fn update_course(
     let mut tx = db.begin().await?;
 
     // Lock pre-read to avoid two concurrent PATCHes validating against the
-    // same stale row — full rationale on `find_by_id_for_update_tx`.
-    let existing = repository::find_by_id_for_update_tx(&mut tx, id)
+    // same stale row — full rationale on `find_age_bounds_for_update_tx`.
+    let existing = repository::find_age_bounds_for_update_tx(&mut tx, id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 

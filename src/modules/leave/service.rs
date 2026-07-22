@@ -202,6 +202,9 @@ pub async fn decide_leave_request(
         .ok_or_else(|| AppError::Conflict("僅待審核假單可審核".into()))?;
 
     if new_status == LeaveStatus::Approved {
+        // Writing `leave` always passes the upsert guard's first branch
+        // (`EXCLUDED.status = 'leave'` — 核准恆勝, ADR-0008), so the
+        // rows_affected signal the bulk-marking path checks is always 1 here.
         attendance_repository::upsert_attendance_tx(
             &mut tx,
             ctx.session_id,

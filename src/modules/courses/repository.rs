@@ -11,7 +11,7 @@ use chrono::NaiveTime;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::model::{Course, CourseLevel, CourseScheduleSlot};
+use super::model::{Course, CourseAgeBounds, CourseLevel, CourseScheduleSlot};
 
 pub async fn find_all_active(
     db: &PgPool,
@@ -68,26 +68,21 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::E
 }
 
 /// Row-lock pre-read for `update_course`'s single-tx "lock → merge →
-/// validate → write" flow — same column set as [`find_by_id`], plus
-/// `FOR UPDATE` so the lock is held for the rest of the caller's
-/// transaction. Confirms the course exists (404 if not), and its
-/// `min_age`/`max_age` are what the caller merges the tri-state PATCH
-/// against before validating with `AgeRange::new`. Holding the lock across
-/// that validation and the subsequent write is what serializes two
-/// concurrent single-field PATCHes — without it, both could read the same
-/// stale counterpart, both pass validation, and the second would only be
-/// caught by the DB CHECK (23514) instead.
-pub async fn find_by_id_for_update_tx(
+/// validate → write" flow. `FOR UPDATE` locks the whole course row (row
+/// locks are column-agnostic); the projection is only what the caller
+/// consumes — existence (404 on `None`) and the `min_age`/`max_age` pair it
+/// merges the tri-state PATCH against before validating with
+/// `AgeRange::new`. Holding the lock across that validation and the
+/// subsequent write is what serializes two concurrent single-field PATCHes
+/// — without it, both could read the same stale counterpart, both pass
+/// validation, and the second would only be caught by the DB CHECK (23514)
+/// instead.
+pub async fn find_age_bounds_for_update_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
-) -> Result<Option<Course>, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
-        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
-         FROM courses c WHERE c.id = $1 FOR UPDATE",
+) -> Result<Option<CourseAgeBounds>, sqlx::Error> {
+    sqlx::query_as::<_, CourseAgeBounds>(
+        "SELECT c.min_age, c.max_age FROM courses c WHERE c.id = $1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -147,7 +142,7 @@ pub async fn create(
 
 /// Executor-generic (single statement — no lock of its own) so
 /// `update_course` can run it inside the same transaction as its
-/// `find_by_id_for_update_tx` row lock and, when the request carries
+/// `find_age_bounds_for_update_tx` row lock and, when the request carries
 /// `schedule_slots`, `replace_slots_tx`; callers pass `&mut *tx`.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(

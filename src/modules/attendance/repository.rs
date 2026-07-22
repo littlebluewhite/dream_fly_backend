@@ -84,19 +84,24 @@ pub async fn find_active_enrolment_ids_in(
 ///  - `NOT EXISTS (approved leave)` — the existing `leave` row is verbal (no
 ///    approved request behind it), so it stays freely overwritable.
 ///
-/// The blocked case affects zero rows *without erroring* — callers must not
-/// assert on `rows_affected` (they don't: the result is discarded). Recovery
-/// from the residual snapshot-lag window is a manual re-mark to `leave`. The
-/// `EXISTS` sub-select walks the same `uniq_leave_requests_active` partial
-/// index (enrolment_id-leading, `approved` ∈ its predicate).
+/// The blocked case affects zero rows *without erroring* — and zero is the
+/// block's *only* producer (a conflict-free INSERT and an allowed DO UPDATE
+/// both report 1 row), so the returned `rows_affected` is the guard's signal:
+/// `attendance::service` treats `0` as the guard firing inside the TOCTOU
+/// window and converts it into the same batch-wide 422 (rolling the tx back),
+/// while `leave::service`'s approval upsert writes `leave` and always passes
+/// the first branch. Recovery from the residual snapshot-lag window (ADR-0008
+/// known gap 2) is a manual re-mark to `leave`. The `EXISTS` sub-select walks
+/// the same `uniq_leave_requests_active` partial index (enrolment_id-leading,
+/// `approved` ∈ its predicate).
 pub async fn upsert_attendance_tx(
     tx: &mut Transaction<'_, Postgres>,
     session_id: Uuid,
     enrolment_id: Uuid,
     status: AttendanceStatus,
     marked_by: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
         "INSERT INTO attendance_records \
          (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
          VALUES ($1, $2, $3, $4::attendance_status, $5, NOW(), NOW()) \
@@ -118,7 +123,7 @@ pub async fn upsert_attendance_tx(
     .bind(marked_by)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Of the given `enrolment_ids`, the subset holding an `approved` leave

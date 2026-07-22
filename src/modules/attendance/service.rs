@@ -94,9 +94,11 @@ pub async fn bulk_upsert_attendance(
     // marked present/absent. `plan` is pure, so its `Err` short-circuits via
     // `?` before any upsert runs — the tx rolls back with zero writes, keeping
     // the existing "whole batch 422, zero writes" contract. The `ON CONFLICT`
-    // guard in `upsert_attendance_tx` closes the residual TOCTOU window. Gate
-    // order is unchanged: parse (above) precedes both the membership check and
-    // this approved-guard, which `plan` evaluates together.
+    // guard in `upsert_attendance_tx` closes the residual TOCTOU window — its
+    // zero-row block is converted into this same batch-wide 422 in the upsert
+    // loop below. Gate order is unchanged: parse (above) precedes both the
+    // membership check and this approved-guard, which `plan` evaluates
+    // together.
     let approved: HashSet<Uuid> = if parsed.is_empty() {
         HashSet::new()
     } else {
@@ -109,8 +111,19 @@ pub async fn bulk_upsert_attendance(
     let plan = marking::plan(parsed, &valid, &approved)?;
 
     for (enrolment_id, status) in &plan.entries {
-        repository::upsert_attendance_tx(&mut tx, session_id, *enrolment_id, *status, auth.user_id)
-            .await?;
+        let affected =
+            repository::upsert_attendance_tx(&mut tx, session_id, *enrolment_id, *status, auth.user_id)
+                .await?;
+        // Zero rows has exactly one producer: the write-point guard blocking a
+        // present/absent over an approved leave whose approval committed after
+        // this tx's approved-set read above. Surface the same 422 as the
+        // pre-check; returning here drops the tx, so the whole batch rolls
+        // back unwritten — the contract holds inside the race window too.
+        if affected == 0 {
+            return Err(AppError::Validation(
+                "cannot overwrite an approved leave with present/absent".into(),
+            ));
+        }
     }
     tx.commit().await?;
 

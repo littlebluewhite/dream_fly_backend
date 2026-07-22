@@ -85,6 +85,16 @@ pub struct CourseScheduleSlot {
     pub created_at: DateTime<Utc>,
 }
 
+/// The two columns `update_course`'s locking pre-read consumes — fetched
+/// `FOR UPDATE` by `repository::find_age_bounds_for_update_tx` instead of
+/// duplicating the full `Course` projection (and its two correlated COUNT
+/// subqueries) on every PATCH.
+#[derive(Debug, sqlx::FromRow)]
+pub struct CourseAgeBounds {
+    pub min_age: Option<i32>,
+    pub max_age: Option<i32>,
+}
+
 /// Owner of a course's "legal age range" invariant: each bound, if present,
 /// falls within `0..=150`, and if both are present `min_age <= max_age`. The
 /// DB `courses_age_range` CHECK constraint enforces the ordering half as a

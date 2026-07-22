@@ -54,12 +54,12 @@
 
 | 狀態碼 | 意義 | 常見情境 |
 | --- | --- | --- |
-| 400 Bad Request | 請求格式錯誤 / 業務規則拒絕 | 無效的 coupon、無法轉換的訂單狀態、購物車為空 |
+| 400 Bad Request | 請求格式錯誤 / 非驗證類的業務規則拒絕 | 無效的 coupon、無法轉換的訂單狀態、購物車為空 |
 | 401 Unauthorized | 未帶 token / token 無效或過期 / 帳密錯誤 | 缺少或錯誤的 `Authorization` header |
 | 403 Forbidden | 已認證但權限不足 | 一般會員呼叫 admin-only 端點 |
 | 404 Not Found | 資源不存在 | 課程 / 商品 / 優惠碼 / 訂單不存在 |
 | 409 Conflict | 唯一性衝突 / 併發衝突 | Email 已註冊、優惠碼重複、庫存不足、點數不足 |
-| 422 Unprocessable Entity | 欄位驗證失敗 | `validator` 規則不通過（長度、格式、必填） |
+| 422 Unprocessable Entity | 欄位／跨欄位驗證失敗（DTO 或 service 層） | `validator` 規則不通過（長度、格式、必填）；service 層驗證——`end_time` 須晚於 `start_time`、年齡範圍 0–150、場次尚未開始、點名覆寫已核准請假 |
 | 500 Internal Server Error | 未預期錯誤 | 一律回通用訊息，不洩漏內部細節 |
 
 **總則：admin-only 端點的角色閘門先於請求驗證。** admin 專屬端點在 route 層即檢查
@@ -868,7 +868,7 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 2. `PUT /sessions/{id}/attendance` 的驗證發生在任何寫入之前：先驗證每筆 `status` 是合法值、每筆 `enrolment_id` 都屬於該場次所在課程且狀態為 `active`；只要有一筆不符合，**整批 422 拒絕，零寫入**（即使批次中其餘筆數本身合法有效）。
 3. `GET /coaches/me/students` 僅限 `coach` 角色（無 admin 例外）。「我的 active 課程」＝ `courses.coach_id` 指向呼叫者的課程且 `is_active = true`；「active enrolments」＝該課程 `enrolments.status = 'active'`。同一學員在此教練名下多堂課皆有效報名時只會出現一筆，`courses` 欄位彙整該學員在這位教練名下的所有課程，每筆課程條目皆帶該學員在該課程的 `enrolment_id`（供前端「寫評語」呼叫 `POST /report-cards` 使用）。
 4. `PUT /sessions/{id}/attendance` 要求場次已經開始才能點名（與 §3.20 請假「開課前皆可申請」極性相反）：「已開始」的判定與 §3.18 裁決 2 一致，以 `studio_timezone` 當地牆鐘時間比較 `session_date`+`start_time` 與呼叫當下，開始瞬間本身即視為已開始（含界，同 `has_started`）；尚未開始 → 422（訊息「場次尚未開始，無法點名」）。此檢查發生在裁決 1 的教練/admin 權限驗證之後、裁決 2 的批次內容驗證之前——**即使 `records` 為空陣列，未開始場次一樣回 422**（空批次不再是恆成功的 no-op；行為變更，舊版無此檢查恆回 200）。
-5. **核准恆勝、點名不可覆寫已核准請假**（見 ADR-0008）：核准請假（§3.20 `PATCH`）在同一交易內把該場次出勤投影為 `leave`（`marked_by` = 核准者），此投影**覆寫**該筆既有的 `present`/`absent` 是合法裁決——晚核准是營運常態，`decide` 無時間閘。反方向則被擋下：`PUT /sessions/{id}/attendance` 若把一筆對該場次持有 `approved` 假單的成員點成 `present`/`absent`，**整批 422、零寫入**（與裁決 2 同為全有全無）；點成 `leave` 則通過（冪等）。此規則以兩層實作——批次寫入前的整批 pre-check，加上 upsert 寫入點守衛（關閉兩者之間的競態殘餘窗）。**口頭請假**（直接 `PUT "leave"`、背後無核准假單）不受此限，仍可自由被覆寫。此檢查在裁決 2 的成員資格驗證同層（皆 422、皆整批拒絕）。
+5. **核准恆勝、點名不可覆寫已核准請假**（見 ADR-0008）：核准請假（§3.20 `PATCH`）在同一交易內把該場次出勤投影為 `leave`（`marked_by` = 核准者），此投影**覆寫**該筆既有的 `present`/`absent` 是合法裁決——晚核准是營運常態，`decide` 無時間閘。反方向則被擋下：`PUT /sessions/{id}/attendance` 若把一筆對該場次持有 `approved` 假單的成員點成 `present`/`absent`，**整批 422、零寫入**（與裁決 2 同為全有全無）；點成 `leave` 則通過（冪等）。此規則以兩層實作——批次寫入前的整批 pre-check，加上 upsert 寫入點守衛（關閉兩者之間的競態殘餘窗；守衛在窗內擋下時，同樣以整批 422、零寫入收場）。**口頭請假**（直接 `PUT "leave"`、背後無核准假單）不受此限，仍可自由被覆寫。此檢查在裁決 2 的成員資格驗證同層（皆 422、皆整批拒絕）。
 
 #### `GET /sessions/{id}/roster` — admin 或該課教練
 該場次名冊：課程的 active enrolments JOIN `users`，並 LEFT JOIN 這個場次自己的出勤紀錄（尚未點名的學員該欄位為 `null`）。404：場次不存在。403：非本課教練。

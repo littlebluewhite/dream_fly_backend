@@ -2,9 +2,11 @@
 //! self-defending 核准恆勝 guard (ADR-0008). These call the repository directly
 //! (no HTTP, no `marking::plan` pre-check) so they exercise the `ON CONFLICT
 //! ... WHERE` clause in isolation — the deterministic, single-connection proxy
-//! for the TOCTOU race the guard closes. They assert the *row state* after the
-//! upsert, never `rows_affected` (the blocked case affects zero rows without
-//! erroring, and the caller discards the result).
+//! for the TOCTOU race the guard closes. They assert both the *row state*
+//! after the upsert and the `rows_affected` signal: the blocked case affects
+//! zero rows without erroring, and zero has no other producer — which is what
+//! lets `attendance::service` convert an in-window block into the same
+//! batch-wide 422 the pre-check gives.
 
 mod common;
 
@@ -42,7 +44,7 @@ async fn upsert_guard_blocks_present_over_approved_leave(db: PgPool) {
     seed_attendance(&db, session_id, enrolment_id, "leave", member).await;
 
     let mut tx = db.begin().await.expect("begin");
-    repository::upsert_attendance_tx(
+    let affected = repository::upsert_attendance_tx(
         &mut tx,
         session_id,
         enrolment_id,
@@ -52,6 +54,12 @@ async fn upsert_guard_blocks_present_over_approved_leave(db: PgPool) {
     .await
     .expect("upsert must not error even when the guard blocks the update");
     tx.commit().await.expect("commit");
+
+    assert_eq!(
+        affected, 0,
+        "a blocked upsert must report zero rows — the signal `attendance::service` \
+         converts into the batch-wide 422 inside the race window"
+    );
 
     let status: String = sqlx::query_scalar(
         "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
@@ -78,7 +86,7 @@ async fn upsert_guard_allows_present_over_verbal_leave(db: PgPool) {
     seed_attendance(&db, session_id, enrolment_id, "leave", member).await;
 
     let mut tx = db.begin().await.expect("begin");
-    repository::upsert_attendance_tx(
+    let affected = repository::upsert_attendance_tx(
         &mut tx,
         session_id,
         enrolment_id,
@@ -88,6 +96,8 @@ async fn upsert_guard_allows_present_over_verbal_leave(db: PgPool) {
     .await
     .expect("upsert");
     tx.commit().await.expect("commit");
+
+    assert_eq!(affected, 1, "an allowed overwrite must report one row");
 
     let status: String = sqlx::query_scalar(
         "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",

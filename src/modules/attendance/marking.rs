@@ -82,7 +82,8 @@ pub fn parse(
 ///    overwritable. This pre-check is one of two defense layers; the
 ///    `ON CONFLICT` guard in `repository::upsert_attendance_tx` closes the
 ///    residual TOCTOU window where an approval commits between this check and
-///    the upsert.
+///    the upsert — the service converts that guard's zero-row block into this
+///    same 422, so the whole-batch contract holds inside the window too.
 pub fn plan(
     parsed: Vec<(Uuid, AttendanceStatus)>,
     valid_enrolment_ids: &HashSet<Uuid>,
