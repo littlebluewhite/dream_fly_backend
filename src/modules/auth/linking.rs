@@ -57,10 +57,10 @@ pub enum LinkAction {
 #[derive(Debug)]
 pub struct LinkPlan {
     pub action: LinkAction,
-    /// 舊稱 `!existed`(service.rs:314)——Create 與 Link 皆為 `true`,只有
+    /// 舊稱 `!existed`——Create 與 Link 皆為 `true`,只有
     /// Refresh 為 `false`。
     pub emit_registered_event: bool,
-    /// 舊稱 `created_new_user`(service.rs:336)——只有 Create 為 `true`。
+    /// 舊稱 `created_new_user`——只有 Create 為 `true`。
     pub send_welcome: bool,
 }
 

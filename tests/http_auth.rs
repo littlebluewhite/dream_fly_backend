@@ -254,10 +254,11 @@ async fn google_auth_upstream_error_returns_bad_request(db: PgPool) {
 }
 
 /// `auth::service::google_auth`'s one deliberately asymmetric branch: a
-/// brand-new Google user gets a welcome notification (`created_new_user`
-/// branch), but linking Google to an existing password account does not
-/// resend it (see the comment above `if created_new_user` in
-/// `src/modules/auth/service.rs`). Exercising this for real means the id_token
+/// brand-new Google user gets a welcome notification
+/// (`LinkPlan::send_welcome` is `true` only for `Create`), but linking
+/// Google to an existing password account does not resend it (see the
+/// asymmetry section of `auth::linking`'s module doc). Exercising this for
+/// real means the id_token
 /// must pass real RS256 signature verification against a `wiremock`-served
 /// JWKS — not just the token-exchange redirect the test above uses — so
 /// these two tests sign with a fixed, test-only RSA key and serve its public
@@ -379,8 +380,8 @@ async fn google_auth_new_user_gets_welcome_notification(db: PgPool) {
     let user_id =
         Uuid::parse_str(body["user"]["id"].as_str().expect("user.id")).expect("parse user id");
 
-    // The genuinely-new-Google-user branch (`created_new_user = true`) fires
-    // a welcome notification.
+    // The genuinely-new-Google-user branch (`linking::plan`'s `Create` case,
+    // `send_welcome: true`) fires a welcome notification.
     let welcome = latest_notification(&app.db, user_id, "system")
         .await
         .expect("welcome notification row");
@@ -431,7 +432,8 @@ async fn google_auth_linking_existing_account_does_not_resend_welcome(db: PgPool
     assert_eq!(welcome_count_before, 1);
 
     // Now link Google to that same email — must NOT be treated as a
-    // genuinely new user (`created_new_user` stays false).
+    // genuinely new user (`linking::plan`'s `Link` case leaves
+    // `send_welcome: false`).
     let resp = app
         .post("/api/v1/auth/google")
         .json(&json!({ "code": "fake-authorization-code" }))

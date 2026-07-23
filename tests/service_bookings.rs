@@ -129,8 +129,9 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
 }
 
 /// Step 8: an admin-closed slot (`is_closed`) rejects new bookings the same
-/// way a full one does — `occupy_slot_tx`'s WHERE guard folds both
-/// causes into the same `None` branch, so the message names both.
+/// way a full one does — `occupy_slot_tx`'s WHERE guard folds three causes
+/// (missing/full/closed) into the same `None` branch, so the message is
+/// shared across all three.
 #[sqlx::test]
 async fn closed_slot_rejects_new_booking(db: PgPool) {
     let server = common::test_server_config();

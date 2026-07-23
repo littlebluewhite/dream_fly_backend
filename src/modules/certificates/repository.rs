@@ -77,7 +77,7 @@ pub async fn find_report_card_row_tx(
 }
 
 /// This user's report cards (via their enrolments), newest first — same
-/// joined shape as [`find_report_card_row`], one query, no N+1.
+/// joined shape as [`find_report_card_row_tx`], one query, no N+1.
 pub async fn find_my_report_cards(
     db: &PgPool,
     user_id: Uuid,
@@ -172,7 +172,7 @@ pub async fn find_certificate_row_tx(
 }
 
 /// This user's certificates, newest first — same joined shape as
-/// [`find_certificate_row`], one query, no N+1.
+/// [`find_certificate_row_tx`], one query, no N+1.
 pub async fn find_my_certificates(
     db: &PgPool,
     user_id: Uuid,
