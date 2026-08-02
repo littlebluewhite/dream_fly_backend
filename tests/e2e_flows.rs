@@ -5,7 +5,10 @@
 
 mod common;
 
-use common::fixtures::{seed_coupon, seed_course, seed_time_slot_full};
+use chrono::{Duration, NaiveTime, Utc};
+use common::fixtures::{
+    seed_coach, seed_coupon, seed_course, seed_course_session, seed_enrolment, seed_time_slot_full,
+};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -375,5 +378,151 @@ async fn e2e_checkout_with_course_and_subscription_artifacts(db: PgPool) {
         .await;
     assert_eq!(points.status_code(), 200);
     assert_eq!(points.json::<serde_json::Value>()["balance"], points_earned);
+}
+
+/// Member leave request → coach approval (attendance projects to `leave`,
+/// ADR-0008 「核准恆勝」) → makeup booking (seat ledger moves on both the
+/// original and target session, contract §3.20 名額公式) → the coach's later
+/// attempt to batch-mark that same, now-approved-leave member `present` is
+/// rejected whole (ADR-0008 approved-guard, 422) — the one deliberate wire
+/// change the ADR introduces.
+#[sqlx::test]
+async fn e2e_leave_makeup_projection_flow(db: PgPool) {
+    let app = spawn_test_app(db).await;
+
+    // Coach + course + two future sessions (the original session to take
+    // leave from, and a later makeup target) — course/session creation isn't
+    // the point of this flow, so seeded via fixtures like the other e2e
+    // journeys' catalog setup.
+    let (coach_user_id, coach_token) =
+        app.seed_user_with_roles("e2e-leave-coach@example.com", &["coach"]).await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "E2E Leave Coach").await;
+    let course_id = seed_course(&app.db, "E2E Leave Course", Some(coach_id)).await;
+    let original_date = (Utc::now() + Duration::days(1)).date_naive();
+    let original_session_id = seed_course_session(
+        &app.db,
+        course_id,
+        original_date,
+        NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+        NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+    )
+    .await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session_id = seed_course_session(
+        &app.db,
+        course_id,
+        target_date,
+        NaiveTime::from_hms_opt(14, 0, 0).unwrap(),
+        NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+    )
+    .await;
+
+    // Register the member and give them an active enrolment.
+    let member = app.register_member("e2e-leave-member@example.com", "Password!234").await;
+    let enrolment_id =
+        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+
+    // --- 請假: the member requests leave for the original session. ---
+    let leave_resp = app
+        .post("/api/v1/leave-requests")
+        .authorization_bearer(&member.access_token)
+        .json(&json!({"session_id": original_session_id, "reason": "感冒"}))
+        .await;
+    assert_eq!(leave_resp.status_code(), 200, "body={}", leave_resp.text());
+    let leave_body: serde_json::Value = leave_resp.json();
+    assert_eq!(leave_body["status"], "pending");
+    assert_eq!(leave_body["session_id"], original_session_id.to_string());
+    let leave_id = leave_body["id"].as_str().unwrap().to_string();
+
+    // --- 核准: the course's coach approves it. ---
+    let decide_resp = app
+        .patch(&format!("/api/v1/leave-requests/{leave_id}"))
+        .authorization_bearer(&coach_token)
+        .json(&json!({"status": "approved"}))
+        .await;
+    assert_eq!(decide_resp.status_code(), 200, "body={}", decide_resp.text());
+    assert_eq!(decide_resp.json::<serde_json::Value>()["status"], "approved");
+
+    // 核准恆勝 (ADR-0008): the same-tx attendance write projects onto the
+    // original session's roster as `leave`.
+    let roster_resp = app
+        .get(&format!("/api/v1/sessions/{original_session_id}/roster"))
+        .authorization_bearer(&coach_token)
+        .await;
+    assert_eq!(roster_resp.status_code(), 200, "body={}", roster_resp.text());
+    let roster_body: serde_json::Value = roster_resp.json();
+    let roster_entry = roster_body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["enrolment_id"] == enrolment_id.to_string())
+        .expect("member's roster entry present");
+    assert_eq!(roster_entry["attendance_status"], "leave");
+
+    // --- 補課: the member books a makeup into the future target session. ---
+    let makeup_resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&member.access_token)
+        .json(&json!({"session_id": target_session_id}))
+        .await;
+    assert_eq!(makeup_resp.status_code(), 200, "body={}", makeup_resp.text());
+    assert_eq!(
+        makeup_resp.json::<serde_json::Value>()["makeup_session_id"],
+        target_session_id.to_string()
+    );
+
+    // 座位帳兩邊 (§3.20 名額公式): the original session's approved-leave count
+    // (leave releases a seat there) and the target session's makeup count
+    // (makeup occupies a seat there) each moved by exactly one.
+    let original_leave_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM leave_requests \
+         WHERE session_id = $1 AND status = 'approved'::leave_status",
+    )
+    .bind(original_session_id)
+    .fetch_one(&app.db)
+    .await
+    .expect("count approved leave for original session");
+    assert_eq!(original_leave_count, 1, "original session must show one seat freed by leave");
+
+    let target_makeup_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM leave_requests WHERE makeup_session_id = $1")
+            .bind(target_session_id)
+            .fetch_one(&app.db)
+            .await
+            .expect("count makeups booked into target session");
+    assert_eq!(target_makeup_count, 1, "target session must show one seat occupied by makeup");
+
+    // --- approved-guard (ADR-0008): advance the mock clock to the original
+    // session's start so the PUT attendance time gate itself is satisfied,
+    // isolating the approved-guard 422 as the one under test.
+    app.clock.set(original_date.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()).and_utc());
+    let guard_resp = app
+        .put(&format!("/api/v1/sessions/{original_session_id}/attendance"))
+        .authorization_bearer(&coach_token)
+        .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "present"}]}))
+        .await;
+    assert_eq!(guard_resp.status_code(), 422, "body={}", guard_resp.text());
+    assert_eq!(
+        guard_resp.json::<serde_json::Value>()["error"],
+        "cannot overwrite an approved leave with present/absent"
+    );
+
+    // The rejected batch must leave the leave projection untouched.
+    let roster_after_resp = app
+        .get(&format!("/api/v1/sessions/{original_session_id}/roster"))
+        .authorization_bearer(&coach_token)
+        .await;
+    assert_eq!(roster_after_resp.status_code(), 200, "body={}", roster_after_resp.text());
+    let roster_after_body: serde_json::Value = roster_after_resp.json();
+    let entry_after = roster_after_body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["enrolment_id"] == enrolment_id.to_string())
+        .expect("member's roster entry present");
+    assert_eq!(
+        entry_after["attendance_status"], "leave",
+        "approved-guard must leave the projection as leave"
+    );
 }
 

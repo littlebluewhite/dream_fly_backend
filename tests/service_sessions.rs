@@ -21,8 +21,8 @@ use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{repository as sessions_repository, service};
 
 use common::fixtures::{
-    seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_course_session, seed_enrolment,
+    seed_coach, seed_course, seed_course_schedule_slot, seed_course_session, seed_enrolment,
+    seed_session_scene,
 };
 
 /// PostgreSQL `EXTRACT(DOW)` / this module's `day_of_week` convention:
@@ -198,12 +198,16 @@ async fn my_weekly_schedule_only_includes_active_enrolments(db: PgPool) {
 async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPool) {
     let coach_user = common::seed_member(&db, "coach-today@example.com", "hunter22-secret").await;
     let coach_id = seed_coach(&db, coach_user, "Coach Today").await;
-    let own_course = seed_course(&db, "Own Course Today", Some(coach_id)).await;
-    let other_course = seed_course(&db, "Other Course Today", None).await;
-
     let today = Utc::now().date_naive();
     let dow = dow_of(today);
-    seed_course_schedule_slot(&db, own_course, dow, t(9, 0), t(10, 0)).await;
+    let own_scene =
+        seed_session_scene(&db, "Own Course Today", Some(coach_id), today, t(9, 0), None).await;
+    let own_course = own_scene.course;
+    // other_course intentionally has no session pre-seeded — the coach-scoped
+    // today_sessions() materialize/read must never surface a course this
+    // coach doesn't own, so its session is left to that (never-triggered)
+    // scope exclusion rather than composited into existence.
+    let other_course = seed_course(&db, "Other Course Today", None).await;
     seed_course_schedule_slot(&db, other_course, dow, t(9, 0), t(10, 0)).await;
 
     // Two active enrolments + one cancelled on own_course -> enrolled_count
@@ -251,13 +255,15 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
         .await
         .expect("rename coach user");
     let coach_id = seed_coach(&db, coach_user, "Today Coach Title").await;
-    let with_coach = seed_course(&db, "Course With Coach Today", Some(coach_id)).await;
-    let without_coach = seed_course(&db, "Course Without Coach Today", None).await;
 
     let today = Utc::now().date_naive();
-    let dow = dow_of(today);
-    seed_course_schedule_slot(&db, with_coach, dow, t(9, 0), t(10, 0)).await;
-    seed_course_schedule_slot(&db, without_coach, dow, t(11, 0), t(12, 0)).await;
+    let with_scene =
+        seed_session_scene(&db, "Course With Coach Today", Some(coach_id), today, t(9, 0), None)
+            .await;
+    let with_coach = with_scene.course;
+    let without_scene =
+        seed_session_scene(&db, "Course Without Coach Today", None, today, t(11, 0), None).await;
+    let without_coach = without_scene.course;
 
     let admin_id = common::seed_member(&db, "coach-name-admin@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
@@ -275,10 +281,17 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
 
 #[sqlx::test]
 async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
-    let course_id = seed_course(&db, "Venue Match Course Today", None).await;
     let today = Utc::now().date_naive();
-    let dow = dow_of(today);
-    seed_course_schedule_slot_with_venue(&db, course_id, dow, t(9, 0), t(10, 0), "Main Hall").await;
+    let scene = seed_session_scene(
+        &db,
+        "Venue Match Course Today",
+        None,
+        today,
+        t(9, 0),
+        Some("Main Hall"),
+    )
+    .await;
+    let course_id = scene.course;
 
     let admin_id = common::seed_member(&db, "venue-match-admin@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
@@ -316,13 +329,13 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
     let coach_user =
         common::seed_member(&db, "coach-admin-today@example.com", "hunter22-secret").await;
     let coach_id = seed_coach(&db, coach_user, "Coach").await;
-    let course_a = seed_course(&db, "Course A Admin Today", Some(coach_id)).await;
-    let course_b = seed_course(&db, "Course B Admin Today", None).await;
 
     let today = Utc::now().date_naive();
-    let dow = dow_of(today);
-    seed_course_schedule_slot(&db, course_a, dow, t(9, 0), t(10, 0)).await;
-    seed_course_schedule_slot(&db, course_b, dow, t(9, 0), t(10, 0)).await;
+    let scene_a =
+        seed_session_scene(&db, "Course A Admin Today", Some(coach_id), today, t(9, 0), None).await;
+    let course_a = scene_a.course;
+    let scene_b = seed_session_scene(&db, "Course B Admin Today", None, today, t(9, 0), None).await;
+    let course_b = scene_b.course;
 
     let admin_id = common::seed_member(&db, "admin-today@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);

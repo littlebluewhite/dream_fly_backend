@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -1060,4 +1060,53 @@ pub async fn seed_carted_member(
     }
     set_points_balance(db, member, points).await;
     member
+}
+
+/// [`seed_session_scene`] 回傳的新建 course/slot/session 三個 id。
+pub struct SessionScene {
+    pub course: Uuid,
+    pub slot: Uuid,
+    pub session: Uuid,
+}
+
+/// 「某課程在某天某時段有一筆對應週課表 slot 的場次」：`seed_course`
+/// （name、coach_id）+ `seed_course_schedule_slot`（day_of_week 由
+/// `session_date` 反推，不留給呼叫端另傳——與 `session_date` 兜不起來的
+/// `day_of_week` 沒有意義，這兩者本就該連動，不留製造不一致的空間）+
+/// `seed_course_session`（同一 `session_date`/`start_time`，結束時間固定
+/// 「起算 +1 小時」，同 `seed_marked_attendance` 既有慣例：本檔目前每個
+/// 場次皆整點起算 1 小時，沒有測試需要別的長度），取代
+/// `service_sessions.rs` 反覆出現的「建課、建 slot」兩段式 inline 序列，並
+/// 讓場次直接落地成資料列——不必依賴 ACT 呼叫（`list_course_sessions`/
+/// `today_sessions`）自己的 materialize 副作用才拿得到一筆 `course_sessions`
+/// 列。`name`/`coach_id` 顯式入參，同 `seed_course`——課名與是否指派教練皆
+/// 是呼叫端才知道的變異點。`session_date`/`start_time` 顯式入參：測試常需
+/// 要場次精確落在「今天」或某個未來/過去日期，composite 沒辦法代猜是哪一
+/// 天。`venue` 給 `Some` 時額外落在 slot 上（供 venue 解析測試比對），
+/// `None` 同 `seed_course_schedule_slot` 原生的 NULL 預設。**不適用**於
+/// 「slot 本身有無存在就是測試標的」（例如場次無對應 slot 時 venue 應為
+/// null 的測試——需要真的沒有 slot）或「materialize 本身就是測試標的」
+/// （例如 materialize 冪等測試——需要 ACT 呼叫自己把場次物化出來）的案
+/// 例：本 composite 一定連帶造出 slot 與場次，硬套會讓那類測試失去意義。
+/// Returns the new scene.
+pub async fn seed_session_scene(
+    db: &PgPool,
+    name: &str,
+    coach_id: Option<Uuid>,
+    session_date: NaiveDate,
+    start_time: NaiveTime,
+    venue: Option<&str>,
+) -> SessionScene {
+    let course = seed_course(db, name, coach_id).await;
+    let day_of_week = session_date.weekday().num_days_from_sunday() as i16;
+    let end_time = start_time + Duration::hours(1);
+    let slot = match venue {
+        Some(v) => {
+            seed_course_schedule_slot_with_venue(db, course, day_of_week, start_time, end_time, v)
+                .await
+        }
+        None => seed_course_schedule_slot(db, course, day_of_week, start_time, end_time).await,
+    };
+    let session = seed_course_session(db, course, session_date, start_time, end_time).await;
+    SessionScene { course, slot, session }
 }
