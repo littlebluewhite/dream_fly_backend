@@ -5,7 +5,7 @@ Dream Fly 工作室預約與商務後端的領域語言。於 notifications 接�
 ## Language
 
 **Notification**:
-持久化到 `notifications` 表、只顯示給單一使用者的 in-app 訊息,在某個領域動作 commit 之後以 best-effort 寫入;絕不阻擋或回滾觸發它的動作。「commit 之後」由 `PendingNotification`(`#[must_use]`,`.deliver(db)` 唯一 IO 入口)提醒,時機本身仍是位置慣例。目前所有交付站點皆遵循「tx 內完成領域寫入 → commit → deliver」標準形,無例外站點。
+持久化到 `notifications` 表、只顯示給單一使用者的 in-app 訊息,在某個領域動作 commit 之後以 best-effort 寫入;絕不阻擋或回滾觸發它的動作。「commit 之後」由 `PendingNotification`(`#[must_use]`,`.deliver(db)` 唯一 IO 入口)提醒,時機本身仍是位置慣例——是否收進型別系統已裁決不做,封存於 ADR-0009,重開條件見該 ADR。目前所有交付站點皆遵循「tx 內完成領域寫入 → commit → deliver」標準形,無例外站點。
 _Avoid_: alert, push(本系統無外部推播通道), message
 
 **Event**:
@@ -16,7 +16,8 @@ _Avoid_: notification, message
 牆鐘語意的單一歸屬,`utils::studio_clock`,契約 §3.18 裁決 2。
 
 **課程教練所有權(Course-Coach Ownership)**:
-`coaches::service::resolve/require_course_coach`;三態政策=所有權 gate 403 / 範圍列表空集合 / 儀表板 404。
+`coaches::service::resolve/require_course_coach`;三態政策=所有權 gate 403 / 範圍列表空集合 / 儀表板 404。所有權 gate 有**第二形狀**——教練—學員**關係** gate(契約 §3.22「教過此生,active 或 cancelled 皆算」),刻意 inline 於 `certificates::service::create_certificate`(src/modules/certificates/service.rs:80-90:`coaches::service::resolve` + `user_has_enrolment_with_coach` EXISTS 查詢),**不歸戶 coaches 模組**——單一呼叫端,依 ADR-0005 判準,為它建姊妹 helper 是淺模組;出現第二個「教練發給自己學員」類端點時再歸戶。對照:單課 gate `require_course_coach`(coaches/service.rs:44-64)已歸戶,`create_report_card`(certificates/service.rs:29)是其消費端。
+_Avoid_: 把這條關係 gate 與單課 gate `require_course_coach` 混同
 
 **訂單定價(Order Pricing)**:
 `orders::pricing::price → PricingOutcome`,純函式,交易編排留 checkout。
