@@ -392,7 +392,8 @@ admin 調整的語意本來就是「正負皆可、由操作者決定」，`POST
 `as i64`/`try_into` 轉換，換不到額外保障）。
 
 必須與另案（MaterializedDay 單日物化——`sessions::repository::find_today_sessions_in`/
-`coach_today_and_pending` 現有的 `mat.from_date() == mat.to_date()` debug_assert）明文區辨：兩
+`reports::repository::coach_today_and_pending` 現有的 `mat.from_date() == mat.to_date()`
+debug_assert）明文區辨：兩
 案的 debug_assert 表面上是同一種防線，適用的判準也相同——「上游是否存在 owner 級保證」——但代入
 的事實不同，得出相反的結論。MaterializedDay 案的 debug_assert 是**唯一防線**：`MaterializedRange`
 本身允許多日窗，「這次呼叫只物化了一天」這個前提沒有任何上游 owner 保證，純粹靠呼叫端自律，
