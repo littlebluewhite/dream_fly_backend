@@ -98,8 +98,8 @@ pub async fn today_sessions(
         }
     };
 
-    let mat = repository::materialize_range(db, &course_ids, today, today).await?;
-    let rows = repository::find_today_sessions_in(db, &mat).await?;
+    let day = repository::materialize_day(db, &course_ids, today).await?;
+    let rows = repository::find_today_sessions_in(db, &day).await?;
     Ok(rows
         .into_iter()
         .map(|r| {

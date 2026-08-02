@@ -12,10 +12,13 @@ use super::model::{CourseSession, MyScheduleRow, TodaySessionRow};
 ///
 /// This is **not** a course-scope filter guarantee: it proves the range was
 /// materialized, not that every reader filters by `course_ids`. Some readers
-/// (e.g. `reports::repository::venue_usage`/`coach_today_and_pending`) use
-/// only the date window and ignore `course_ids` entirely — see each reader's
-/// own doc for its actual scope. Fields are private; only `materialize_range`
-/// can construct one.
+/// (e.g. `reports::repository::venue_usage`) use only the date window and
+/// ignore `course_ids` entirely — see each reader's own doc for its actual
+/// scope. Fields are private; only `materialize_range` can construct one.
+///
+/// 姊妹型別 [`MaterializedDay`]:額外要求單日(`from == to`)的消費端改收
+/// 它——不再靠讀取端自行斷言 `from_date() == to_date()`,分工細節見它自己
+/// 的 doc。
 #[derive(Debug, Clone)]
 pub struct MaterializedRange {
     course_ids: Vec<Uuid>,
@@ -36,6 +39,37 @@ impl MaterializedRange {
 
     pub fn to_date(&self) -> NaiveDate {
         self.to
+    }
+}
+
+/// 證明 `materialize_day(db, course_ids, date)` 已針對這組確切的
+/// `(course_ids, date)` 執行過——[`MaterializedRange`] 的單日姊妹型別。
+/// 兩個消費端額外要求單日窗(`from == to`):`find_today_sessions_in`——
+/// `TodaySessionRow` 無日期欄,多日範圍會把多天混成「今天」;
+/// `coach_today_and_pending`——「今天」本身無多日語意。這個前提以前只靠
+/// 讀取端自行 `debug_assert!(from_date() == to_date())` 把關,是唯一防線:
+/// `MaterializedRange` 本身允許任意區間,沒有任何上游 owner 保證這次呼叫
+/// 只物化了一天,release build 拿掉這道斷言後,悄悄傳入的多日 witness 沒
+/// 有其他防線接住(對照 `LedgerDelta` 幅度 debug_assert 的
+/// defense-in-depth 判準,見 ADR-0007 第四則 Addendum)。本型別把「單日」
+/// 前提收進建構點:[`materialize_day`] 是唯一建構方式,消費端不再需要自
+/// 行斷言。
+///
+/// 與 [`MaterializedRange`] 分工:只要求「這個範圍已物化」的讀取端繼續
+/// 收 `&MaterializedRange`;額外要求「而且剛好一天」的讀取端改收
+/// `&MaterializedDay`。欄位全私有,僅 `materialize_day` 能建構。
+#[derive(Debug, Clone)]
+pub struct MaterializedDay {
+    range: MaterializedRange,
+}
+
+impl MaterializedDay {
+    pub fn course_ids(&self) -> &[Uuid] {
+        self.range.course_ids()
+    }
+
+    pub fn date(&self) -> NaiveDate {
+        self.range.from_date()
     }
 }
 
@@ -114,6 +148,18 @@ pub async fn materialize_range(
     Ok(witness)
 }
 
+/// `materialize_day` 是 [`MaterializedDay`] 的唯一建構點——內部呼叫
+/// `materialize_range(db, course_ids, date, date)`,冪等與早退邏輯全部
+/// 重用,不重複實作。
+pub async fn materialize_day(
+    db: &PgPool,
+    course_ids: &[Uuid],
+    date: NaiveDate,
+) -> Result<MaterializedDay, sqlx::Error> {
+    let range = materialize_range(db, course_ids, date, date).await?;
+    Ok(MaterializedDay { range })
+}
+
 pub async fn find_sessions_in(
     db: &PgPool,
     mat: &MaterializedRange,
@@ -156,20 +202,13 @@ pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec
 /// `course_schedule_slots_unique` guarantees at most one match, so this
 /// LEFT JOIN can never fan out a session into more than one row.
 ///
-/// `mat` must be a single-day witness (`from_date() == to_date()`,
-/// `debug_assert`-checked): `TodaySessionRow` carries no date column, so a
-/// multi-day witness would silently blend sessions from different days into
-/// one undated list.
+/// 收 [`MaterializedDay`]——單日前提已在型別層成立,不再需要在此自行
+/// 斷言。
 pub async fn find_today_sessions_in(
     db: &PgPool,
-    mat: &MaterializedRange,
+    day: &MaterializedDay,
 ) -> Result<Vec<TodaySessionRow>, sqlx::Error> {
-    debug_assert!(
-        mat.from_date() == mat.to_date(),
-        "find_today_sessions_in requires a single-day witness (TodaySessionRow has no date column)"
-    );
-
-    if mat.course_ids().is_empty() {
+    if day.course_ids().is_empty() {
         return Ok(Vec::new());
     }
 
@@ -187,12 +226,11 @@ pub async fn find_today_sessions_in(
            ON s.course_id = cs.course_id \
           AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
           AND s.start_time = cs.start_time \
-         WHERE cs.session_date BETWEEN $1 AND $2 AND cs.course_id = ANY($3::uuid[]) \
-         ORDER BY cs.session_date, cs.start_time",
+         WHERE cs.session_date = $1 AND cs.course_id = ANY($2::uuid[]) \
+         ORDER BY cs.start_time",
     )
-    .bind(mat.from_date())
-    .bind(mat.to_date())
-    .bind(mat.course_ids())
+    .bind(day.date())
+    .bind(day.course_ids())
     .fetch_all(db)
     .await
 }

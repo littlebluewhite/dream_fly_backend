@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::modules::bookings::model::VENUE_REVENUE_STATUSES;
 use crate::modules::orders::model::REVENUE_STATUSES;
-use crate::modules::sessions::repository::MaterializedRange;
+use crate::modules::sessions::repository::{MaterializedDay, MaterializedRange};
 
 use super::model::{
     ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
@@ -629,24 +629,17 @@ pub async fn venue_usage(
 // GET /reports/coach
 // ---------------------------------------------------------------------------
 
-/// `(today_sessions, pending_attendance)` for `coach_id`'s courses within
-/// `mat`'s date window — this only counts already-existing `course_sessions`
-/// rows. `mat` must be a single-day witness (`from_date() == to_date()`,
-/// `debug_assert`-checked — a multi-day witness would silently count
-/// multiple days as "today"), so `session_date BETWEEN mat.from_date() AND
-/// mat.to_date()` is semantically the old `= today` equality. Coach scope
-/// comes from the `coach_id` JOIN, not from `mat.course_ids()` (unused
-/// here).
+/// `(today_sessions, pending_attendance)` for `coach_id`'s courses on
+/// `day` — this only counts already-existing `course_sessions` rows. `day`
+/// 收 [`MaterializedDay`]——單日前提已在型別層成立,`session_date =
+/// day.date()` 直接以等值查詢表達「今天」,不必再靠 `BETWEEN` 加斷言。
+/// Coach scope comes from the `coach_id` JOIN, not from `day.course_ids()`
+/// (unused here).
 pub async fn coach_today_and_pending(
     db: &PgPool,
     coach_id: Uuid,
-    mat: &MaterializedRange,
+    day: &MaterializedDay,
 ) -> Result<(i64, i64), sqlx::Error> {
-    debug_assert!(
-        mat.from_date() == mat.to_date(),
-        "coach_today_and_pending requires a single-day witness"
-    );
-
     sqlx::query_as::<_, (i64, i64)>(
         "SELECT COUNT(*), \
                 COUNT(*) FILTER (WHERE NOT EXISTS ( \
@@ -654,11 +647,10 @@ pub async fn coach_today_and_pending(
                 )) \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
-         WHERE c.coach_id = $1 AND cs.session_date BETWEEN $2 AND $3",
+         WHERE c.coach_id = $1 AND cs.session_date = $2",
     )
     .bind(coach_id)
-    .bind(mat.from_date())
-    .bind(mat.to_date())
+    .bind(day.date())
     .fetch_one(db)
     .await
 }
@@ -733,8 +725,7 @@ pub async fn my_active_enrolment_course_ids(
 
 /// Count of `mat.course_ids()`'s materialized sessions in
 /// `[mat.from_date(), mat.to_date()]` — the one reader that binds all three
-/// witness fields directly (`venue_usage`/`coach_today_and_pending` only use
-/// the date window).
+/// witness fields directly (`venue_usage` only uses the date window).
 pub async fn upcoming_session_count(
     db: &PgPool,
     mat: &MaterializedRange,

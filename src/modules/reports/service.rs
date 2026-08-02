@@ -298,10 +298,10 @@ pub async fn coach_report(
 
     let today = studio_clock::today(studio_clock::studio_tz(server), now);
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
-    let mat = sessions_repository::materialize_range(db, &course_ids, today, today).await?;
+    let day = sessions_repository::materialize_day(db, &course_ids, today).await?;
 
     let (today_sessions, pending_attendance) =
-        repository::coach_today_and_pending(db, coach.id, &mat).await?;
+        repository::coach_today_and_pending(db, coach.id, &day).await?;
     let unread_messages = messages_repository::count_unread_for_user(db, auth.user_id).await?;
     let student_count = attendance_repository::count_my_students(db, coach.id).await?;
 
