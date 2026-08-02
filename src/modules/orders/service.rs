@@ -14,7 +14,7 @@ use crate::modules::coupons::service as coupons_service;
 use crate::modules::enrolments::dto::EnrolmentResponse;
 use crate::modules::enrolments::service as enrolments_service;
 use crate::modules::notifications::service as notify;
-use crate::modules::points::model::PointReason;
+use crate::modules::points::model::LedgerDelta;
 use crate::modules::points::service as points_service;
 use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
@@ -335,9 +335,7 @@ pub async fn checkout(
         points_service::apply_delta_tx(
             &mut tx,
             user_id,
-            -outcome.points_used,
-            PointReason::CheckoutRedeem,
-            Some(order.id),
+            LedgerDelta::checkout_redeem(outcome.points_used, order.id),
         )
         .await?;
     }
@@ -345,9 +343,7 @@ pub async fn checkout(
         points_service::apply_delta_tx(
             &mut tx,
             user_id,
-            outcome.points_earned,
-            PointReason::CheckoutEarn,
-            Some(order.id),
+            LedgerDelta::checkout_earn(outcome.points_earned, order.id),
         )
         .await?;
     }
@@ -701,9 +697,7 @@ async fn compensate_order_artifacts_tx(
         points_service::apply_delta_tx(
             tx,
             order.user_id,
-            plan.restore_points,
-            PointReason::RefundRestore,
-            Some(order.id),
+            LedgerDelta::refund_restore(plan.restore_points, order.id),
         )
         .await?;
     }
@@ -711,9 +705,7 @@ async fn compensate_order_artifacts_tx(
         points_service::apply_delta_tx(
             tx,
             order.user_id,
-            -plan.clawback_points,
-            PointReason::RefundClawback,
-            Some(order.id),
+            LedgerDelta::refund_clawback(plan.clawback_points, order.id),
         )
         .await?;
     }

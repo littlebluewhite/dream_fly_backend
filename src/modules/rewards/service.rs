@@ -3,7 +3,6 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::points::model::PointReason;
 use crate::modules::points::service as points_service;
 
 use super::dto::{
@@ -56,14 +55,8 @@ pub async fn redeem(db: &PgPool, user_id: Uuid, reward_id: Uuid) -> Result<Redee
     // second concurrent redeem/checkout for the same user blocks on this
     // row lock until we commit or roll back. Insufficient balance surfaces
     // as `AppError::Conflict("點數不足")` from `try_spend_tx` itself.
-    let balance_after = points_service::try_spend_tx(
-        &mut tx,
-        user_id,
-        reward.points_cost as i64,
-        PointReason::Redeem,
-        None,
-    )
-    .await?;
+    let balance_after =
+        points_service::try_spend_tx(&mut tx, user_id, reward.points_cost as i64).await?;
 
     if reward.stock.is_some() {
         repository::decrement_stock_tx(&mut tx, reward.id).await?;

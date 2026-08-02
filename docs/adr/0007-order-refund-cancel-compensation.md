@@ -350,3 +350,91 @@ witness（欄位私有，僅 `lock_balance_tx` 能建構；無 `mod tx_witness` 
 與 `service_rewards.rs` 多處）同樣全不碰。新增 `lock_balance_tx_returns_witness_carrying_user_and_locked_balance`
 （`service_points.rs`，含 NotFound 映射穿越新簽章不變）、`checkout_cart_seam_reads_only_the_locked_users_cart`
 （`service_cart.rs`）直接釘住新簽章本身的行為。
+
+## Addendum（2026-08-03）：「給點」符號×order_id 配對收進 LedgerDelta 建構子——try_spend_tx 同步收窄
+
+**遷移登記**：`points::service::apply_delta_tx` 原本收 `(delta: i64, reason: PointReason,
+order_id: Option<Uuid>)` 三個裸參數，兩條散文前提——契約 §1.6「一個 reason ⇒ 固定正負號」（例如
+`CheckoutRedeem` 恆負、`RefundRestore` 恆正）、checkout/refund 類 reason 恆帶 `order_id`（決策 7
+`uniq_point_ledger_refund_once` 依賴這個前提才能防止同一筆訂單被重複退點）——全靠呼叫端自律。本
+輪把兩條前提收進 `points::model::LedgerDelta` 這個 smart constructor：六個建構子與六個
+`PointReason` 變體一對一同名（`checkout_earn`/`checkout_redeem`/`redeem`/`refund_restore`/
+`refund_clawback`/`admin_adjust`），`apply_delta_tx` 簽章收斂為 `(tx, user_id, ld:
+LedgerDelta)`，函式體改讀 `ld.delta()`/`ld.reason()`/`ld.order_id()`——zero-delta guard（「delta
+must be non-zero」）與 `users_points_balance_check` → `Conflict("點數不足")` 映射逐字不動，只是
+輸入來源從三個獨立參數變成一個已配對好的值。
+
+`try_spend_tx` 同步收窄，是設計裁決的必然結果、不是順手改動：舊簽章 `(tx, user_id, cost, reason,
+order_id)` 允許呼叫端傳入任意 `(reason, order_id)` 組合，這正是 `LedgerDelta` 詞彙下刻意消滅的
+自由度——一個接受任意 reason 的 spend 函式無法用 `LedgerDelta` 表達（它不知道該叫哪個建構子）。
+新簽章 `(tx, user_id, cost: i64)` 內部固定呼叫 `LedgerDelta::redeem(cost)`，`cost <= 0` guard
+（「cost must be positive」）不動。目前唯一呼叫端 `rewards::service::redeem` 本來就只花
+`PointReason::Redeem` 這一種 reason——收斂沒有讓任何現有呼叫端變得無法表達。**演化路徑**：未來若
+出現第二種 spender（例如另一個用不同 reason 花點數的功能），正確做法是替 `try_spend_tx` 的簽章
+加一個 `LedgerDelta` 建構子參數（呼叫端已經構造好要花的 delta，函式只管鎖—比較—花）、或是新增一
+個姊妹函式，而不是把 `reason`/`order_id` 重新開放成裸參數——那會原地重建本輪要消滅的「任意
+reason 配任意符號」自由度。
+
+**意識性排除**：
+
+(a) **`admin_adjust` 保持帶符號**——這不是前五個建構子漏掉的第六種固定符號，而是刻意的逃生口：
+admin 調整的語意本來就是「正負皆可、由操作者決定」，`POST /points/adjustments` 的
+`AdjustPointsRequest.delta` 欄位本身也沒有符號限制。把 `admin_adjust` 硬做成固定符號會誤述這個
+端點的真實語意，不是補上型別安全，是說謊。
+
+(b) **幅度非負不用 `Result`/`u64` 強制，`debug_assert` 是 defense-in-depth**——`LedgerDelta` 五
+個固定符號建構子收 `magnitude: i64`、不回 `Result`，只在 debug/測試 build 用
+`debug_assert!(magnitude >= 0, ...)` 兜底。理由是四個幅度來源各自已有 owner 級保證：
+`orders::pricing::PricingOutcome`（純函式，`pricing.rs` 自身的核測試覆蓋）、
+`orders::refund::RefundPlan` 的 `restore_points`/`clawback_points`（doc 與測試皆載明恆
+`>= 0`）、`rewards.points_cost`（DB `CHECK > 0`）、seed 的字面正值——在型別層對一個已經有 owner
+兜底的量再加一道 `Result`/`u64` 防線，是不必要的重複成本（`u64` 尤其會讓四個呼叫端全部多一次
+`as i64`/`try_into` 轉換，換不到額外保障）。
+
+必須與另案（MaterializedDay 單日物化——`sessions::repository::find_today_sessions_in`/
+`coach_today_and_pending` 現有的 `mat.from_date() == mat.to_date()` debug_assert）明文區辨：兩
+案的 debug_assert 表面上是同一種防線，適用的判準也相同——「上游是否存在 owner 級保證」——但代入
+的事實不同，得出相反的結論。MaterializedDay 案的 debug_assert 是**唯一防線**：`MaterializedRange`
+本身允許多日窗，「這次呼叫只物化了一天」這個前提沒有任何上游 owner 保證，純粹靠呼叫端自律，
+release build 拿掉這道斷言後，一個悄悄傳入多日窗的呼叫會被 `find_today_sessions_in` 默默按第一
+天處理，沒有其他防線接住。`LedgerDelta` 這裡相反：四個幅度來源都已經有 owner（純函式核測試、DB
+CHECK 約束）兜底，`debug_assert` 只是這些既有防線之外「順手多檢查一次」的 defense-in-depth，
+release build 拿掉它不會讓任何一個現有呼叫端失去保障——差別在於同一個判準底下，一邊「上游無
+owner」得出「debug_assert 必須升級為型別強制」的結論（MaterializedDay 案的收斂方向），另一邊
+「上游已有 owner」得出「debug_assert 足夠、不需要再加型別強制」的結論（本案）：不是判準不一
+致，是代入的前提不同。
+
+(c) **`insert_ledger_tx` 保留裸參數殘縫**——`points::repository::insert_ledger_tx` 的簽章
+`(tx, user_id, delta, balance_after, reason, order_id)` 不跟進收 `&LedgerDelta`；
+`points::service::apply_delta_tx` 在呼叫處把 `ld.delta()`/`ld.reason()`/`ld.order_id()` 三個欄
+位重新拆開餵給它。比照本 ADR 前一則 Addendum（2026-07-23）對 `cart::repository` 保留裸
+`user_id` 參數的登記方式：ADR-0005 seam 是既認的信任邊界，repository 層對 service 層的裸參數不
+強行封起來——`insert_ledger_tx` 唯一呼叫端就是同檔 `apply_delta_tx`，兩者緊鄰，`ld` 在呼叫處已
+經拆完，repository 這層再收一個 `&LedgerDelta` 只是把同一份資料換個容器傳遞，沒有新增保障，徒
+增 `points::repository` 對 `points::model::LedgerDelta` 的耦合。
+
+(d) **`user_id` 不併入 `LedgerDelta`**——不存在「這個 reason 只能配這個 user」之類的配對
+invariant 需要型別擔保；user 的正確歸屬已經是 `BalanceLock` witness（同檔，`lock_balance_tx`
+回傳）治理的範疇——呼叫 `apply_delta_tx` 前鎖定的是哪個 user、`ld` 要寫給哪個 user，兩者由呼叫
+端的區域變數自然保持一致，不是 `LedgerDelta` 需要收斂的自由度。把 `user_id` 塞進 `LedgerDelta`
+只會讓這個型別多背一個與「符號×order_id 配對」無關的欄位。
+
+**回歸清單**（零行為變更的測試錨，全數綠燈、無斷言變更）：`tests/service_orders.rs` 全檔，尤其
+`refund_reverses_stock_enrolment_subscription_and_points`（refund）、
+`cancel_compensates_identically_to_refund`（cancel）、
+`refund_clawback_insufficient_balance_conflicts_and_rolls_back_all`（clawback-conflict 409）、
+`concurrent_checkout_last_unit_only_succeeds_once`、
+`concurrent_checkout_same_idempotency_key_converges_to_one_order`、
+`checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`、
+`order_paths_complete_on_a_single_connection_pool`（併發與鎖拓撲）；
+`tests/service_rewards.rs::redeem_insufficient_balance_conflict_with_zero_side_effects`（「點數
+不足」訊息釘位）；`tests/service_points.rs` 的 `adjust_points` 套件（CAS 增/減/mismatch/穿越
+`users_points_balance_check`/nonexistent-user 五個站點）；`tests/service_cart.rs` 全檔。
+`tests/service_points.rs` 本身除 11 個站點隨簽章機械遷移外（其中 2 個是語意升級——舊測試曾以
+`CheckoutEarn`/`CheckoutRedeem` 搭配 `order_id: None` 組合，這個組合在 `LedgerDelta` 詞彙下刻意
+不可表達，改為先造一張訂單再帶真實 `order_id`），新增
+`find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem_writes`：同一 order 經
+`apply_delta_tx` 寫入 `checkout_earn`/`checkout_redeem` 後，直接呼叫
+`points::repository::find_order_flow_sums_tx` 讀回，斷言兩個方向皆為正幅度——把「寫入端寫負值
+（`checkout_redeem`）/ SQL 讀取端 `COALESCE(-(SUM(...)))` 取負還原」這對攣生從只能靠 e2e
+checkout/refund 場景間接覆蓋，拉到接縫本地直接斷言。

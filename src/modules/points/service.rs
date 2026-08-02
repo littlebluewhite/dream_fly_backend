@@ -7,23 +7,31 @@ use crate::extractors::pagination::PaginationParams;
 use super::dto::{
     AdjustPointsRequest, LedgerEntryResponse, PointsAdjustmentResponse, PointsMeResponse,
 };
-use super::model::PointReason;
+use super::model::LedgerDelta;
 use super::repository;
 
 /// 原子調整點數並寫 ledger；餘額不足（結果 < 0）→ AppError::Conflict("點數不足")。
 ///
-/// `delta == 0` is rejected up front (a zero-delta ledger row would be
-/// pure noise) without touching the database. Otherwise the balance update
-/// and the ledger insert happen in the caller's transaction: on any error
-/// returned here, the caller is responsible for rolling back (or simply
-/// not committing) `tx` — this function never commits.
+/// `ld: LedgerDelta` already pairs the signed delta with its `PointReason`
+/// and (where the reason demands it) an `order_id` at construction time —
+/// this function just reads the three fields back out
+/// (`ld.delta()`/`ld.reason()`/`ld.order_id()`) instead of receiving them as
+/// independent, individually-forgeable parameters (see `LedgerDelta`'s type
+/// doc for the invariants this closes). `delta == 0` is still rejected up
+/// front (a zero-delta ledger row would be pure noise) without touching the
+/// database — this guard, not `LedgerDelta`'s constructors, is where a zero
+/// magnitude is turned away; the constructors' `debug_assert` only guards
+/// against a *negative* magnitude, deliberately leaving zero to reach here.
+/// Otherwise the balance update and the ledger insert happen in the
+/// caller's transaction: on any error returned here, the caller is
+/// responsible for rolling back (or simply not committing) `tx` — this
+/// function never commits.
 pub async fn apply_delta_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
-    delta: i64,
-    reason: PointReason,
-    order_id: Option<Uuid>,
+    ld: LedgerDelta,
 ) -> Result<i64, AppError> {
+    let delta = ld.delta();
     if delta == 0 {
         return Err(AppError::Validation("delta must be non-zero".into()));
     }
@@ -45,7 +53,15 @@ pub async fn apply_delta_tx(
         Err(e) => return Err(AppError::Database(e)),
     };
 
-    repository::insert_ledger_tx(tx, user_id, delta, balance_after, reason, order_id).await?;
+    repository::insert_ledger_tx(
+        tx,
+        user_id,
+        delta,
+        balance_after,
+        ld.reason(),
+        ld.order_id(),
+    )
+    .await?;
 
     Ok(balance_after)
 }
@@ -134,6 +150,18 @@ pub async fn lock_balance_tx(
 /// → compare → `apply_delta_tx`, all under the one row lock `lock_balance_tx`
 /// takes. Returns the resulting balance (`balance_after`).
 ///
+/// The spent reason is hard-coded to `PointReason::Redeem` via
+/// `LedgerDelta::redeem(cost)` — this function used to take `reason` and
+/// `order_id` as free parameters, but `rewards::service::redeem` was (and
+/// remains) its only caller, and it only ever spends for that one reason.
+/// Under the `LedgerDelta` vocabulary this narrowing isn't optional: a
+/// function that accepted an arbitrary `(reason, order_id)` pair is exactly
+/// the freedom `LedgerDelta` exists to remove. Should a second spender with
+/// a different reason show up, the evolution path is a new `LedgerDelta`
+/// constructor for that reason (or widening this function to take a
+/// caller-constructed `LedgerDelta` instead of a bare `cost`), not
+/// reopening `reason`/`order_id` as loose parameters here.
+///
 /// `cost <= 0` is rejected up front, before taking the lock —
 /// `AppError::Validation`. This guards a sign-flip footgun (a negative cost
 /// would silently *credit* the account instead of spending from it), not a
@@ -154,8 +182,6 @@ pub async fn try_spend_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     cost: i64,
-    reason: PointReason,
-    order_id: Option<Uuid>,
 ) -> Result<i64, AppError> {
     if cost <= 0 {
         return Err(AppError::Validation("cost must be positive".into()));
@@ -167,7 +193,7 @@ pub async fn try_spend_tx(
         return Err(AppError::Conflict("點數不足".into()));
     }
 
-    apply_delta_tx(tx, user_id, -cost, reason, order_id).await
+    apply_delta_tx(tx, user_id, LedgerDelta::redeem(cost)).await
 }
 
 /// Passthrough to `repository::find_order_flow_sums_tx` — the ADR-0005 seam
@@ -253,14 +279,8 @@ pub async fn adjust_points(
         )));
     }
 
-    let balance = apply_delta_tx(
-        &mut tx,
-        req.user_id,
-        req.delta,
-        PointReason::AdminAdjust,
-        None,
-    )
-    .await?;
+    let balance =
+        apply_delta_tx(&mut tx, req.user_id, LedgerDelta::admin_adjust(req.delta)).await?;
 
     tx.commit().await?;
 

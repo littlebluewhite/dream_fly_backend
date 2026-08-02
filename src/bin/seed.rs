@@ -23,7 +23,7 @@
 //! randomness — so re-running on the same day produces the identical set.
 //!
 //! `points_balance` is granted through `points::service::apply_delta_tx`
-//! (`PointReason::AdminAdjust`) in the same transaction as the user INSERT,
+//! (`LedgerDelta::admin_adjust`) in the same transaction as the user INSERT,
 //! never written to the column directly, so `points_balance ==
 //! SUM(point_ledger.delta)` holds for every seeded user — but only on a
 //! freshly migrated database: rows left over from an older run of this seed
@@ -42,7 +42,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::AppConfig;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
-use dream_fly_backend::modules::points::model::PointReason;
+use dream_fly_backend::modules::points::model::LedgerDelta;
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
 use dream_fly_backend::utils::password;
@@ -61,7 +61,7 @@ fn vs(items: &[&str]) -> Vec<String> {
 /// was just inserted or already existed. The INSERT always writes
 /// `points_balance = 0`; when the row is newly inserted (not a conflict)
 /// and `points_balance > 0`, the target balance is granted via
-/// `points_service::apply_delta_tx` (`PointReason::AdminAdjust`) in the same
+/// `points_service::apply_delta_tx` (`LedgerDelta::admin_adjust`) in the same
 /// transaction as the INSERT — user row and `point_ledger` grant land
 /// atomically (a failed grant rolls back the insert too), and a conflict
 /// (already exists) never grants, so re-runs stay idempotent.
@@ -103,9 +103,7 @@ async fn upsert_user(
                 points_service::apply_delta_tx(
                     &mut tx,
                     id,
-                    points_balance,
-                    PointReason::AdminAdjust,
-                    None,
+                    LedgerDelta::admin_adjust(points_balance),
                 )
                 .await
                 .with_context(|| format!("grant seed points to user {email}"))?;
@@ -540,9 +538,7 @@ async fn upsert_seed_member(
                 points_service::apply_delta_tx(
                     &mut tx,
                     id,
-                    points_balance,
-                    PointReason::AdminAdjust,
-                    None,
+                    LedgerDelta::admin_adjust(points_balance),
                 )
                 .await
                 .with_context(|| format!("grant seed points to seed member {email}"))?;

@@ -1,15 +1,27 @@
 //! Integration tests for `points::service`.
 //!
-//! Covers `apply_delta_tx`: earn (positive delta, no order), redeem
-//! (negative delta, with an order id), insufficient balance (the
+//! Covers `apply_delta_tx`, which now takes a `points::model::LedgerDelta`
+//! built via one of its six reason-named constructors instead of a bare
+//! `(delta, reason, order_id)` triple: earn and redeem each carry a real
+//! `order_id` here (a `CheckoutEarn`/`CheckoutRedeem` row with no
+//! `order_id` is no longer constructible under `LedgerDelta` — exactly the
+//! freedom this refactor removes), insufficient balance (the
 //! `users_points_balance_check` CHECK constraint rejects the UPDATE and the
 //! database error is mapped to `AppError::Conflict`, with nothing persisted
 //! since the failure happened inside an uncommitted transaction), a zero
-//! delta (rejected before touching the DB), and a nonexistent user (404).
-//! Also a DB-layer test of the CHECK constraint itself via the repository
-//! function directly — the exact condition `apply_delta_tx`'s
-//! `is_check_violation()` arm matches on — and the `/points/me` pagination
-//! clamp (mirrors `service_coupons.rs` / `service_users.rs`).
+//! delta (rejected before touching the DB — via `LedgerDelta::admin_adjust`,
+//! whose zero magnitude the reason-named constructors' `debug_assert`
+//! deliberately lets through), and a nonexistent user (404). Also a
+//! DB-layer test of the CHECK constraint itself via the repository function
+//! directly — the exact condition `apply_delta_tx`'s `is_check_violation()`
+//! arm matches on — a seam-local anchor pairing `LedgerDelta`'s
+//! `checkout_earn`/`checkout_redeem` ledger writes with
+//! `find_order_flow_sums_tx`'s read-back, the `/points/me` pagination clamp
+//! (mirrors `service_coupons.rs` / `service_users.rs`), `try_spend_tx`
+//! (now `(tx, user_id, cost)` — the spent reason is hard-coded to
+//! `PointReason::Redeem` inside the function rather than caller-supplied),
+//! and `adjust_points` (admin CAS adjustment, internally
+//! `LedgerDelta::admin_adjust`).
 
 mod common;
 
@@ -20,7 +32,7 @@ use common::fixtures::set_points_balance;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::points::dto::AdjustPointsRequest;
-use dream_fly_backend::modules::points::model::PointReason;
+use dream_fly_backend::modules::points::model::{LedgerDelta, PointReason};
 use dream_fly_backend::modules::points::repository as points_repo;
 use dream_fly_backend::modules::points::service;
 
@@ -49,10 +61,11 @@ async fn seed_order(db: &PgPool, user_id: Uuid) -> Uuid {
 async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-earn@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 10).await;
+    let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
     let balance_after =
-        service::apply_delta_tx(&mut tx, user_id, 50, PointReason::CheckoutEarn, None)
+        service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_earn(50, order_id))
             .await
             .expect("earn should succeed");
     tx.commit().await.expect("commit");
@@ -72,7 +85,7 @@ async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
     assert_eq!(ledger[0].delta, 50);
     assert_eq!(ledger[0].balance_after, 60);
     assert_eq!(ledger[0].reason, PointReason::CheckoutEarn);
-    assert_eq!(ledger[0].order_id, None);
+    assert_eq!(ledger[0].order_id, Some(order_id));
 }
 
 #[sqlx::test]
@@ -82,15 +95,10 @@ async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_i
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let balance_after = service::apply_delta_tx(
-        &mut tx,
-        user_id,
-        -30,
-        PointReason::CheckoutRedeem,
-        Some(order_id),
-    )
-    .await
-    .expect("redeem should succeed");
+    let balance_after =
+        service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_redeem(30, order_id))
+            .await
+            .expect("redeem should succeed");
     tx.commit().await.expect("commit");
 
     assert_eq!(balance_after, 70);
@@ -109,11 +117,16 @@ async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_i
 async fn apply_delta_insufficient_balance_returns_conflict_and_does_not_persist(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-insufficient@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 100).await;
+    let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, user_id, -200, PointReason::CheckoutRedeem, None)
-        .await
-        .expect_err("insufficient balance must be rejected");
+    let err = service::apply_delta_tx(
+        &mut tx,
+        user_id,
+        LedgerDelta::checkout_redeem(200, order_id),
+    )
+    .await
+    .expect_err("insufficient balance must be rejected");
     // Roll back explicitly (rather than relying on Drop) so the connection
     // is cleanly back in the pool before the independent verification
     // queries below run over the same pool.
@@ -143,7 +156,7 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-zero@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, user_id, 0, PointReason::AdminAdjust, None)
+    let err = service::apply_delta_tx(&mut tx, user_id, LedgerDelta::admin_adjust(0))
         .await
         .expect_err("zero delta must be rejected");
     tx.rollback().await.expect("rollback");
@@ -162,7 +175,7 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
 #[sqlx::test]
 async fn apply_delta_nonexistent_user_returns_not_found(db: PgPool) {
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, Uuid::now_v7(), 10, PointReason::AdminAdjust, None)
+    let err = service::apply_delta_tx(&mut tx, Uuid::now_v7(), LedgerDelta::admin_adjust(10))
         .await
         .expect_err("nonexistent user must 404");
     tx.rollback().await.expect("rollback");
@@ -221,7 +234,7 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
     .expect("add artificial cap constraint");
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, user_id, 5000, PointReason::AdminAdjust, None)
+    let err = service::apply_delta_tx(&mut tx, user_id, LedgerDelta::admin_adjust(5000))
         .await
         .expect_err("cap violation must be rejected");
     tx.rollback().await.expect("rollback");
@@ -235,6 +248,49 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
             "an unrelated check violation must pass through as Database, got {other:?}"
         ),
     }
+}
+
+// ---------------------------------------------------------------------
+// LedgerDelta: seam-local anchor for the checkout_earn/checkout_redeem
+// write <-> find_order_flow_sums_tx read-back sign twin
+// ---------------------------------------------------------------------
+
+/// `LedgerDelta::checkout_redeem` writes a *negative* `delta`;
+/// `find_order_flow_sums_tx`'s SQL negates the summed `checkout_redeem`
+/// delta back on the way out (`points::repository`'s doc comment on that
+/// function has the exact `COALESCE(-(SUM(...)))` shape). Nothing forces
+/// those two signs to stay in step with each other — only e2e
+/// checkout/refund tests would notice if they ever drifted apart. This
+/// test pulls that twin from e2e distance to the seam itself: write both
+/// directions for the same order via `apply_delta_tx`, then read them back
+/// through the exact repository function `orders::refund::plan_refund`
+/// consumes, and assert both magnitudes come back positive.
+#[sqlx::test]
+async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem_writes(
+    db: PgPool,
+) {
+    let user_id = common::seed_member(&db, "pts-flow-sums@example.com", "Password!234").await;
+    set_points_balance(&db, user_id, 100).await; // covers the 30-point redeem below
+    let order_id = seed_order(&db, user_id).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_earn(10, order_id))
+        .await
+        .expect("earn should succeed");
+    service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_redeem(30, order_id))
+        .await
+        .expect("redeem should succeed");
+
+    let (earned, redeemed) = points_repo::find_order_flow_sums_tx(&mut tx, order_id)
+        .await
+        .expect("read back flow sums");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(earned, 10, "checkout_earn magnitude reads back positive");
+    assert_eq!(
+        redeemed, 30,
+        "checkout_redeem magnitude reads back positive despite the negative delta written"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -273,7 +329,7 @@ async fn lock_balance_tx_returns_witness_carrying_user_and_locked_balance(db: Pg
 /// below. Mirrors `service_rewards.rs`'s `attempt_redeem` helper.
 async fn attempt_spend(db: PgPool, user_id: Uuid, cost: i64) -> Result<i64, AppError> {
     let mut tx = db.begin().await.expect("begin tx");
-    let result = service::try_spend_tx(&mut tx, user_id, cost, PointReason::Redeem, None).await;
+    let result = service::try_spend_tx(&mut tx, user_id, cost).await;
     match &result {
         Ok(_) => tx.commit().await.expect("commit"),
         Err(_) => tx.rollback().await.expect("rollback"),
@@ -287,7 +343,7 @@ async fn try_spend_success_returns_balance_after_and_writes_ledger_row(db: PgPoo
     set_points_balance(&db, user_id, 100).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let balance_after = service::try_spend_tx(&mut tx, user_id, 30, PointReason::Redeem, None)
+    let balance_after = service::try_spend_tx(&mut tx, user_id, 30)
         .await
         .expect("spend should succeed");
     tx.commit().await.expect("commit");
@@ -316,7 +372,7 @@ async fn try_spend_insufficient_balance_returns_conflict_and_does_not_persist(db
     set_points_balance(&db, user_id, 10).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::try_spend_tx(&mut tx, user_id, 50, PointReason::Redeem, None)
+    let err = service::try_spend_tx(&mut tx, user_id, 50)
         .await
         .expect_err("insufficient balance must be rejected");
     tx.rollback().await.expect("rollback");
@@ -390,14 +446,14 @@ async fn try_spend_nonpositive_cost_returns_validation_error(db: PgPool) {
     set_points_balance(&db, user_id, 100).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::try_spend_tx(&mut tx, user_id, 0, PointReason::Redeem, None)
+    let err = service::try_spend_tx(&mut tx, user_id, 0)
         .await
         .expect_err("zero cost must be rejected");
     tx.rollback().await.expect("rollback");
     assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::try_spend_tx(&mut tx, user_id, -10, PointReason::Redeem, None)
+    let err = service::try_spend_tx(&mut tx, user_id, -10)
         .await
         .expect_err("negative cost must be rejected");
     tx.rollback().await.expect("rollback");

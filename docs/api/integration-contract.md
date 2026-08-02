@@ -85,6 +85,7 @@
 - **兌換**：`POST /rewards/{id}/redeem` 成功會扣點，寫入一筆 `point_ledger`，`reason = "redeem"`（`delta = -points_cost`）——與結帳的 `checkout_redeem` 是不同 reason，前端可用此欄位區分「結帳折抵」與「兌換獎勵」兩種扣點來源。見 §3.23。
 - **退款/取消補償**：訂單從已計入營收的狀態（`paid`/`processing`/`completed`）轉入 `cancelled`/`refunded` 時（見 §3.10），結帳當下的點數流會被反轉，寫入 `point_ledger` 兩個新 reason：`refund_restore`（沖回 `checkout_redeem` 扣掉的點數，`delta` 恆為正）、`refund_clawback`（沖回 `checkout_earn` 賺到的點數，`delta` 恆為負）——與其他 reason 一樣遵守「一個 reason ⇒ 固定正負號」的慣例。沒有點數流的訂單退款時不會寫入這兩種列——「沒有點數流」指結帳當下 earn 與 redeem 皆為 0（例如全額折抵至總額 0、或總額低於 10 元 earn 四捨五入為 0 的單），**不等於**「未使用 `use_points`」：earn 是對結帳總額計算的，未折抵點數的一般訂單仍有 `checkout_earn` 列，退款時仍會寫入 `refund_clawback`（會員點數若已花用、不足以沖回 → 409，見 §3.10）。
 - 點數餘額與明細見 `GET /points/me`。`reason` 目前有 `checkout_earn`/`checkout_redeem`/`admin_adjust`/`redeem`/`refund_restore`/`refund_clawback` 六種。
+- 程式面 owner：上述「一個 reason ⇒ 固定正負號」慣例、以及 checkout/refund 類 reason 恆帶 `order_id` 的約束（ADR-0007 決策 7，見 `uniq_point_ledger_refund_once`），在型別層由 `points::model::LedgerDelta` 的六個建構子（`checkout_earn`/`checkout_redeem`/`redeem`/`refund_restore`/`refund_clawback`/`admin_adjust`）收斂。
 
 ### 1.7 Idempotency-Key（`POST /orders`）
 
