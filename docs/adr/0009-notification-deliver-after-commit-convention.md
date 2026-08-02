@@ -20,7 +20,7 @@
 
 讓 commit 本身的呼叫順帶消費 `PendingNotification`,一次呼叫做完「commit 交易 + 送通知」兩件事,型別上不可能「commit 了卻沒送」,也不可能「commit 前送」。否決理由:與 orders 衝突。`checkout`(`orders/service.rs:404-414`)與 `update_order_status`(`orders/service.rs:625-638`)在 commit 之後、deliver 之後,還要呼叫 `assemble_response` 組裝回應——deliver 不是「commit 之後的最後一步」,是中間一步。一個把 commit 與 deliver 綁成單一動作的 combinator,沒有自然的地方安放 `assemble_response` 這第三步,combinator 不是通用形。
 
-**佐證先例**:`points::service` 已有「刻意不套更強型別保證」的在案裁決——ADR-0007 Addendum(2026-08-03)`LedgerDelta` 的意識性排除(b):四個幅度來源(`PricingOutcome`、`RefundPlan`、`rewards.points_cost`、seed 字面值)已各自有 owner 級保證(純函式核測試、DB CHECK)兜底,選擇維持 `debug_assert` 而不是升級成 `Result`/`u64` 型別強制——對一個已有 owner 兜底的量再加一層型別強制,是不必要的重複成本。這裡的判準相同:8 個站點均一形(`tx 內完成領域寫入 → commit → deliver`)、`#[must_use]` 擋住「忘了送」、CONTEXT.md 明文承認「時機本身仍是位置慣例」,三者合起來已經是這條慣例現有的 owner 級保證。witness 化是逐案裁決,不是教條——points 那一案選擇不加型別強制,notification 這一案依同一判準,也選擇不加。8 站均一形 + `#[must_use]` + CONTEXT 明文承認,是合理停損。
+**佐證先例**:`points::service` 已有「刻意不套更強型別保證」的在案裁決——ADR-0007 Addendum(2026-08-03)`LedgerDelta` 的意識性排除(b):四個幅度來源(`PricingOutcome`、`RefundPlan`、`rewards.points_cost`、seed 字面值)已各自有 owner 級保證(純函式核測試、DB CHECK)兜底,選擇維持 `debug_assert` 而不是升級成 `Result`/`u64` 型別強制——對一個已有 owner 兜底的量再加一層型別強制,是不必要的重複成本。這裡的判準相同:8 個站點均一形(`tx 內完成領域寫入 → commit → deliver`)、`#[must_use]` 擋住「忘了送」、CONTEXT.md 明文承認「時機本身仍是位置慣例」,三者合起來已經是這條慣例現有的風險緩解。witness 化是逐案裁決,不是教條——points 那一案選擇不加型別強制,notification 這一案依同一判準,也選擇不加。8 站均一形 + `#[must_use]` + CONTEXT 明文承認,是合理停損。
 
 ## Consequences
 

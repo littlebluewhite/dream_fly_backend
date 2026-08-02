@@ -392,10 +392,11 @@ admin 調整的語意本來就是「正負皆可、由操作者決定」，`POST
 `as i64`/`try_into` 轉換，換不到額外保障）。
 
 必須與另案（MaterializedDay 單日物化——`sessions::repository::find_today_sessions_in`/
-`reports::repository::coach_today_and_pending` 現有的 `mat.from_date() == mat.to_date()`
+`reports::repository::coach_today_and_pending` 當時的 `mat.from_date() == mat.to_date()`
 debug_assert）明文區辨：兩
 案的 debug_assert 表面上是同一種防線，適用的判準也相同——「上游是否存在 owner 級保證」——但代入
-的事實不同，得出相反的結論。MaterializedDay 案的 debug_assert 是**唯一防線**：`MaterializedRange`
+的事實不同，得出相反的結論。MaterializedDay 案的 debug_assert 原是**唯一防線**，該案已於同輪收進
+`MaterializedDay`：`MaterializedRange`
 本身允許多日窗，「這次呼叫只物化了一天」這個前提沒有任何上游 owner 保證，純粹靠呼叫端自律，
 release build 拿掉這道斷言後，一個悄悄傳入多日窗的呼叫會被 `find_today_sessions_in` 默默按第一
 天處理，沒有其他防線接住。`LedgerDelta` 這裡相反：四個幅度來源都已經有 owner（純函式核測試、DB
@@ -410,7 +411,7 @@ owner」得出「debug_assert 必須升級為型別強制」的結論（Material
 `points::service::apply_delta_tx` 在呼叫處把 `ld.delta()`/`ld.reason()`/`ld.order_id()` 三個欄
 位重新拆開餵給它。比照本 ADR 前一則 Addendum（2026-07-23）對 `cart::repository` 保留裸
 `user_id` 參數的登記方式：ADR-0005 seam 是既認的信任邊界，repository 層對 service 層的裸參數不
-強行封起來——`insert_ledger_tx` 唯一呼叫端就是同檔 `apply_delta_tx`，兩者緊鄰，`ld` 在呼叫處已
+強行封起來——`insert_ledger_tx` 唯一呼叫端就是同模組 `apply_delta_tx`，兩者緊鄰，`ld` 在呼叫處已
 經拆完，repository 這層再收一個 `&LedgerDelta` 只是把同一份資料換個容器傳遞，沒有新增保障，徒
 增 `points::repository` 對 `points::model::LedgerDelta` 的耦合。
 

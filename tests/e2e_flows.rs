@@ -525,4 +525,3 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
         "approved-guard must leave the projection as leave"
     );
 }
-
