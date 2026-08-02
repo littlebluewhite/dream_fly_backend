@@ -60,9 +60,9 @@ impl PointReason {
 /// >= 0, ...)` 只在 debug/測試 build 存在、release build 會被編掉——這是有
 /// owner 兜底之後「順手多檢查一次」的 defense-in-depth,不是唯一防線,
 /// release build 少了這道斷言不影響正確性(對照 `sessions::repository` 的
-/// `MaterializedRange` 單日 debug_assert:那裡沒有上游 owner 保證單日窗成
-/// 立,是唯一防線——判準相同、代入的事實不同,結論相反,詳見 ADR-0007 第
-/// 四則 Addendum)。斷言用 `>=` 不用 `>`:零幅度被放行通過建構子,交給
+/// 單日物化案:那裡的 `MaterializedRange` 單日前提原本同樣是唯一防線,已
+/// 改型別化收進 `MaterializedDay`——同判準、相反結論,詳見 ADR-0007 第四
+/// 則 Addendum)。斷言用 `>=` 不用 `>`:零幅度被放行通過建構子,交給
 /// `apply_delta_tx` 既有的 zero-delta `Validation` guard 處理(該 guard 不
 /// 動)——建構子不搶在前面用 panic 攔零。
 ///
