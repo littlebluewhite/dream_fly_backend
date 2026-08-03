@@ -1,3 +1,4 @@
+pub mod assembly;
 pub mod dto;
 pub mod handlers;
 pub mod model;

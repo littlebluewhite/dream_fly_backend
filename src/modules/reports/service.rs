@@ -11,12 +11,9 @@ use crate::modules::messages::repository as messages_repository;
 use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::studio_clock;
 
+use super::assembly::{self, safe_ratio};
 use super::dto::{
-    ActivityItem, ActivityResponse, AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection,
-    AdminReportResponse, AdminRevenueSection, BucketCountEntry, CategorySplitEntry,
-    CoachReportResponse, FunnelSection, IncomeSourceEntry, IncomeSourceMonthEntry, KpisSection,
-    MemberReportResponse, MonthPair, PaymentSplitEntry, RateMonthPair, RetentionMonthRow,
-    RevenueMonthPoint, VenueUsageEntry, WeekdayLoadEntry,
+    ActivityItem, ActivityResponse, AdminReportResponse, CoachReportResponse, MemberReportResponse,
 };
 use super::model::ActivityRow;
 use super::repository;
@@ -33,34 +30,12 @@ const COACH_ATTENDANCE_WINDOW_DAYS: i64 = 30;
 /// passes this constant verbatim.
 const TRAILING_WINDOW_MONTHS: i32 = 12;
 
-/// The one source of `repository::income_by_source` that is *not* an order
-/// line (bookings, not `order_items`) — `category_split` is defined over
-/// order-line 毛額 only, so this source is filtered out of it (and out of
-/// its ratio denominator) while still appearing in `revenue_breakdown`.
-const VENUE_RENTAL_SOURCE: &str = "venue_rental";
-
 /// Forward window for a member's "upcoming sessions" count. Mirrors
 /// `sessions::service`'s `DEFAULT_RANGE_DAYS` "`to = from + N` days" math
 /// (an 8-calendar-day inclusive window: today plus 7 more days), rather
 /// than a strict "next 7 calendar dates", for consistency with how this
 /// codebase already expresses "N-day range from today" elsewhere.
 const MEMBER_UPCOMING_WINDOW_DAYS: i64 = 7;
-
-/// `numerator / denominator` as a ratio, or `None` when `denominator` is 0.
-/// Guards against emitting `NaN`/`Infinity` (which `serde_json` cannot
-/// represent as valid JSON) and, more importantly, expresses "undefined"
-/// explicitly rather than relying on that library-specific NaN/Infinity
-/// serialization behavior. Shared by `fill_rate` (enrolled/max_students),
-/// every attendance-rate calculation (present/(present+absent)), and
-/// `category_split`'s gross-over-total ratios — all are "count over count,
-/// zero-safe" in the same shape.
-fn safe_ratio(numerator: i64, denominator: i64) -> Option<f64> {
-    if denominator == 0 {
-        None
-    } else {
-        Some(numerator as f64 / denominator as f64)
-    }
-}
 
 /// `GET /reports/admin`. Role gating (`admin` only) happens in the
 /// handler, not here (mirrors `sessions::today_sessions`'s division of
@@ -72,12 +47,10 @@ pub async fn admin_report(
 ) -> Result<AdminReportResponse, AppError> {
     let tz_name = server.studio_timezone.as_str();
 
-    let trend_rows =
-        repository::revenue_trend(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
-    let (total, new_this_month, active) = repository::member_stats(db, now, tz_name).await?;
+    let trend_rows = repository::revenue_trend(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
+    let member_stats = repository::member_stats(db, now, tz_name).await?;
     let course_rows = repository::course_reports(db).await?;
-    let coach_rows =
-        repository::coach_reports(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
+    let coach_rows = repository::coach_reports(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
     let kpi = repository::kpis(db, now, tz_name).await?;
     let income_rows =
         repository::income_by_source(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
@@ -100,176 +73,24 @@ pub async fn admin_report(
         sessions_repository::materialize_range(db, &all_course_ids, month_start, month_end).await?;
     let venue_rows = repository::venue_usage(db, &mat).await?;
 
-    let trend: Vec<RevenueMonthPoint> = trend_rows
-        .into_iter()
-        .map(|(month, revenue_cents)| RevenueMonthPoint { month, revenue_cents })
-        .collect();
-    // `revenue_trend` always returns exactly 12 rows (oldest..newest,
-    // ending at the current studio-local month), so the last entry is
-    // "this month" and the second-to-last is "last month". `checked_sub`
-    // guards against a hypothetically shorter vec rather than assuming the
-    // invariant always holds.
-    let this_month_cents = trend.last().map(|p| p.revenue_cents).unwrap_or(0);
-    let last_month_cents = trend
-        .len()
-        .checked_sub(2)
-        .and_then(|i| trend.get(i))
-        .map(|p| p.revenue_cents)
-        .unwrap_or(0);
-
-    let courses: Vec<AdminCourseReportRow> = course_rows
-        .into_iter()
-        .map(|r| AdminCourseReportRow {
-            fill_rate: safe_ratio(r.enrolled, r.max_students as i64),
-            course_id: r.course_id,
-            name: r.name,
-            enrolled: r.enrolled,
-            max_students: r.max_students,
-            waitlist_count: r.waitlist_count,
-        })
-        .collect();
-
-    let coaches: Vec<AdminCoachReportRow> = coach_rows
-        .into_iter()
-        .map(|r| AdminCoachReportRow {
-            coach_id: r.coach_id,
-            name: r.name,
-            course_count: r.course_count,
-            student_count: r.student_count,
-            revenue_cents_12m: r.revenue_cents_12m,
-            attendance_rate: safe_ratio(r.att_present, r.att_present + r.att_absent),
-        })
-        .collect();
-
-    let kpis = KpisSection {
-        new_members: MonthPair {
-            this_month: kpi.new_members_this,
-            last_month: kpi.new_members_last,
-        },
-        new_enrolments: MonthPair {
-            this_month: kpi.new_enrolments_this,
-            last_month: kpi.new_enrolments_last,
-        },
-        paid_orders_count: MonthPair {
-            this_month: kpi.paid_orders_this,
-            last_month: kpi.paid_orders_last,
-        },
-        attendance_rate: RateMonthPair {
-            this_month: safe_ratio(kpi.present_this, kpi.present_this + kpi.absent_this),
-            last_month: safe_ratio(kpi.present_last, kpi.present_last + kpi.absent_last),
-        },
-    };
-
-    // `income_by_source` zero-fills every (month, source) cell, so the
-    // current studio month's rows are always exactly the 6 sources —
-    // `revenue_breakdown` is that slice, `income_sources_12m` the whole
-    // series, and `category_split` the order-line subset of the slice with
-    // ratios over the order-line total (venue rental is not an order line
-    // — see `dto::CategorySplitEntry`).
     let current_month_key = studio_clock::month_key(studio_clock::studio_tz(server), now);
-    let revenue_breakdown: Vec<IncomeSourceEntry> = income_rows
-        .iter()
-        .filter(|r| r.month == current_month_key)
-        .map(|r| IncomeSourceEntry {
-            source: r.source.clone(),
-            gross_cents: r.gross_cents,
-            orders_count: r.orders_count,
-            units: r.units,
-        })
-        .collect();
-
-    let order_line_total: i64 = revenue_breakdown
-        .iter()
-        .filter(|r| r.source != VENUE_RENTAL_SOURCE)
-        .map(|r| r.gross_cents)
-        .sum();
-    let category_split: Vec<CategorySplitEntry> = revenue_breakdown
-        .iter()
-        .filter(|r| r.source != VENUE_RENTAL_SOURCE)
-        .map(|r| CategorySplitEntry {
-            source: r.source.clone(),
-            gross_cents: r.gross_cents,
-            ratio: safe_ratio(r.gross_cents, order_line_total),
-        })
-        .collect();
-
-    let income_sources_12m: Vec<IncomeSourceMonthEntry> = income_rows
-        .into_iter()
-        .map(|r| IncomeSourceMonthEntry {
-            month: r.month,
-            source: r.source,
-            gross_cents: r.gross_cents,
-            orders_count: r.orders_count,
-            units: r.units,
-        })
-        .collect();
-
-    let payment_split: Vec<PaymentSplitEntry> = payment_rows
-        .into_iter()
-        .map(|(method, count)| PaymentSplitEntry { method, count })
-        .collect();
-
-    // The three fixed-bucket distributions share `(bucket, count)` — each
-    // repository query already zero-fills its own fixed bucket set, so the
-    // service just renames the row into its DTO.
-    let attendance_distribution: Vec<BucketCountEntry> = attendance_dist_rows
-        .into_iter()
-        .map(|r| BucketCountEntry { bucket: r.bucket, count: r.count })
-        .collect();
-    let age_distribution: Vec<BucketCountEntry> = age_dist_rows
-        .into_iter()
-        .map(|r| BucketCountEntry { bucket: r.bucket, count: r.count })
-        .collect();
-    let tier_distribution: Vec<BucketCountEntry> = tier_dist_rows
-        .into_iter()
-        .map(|r| BucketCountEntry { bucket: r.bucket, count: r.count })
-        .collect();
-
-    // `rate` = |上月活躍 ∩ 本月活躍| / |上月活躍| — `safe_ratio` renders the
-    // empty-previous-month case as null (undefined), not 0.
-    let retention: Vec<RetentionMonthRow> = retention_rows
-        .into_iter()
-        .map(|r| RetentionMonthRow {
-            month: r.month,
-            new_count: r.new_count,
-            returning_count: r.returning_count,
-            rate: safe_ratio(r.retained_count, r.prev_active_count),
-        })
-        .collect();
-
-    let funnel = FunnelSection {
-        trial_inquiries: funnel_row.trial_inquiries,
-        new_enrolments: funnel_row.new_enrolments,
+    let inputs = assembly::AdminReportInputs {
+        trend_rows,
+        member_stats,
+        course_rows,
+        coach_rows,
+        kpi,
+        income_rows,
+        payment_rows,
+        attendance_dist_rows,
+        age_dist_rows,
+        tier_dist_rows,
+        retention_rows,
+        funnel_row,
+        weekday_rows,
+        venue_rows,
     };
-
-    let weekday_load: Vec<WeekdayLoadEntry> = weekday_rows
-        .into_iter()
-        .map(|r| WeekdayLoadEntry { weekday: r.weekday, present_count: r.present_count })
-        .collect();
-
-    let venue_usage: Vec<VenueUsageEntry> = venue_rows
-        .into_iter()
-        .map(|r| VenueUsageEntry { venue: r.venue, minutes: r.minutes })
-        .collect();
-
-    Ok(AdminReportResponse {
-        revenue: AdminRevenueSection { this_month_cents, last_month_cents, trend },
-        kpis,
-        revenue_breakdown,
-        income_sources_12m,
-        category_split,
-        payment_split,
-        attendance_distribution,
-        age_distribution,
-        tier_distribution,
-        retention,
-        funnel,
-        weekday_load,
-        venue_usage,
-        members: AdminMembersSection { total, new_this_month, active },
-        courses,
-        coaches,
-    })
+    Ok(assembly::assemble_admin_report(inputs, &current_month_key))
 }
 
 /// `(first_day, last_day)` of `today`'s calendar month. Used to bound the
@@ -390,27 +211,4 @@ fn activity_label(row: ActivityRow) -> ActivityItem {
         other => format!("{}:{}", other, row.detail),
     };
     ActivityItem { kind: row.kind, label, occurred_at: row.occurred_at }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // `courses_max_students_pos CHECK (max_students > 0)` (see the init
-    // migration) means a real `courses` row can never have `max_students =
-    // 0` — this scenario cannot be reproduced through a DB-backed
-    // integration test. `safe_ratio` is exercised directly here instead,
-    // covering the task brief's "fill_rate 除零" requirement at the level
-    // where it's actually reachable: defensive code, not reachable data.
-    #[test]
-    fn safe_ratio_divide_by_zero_is_none() {
-        assert_eq!(safe_ratio(5, 0), None);
-        assert_eq!(safe_ratio(0, 0), None);
-    }
-
-    #[test]
-    fn safe_ratio_normal_case() {
-        assert_eq!(safe_ratio(6, 8), Some(0.75));
-        assert_eq!(safe_ratio(0, 5), Some(0.0));
-    }
 }
