@@ -507,12 +507,16 @@ Create body：`{ name, slug?, product_type, description?, price_cents, original_
       "name": "string", "slug": "string",
       "quantity": "number",
       "unit_price_cents": "number",
-      "subtotal_cents": "number"
+      "subtotal_cents": "number",
+      "is_active": "boolean"    // 對應 product/course 目前是否已下架；前端可用它標記
+                                // 「這行結帳時會被擋下」，提示買家先移除
     }
   ],
   "total_cents": "number"
 }
 ```
+
+`is_active` 是即時 join 現在的商品/課程目錄取得（`COALESCE(products.is_active, courses.is_active)`——每筆恰對應其中一邊），不是快照欄位。`is_active: false` 的行結帳時會被整批擋下（422，見 §3.10），前端可據此提前標記、提示買家移除。
 
 #### `POST /cart/items` — 需登入
 Body：`{ item_type: "product"|"course", item_id: "uuid", quantity? }`（quantity 預設 1，範圍 1-999）。回應：更新後的 `CartResponse`。

@@ -116,6 +116,7 @@ pub struct CartItemJoined {
     pub name: String,
     pub slug: String,
     pub price_cents: i64,
+    pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

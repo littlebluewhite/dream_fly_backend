@@ -69,6 +69,45 @@ async fn add_item_increases_cart(db: PgPool) {
     assert_eq!(body["total_cents"], 3000);
 }
 
+/// `GET /cart` surfaces `is_active`, live-joined off the product row (not a
+/// cart-time snapshot) — so it flips from `true` to `false` the moment the
+/// product is delisted, without the cart item itself changing.
+#[sqlx::test]
+async fn get_cart_item_reflects_product_is_active(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("c7@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Flag Widget", Some(100)).await;
+
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let resp = app
+        .get("/api/v1/cart")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(
+        resp.json::<serde_json::Value>()["items"][0]["is_active"],
+        true
+    );
+
+    sqlx::query("UPDATE products SET is_active = false WHERE id = $1")
+        .bind(pid)
+        .execute(&app.db)
+        .await
+        .expect("deactivate product");
+
+    let resp = app
+        .get("/api/v1/cart")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(
+        resp.json::<serde_json::Value>()["items"][0]["is_active"],
+        false
+    );
+}
+
 #[sqlx::test]
 async fn add_item_nonexistent_product_returns_error(db: PgPool) {
     let app = spawn_test_app(db).await;

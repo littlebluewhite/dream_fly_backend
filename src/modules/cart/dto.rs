@@ -16,6 +16,7 @@ pub struct CartItemResponse {
     pub quantity: i32,
     pub unit_price_cents: i64,
     pub subtotal_cents: i64,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +50,7 @@ impl CartResponse {
                 quantity: item.quantity,
                 unit_price_cents: item.price_cents,
                 subtotal_cents: subtotal,
+                is_active: item.is_active,
             });
         }
 

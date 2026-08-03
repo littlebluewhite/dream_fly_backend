@@ -8,6 +8,7 @@ pub async fn find_by_user(db: &PgPool, user_id: Uuid) -> Result<Vec<CartItemJoin
         "SELECT ci.id, ci.user_id, ci.item_type, ci.product_id, ci.course_id, ci.quantity, \
          COALESCE(p.name, c.name) AS name, COALESCE(p.slug, c.slug) AS slug, \
          COALESCE(p.price_cents, c.price_cents) AS price_cents, \
+         COALESCE(p.is_active, c.is_active) AS is_active, \
          ci.created_at, ci.updated_at \
          FROM cart_items ci \
          LEFT JOIN products p ON ci.product_id = p.id \
