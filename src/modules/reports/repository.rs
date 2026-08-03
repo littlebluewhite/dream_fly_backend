@@ -35,8 +35,8 @@ pub async fn revenue_trend(
         "SELECT to_char(m.month_start, 'YYYY-MM') AS month, \
                 COALESCE(SUM(o.total_cents), 0)::bigint AS revenue_cents \
          FROM generate_series( \
-                date_trunc('month', $1::timestamptz AT TIME ZONE $2) - interval '11 months', \
-                date_trunc('month', $1::timestamptz AT TIME ZONE $2), \
+                studio_month_anchor($1, $2) - interval '11 months', \
+                studio_month_anchor($1, $2), \
                 interval '1 month' \
               ) AS m(month_start) \
          LEFT JOIN orders o \
@@ -65,7 +65,7 @@ pub async fn member_stats(
         "SELECT COUNT(*), \
                 COUNT(*) FILTER ( \
                   WHERE date_trunc('month', u.created_at AT TIME ZONE $2) \
-                      = date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                      = studio_month_anchor($1, $2) \
                 ), \
                 (SELECT COUNT(DISTINCT user_id) FROM active_enrolments) \
          FROM users u",
@@ -98,7 +98,7 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
     // new_enrolments_this/_last 刻意不換底至 active_enrolments view——量的是「報名事件」(status <> 'cancelled' + created_at 分桶),非「目前占位」,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, KpiRow>(
         "WITH anchor AS ( \
-           SELECT date_trunc('month', $1::timestamptz AT TIME ZONE $2) AS this_m \
+           SELECT studio_month_anchor($1, $2) AS this_m \
          ) \
          SELECT \
            (SELECT COUNT(*) FROM users u \
@@ -186,9 +186,9 @@ pub async fn income_by_source(
     sqlx::query_as::<_, IncomeSourceRow>(
         "WITH months AS ( \
            SELECT generate_series( \
-                    date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                    studio_month_anchor($1, $2) \
                       - ($3 - 1) * interval '1 month', \
-                    date_trunc('month', $1::timestamptz AT TIME ZONE $2), \
+                    studio_month_anchor($1, $2), \
                     interval '1 month' \
                   ) AS month_start \
          ), \
@@ -256,7 +256,7 @@ pub async fn payment_split(
          FROM orders o \
          WHERE o.status::text = ANY($3) \
            AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
-             = date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+             = studio_month_anchor($1, $2) \
          GROUP BY 1 \
          ORDER BY orders DESC, method",
     )
@@ -324,9 +324,9 @@ pub async fn coach_reports(
                     AND o.status::text = ANY($3) \
                     AND o.paid_at IS NOT NULL \
                     AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
-                        BETWEEN date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                        BETWEEN studio_month_anchor($1, $2) \
                                   - interval '11 months' \
-                            AND date_trunc('month', $1::timestamptz AT TIME ZONE $2) \
+                            AND studio_month_anchor($1, $2) \
                 )::bigint AS revenue_cents_12m, \
                 (SELECT COUNT(*) FROM countable_attendance ca \
                    JOIN course_sessions cs ON cs.id = ca.session_id \
@@ -414,7 +414,7 @@ pub async fn age_distribution(
          ), \
          member_ages AS ( \
            SELECT date_part('year', \
-                    age(($1::timestamptz AT TIME ZONE $2)::date, u.birth_date))::int AS age \
+                    age(studio_today($1, $2), u.birth_date))::int AS age \
              FROM users u \
             WHERE u.birth_date IS NOT NULL \
          ) \
@@ -482,8 +482,8 @@ pub async fn retention(
     sqlx::query_as::<_, RetentionRow>(
         "WITH months AS ( \
            SELECT generate_series( \
-                    date_trunc('month', $1::timestamptz AT TIME ZONE $2) - interval '5 months', \
-                    date_trunc('month', $1::timestamptz AT TIME ZONE $2), \
+                    studio_month_anchor($1, $2) - interval '5 months', \
+                    studio_month_anchor($1, $2), \
                     interval '1 month' \
                   ) AS m \
          ), \
@@ -540,11 +540,11 @@ pub async fn funnel(
            (SELECT COUNT(*) FROM contact_inquiries ci \
              WHERE ci.inquiry_type = 'trial' \
                AND (ci.created_at AT TIME ZONE $2)::date \
-                   >= ($1::timestamptz AT TIME ZONE $2)::date - 90)::bigint AS trial_inquiries, \
+                   >= studio_today($1, $2) - 90)::bigint AS trial_inquiries, \
            (SELECT COUNT(*) FROM enrolments e \
              WHERE e.status <> 'cancelled' \
                AND (e.created_at AT TIME ZONE $2)::date \
-                   >= ($1::timestamptz AT TIME ZONE $2)::date - 90)::bigint AS new_enrolments",
+                   >= studio_today($1, $2) - 90)::bigint AS new_enrolments",
     )
     .bind(now)
     .bind(tz_name)
@@ -578,8 +578,8 @@ pub async fn weekday_load(
              FROM countable_attendance ca \
              JOIN course_sessions cs ON cs.id = ca.session_id \
             WHERE ca.is_present \
-              AND cs.session_date BETWEEN ($1::timestamptz AT TIME ZONE $2)::date - 30 \
-                                      AND ($1::timestamptz AT TIME ZONE $2)::date \
+              AND cs.session_date BETWEEN studio_today($1, $2) - 30 \
+                                      AND studio_today($1, $2) \
             GROUP BY 1 \
          ) \
          SELECT w.weekday, COALESCE(p.c, 0)::bigint AS present_count \

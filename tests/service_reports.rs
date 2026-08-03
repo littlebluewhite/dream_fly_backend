@@ -20,12 +20,14 @@
 
 mod common;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::reports::service;
+use dream_fly_backend::utils::studio_clock;
 
 use common::fixtures::{
     SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
@@ -1328,4 +1330,82 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
         "oldest rows must have been dropped by the 20-cap, got {:?}",
         report.items.iter().map(|i| i.occurred_at).collect::<Vec<_>>()
     );
+}
+
+// ---------------------------------------------------------------------------
+// studio_month_anchor / studio_today SQL functions (migration
+// `20260803000001_studio_clock_functions.sql`, Phase 5a) — Rust↔SQL 攣生
+// cross-test. `reports::repository`'s 16 "studio wall-clock first, then
+// truncate" call sites and `utils::studio_clock::{month_key, today}` are two
+// independently hand-written encodings of the same rule; this anchors them
+// against each other the same way `orders::model`'s
+// `revenue_predicate_matches_revenue_statuses_array` anchors `is_revenue()`
+// against `REVENUE_STATUSES` — cross-checked instead of trusted to stay in
+// sync by construction. Samples: an Asia/Taipei month boundary crossed by
+// exactly one second (UTC 06-30 16:00 = Taipei 07-01 00:00), an
+// America/New_York reverse month roll (studio-local lags a UTC calendar
+// rollover), and plain UTC.
+// ---------------------------------------------------------------------------
+
+struct ClockCase {
+    name: &'static str,
+    tz_name: &'static str,
+    now: DateTime<Utc>,
+}
+
+fn clock_cases() -> Vec<ClockCase> {
+    vec![
+        ClockCase {
+            name: "Asia/Taipei one second before the month boundary (still June)",
+            tz_name: "Asia/Taipei",
+            now: Utc.with_ymd_and_hms(2026, 6, 30, 15, 59, 59).unwrap(),
+        },
+        ClockCase {
+            name: "Asia/Taipei one second after the month boundary (rolls to July)",
+            tz_name: "Asia/Taipei",
+            now: Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 0).unwrap(),
+        },
+        ClockCase {
+            name: "America/New_York reverse month roll (studio stays in July \
+                   while UTC has already rolled into August)",
+            tz_name: "America/New_York",
+            now: Utc.with_ymd_and_hms(2026, 8, 1, 2, 0, 0).unwrap(),
+        },
+        ClockCase { name: "UTC", tz_name: "UTC", now: Utc.with_ymd_and_hms(2026, 7, 5, 12, 0, 0).unwrap() },
+    ]
+}
+
+#[sqlx::test]
+async fn month_key_matches_sql_studio_month_anchor(db: PgPool) {
+    for case in clock_cases() {
+        let tz: Tz = case.tz_name.parse().expect("valid IANA name");
+        let rust_key = studio_clock::month_key(tz, case.now);
+
+        let sql_key: String =
+            sqlx::query_scalar("SELECT to_char(studio_month_anchor($1, $2), 'YYYY-MM')")
+                .bind(case.now)
+                .bind(case.tz_name)
+                .fetch_one(&db)
+                .await
+                .expect("studio_month_anchor");
+
+        assert_eq!(rust_key, sql_key, "case: {}", case.name);
+    }
+}
+
+#[sqlx::test]
+async fn today_matches_sql_studio_today(db: PgPool) {
+    for case in clock_cases() {
+        let tz: Tz = case.tz_name.parse().expect("valid IANA name");
+        let rust_today = studio_clock::today(tz, case.now);
+
+        let sql_today: NaiveDate = sqlx::query_scalar("SELECT studio_today($1, $2)")
+            .bind(case.now)
+            .bind(case.tz_name)
+            .fetch_one(&db)
+            .await
+            .expect("studio_today");
+
+        assert_eq!(rust_today, sql_today, "case: {}", case.name);
+    }
 }
