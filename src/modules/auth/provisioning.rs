@@ -59,9 +59,18 @@ pub struct NewAccount<'a> {
 }
 
 /// The freshly-created row plus the [`RoleCacheDirty`] witness from its
-/// `member`-role grant. `#[must_use]`, same discipline as `RoleCacheDirty`
-/// itself: forgetting to carry `dirty` out to a post-commit `.flush(redis)`
-/// should not compile away silently.
+/// `member`-role grant.
+///
+/// `#[must_use]` here only guards against the whole value being discarded
+/// outright — and even that case is already subsumed by `create_account`'s
+/// `Result` return type, which is `#[must_use]` on its own. It does NOT
+/// catch a caller that binds the result, reads `.user`, and never touches
+/// `.dirty`: Rust has no field-level must-use, so that specific mistake
+/// compiles silently. The caller MUST still, by convention rather than
+/// compiler enforcement, call `dirty.flush(redis)` after `tx.commit()` (see
+/// [`RoleCacheDirty`]'s own doc for why). Both current call sites
+/// (`auth::service::register`, `users::service::create_user`) do this
+/// correctly.
 #[must_use]
 pub struct ProvisionedAccount {
     pub user: User,
