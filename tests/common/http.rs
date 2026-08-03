@@ -224,7 +224,7 @@ impl TestApp {
 
         let mut tx = self.db.begin().await.expect("begin tx");
 
-        let user = repository::create_user_tx(&mut tx, email, "Seeded User", &hashed)
+        let user = repository::create_user_tx(&mut tx, email, "Seeded User", None, &hashed, None)
             .await
             .expect("insert user");
 

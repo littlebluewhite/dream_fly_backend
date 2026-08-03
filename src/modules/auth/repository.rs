@@ -1,26 +1,36 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::model::{RefreshToken, User};
 
+/// Task 6B: absorbed `users::repository::create_user_tx`'s shape — same
+/// 10-column `INSERT`, with `phone`/`birth_date` alongside the original 4
+/// arguments — so both birth-owner callers (`provisioning::create_account`,
+/// which passes `None`/`None` for `auth::service::register` and real values
+/// for the admin-creation path) share one INSERT instead of two
+/// near-duplicate ones.
 pub async fn create_user_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     email: &str,
     name: &str,
+    phone: Option<&str>,
     password_hash: &str,
+    birth_date: Option<NaiveDate>,
 ) -> Result<User, sqlx::Error> {
     sqlx::query_as::<_, User>(
         r#"
-        INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, NOW(), NOW())
+        INSERT INTO users (id, email, name, phone, password_hash, phone_verified, is_active, birth_date, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, false, true, $6, NOW(), NOW())
         RETURNING *
         "#,
     )
     .bind(Uuid::now_v7())
     .bind(email)
     .bind(name)
+    .bind(phone)
     .bind(password_hash)
+    .bind(birth_date)
     .fetch_one(&mut **tx)
     .await
 }

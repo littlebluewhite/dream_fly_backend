@@ -3,6 +3,7 @@ pub mod handlers;
 pub mod linking;
 pub mod model;
 mod otp;
+pub mod provisioning;
 mod rate_limit;
 pub mod repository;
 mod reset_tokens;

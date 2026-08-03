@@ -109,7 +109,7 @@ pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> 
 
     let mut tx = db.begin().await.expect("begin tx");
 
-    let user = repository::create_user_tx(&mut tx, email, "Test Member", &hash)
+    let user = repository::create_user_tx(&mut tx, email, "Test Member", None, &hash, None)
         .await
         .expect("insert user");
 

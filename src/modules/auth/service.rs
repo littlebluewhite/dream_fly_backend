@@ -22,6 +22,7 @@ use super::dto::{
 use super::linking;
 use super::model::normalize_email;
 use super::otp;
+use super::provisioning;
 use super::rate_limit;
 use super::repository;
 use super::reset_tokens;
@@ -66,54 +67,46 @@ pub async fn register(
     req: RegisterRequest,
     correlation_id: Option<String>,
 ) -> Result<AuthResponse, AppError> {
-    // Normalize email to lowercase to avoid IDOR via case-insensitive
-    // duplicates later on.
-    let email = normalize_email(&req.email);
-
     // Hash password (on a blocking thread so the Argon2 CPU burst doesn't
     // stall async workers).
     let hashed = password::hash_password(req.password.clone())
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))?;
 
-    // Wrap user creation + role assignment + token persistence in a single
-    // transaction so partial failures never leave orphaned rows.
+    // Wrap user creation + role assignment + outbox event + token
+    // persistence in a single transaction so partial failures never leave
+    // orphaned rows.
     let mut tx = db.begin().await?;
 
-    // Insert user. Rely on the DB unique constraint for the duplicate check
-    // so existence enumeration is not possible via race condition probing.
-    let user = repository::create_user_tx(&mut tx, &email, &req.name, &hashed)
-        .await
-        .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
-
-    // Assign "member" role
-    let dirty = permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?;
-
-    // Build tokens before publishing: if token generation fails the entire
-    // transaction rolls back — no phantom user row.
-    let response = issue_session(&mut tx, config, &user).await?;
-
-    // Queue the user_registered event inside the same tx. The event is for
-    // audit / external integration only — the welcome notification is now
-    // written synchronously post-commit via `notify::user_welcomed` below,
-    // not derived from this event.
-    outbox::insert_domain_event_tx(
+    // Insert user + assign "member" role + queue the user_registered event —
+    // see `provisioning::create_account` for why these three are one atomic
+    // step (including the email normalization). Rely on the DB unique
+    // constraint for the duplicate check so existence enumeration is not
+    // possible via race condition probing.
+    let provisioned = provisioning::create_account(
         &mut tx,
-        UserRegisteredPayload {
-            user_id: user.id,
-            email: user.email.clone(),
-            name: user.name.clone(),
+        provisioning::NewAccount {
+            email: &req.email,
+            name: &req.name,
+            phone: None,
+            birth_date: None,
+            password_hash: &hashed,
         },
         correlation_id,
     )
-    .await?;
+    .await
+    .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
+
+    // Build tokens before publishing: if token generation fails the entire
+    // transaction rolls back — no phantom user row.
+    let response = issue_session(&mut tx, config, &provisioned.user).await?;
 
     tx.commit().await?;
 
-    dirty.flush(redis).await;
+    provisioned.dirty.flush(redis).await;
 
     // Welcome notification is written synchronously after commit.
-    notify::user_welcomed(user.id).deliver(db).await;
+    notify::user_welcomed(provisioned.user.id).deliver(db).await;
 
     Ok(response)
 }
@@ -534,9 +527,16 @@ mod tests {
     /// INSERT.
     async fn insert_bare_user(db: &PgPool, email: &str) -> super::super::model::User {
         let mut tx = db.begin().await.expect("begin tx");
-        let user = repository::create_user_tx(&mut tx, email, "Owner Test User", "owner-test-hash")
-            .await
-            .expect("insert bare user");
+        let user = repository::create_user_tx(
+            &mut tx,
+            email,
+            "Owner Test User",
+            None,
+            "owner-test-hash",
+            None,
+        )
+        .await
+        .expect("insert bare user");
         tx.commit().await.expect("commit user insert");
         user
     }
