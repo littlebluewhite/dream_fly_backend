@@ -215,6 +215,40 @@ async fn update_product_as_member_returns_403(db: PgPool) {
     assert_eq!(resp.status_code(), 403);
 }
 
+#[sqlx::test]
+async fn get_deactivated_product_public_detail_returns_404(db: PgPool) {
+    // Handler-wiring guard: `GET /products/{slugOrId}` must call the
+    // active-scoped service functions on both the UUID and slug arms.
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+
+    let created: serde_json::Value = app
+        .post("/api/v1/products")
+        .authorization_bearer(&token)
+        .json(&json!({
+            "name": "Retiring Item",
+            "product_type": "merchandise",
+            "price_cents": 1000,
+        }))
+        .await
+        .json();
+    let id = created["id"].as_str().unwrap();
+    let slug = created["slug"].as_str().unwrap().to_string();
+
+    let patch_resp = app
+        .patch(&format!("/api/v1/products/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "is_active": false }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+
+    let resp_by_id = app.get(&format!("/api/v1/products/{id}")).await;
+    assert_eq!(resp_by_id.status_code(), 404);
+
+    let resp_by_slug = app.get(&format!("/api/v1/products/{slug}")).await;
+    assert_eq!(resp_by_slug.status_code(), 404);
+}
+
 // ---------------------------------------------------------------------------
 // BE#22 — PATCH `null` must clear nullable columns, not be silently ignored
 // ---------------------------------------------------------------------------

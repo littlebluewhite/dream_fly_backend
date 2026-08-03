@@ -5,6 +5,8 @@
 //! - `create` rejects unknown product_type with Validation
 //! - `create` returns Conflict on duplicate slug
 //! - `get_by_slug` / `get_by_id` NotFound surface cleanly
+//! - `get_active_by_slug` / `get_active_by_id` NotFound once deactivated,
+//!   while unscoped `get_by_slug` / `get_by_id` still resolve
 //! - `list` filters inactive rows and applies product_type filter
 //! - `update` NotFound when row doesn't exist
 //! - `update` rejects unknown product_type
@@ -97,6 +99,37 @@ async fn get_product_by_slug_or_id_not_found(db: PgPool) {
         service::get_by_id(&db, Uuid::now_v7()).await.unwrap_err(),
         AppError::NotFound(_)
     ));
+}
+
+#[sqlx::test]
+async fn get_active_by_slug_or_id_not_found_when_inactive_but_unscoped_still_ok(db: PgPool) {
+    let created = service::create(&db, create("Deactivated", Some("deactivated"), "merchandise"))
+        .await
+        .expect("create");
+
+    sqlx::query("UPDATE products SET is_active = false WHERE id = $1")
+        .bind(created.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        service::get_active_by_slug(&db, "deactivated").await.unwrap_err(),
+        AppError::NotFound(_)
+    ));
+    assert!(matches!(
+        service::get_active_by_id(&db, created.id).await.unwrap_err(),
+        AppError::NotFound(_)
+    ));
+
+    // Unscoped lookups must still resolve — pins down the scoped/unscoped
+    // branch itself, not just the WHERE clause.
+    service::get_by_slug(&db, "deactivated")
+        .await
+        .expect("unscoped get_by_slug must still resolve an inactive row");
+    service::get_by_id(&db, created.id)
+        .await
+        .expect("unscoped get_by_id must still resolve an inactive row");
 }
 
 #[sqlx::test]

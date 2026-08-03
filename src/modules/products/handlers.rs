@@ -38,9 +38,9 @@ pub async fn get_by_slug(
 ) -> Result<Json<ProductResponse>, AppError> {
     // Try parsing as UUID first, fallback to slug lookup
     let product = if let Ok(id) = slug_or_id.parse::<Uuid>() {
-        service::get_by_id(&state.db, id).await?
+        service::get_active_by_id(&state.db, id).await?
     } else {
-        service::get_by_slug(&state.db, &slug_or_id).await?
+        service::get_active_by_slug(&state.db, &slug_or_id).await?
     };
     Ok(Json(product))
 }

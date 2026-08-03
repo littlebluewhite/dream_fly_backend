@@ -483,7 +483,7 @@ Body：`{ is_closed: boolean }`。admin 手動關閉／重新開放單一時段�
 `stock: null` = 無限庫存（票券/方案皆為 null；只有實體商品 merchandise 才會有限量庫存數字）。`quota` 為 `stock` 的直接映射（同一個值，語意相同，null = 無限）。`sold` = 該商品在「已付款類」訂單（`paid`/`processing`/`completed`）中 `order_items.quantity` 的總和，一次 GROUP BY 查詢算完，無訂單時為 `0`。
 
 #### `GET /products/{slugOrId}` — 公開
-同 courses，slug 或 UUID 皆可。回應：`ProductResponse`。
+同 courses，slug 或 UUID 皆可。回應：`ProductResponse`。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `POST /products` / `PATCH /products/{id}` — admin
 Create body：`{ name, slug?, product_type, description?, price_cents, original_price_cents?, features?, is_highlighted?, badge?, stock?, valid_days?, session_count? }`。Update 為對應欄位皆選填的 PATCH（`Some(null)` 語意清除欄位，前端只需照一般 PATCH 語意送想改的欄位）。

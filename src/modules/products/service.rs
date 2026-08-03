@@ -72,6 +72,24 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<ProductResponse, AppErro
     to_response(db, product).await
 }
 
+/// Public-facing lookup — only returns an active product. Template:
+/// `posts::service::get_published_by_slug_or_id`.
+pub async fn get_active_by_slug(db: &PgPool, slug: &str) -> Result<ProductResponse, AppError> {
+    let product = repository::find_active_by_slug(db, slug)
+        .await?
+        .ok_or_else(|| AppError::NotFound("product not found".into()))?;
+    to_response(db, product).await
+}
+
+/// Public-facing lookup — only returns an active product. Template:
+/// `posts::service::get_published_by_slug_or_id`.
+pub async fn get_active_by_id(db: &PgPool, id: Uuid) -> Result<ProductResponse, AppError> {
+    let product = repository::find_active_by_id(db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("product not found".into()))?;
+    to_response(db, product).await
+}
+
 pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductResponse, AppError> {
     let slug = req.slug.unwrap_or_else(|| slugify(&req.name));
 

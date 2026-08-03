@@ -108,6 +108,34 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Product>, sqlx::
     .await
 }
 
+/// Public-facing lookup — only returns an active row. Template:
+/// `posts::repository::find_published_by_slug`.
+pub async fn find_active_by_slug(db: &PgPool, slug: &str) -> Result<Option<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
+        "SELECT id, name, slug, product_type, description, price_cents, \
+         original_price_cents, features, is_highlighted, badge, stock, \
+         valid_days, session_count, is_active, created_at, updated_at \
+         FROM products WHERE LOWER(slug) = LOWER($1) AND is_active = true",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await
+}
+
+/// Public-facing lookup — only returns an active row. Template:
+/// `posts::repository::find_published_by_id`.
+pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
+        "SELECT id, name, slug, product_type, description, price_cents, \
+         original_price_cents, features, is_highlighted, badge, stock, \
+         valid_days, session_count, is_active, created_at, updated_at \
+         FROM products WHERE id = $1 AND is_active = true",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
 /// Attempts to decrement `stock` by `quantity` atomically.
 ///
 /// Returns:
