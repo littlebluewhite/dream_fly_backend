@@ -163,7 +163,10 @@ pub async fn update(
         AppError::conflict_on_constraint(
             e,
             "uq_products_slug_lower",
-            format!("slug '{}' already exists", req.slug.as_deref().unwrap_or_default()),
+            format!(
+                "slug '{}' already exists",
+                req.slug.as_deref().unwrap_or_default()
+            ),
         )
     })?
     .ok_or_else(|| AppError::NotFound("product not found".into()))?;

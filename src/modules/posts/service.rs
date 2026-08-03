@@ -146,7 +146,9 @@ pub async fn update_post(
         published_at,
     )
     .await
-    .map_err(|e| AppError::conflict_on_constraint(e, "uq_posts_slug_lower", "post slug already exists"))?;
+    .map_err(|e| {
+        AppError::conflict_on_constraint(e, "uq_posts_slug_lower", "post slug already exists")
+    })?;
 
     post.map(PostDetailResponse::from)
         .ok_or_else(|| AppError::NotFound("post not found".into()))

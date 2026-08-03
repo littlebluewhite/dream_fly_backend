@@ -223,7 +223,9 @@ pub async fn update_course(
         },
     )
     .await
-    .map_err(|e| AppError::conflict_on_constraint(e, "uq_courses_slug_lower", "course slug already exists"))?
+    .map_err(|e| {
+        AppError::conflict_on_constraint(e, "uq_courses_slug_lower", "course slug already exists")
+    })?
     .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
     if let Some(slots) = &parsed_slots {
