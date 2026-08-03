@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
+use crate::extractors::request_id::RequestId;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
@@ -56,10 +57,11 @@ pub async fn get_user(
 pub async fn create(
     State(state): State<AppState>,
     _auth: AuthUser,
+    request_id: RequestId,
     ValidatedJson(req): ValidatedJson<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
     let mut redis = state.redis.clone();
-    let response = service::create_user(&state.db, &mut redis, req).await?;
+    let response = service::create_user(&state.db, &mut redis, req, request_id.0).await?;
     Ok(Json(response))
 }
 

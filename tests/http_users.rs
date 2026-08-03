@@ -362,6 +362,63 @@ async fn admin_create_user_as_member_returns_403(db: PgPool) {
     assert_eq!(resp.status_code(), 403);
 }
 
+/// Task 6C: `POST /users` now shares `auth::provisioning::create_account`
+/// with `POST /auth/register`, so an admin-created account queues a
+/// `user_registered` outbox event too — same shape as
+/// `register_with_x_request_id_header_lands_in_outbox_correlation_id`
+/// (tests/http_auth.rs).
+#[sqlx::test]
+async fn admin_create_user_writes_user_registered_outbox_event(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .add_header("x-request-id", "rid-admin-create-1")
+        .json(&json!({
+            "email": "admincreated-event@example.com",
+            "name": "Admin Created Event",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let correlation_id: String =
+        sqlx::query_scalar("SELECT payload->>'correlation_id' FROM events_outbox")
+            .fetch_one(&app.db)
+            .await
+            .expect("user_registered outbox row");
+    assert_eq!(correlation_id, "rid-admin-create-1");
+}
+
+/// Task 6C: the decision is to emit the `user_registered` event but *not*
+/// resurrect the welcome notification for admin-created accounts — the
+/// admin is provisioning the account, not the user registering themselves.
+/// This pins that decision as a permanent regression guard.
+#[sqlx::test]
+async fn admin_create_user_writes_no_welcome_notification(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "admincreated-nowelcome@example.com",
+            "name": "Admin Created No Welcome",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+        .fetch_one(&app.db)
+        .await
+        .expect("count notifications");
+    assert_eq!(count, 0);
+}
+
 #[sqlx::test]
 async fn admin_update_user_partial_updates_name_only(db: PgPool) {
     let app = spawn_test_app(db).await;

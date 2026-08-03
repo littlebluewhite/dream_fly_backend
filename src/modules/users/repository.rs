@@ -34,35 +34,6 @@ pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {
         .await
 }
 
-/// `POST /users` (admin) insert. Same shape as `auth::repository::create_user_tx`
-/// plus an optional `phone` column (the admin-creation body accepts `phone?`,
-/// which self-registration does not) and an optional `birth_date` (Task
-/// P4-B2 — also not on self-registration, see `users::dto::CreateUserRequest`).
-pub async fn create_user_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    email: &str,
-    name: &str,
-    phone: Option<&str>,
-    password_hash: &str,
-    birth_date: Option<NaiveDate>,
-) -> Result<User, sqlx::Error> {
-    sqlx::query_as::<_, User>(
-        r#"
-        INSERT INTO users (id, email, name, phone, password_hash, phone_verified, is_active, birth_date, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, false, true, $6, NOW(), NOW())
-        RETURNING *
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(email)
-    .bind(name)
-    .bind(phone)
-    .bind(password_hash)
-    .bind(birth_date)
-    .fetch_one(&mut **tx)
-    .await
-}
-
 /// `PATCH /users/{id}` (admin) partial update. Returns `None` when `id`
 /// doesn't exist so the service layer can 404 without a separate
 /// existence-check query (mirrors `courses::repository::update`).

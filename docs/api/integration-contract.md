@@ -293,7 +293,7 @@ Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date
 回應：單筆 `UserResponse`。404 若查無。
 
 #### `POST /users` — admin
-Body（`CreateUserRequest`）：`{ email, name, phone?, password, birth_date? }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字；`birth_date` 為 `YYYY-MM-DD` 字串，選填，範圍同 `PATCH /users/me`：`1900-01-01` 至今天）。建立流程比照 `POST /auth/register`：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色。回應：`UserResponse`（見上）。
+Body（`CreateUserRequest`）：`{ email, name, phone?, password, birth_date? }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字；`birth_date` 為 `YYYY-MM-DD` 字串，選填，範圍同 `PATCH /users/me`：`1900-01-01` 至今天）。建立流程與 `POST /auth/register` 共用同一 owner（`auth::provisioning::create_account`）：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色，並排入 `user_registered` outbox 事件（帶 `x-request-id` 則落在事件的 correlation_id）；與 `/auth/register` 不同的是，本端點不簽發 session、也不發送歡迎通知——帳號是 admin 代建，不是使用者本人註冊。回應：`UserResponse`（見上）。
 錯誤：409（email 已存在，訊息 `"Email 已被使用"`——與 `/auth/register` 刻意通用化的 409 訊息不同，因為呼叫者是 admin，不受帳號枚舉考量限制）；422（password < 8 字；`birth_date` 超出範圍）。
 
 **`POST /auth/register`（自助註冊）刻意不收 `birth_date`**——維持較低的註冊摩擦；自助註冊帳號的 `birth_date` 起始值為 `null`，會員本人可日後透過 `PATCH /users/me` 補填。

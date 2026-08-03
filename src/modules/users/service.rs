@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::revoke_user;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::auth::model::normalize_email;
+use crate::modules::auth::provisioning as auth_provisioning;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
 
@@ -95,45 +95,49 @@ pub async fn get_user(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppErr
     Ok(UserResponse::new(user, roles))
 }
 
-/// `POST /users` (admin). Builds the account the same way
-/// `auth::service::register` does — Argon2 hash, `is_active = true`, assign
-/// the `member` role, all inside one transaction so a role-assignment
-/// failure can never leave an orphaned user row — but skips the
-/// tokens/outbox/welcome-notification side effects register does, since an
-/// admin-created account has no session of its own to hand back.
+/// `POST /users` (admin). Builds the account through the same owner
+/// `auth::service::register` uses (`auth::provisioning::create_account`) —
+/// Argon2 hash, `is_active = true`, assign the `member` role, and (Task 6C)
+/// queue a `user_registered` outbox event, all inside one transaction so a
+/// partial failure can never leave an orphaned/inconsistent row. Unlike
+/// `register`, this endpoint still does not issue a session or send a
+/// welcome notification — an admin-created account has no session of its
+/// own to hand back, and the account wasn't the user's own registration
+/// action to welcome them for.
 pub async fn create_user(
     db: &PgPool,
     redis: &mut redis::aio::ConnectionManager,
     req: CreateUserRequest,
+    correlation_id: Option<String>,
 ) -> Result<UserResponse, AppError> {
-    let email = normalize_email(&req.email);
-
     let hashed = password::hash_password(req.password.clone())
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))?;
 
     let mut tx = db.begin().await?;
 
-    let user = repository::create_user_tx(
+    let provisioned = auth_provisioning::create_account(
         &mut tx,
-        &email,
-        &req.name,
-        req.phone.as_deref(),
-        &hashed,
-        req.birth_date,
+        auth_provisioning::NewAccount {
+            email: &req.email,
+            name: &req.name,
+            phone: req.phone.as_deref(),
+            birth_date: req.birth_date,
+            password_hash: &hashed,
+        },
+        correlation_id,
     )
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "Email 已被使用"))?;
 
-    let dirty = permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?;
-
-    let roles = permissions_repository::find_role_names_by_user(&mut *tx, user.id).await?;
+    let roles =
+        permissions_repository::find_role_names_by_user(&mut *tx, provisioned.user.id).await?;
 
     tx.commit().await?;
 
-    dirty.flush(redis).await;
+    provisioned.dirty.flush(redis).await;
 
-    Ok(UserResponse::new(user, roles))
+    Ok(UserResponse::new(provisioned.user, roles))
 }
 
 /// `PATCH /users/{id}` (admin). `name`/`phone`/`is_active` only — `email`,
