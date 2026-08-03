@@ -19,6 +19,15 @@ pub async fn get_by_slug(db: &PgPool, slug: &str) -> Result<VenueResponse, AppEr
     Ok(VenueResponse::from(venue))
 }
 
+/// Public-facing lookup — only returns an active venue. Template:
+/// `posts::service::get_published_by_slug_or_id`.
+pub async fn get_active_by_slug(db: &PgPool, slug: &str) -> Result<VenueResponse, AppError> {
+    let venue = repository::find_active_by_slug(db, slug)
+        .await?
+        .ok_or_else(|| AppError::NotFound("venue not found".into()))?;
+    Ok(VenueResponse::from(venue))
+}
+
 pub async fn create_venue(
     db: &PgPool,
     req: &CreateVenueRequest,

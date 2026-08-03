@@ -25,7 +25,7 @@ pub async fn get_by_slug(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Json<VenueResponse>, AppError> {
-    let venue = service::get_by_slug(&state.db, &slug).await?;
+    let venue = service::get_active_by_slug(&state.db, &slug).await?;
     Ok(Json(venue))
 }
 

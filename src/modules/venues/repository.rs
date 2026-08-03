@@ -26,6 +26,27 @@ pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Venue>, sqlx
     .await
 }
 
+/// Public-facing lookup — only returns an active row. Template:
+/// `posts::repository::find_published_by_slug`. Slug-only (no
+/// `find_active_by_id` counterpart): the public detail endpoint
+/// (`GET /venues/{slug}`) never accepts a UUID — see `find_by_id`'s own doc
+/// comment.
+pub async fn find_active_by_slug(db: &PgPool, slug: &str) -> Result<Option<Venue>, sqlx::Error> {
+    sqlx::query_as::<_, Venue>(
+        "SELECT id, category_id, name, slug, description, features, image_url, \
+         is_active, created_at, updated_at \
+         FROM venues WHERE LOWER(slug) = LOWER($1) AND is_active = true",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await
+}
+
+/// Dead code — zero call sites as of the 2026-08 audit (Phase 1 of the
+/// visibility-predicate sweep). Kept rather than deleted: `venues` is the
+/// only one of the four modules in that sweep whose public detail endpoint
+/// is slug-only, so this by-id finder never got a caller to begin with, not
+/// because of the sweep itself.
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Venue>, sqlx::Error> {
     sqlx::query_as::<_, Venue>(
         "SELECT id, category_id, name, slug, description, features, image_url, \

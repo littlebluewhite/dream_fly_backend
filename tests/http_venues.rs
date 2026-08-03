@@ -213,6 +213,30 @@ async fn update_venue_unknown_id_returns_404(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn get_deactivated_venue_public_detail_returns_404(db: PgPool) {
+    // Handler-wiring guard: `GET /venues/{slug}` must call the active-scoped
+    // service function.
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let id = seed_venue(&app.db, "Retiring Hall", None).await;
+    let slug: String = sqlx::query_scalar("SELECT slug FROM venues WHERE id = $1")
+        .bind(id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+    let patch_resp = app
+        .patch(&format!("/api/v1/venues/{id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "is_active": false }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+
+    let resp = app.get(&format!("/api/v1/venues/{slug}")).await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[sqlx::test]
 async fn update_venue_empty_body_is_noop(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;

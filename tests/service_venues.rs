@@ -7,6 +7,8 @@
 //!   violation is translated, not leaked as 500)
 //! - `get_by_slug` NotFound for a random slug
 //! - `list_active` filters out deactivated venues
+//! - `get_active_by_slug` NotFound once deactivated, while unscoped
+//!   `get_by_slug` still resolves
 
 mod common;
 
@@ -68,6 +70,30 @@ async fn get_by_slug_nonexistent_returns_not_found(db: PgPool) {
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
+}
+
+#[sqlx::test]
+async fn get_active_by_slug_not_found_when_inactive_but_unscoped_still_ok(db: PgPool) {
+    let created = service::create_venue(&db, &req("Deactivated Hall", Some("deactivated-hall")))
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE venues SET is_active = false WHERE id = $1")
+        .bind(created.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        service::get_active_by_slug(&db, "deactivated-hall").await.unwrap_err(),
+        AppError::NotFound(_)
+    ));
+
+    // Unscoped lookup must still resolve — pins down the scoped/unscoped
+    // branch itself, not just the WHERE clause.
+    service::get_by_slug(&db, "deactivated-hall")
+        .await
+        .expect("unscoped get_by_slug must still resolve an inactive row");
 }
 
 #[sqlx::test]

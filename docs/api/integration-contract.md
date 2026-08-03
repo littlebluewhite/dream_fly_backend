@@ -420,7 +420,7 @@ Body（clock-in）：`{ note? }`（≤500 字）。回應（`ClockRecordResponse
 回應：`VenueResponse[]`（**純陣列，不分頁**）：`{ id, category_id, name, slug, description, features, image_url, is_active, created_at }`。
 
 #### `GET /venues/{slug}` — 公開
-**僅接受 slug**（不像 courses/products 支援 UUID fallback）。回應：`VenueResponse`。
+**僅接受 slug**（不像 courses/products 支援 UUID fallback）。回應：`VenueResponse`。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `POST /venues` — admin
 Body：`{ name, slug?, category_id?, description?, features?, image_url? }`。回應：`VenueResponse`。
