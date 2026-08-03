@@ -1,29 +1,26 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::modules::products::model::{Product, ProductType};
+use crate::modules::products::model::Product;
 
 use super::dto::SubscriptionResponse;
+use super::entitlement;
 use super::model::Subscription;
 use super::repository;
 
 /// 依商品 entitlement 設定產生訂閱；非 entitlement 商品（product_type 非
 /// membership/ticket）回 Ok(None)。
 ///
-/// Rules:
-/// - `product.product_type` not in {membership, ticket} → `Ok(None)`.
-/// - `session_count` set → one row, `total_sessions = remaining_sessions =
-///   session_count * quantity`. If `valid_days` is *also* set, `expires_at`
-///   is populated too (both constraints apply — sessions still drive the
-///   quota).
-/// - else `valid_days` set → `expires_at = now + valid_days`, no session
-///   quota; `quantity` must be 1 (a time-based grant can't be multiplied
-///   into one row), otherwise `AppError::Validation`.
-/// - neither set → unlimited membership record (no expiry, no quota).
+/// The branch rules themselves (session-count / time-based / unlimited /
+/// non-entitlement) live in `entitlement::plan` as a pure function — see
+/// that module's doc for the four cases. This function is just: call it,
+/// then write the one `repository::insert_tx` row.
 ///
-/// `price_cents` is the unit price paid and is stored as given.
+/// `price_cents` is the unit price paid and is stored as given. `now` is
+/// the caller-sampled clock (checkout's own `now`), threaded through so
+/// `entitlement::plan` never reads the wall clock itself.
 pub async fn grant_from_purchase_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
@@ -31,40 +28,20 @@ pub async fn grant_from_purchase_tx(
     quantity: i32,
     price_cents: i64,
     order_id: Uuid,
+    now: DateTime<Utc>,
 ) -> Result<Option<Subscription>, AppError> {
-    if !matches!(
-        product.product_type,
-        ProductType::Membership | ProductType::Ticket
-    ) {
+    let Some(grant) = entitlement::plan(product, quantity, now)? else {
         return Ok(None);
-    }
-
-    let (total_sessions, remaining_sessions, expires_at) =
-        if let Some(session_count) = product.session_count {
-            let total = session_count * quantity;
-            let expires_at = product
-                .valid_days
-                .map(|days| Utc::now() + Duration::days(days as i64));
-            (Some(total), Some(total), expires_at)
-        } else if let Some(valid_days) = product.valid_days {
-            if quantity != 1 {
-                return Err(AppError::Validation(
-                    "time-based subscription quantity must be 1".into(),
-                ));
-            }
-            (None, None, Some(Utc::now() + Duration::days(valid_days as i64)))
-        } else {
-            (None, None, None)
-        };
+    };
 
     let subscription = repository::insert_tx(
         tx,
         user_id,
         product.id,
         order_id,
-        expires_at,
-        total_sessions,
-        remaining_sessions,
+        grant.expires_at,
+        grant.total_sessions,
+        grant.remaining_sessions,
         price_cents,
     )
     .await

@@ -349,6 +349,7 @@ pub async fn checkout(
             p.quantity,
             p.price_cents,
             order.id,
+            now,
         )
         .await?;
     }

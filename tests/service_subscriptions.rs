@@ -1,10 +1,14 @@
 //! Integration tests for `subscriptions::service`.
 //!
 //! Covered paths:
-//! - `grant_from_purchase_tx`: the three entitlement rules (session-count,
-//!   time-based, pure membership), the session+valid_days combo, a
-//!   non-entitlement product returning `None`, and the time-based
-//!   quantity-must-be-1 validation error.
+//! - `grant_from_purchase_tx`: the branch rules themselves (session-count,
+//!   time-based, unlimited membership, non-entitlement `None`, the
+//!   time-based quantity-must-be-1 error) are pure-core tested in
+//!   `subscriptions::entitlement::plan`'s own `#[cfg(test)]` module — no DB,
+//!   exact `expires_at` values, no ±1 day window. The two cases kept here
+//!   guard what only a real DB can: the session+valid_days combo through
+//!   `insert_tx` + `derived_status`, and that a non-entitlement product
+//!   writes no row at all.
 //! - `redeem`: successful decrement, zero-remaining conflict, expired-by-date
 //!   conflict, no-session-quota conflict (exact message), cancelled conflict,
 //!   and not-found.
@@ -17,7 +21,7 @@
 
 mod common;
 
-use chrono::{Duration, Utc};
+use chrono::{Duration, SubsecRound, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -62,32 +66,6 @@ async fn seed_order(
 // ---------------------------------------------------------------------------
 
 #[sqlx::test]
-async fn grant_session_count_multiplies_by_quantity(db: PgPool) {
-    let user_id = common::seed_member(&db, "grant-a@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-10", "ticket", 5_000, None, Some(10)).await;
-    let product = products_repo::find_by_id(&db, product_id)
-        .await
-        .expect("query product")
-        .expect("product exists");
-    let mut tx = db.begin().await.expect("begin tx");
-    let order_id = seed_order(&mut tx, user_id, 5_000).await;
-    let result = service::grant_from_purchase_tx(&mut tx, user_id, &product, 3, 5_000, order_id)
-        .await
-        .expect("grant");
-    tx.commit().await.expect("commit");
-
-    let sub = result.expect("expected Some(subscription)");
-    assert_eq!(sub.total_sessions, Some(30));
-    assert_eq!(sub.remaining_sessions, Some(30));
-    assert!(sub.expires_at.is_none());
-    assert_eq!(sub.price_cents, 5_000);
-    assert_eq!(sub.user_id, user_id);
-    assert_eq!(sub.product_id, product_id);
-    assert_eq!(sub.order_id, Some(order_id));
-}
-
-#[sqlx::test]
 async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
     let user_id = common::seed_member(&db, "grant-b@example.com", "Password!234").await;
     let product_id =
@@ -96,78 +74,27 @@ async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
         .await
         .expect("query product")
         .expect("product exists");
-    let before = Utc::now();
+    // Truncated to microsecond precision: Postgres `timestamptz` stores
+    // microseconds, so encoding `now` for the INSERT below already drops any
+    // finer remainder — fixing `now` at that precision upfront means the
+    // round-tripped `expires_at` compares exactly equal instead of needing a
+    // ±1 day window.
+    let now = Utc::now().trunc_subsecs(6);
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 8_000).await;
-    let result = service::grant_from_purchase_tx(&mut tx, user_id, &product, 2, 8_000, order_id)
-        .await
-        .expect("grant");
+    let result =
+        service::grant_from_purchase_tx(&mut tx, user_id, &product, 2, 8_000, order_id, now)
+            .await
+            .expect("grant");
     tx.commit().await.expect("commit");
 
     let sub = result.expect("expected Some(subscription)");
     // Both constraints apply: sessions still drive the quota...
     assert_eq!(sub.total_sessions, Some(10));
     assert_eq!(sub.remaining_sessions, Some(10));
-    // ...and expires_at is populated too, since valid_days was also set.
-    let expires_at = sub
-        .expires_at
-        .expect("expires_at should be set when valid_days is also present");
-    assert!(expires_at > before + Duration::days(89));
-    assert!(expires_at < before + Duration::days(91));
-}
-
-#[sqlx::test]
-async fn grant_valid_days_only_sets_expiry_and_no_sessions(db: PgPool) {
-    let user_id = common::seed_member(&db, "grant-c@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "membership-30d", "membership", 3_000, Some(30), None).await;
-    let product = products_repo::find_by_id(&db, product_id)
-        .await
-        .expect("query product")
-        .expect("product exists");
-    let before = Utc::now();
-    let mut tx = db.begin().await.expect("begin tx");
-    let order_id = seed_order(&mut tx, user_id, 3_000).await;
-    let result = service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 3_000, order_id)
-        .await
-        .expect("grant");
-    tx.commit().await.expect("commit");
-
-    let sub = result.expect("expected Some(subscription)");
-    assert!(sub.total_sessions.is_none());
-    assert!(sub.remaining_sessions.is_none());
-    let expires_at = sub.expires_at.expect("expires_at should be set");
-    assert!(expires_at > before + Duration::days(29));
-    assert!(expires_at < before + Duration::days(31));
-}
-
-#[sqlx::test]
-async fn grant_no_entitlement_fields_creates_unlimited_membership(db: PgPool) {
-    let user_id = common::seed_member(&db, "grant-d@example.com", "Password!234").await;
-    let product_id = seed_entitlement_product(
-        &db,
-        "membership-unlimited",
-        "membership",
-        20_000,
-        None,
-        None,
-    )
-    .await;
-    let product = products_repo::find_by_id(&db, product_id)
-        .await
-        .expect("query product")
-        .expect("product exists");
-    let mut tx = db.begin().await.expect("begin tx");
-    let order_id = seed_order(&mut tx, user_id, 20_000).await;
-    let result = service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 20_000, order_id)
-        .await
-        .expect("grant");
-    tx.commit().await.expect("commit");
-
-    let sub = result.expect("expected Some(subscription)");
-    assert!(sub.total_sessions.is_none());
-    assert!(sub.remaining_sessions.is_none());
-    assert!(sub.expires_at.is_none());
+    // ...and expires_at is populated too, since valid_days was also set —
+    // exact value now that `now` is fixed and DB-precision-aligned.
+    assert_eq!(sub.expires_at, Some(now + Duration::days(90)));
 }
 
 #[sqlx::test]
@@ -181,34 +108,14 @@ async fn grant_non_entitlement_product_type_returns_none(db: PgPool) {
         .expect("product exists");
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 1_500).await;
-    let result = service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 1_500, order_id)
-        .await
-        .expect("grant should not error for a non-entitlement product");
+    let result = service::grant_from_purchase_tx(
+        &mut tx, user_id, &product, 1, 1_500, order_id, Utc::now(),
+    )
+    .await
+    .expect("grant should not error for a non-entitlement product");
     tx.rollback().await.expect("rollback");
 
     assert!(result.is_none());
-}
-
-#[sqlx::test]
-async fn grant_time_based_with_quantity_other_than_one_is_validation_error(db: PgPool) {
-    let user_id = common::seed_member(&db, "grant-f@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "membership-90d", "membership", 6_000, Some(90), None).await;
-    let product = products_repo::find_by_id(&db, product_id)
-        .await
-        .expect("query product")
-        .expect("product exists");
-    let mut tx = db.begin().await.expect("begin tx");
-    let order_id = seed_order(&mut tx, user_id, 6_000).await;
-    let err = service::grant_from_purchase_tx(&mut tx, user_id, &product, 2, 6_000, order_id)
-        .await
-        .expect_err("quantity=2 for a time-based product must fail");
-    tx.rollback().await.expect("rollback");
-
-    assert!(
-        matches!(err, AppError::Validation(_)),
-        "expected Validation, got {err:?}"
-    );
 }
 
 // ---------------------------------------------------------------------------
