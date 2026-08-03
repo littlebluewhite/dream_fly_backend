@@ -24,6 +24,7 @@ use uuid::Uuid;
 use dream_fly_backend::config::{AuthConfig, ServerConfig};
 use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::auth::repository;
+use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::password;
 
 /// Pin the server config tests use to UTC so naïve date+time arithmetic
@@ -98,8 +99,9 @@ pub fn admin_auth(user_id: Uuid) -> AuthUser {
 
 /// Insert a member user with a pre-hashed password. Returns the new user's id.
 ///
-/// Owner: delegates to `auth::repository::create_user_tx` / `assign_role_tx`
-/// rather than hand-rolling the `INSERT` — see those for the real row shape.
+/// Owner: delegates to `auth::repository::create_user_tx` /
+/// `permissions::repository::assign_role_by_name` rather than hand-rolling
+/// the `INSERT` — see those for the real row shape.
 pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> Uuid {
     let hash = password::hash_password(plaintext_password.to_string())
         .await
@@ -114,7 +116,7 @@ pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> 
     // Attach the `member` role (seeded by migration 00002). Witness
     // discarded: this helper has never invalidated the role/active cache
     // either, so dropping it here is behavior-equivalent to before.
-    let _ = repository::assign_role_tx(&mut tx, user.id, "member")
+    let _ = permissions_repository::assign_role_by_name(&mut tx, user.id, "member")
         .await
         .expect("assign member role");
 

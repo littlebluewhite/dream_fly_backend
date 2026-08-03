@@ -42,6 +42,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::AppConfig;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
+use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::LedgerDelta;
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
@@ -124,21 +125,23 @@ async fn upsert_user(
     Ok(user_id)
 }
 
-/// Attach a role to a user (idempotent — same ON CONFLICT DO NOTHING pattern
-/// as `auth::repository::assign_role_tx`).
+/// Attach a role to a user — delegates to
+/// `permissions::repository::assign_role_by_name` (idempotent, `ON CONFLICT
+/// DO NOTHING`) via a pool-`acquire`d connection rather than hand-rolling the
+/// `INSERT` (seed has no ambient transaction to reuse).
+///
+/// The returned `RoleCacheDirty` witness is discarded: seed has no Redis
+/// connection to flush it through, a freshly seeded user has no pre-existing
+/// cache entry to invalidate in the first place, and the 15-minute
+/// role-cache TTL self-heals regardless.
 async fn assign_role(db: &PgPool, user_id: Uuid, role_name: &str) -> anyhow::Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO user_roles (user_id, role_id)
-        SELECT $1, id FROM roles WHERE name = $2
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(user_id)
-    .bind(role_name)
-    .execute(db)
-    .await
-    .with_context(|| format!("assign role '{role_name}' to {user_id}"))?;
+    let mut conn = db
+        .acquire()
+        .await
+        .with_context(|| format!("acquire connection to assign role '{role_name}' to {user_id}"))?;
+    let _dirty = permissions_repository::assign_role_by_name(&mut conn, user_id, role_name)
+        .await
+        .with_context(|| format!("assign role '{role_name}' to {user_id}"))?;
     Ok(())
 }
 

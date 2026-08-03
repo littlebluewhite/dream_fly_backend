@@ -64,7 +64,7 @@ pub async fn find_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Option<Coach>
 
 /// Takes an already-open transaction so `coaches::service::create_coach` can
 /// insert the coach row and assign the `coach` role
-/// (`auth::repository::assign_role_tx`) atomically in one commit — a
+/// (`permissions::repository::assign_role_by_name`) atomically in one commit — a
 /// role-assignment failure must never leave an orphaned coach row (or vice
 /// versa). `name` isn't a column of this table; the correlated subquery
 /// pulls it from `users` in the same round trip — same idiom as

@@ -5,7 +5,6 @@ use crate::error::AppError;
 use crate::extractors::auth::revoke_user;
 use crate::extractors::pagination::PaginationParams;
 use crate::modules::auth::model::normalize_email;
-use crate::modules::auth::repository as auth_repository;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
 
@@ -126,7 +125,7 @@ pub async fn create_user(
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "Email 已被使用"))?;
 
-    let dirty = auth_repository::assign_role_tx(&mut tx, user.id, "member").await?;
+    let dirty = permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?;
 
     let roles = permissions_repository::find_role_names_by_user(&mut *tx, user.id).await?;
 

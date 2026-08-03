@@ -83,6 +83,44 @@ pub async fn remove_role_from_user(
     Ok(RoleCacheDirty::new(user_id))
 }
 
+/// Name-based, idempotent (`ON CONFLICT DO NOTHING`) role assignment — the
+/// owner that every role-granting call site (`auth::service::register`/
+/// `google_auth`, `users::service::create_user`, `coaches::service::
+/// create_coach`, the seed binary, and the integration-test fixtures)
+/// converges on, replacing what used to be a hand-rolled `INSERT` duplicated
+/// at each site.
+///
+/// Takes a bare `&mut PgConnection` rather than the `_tx` suffix — this
+/// repo's `_tx` convention means "takes a `Transaction`", but this function's
+/// callers include the seed binary, which has no ambient transaction. A
+/// transactional caller passes `&mut tx` (deref-coerces); a plain-pool
+/// caller passes a pool-`acquire`d connection. Naming follows the
+/// executor-typed convention of `auth::service::issue_session`/
+/// `auth::repository::save_refresh_token`.
+///
+/// Returns a [`RoleCacheDirty`] witness — the caller MUST `.flush(redis)` it
+/// after `tx.commit()` (or immediately, for a non-transactional caller with
+/// no commit boundary) so the next request doesn't keep serving the user's
+/// pre-assignment role set out of the Redis cache.
+pub async fn assign_role_by_name(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    role_name: &str,
+) -> Result<RoleCacheDirty, sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO user_roles (user_id, role_id)
+        SELECT $1, id FROM roles WHERE name = $2
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(user_id)
+    .bind(role_name)
+    .execute(conn)
+    .await?;
+    Ok(RoleCacheDirty::new(user_id))
+}
+
 pub async fn find_user_roles(db: &PgPool, user_id: Uuid) -> Result<Vec<Role>, sqlx::Error> {
     sqlx::query_as::<_, Role>(
         "SELECT r.id, r.name, r.description, r.created_at \

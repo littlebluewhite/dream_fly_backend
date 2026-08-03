@@ -87,7 +87,7 @@ pub async fn register(
         .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
 
     // Assign "member" role
-    let dirty = repository::assign_role_tx(&mut tx, user.id, "member").await?;
+    let dirty = permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?;
 
     // Build tokens before publishing: if token generation fails the entire
     // transaction rolls back — no phantom user row.
@@ -282,7 +282,7 @@ pub async fn google_auth(
     };
 
     // 4. Assign "member" role (idempotent)
-    let dirty = repository::assign_role_tx(&mut tx, user.id, "member").await?;
+    let dirty = permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?;
 
     // 5. Update last_login
     repository::update_last_login(&mut *tx, user.id).await?;

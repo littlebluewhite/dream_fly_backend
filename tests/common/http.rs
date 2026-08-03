@@ -40,6 +40,7 @@ use dream_fly_backend::config::{
 };
 use dream_fly_backend::extractors::auth::revoke_user;
 use dream_fly_backend::modules::auth::repository;
+use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
@@ -209,8 +210,9 @@ impl TestApp {
     /// return `(user_id, access_token)`. Use this when a test needs an
     /// admin or coach without going through `/auth/register`.
     ///
-    /// Owner: delegates to `auth::repository::create_user_tx` / `assign_role_tx`
-    /// rather than hand-rolling the `INSERT` — see those for the real row shape.
+    /// Owner: delegates to `auth::repository::create_user_tx` /
+    /// `permissions::repository::assign_role_by_name` rather than
+    /// hand-rolling the `INSERT` — see those for the real row shape.
     pub async fn seed_user_with_roles(
         &self,
         email: &str,
@@ -231,7 +233,7 @@ impl TestApp {
             // `revoke_user`) runs right after `commit` below and clears the
             // role + active cache unconditionally, so a per-call flush would
             // be redundant.
-            let _ = repository::assign_role_tx(&mut tx, user.id, *role)
+            let _ = permissions_repository::assign_role_by_name(&mut tx, user.id, *role)
                 .await
                 .expect("assign role");
         }
