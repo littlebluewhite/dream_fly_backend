@@ -102,6 +102,11 @@ pub struct UpdateUserRequest {
     pub is_active: Option<bool>,
 }
 
+/// Field-superset of `auth::dto::UserResponse` — every field on that type
+/// appears here under the same name with the same wire representation, plus
+/// `last_login`/`points_balance`/`preferences`/`birth_date`. Pinned by
+/// `tests::auth_user_response_is_field_subset_projection_of_users_user_response`
+/// below: a rename, retype, or drop on either side fails that test first.
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
     pub id: Uuid,
@@ -192,5 +197,33 @@ mod tests {
 
         let json = serde_json::to_value(&response).expect("serialize UserResponse");
         assert_eq!(json["roles"], serde_json::json!(["member", "coach"]));
+    }
+
+    /// Anchor test (Task 6D) for the two `UserResponse` types' field
+    /// relationship: `auth::dto::UserResponse` must be a strict
+    /// field-subset projection of this module's `UserResponse` (which
+    /// additionally carries `last_login`/`points_balance`/`preferences`/
+    /// `birth_date`). Serializes both from the *same* `User` + roles, strips
+    /// the four users-only keys from this module's JSON, and asserts the
+    /// remainder is identical to the auth version's JSON — catching a
+    /// rename/retype/drop on either side that a struct-field-only
+    /// comparison would miss.
+    #[test]
+    fn auth_user_response_is_field_subset_projection_of_users_user_response() {
+        let user = test_user();
+        let roles = vec!["member".to_string(), "coach".to_string()];
+
+        let users_json = serde_json::to_value(UserResponse::new(user.clone(), roles.clone()))
+            .expect("serialize users::dto::UserResponse");
+        let auth_json =
+            serde_json::to_value(crate::modules::auth::dto::UserResponse::new(user, roles))
+                .expect("serialize auth::dto::UserResponse");
+
+        let mut users_obj = users_json.as_object().expect("object").clone();
+        for key in ["last_login", "points_balance", "preferences", "birth_date"] {
+            users_obj.remove(key);
+        }
+
+        assert_eq!(serde_json::Value::Object(users_obj), auth_json);
     }
 }

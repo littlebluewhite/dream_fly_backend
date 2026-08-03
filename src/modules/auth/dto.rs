@@ -72,6 +72,11 @@ pub struct AuthResponse {
     pub user: UserResponse,
 }
 
+/// Field-subset of `users::dto::UserResponse` (that type additionally
+/// carries `last_login`/`points_balance`/`preferences`/`birth_date`) — every
+/// field here must serialize identically on both types. Pinned by
+/// `users::dto::tests::
+/// auth_user_response_is_field_subset_projection_of_users_user_response`.
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
     pub id: Uuid,
