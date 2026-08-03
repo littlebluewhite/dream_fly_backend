@@ -9,6 +9,8 @@
 //! - `today_sessions`: a coach sees only their own courses (empty if they
 //!   have no `coaches` row), with a correct active-enrolment count; an
 //!   admin sees every course
+//! - `today_sessions` materializes today's slot itself when no session row
+//!   was pre-seeded (the slot-only guard on the materialize-before-read wire)
 
 mod common;
 
@@ -346,4 +348,29 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
     let ids: Vec<Uuid> = sessions.iter().map(|s| s.course_id).collect();
     assert!(ids.contains(&course_a), "admin must see course_a, got {ids:?}");
     assert!(ids.contains(&course_b), "admin must see course_b, got {ids:?}");
+}
+
+#[sqlx::test]
+async fn today_sessions_materializes_todays_slot_without_preexisting_session(db: PgPool) {
+    // Every other today_sessions test pre-seeds its session row (via
+    // seed_session_scene), so they stay green even if the materialize step
+    // inside `materialize_day` silently stopped running. This slot-only
+    // arrange is the one guard on that wire: the session row must come into
+    // existence through today_sessions() itself.
+    let course_id = seed_course(&db, "Slot Only Today", None).await;
+    let today = Utc::now().date_naive();
+    seed_course_schedule_slot(&db, course_id, dow_of(today), t(9, 0), t(10, 0)).await;
+
+    let admin_id =
+        common::seed_member(&db, "materialize-today-admin@example.com", "hunter22-secret").await;
+    let auth = common::admin_auth(admin_id);
+    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+        .await
+        .expect("today sessions");
+
+    let ids: Vec<Uuid> = sessions.iter().map(|s| s.course_id).collect();
+    assert!(
+        ids.contains(&course_id),
+        "today's weekly slot should have been materialized by today_sessions() itself, got {ids:?}"
+    );
 }
