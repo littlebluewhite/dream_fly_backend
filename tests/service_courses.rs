@@ -7,6 +7,7 @@
 //! - `create_course` rejects `min_age > max_age` with Validation
 //! - `get_course_by_slug_or_id` resolves both forms and returns same row
 //! - `update_course` allows slug update to a unique value and blocks on clash
+//! - `update_course` Conflict on duplicate slug (DB constraint, not a precheck)
 //! - `list_courses` filters out inactive rows
 //! - `get_active_course_by_slug_or_id` NotFound once deactivated, while
 //!   unscoped `get_course_by_slug_or_id` still resolves
@@ -293,6 +294,57 @@ async fn update_course_to_existing_other_slug_returns_conflict(db: PgPool) {
     )
     .await
     .expect("same-slug self-update must not conflict");
+}
+
+#[sqlx::test]
+async fn update_duplicate_slug_returns_conflict(db: PgPool) {
+    service::create_course(
+        &db,
+        CreateCourseRequest {
+            slug: Some("update-taken".into()),
+            ..minimal_create("First")
+        },
+    )
+    .await
+    .unwrap();
+    let second = service::create_course(
+        &db,
+        CreateCourseRequest {
+            slug: Some("update-free".into()),
+            ..minimal_create("Second")
+        },
+    )
+    .await
+    .unwrap();
+
+    let err = service::update_course(
+        &db,
+        second.course.id,
+        UpdateCourseRequest {
+            name: None,
+            slug: Some("update-taken".into()),
+            level: None,
+            description: None,
+            duration_minutes: None,
+            price_cents: None,
+            max_students: None,
+            min_age: None,
+            max_age: None,
+            features: None,
+            coach_id: None,
+            category: None,
+            schedule_text: None,
+            is_highlighted: None,
+            schedule_slots: None,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    match err {
+        AppError::Conflict(msg) => assert!(msg.contains("slug"), "msg: {msg}"),
+        other => panic!("expected Conflict, got {other:?}"),
+    }
 }
 
 #[sqlx::test]

@@ -8,6 +8,7 @@
 //! - `update_post` by author → succeeds
 //! - `update_post` by admin (not author) → succeeds
 //! - `update_post` transitioning draft→published sets published_at
+//! - `update_post` Conflict on duplicate slug (DB constraint, not a precheck)
 //! - `delete_post` NotFound for random id
 //! - `list_published` returns only published posts, paginated
 
@@ -201,6 +202,49 @@ async fn update_post_draft_to_published_sets_published_at(db: PgPool) {
         updated.published_at.is_some(),
         "published_at should be set on first publish"
     );
+}
+
+#[sqlx::test]
+async fn update_duplicate_slug_returns_conflict(db: PgPool) {
+    let author = common::seed_member(&db, "a@example.com", "hunter22-secret").await;
+    service::create_post(
+        &db,
+        author,
+        CreatePostRequest {
+            slug: Some("update-shared".into()),
+            ..create_req("First", "article")
+        },
+    )
+    .await
+    .unwrap();
+    let second = service::create_post(
+        &db,
+        author,
+        CreatePostRequest {
+            slug: Some("update-free".into()),
+            ..create_req("Second", "article")
+        },
+    )
+    .await
+    .unwrap();
+
+    let err = service::update_post(
+        &db,
+        second.id,
+        &common::member_auth(author),
+        UpdatePostRequest {
+            title: None,
+            slug: Some("update-shared".into()),
+            content: None,
+            excerpt: None,
+            category: None,
+            status: None,
+            cover_image: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Conflict(_)));
 }
 
 #[sqlx::test]

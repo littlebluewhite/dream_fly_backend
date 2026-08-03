@@ -123,6 +123,11 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
     to_response(db, product).await
 }
 
+/// `PATCH /products/{id}` — admin only (checked by the handler). Slug
+/// uniqueness is enforced by the DB's `uq_products_slug_lower` functional
+/// index; a violation surfaces as `sqlx::Error::Database` here and is
+/// translated to 409 — same idiom as `venues::service::update_venue` (see
+/// its comment for why the constraint name is matched explicitly).
 pub async fn update(
     db: &PgPool,
     id: Uuid,
@@ -153,7 +158,14 @@ pub async fn update(
             is_active: req.is_active,
         },
     )
-    .await?
+    .await
+    .map_err(|e| {
+        AppError::conflict_on_constraint(
+            e,
+            "uq_products_slug_lower",
+            format!("slug '{}' already exists", req.slug.as_deref().unwrap_or_default()),
+        )
+    })?
     .ok_or_else(|| AppError::NotFound("product not found".into()))?;
 
     to_response(db, product).await

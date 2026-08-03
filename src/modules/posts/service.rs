@@ -82,6 +82,15 @@ pub async fn create_post(
     Ok(PostDetailResponse::from(post))
 }
 
+/// `PATCH /posts/{id}` — ownership checked via `auth.owns_or_admin` below.
+/// Slug uniqueness is enforced by the DB's `uq_posts_slug_lower` functional
+/// index rather than a SELECT-then-check precheck: the old precheck read
+/// `find_by_slug` and only wrote afterward, leaving a window where two
+/// concurrent requests could both pass the check and then both write — a
+/// TOCTOU race. Relying on the constraint instead makes the DB the single
+/// source of truth, so a collision surfaces here as `sqlx::Error::Database`
+/// and is translated to 409 — same idiom as `create_post` above (see its
+/// comment for why this avoids the same race on the INSERT path).
 pub async fn update_post(
     db: &PgPool,
     id: Uuid,
@@ -116,15 +125,6 @@ pub async fn update_post(
         None
     };
 
-    // Check slug uniqueness if changing
-    if let Some(ref new_slug) = req.slug {
-        if let Some(existing_post) = repository::find_by_slug(db, new_slug).await? {
-            if existing_post.id != id {
-                return Err(AppError::Conflict("post slug already exists".into()));
-            }
-        }
-    }
-
     // If transitioning to published and currently not published, set published_at
     let published_at: Option<Option<chrono::DateTime<chrono::Utc>>> =
         if status_str.as_deref() == Some("published") && existing.published_at.is_none() {
@@ -145,7 +145,8 @@ pub async fn update_post(
         req.cover_image.as_ref().map(|o| o.as_deref()),
         published_at,
     )
-    .await?;
+    .await
+    .map_err(|e| AppError::conflict_on_constraint(e, "uq_posts_slug_lower", "post slug already exists"))?;
 
     post.map(PostDetailResponse::from)
         .ok_or_else(|| AppError::NotFound("post not found".into()))

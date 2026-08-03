@@ -110,11 +110,6 @@ pub async fn create_course(
 
     let slug = req.slug.unwrap_or_else(|| slugify(&req.name));
 
-    // Check slug uniqueness
-    if repository::find_by_slug(db, &slug).await?.is_some() {
-        return Err(AppError::Conflict("course slug already exists".into()));
-    }
-
     let features = req.features.unwrap_or_default();
 
     // Parse before opening the transaction so a bad time string 422s without
@@ -127,6 +122,8 @@ pub async fn create_course(
 
     let mut tx = db.begin().await?;
 
+    // Rely on the DB unique index for slug uniqueness — avoids TOCTOU race
+    // between a SELECT check and the INSERT.
     let course = repository::create(
         &mut tx,
         CourseCreate {
@@ -146,7 +143,8 @@ pub async fn create_course(
             is_highlighted: req.is_highlighted,
         },
     )
-    .await?;
+    .await
+    .map_err(|e| AppError::conflict_on_unique(e, "course slug already exists"))?;
 
     if let Some(slots) = &parsed_slots {
         repository::replace_slots_tx(&mut tx, course.id, slots).await?;
@@ -161,6 +159,11 @@ pub async fn create_course(
     })
 }
 
+/// `PATCH /courses/{id}` — admin only (checked by the handler). Slug
+/// uniqueness is enforced by the DB's `uq_courses_slug_lower` functional
+/// index; a violation surfaces as `sqlx::Error::Database` here and is
+/// translated to 409 — same idiom as `venues::service::update_venue` (see
+/// its comment for why the constraint name is matched explicitly).
 pub async fn update_course(
     db: &PgPool,
     id: uuid::Uuid,
@@ -177,15 +180,6 @@ pub async fn update_course(
     } else {
         None
     };
-
-    // Check slug uniqueness if changing
-    if let Some(ref new_slug) = req.slug {
-        if let Some(existing) = repository::find_by_slug(db, new_slug).await? {
-            if existing.id != id {
-                return Err(AppError::Conflict("course slug already exists".into()));
-            }
-        }
-    }
 
     let parsed_slots = req
         .schedule_slots
@@ -228,7 +222,8 @@ pub async fn update_course(
             is_highlighted: req.is_highlighted,
         },
     )
-    .await?
+    .await
+    .map_err(|e| AppError::conflict_on_constraint(e, "uq_courses_slug_lower", "course slug already exists"))?
     .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
     if let Some(slots) = &parsed_slots {

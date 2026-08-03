@@ -10,6 +10,7 @@
 //! - `list` filters inactive rows and applies product_type filter
 //! - `update` NotFound when row doesn't exist
 //! - `update` rejects unknown product_type
+//! - `update` returns Conflict on duplicate slug (DB constraint, not a precheck)
 //! - `reserve_stock_tx`: mixed finite+unlimited stock reserves correctly
 //! - `reserve_stock_tx`: insufficient stock -> Conflict, rollback leaves stock untouched
 //! - `reserve_stock_tx`: descending input still reports the smallest product_id first (lock order)
@@ -230,6 +231,43 @@ async fn update_product_invalid_type_returns_validation(db: PgPool) {
     match err {
         AppError::Validation(msg) => assert!(msg.contains("invalid-type"), "msg: {msg}"),
         other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+#[sqlx::test]
+async fn update_duplicate_slug_returns_conflict(db: PgPool) {
+    service::create(&db, create("First", Some("update-repeat"), "merchandise"))
+        .await
+        .unwrap();
+    let second = service::create(&db, create("Second", Some("update-free"), "merchandise"))
+        .await
+        .unwrap();
+
+    let err = service::update(
+        &db,
+        second.id,
+        UpdateProductRequest {
+            name: None,
+            slug: Some("update-repeat".into()),
+            product_type: None,
+            description: None,
+            price_cents: None,
+            original_price_cents: None,
+            features: None,
+            is_highlighted: None,
+            badge: None,
+            stock: None,
+            valid_days: None,
+            session_count: None,
+            is_active: None,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    match err {
+        AppError::Conflict(msg) => assert!(msg.contains("update-repeat"), "msg: {msg}"),
+        other => panic!("expected Conflict, got {other:?}"),
     }
 }
 
