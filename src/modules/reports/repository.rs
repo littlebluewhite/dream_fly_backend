@@ -15,7 +15,7 @@ use super::model::{
 // GET /reports/admin
 // ---------------------------------------------------------------------------
 
-/// 12 monthly revenue buckets ending at `now`'s `tz_name`-local month
+/// `months` monthly revenue buckets ending at `now`'s `tz_name`-local month
 /// (oldest first). `orders.paid_at` is converted to `tz_name`'s wall-clock
 /// time before truncating to a month, so bucketing follows the studio's
 /// calendar rather than whatever timezone the DB session happens to be in.
@@ -24,29 +24,31 @@ use super::model::{
 /// order keeps its original `paid_at` per `orders::repository::
 /// update_status_and_paid_at_tx`, so this is a status filter, not a
 /// `paid_at IS NOT NULL` filter). The `generate_series` LEFT JOIN
-/// guarantees exactly 12 rows even when `orders` is empty — no month can
-/// "disappear" for lack of matching rows.
+/// guarantees exactly `months` rows even when `orders` is empty — no month
+/// can "disappear" for lack of matching rows.
 pub async fn revenue_trend(
     db: &PgPool,
     now: DateTime<Utc>,
     tz_name: &str,
+    months: i32,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     sqlx::query_as::<_, (String, i64)>(
         "SELECT to_char(m.month_start, 'YYYY-MM') AS month, \
                 COALESCE(SUM(o.total_cents), 0)::bigint AS revenue_cents \
          FROM generate_series( \
-                studio_month_anchor($1, $2) - interval '11 months', \
+                studio_month_anchor($1, $2) - ($3 - 1) * interval '1 month', \
                 studio_month_anchor($1, $2), \
                 interval '1 month' \
               ) AS m(month_start) \
          LEFT JOIN orders o \
            ON date_trunc('month', o.paid_at AT TIME ZONE $2) = m.month_start \
-          AND o.status::text = ANY($3) \
+          AND o.status::text = ANY($4) \
          GROUP BY m.month_start \
          ORDER BY m.month_start",
     )
     .bind(now)
     .bind(tz_name)
+    .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
     .await
@@ -293,10 +295,10 @@ pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Er
 /// 折扣前 line 小計 (`unit_price_cents * quantity`, order 層 discount
 /// 不攤分), orders in `REVENUE_STATUSES` only (排除 pending/refunded),
 /// attributed to `paid_at`'s studio month across the same trailing
-/// 12-month window as [`revenue_trend`] (current month + 11 before it).
-/// The join on `oi.course_id` *is* the course-line filter — the
-/// `order_items_one_target` CHECK guarantees only `item_type = 'course'`
-/// lines have a non-NULL `course_id`.
+/// `months`-month window as [`revenue_trend`] (current month plus
+/// `months - 1` before it). The join on `oi.course_id` *is* the course-line
+/// filter — the `order_items_one_target` CHECK guarantees only
+/// `item_type = 'course'` lines have a non-NULL `course_id`.
 ///
 /// `att_present`/`att_absent` 口徑 (Round 4 Phase 4): **該教練課程的
 /// present/(present+absent),`leave` 不入分母**。These are the raw all-time
@@ -308,6 +310,7 @@ pub async fn coach_reports(
     db: &PgPool,
     now: DateTime<Utc>,
     tz_name: &str,
+    months: i32,
 ) -> Result<Vec<AdminCoachRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminCoachRow>(
         "SELECT co.id AS coach_id, u.name, \
@@ -321,11 +324,11 @@ pub async fn coach_reports(
                    JOIN orders o ON o.id = oi.order_id \
                    JOIN courses c ON c.id = oi.course_id \
                   WHERE c.coach_id = co.id \
-                    AND o.status::text = ANY($3) \
+                    AND o.status::text = ANY($4) \
                     AND o.paid_at IS NOT NULL \
                     AND date_trunc('month', o.paid_at AT TIME ZONE $2) \
                         BETWEEN studio_month_anchor($1, $2) \
-                                  - interval '11 months' \
+                                  - ($3 - 1) * interval '1 month' \
                             AND studio_month_anchor($1, $2) \
                 )::bigint AS revenue_cents_12m, \
                 (SELECT COUNT(*) FROM countable_attendance ca \
@@ -344,6 +347,7 @@ pub async fn coach_reports(
     )
     .bind(now)
     .bind(tz_name)
+    .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
     .await

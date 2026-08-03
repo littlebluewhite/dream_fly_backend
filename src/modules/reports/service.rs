@@ -25,9 +25,13 @@ use super::repository;
 /// (`attendance_rate_30d`), per the task brief.
 const COACH_ATTENDANCE_WINDOW_DAYS: i64 = 30;
 
-/// Months covered by `income_sources_12m` — the same trailing window as
-/// `revenue.trend`'s hardcoded 12 (see `repository::revenue_trend`).
-const INCOME_SOURCE_MONTHS: i32 = 12;
+/// Trailing window (studio-local months) shared by `revenue_trend`,
+/// `coach_reports`, and `income_by_source` — single-sourced here instead of
+/// each query repeating its own "12"/"11 months" literal. `months` only
+/// exists as a SQL bind parameter so the three queries share one window
+/// idiom; it is not a tunable/configurable setting — every call site below
+/// passes this constant verbatim.
+const TRAILING_WINDOW_MONTHS: i32 = 12;
 
 /// The one source of `repository::income_by_source` that is *not* an order
 /// line (bookings, not `order_items`) — `category_split` is defined over
@@ -68,12 +72,15 @@ pub async fn admin_report(
 ) -> Result<AdminReportResponse, AppError> {
     let tz_name = server.studio_timezone.as_str();
 
-    let trend_rows = repository::revenue_trend(db, now, tz_name).await?;
+    let trend_rows =
+        repository::revenue_trend(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
     let (total, new_this_month, active) = repository::member_stats(db, now, tz_name).await?;
     let course_rows = repository::course_reports(db).await?;
-    let coach_rows = repository::coach_reports(db, now, tz_name).await?;
+    let coach_rows =
+        repository::coach_reports(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
     let kpi = repository::kpis(db, now, tz_name).await?;
-    let income_rows = repository::income_by_source(db, now, tz_name, INCOME_SOURCE_MONTHS).await?;
+    let income_rows =
+        repository::income_by_source(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
     let payment_rows = repository::payment_split(db, now, tz_name).await?;
     let attendance_dist_rows = repository::attendance_distribution(db).await?;
     let age_dist_rows = repository::age_distribution(db, now, tz_name).await?;
