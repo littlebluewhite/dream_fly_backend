@@ -81,6 +81,21 @@ pub async fn get_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailResponse, Ap
     })
 }
 
+/// Public-facing lookup — only returns an active coach. Template:
+/// `posts::service::get_published_by_slug_or_id`.
+pub async fn get_active_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailResponse, AppError> {
+    let coach = repository::find_active_by_id(db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
+
+    let schedules = repository::find_schedules(db, id).await?;
+
+    Ok(CoachDetailResponse {
+        coach: CoachResponse::from(coach),
+        schedules: schedules.into_iter().map(CoachScheduleResponse::from).collect(),
+    })
+}
+
 /// `POST /coaches` (admin, checked by the handler). Binds an existing user
 /// (created via `POST /users`) to a new coach profile and assigns them the
 /// `coach` role, both inside one transaction so a role-assignment failure
@@ -179,6 +194,22 @@ pub async fn get_schedules(
 ) -> Result<Vec<CoachScheduleResponse>, AppError> {
     // Verify coach exists (public endpoint; no ownership check needed)
     repository::find_by_id(db, coach_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
+
+    let schedules = repository::find_schedules(db, coach_id).await?;
+    Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())
+}
+
+/// Public-facing lookup — only returns a schedule for an active coach.
+/// Template: `posts::service::get_published_by_slug_or_id`. Same shape as
+/// [`get_schedules`] except the existence check is scoped to active rows.
+pub async fn get_active_schedules(
+    db: &PgPool,
+    coach_id: Uuid,
+) -> Result<Vec<CoachScheduleResponse>, AppError> {
+    // Verify coach exists and is active (public endpoint; no ownership check needed)
+    repository::find_active_by_id(db, coach_id)
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 

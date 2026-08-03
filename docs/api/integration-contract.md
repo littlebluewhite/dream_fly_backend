@@ -383,7 +383,7 @@ Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。`min_ag
 `name` 為教練姓名（join `users.name`，coaches 表本身無此欄位）；`title` 是職稱（如「資深體操教練」），**不含姓名**——兩者是不同語意的欄位。
 
 #### `GET /coaches/{id}` — 公開
-`{id}` 為教練的 UUID（非使用者 id，也非 slug）。回應（`CoachDetailResponse`）：`{ "coach": CoachResponse, "schedules": CoachScheduleResponse[] }`。
+`{id}` 為教練的 UUID（非使用者 id，也非 slug）。回應（`CoachDetailResponse`）：`{ "coach": CoachResponse, "schedules": CoachScheduleResponse[] }`。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `POST /coaches` — admin
 將既有使用者（先用 `POST /users` 建帳號）綁定為教練。Body：`{ user_id, title, bio?, experience?, specialties?, certifications?, display_order?, slug?, photo_url?, is_active? }`。`user_id`/`title` 必填（`title` 對應 `coaches.title`，NOT NULL 無 DEFAULT）；其餘欄位省略時採 DB 預設（`specialties`/`certifications` 預設空陣列、`is_active` 預設 `true`、`display_order` 預設 `0`、`slug`/`photo_url` 維持 `NULL`）。姓名不在此——那是 `users.name`。
@@ -400,7 +400,7 @@ Service 內同一交易完成兩件事：新增 coaches 列 + 指派該 user `co
 錯誤：404（查無此教練）；409（`slug` 與其他教練衝突）。
 
 #### `GET /coaches/{id}/schedule` — 公開
-回應：`CoachScheduleResponse[]`：`{ id, day_of_week (0-6), start_time ("HH:MM:SS"), end_time, is_available }`。
+回應：`CoachScheduleResponse[]`：`{ id, day_of_week (0-6), start_time ("HH:MM:SS"), end_time, is_available }`。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `PUT /coaches/{id}/schedule` — 需登入
 Body：`{ schedules: [{ day_of_week, start_time, end_time, is_available }] }`。整批覆蓋該教練的排班。回應：更新後的 `CoachScheduleResponse[]`。

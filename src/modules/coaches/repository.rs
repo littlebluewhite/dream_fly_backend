@@ -32,6 +32,22 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, sqlx::Er
     .await
 }
 
+/// Public-facing lookup — only returns an active row. Template:
+/// `posts::repository::find_published_by_id`.
+pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
+    sqlx::query_as::<_, Coach>(
+        "SELECT c.id, c.user_id, u.name, c.title, c.bio, c.experience, c.specialties, \
+         c.certifications, c.is_active, c.display_order, c.slug, c.photo_url, \
+         c.created_at, c.updated_at \
+         FROM coaches c \
+         JOIN users u ON u.id = c.user_id \
+         WHERE c.id = $1 AND c.is_active = true",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
 pub async fn find_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
         "SELECT c.id, c.user_id, u.name, c.title, c.bio, c.experience, c.specialties, \

@@ -115,6 +115,30 @@ async fn get_coach_unknown_id_returns_404(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn get_deactivated_coach_public_detail_and_schedule_return_404(db: PgPool) {
+    // Handler-wiring guard: both `GET /coaches/{id}` and
+    // `GET /coaches/{id}/schedule` must call the active-scoped service
+    // functions.
+    let app = spawn_test_app(db).await;
+    let (_admin, token) = app.seed_admin().await;
+    let user = app.register_member("coach-deactivated@example.com", "Password!234").await;
+    let coach_id = seed_coach(&app.db, user.user_id, "Retiring Coach").await;
+
+    let patch_resp = app
+        .patch(&format!("/api/v1/coaches/{coach_id}"))
+        .authorization_bearer(&token)
+        .json(&json!({ "is_active": false }))
+        .await;
+    assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
+
+    let detail_resp = app.get(&format!("/api/v1/coaches/{coach_id}")).await;
+    assert_eq!(detail_resp.status_code(), 404);
+
+    let schedule_resp = app.get(&format!("/api/v1/coaches/{coach_id}/schedule")).await;
+    assert_eq!(schedule_resp.status_code(), 404);
+}
+
+#[sqlx::test]
 async fn coach_schedule_get_is_public(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("coach3@example.com", "Password!234").await;

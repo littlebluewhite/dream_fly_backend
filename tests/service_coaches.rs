@@ -3,6 +3,8 @@
 //! Covered paths:
 //! - `list_active` returns only active coaches (inactive row filtered out)
 //! - `get_detail` nonexistent id → NotFound
+//! - `get_active_detail` / `get_active_schedules` NotFound once deactivated,
+//!   while unscoped `get_detail` / `get_schedules` still resolve
 //! - `get_schedules` returns entries in day_of_week order
 //! - `update_schedules` by the owning user succeeds; by a stranger → Forbidden
 //! - `update_schedules` by an admin on someone else's coach profile succeeds
@@ -49,6 +51,33 @@ async fn list_active_filters_out_inactive_coaches(db: PgPool) {
 async fn get_detail_nonexistent_returns_not_found(db: PgPool) {
     let err = service::get_detail(&db, Uuid::now_v7()).await.unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
+}
+
+#[sqlx::test]
+async fn get_active_detail_and_schedules_not_found_when_inactive_but_unscoped_still_ok(
+    db: PgPool,
+) {
+    let user_id = common::seed_member(&db, "deactivated-coach@example.com", "hunter22-secret").await;
+    let coach_id = common::fixtures::seed_coach(&db, user_id, "Deactivated Coach").await;
+    set_coach_active(&db, coach_id, false).await;
+
+    assert!(matches!(
+        service::get_active_detail(&db, coach_id).await.unwrap_err(),
+        AppError::NotFound(_)
+    ));
+    assert!(matches!(
+        service::get_active_schedules(&db, coach_id).await.unwrap_err(),
+        AppError::NotFound(_)
+    ));
+
+    // Unscoped lookups must still resolve — pins down the scoped/unscoped
+    // branch itself, not just the WHERE clause.
+    service::get_detail(&db, coach_id)
+        .await
+        .expect("unscoped get_detail must still resolve an inactive row");
+    service::get_schedules(&db, coach_id)
+        .await
+        .expect("unscoped get_schedules must still resolve an inactive row");
 }
 
 #[sqlx::test]

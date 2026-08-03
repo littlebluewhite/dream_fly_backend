@@ -29,7 +29,7 @@ pub async fn get_by_id(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<CoachDetailResponse>, AppError> {
-    let detail = service::get_detail(&state.db, id).await?;
+    let detail = service::get_active_detail(&state.db, id).await?;
     Ok(Json(detail))
 }
 
@@ -93,7 +93,7 @@ pub async fn get_schedule(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<CoachScheduleResponse>>, AppError> {
-    let schedules = service::get_schedules(&state.db, id).await?;
+    let schedules = service::get_active_schedules(&state.db, id).await?;
     Ok(Json(schedules))
 }
 
