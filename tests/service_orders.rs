@@ -1373,6 +1373,59 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
     assert_eq!(refund_ledger, 0, "no refund ledger row survives the rollback");
 }
 
+/// ADR-0007 決策 4 釘住的執行順序:`compensate_order_artifacts_tx` 必須先
+/// RESTORE(沖回 `checkout_redeem`)再 CLAWBACK(沖回 `checkout_earn`),因為
+/// `users_points_balance_check` 逐語句評估,先加後扣把扣款門檻從嚴格反序
+/// `balance ≥ earned` 放寬成 `balance + restored ≥ earned`。Row 3(零餘額)
+/// 兩種順序皆 409,測不出順序;這裡把餘額卡在中間帶——`earned - 1`——讓
+/// `balance < earned`(clawback-first 必 409)但 `balance + points_used ≥
+/// earned`(restore-first 必過,因為場景保證 `points_used > 0`),使順序錯誤
+/// 必然可觀測。對調 `compensate_order_artifacts_tx` 裡 restore/clawback 那兩個
+/// if 的順序,此測試會變紅(refund 從成功變成 `Conflict("點數不足")`)。
+#[sqlx::test]
+async fn refund_restore_before_clawback_covers_midrange_balance(db: PgPool) {
+    let (user, order, _limited) =
+        checkout_mixed_with_points(&db, "midrange-buyer@example.com").await;
+
+    // Midrange balance: `earned - 1` is below what clawback alone could
+    // satisfy, but restore's `+points_used` covers it (`points_used > 0` is
+    // guaranteed by `checkout_mixed_with_points`'s own assertion).
+    set_points_balance(&db, user, order.points_earned - 1).await;
+
+    let refunded = service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("restore-before-clawback must cover a midrange balance");
+    assert_eq!(refunded.status, "refunded");
+
+    assert_eq!(
+        common::points_balance_of(&db, user).await,
+        order.points_used - 1,
+        "(earned - 1) restored by +used then clawed back by -earned == used - 1"
+    );
+
+    let restore: (i64, Option<Uuid>) = sqlx::query_as(
+        "SELECT delta, order_id FROM point_ledger \
+         WHERE order_id = $1 AND reason = 'refund_restore'::point_reason",
+    )
+    .bind(order.id)
+    .fetch_one(&db)
+    .await
+    .expect("one refund_restore row");
+    assert_eq!(restore.0, order.points_used, "restore reverses the redeemed magnitude");
+    assert_eq!(restore.1, Some(order.id));
+
+    let clawback: (i64, Option<Uuid>) = sqlx::query_as(
+        "SELECT delta, order_id FROM point_ledger \
+         WHERE order_id = $1 AND reason = 'refund_clawback'::point_reason",
+    )
+    .bind(order.id)
+    .fetch_one(&db)
+    .await
+    .expect("one refund_clawback row");
+    assert_eq!(clawback.0, -order.points_earned, "clawback reverses the earned magnitude");
+    assert_eq!(clawback.1, Some(order.id));
+}
+
 /// Row 4: re-PATCHing the same terminal status is an observable idempotent
 /// no-op — the ledger still has exactly the two rows from the first pass, and
 /// NO new outbox row / notification is written.
