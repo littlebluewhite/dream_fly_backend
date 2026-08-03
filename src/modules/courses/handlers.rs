@@ -27,7 +27,7 @@ pub async fn get_by_slug_or_id(
     State(state): State<AppState>,
     Path(param): Path<String>,
 ) -> Result<Json<CourseDetailResponse>, AppError> {
-    let course = service::get_course_by_slug_or_id(&state.db, &param).await?;
+    let course = service::get_active_course_by_slug_or_id(&state.db, &param).await?;
     Ok(Json(course))
 }
 

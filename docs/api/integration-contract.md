@@ -352,7 +352,7 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 }
 ```
 
-`day_of_week` 為 **0=Sunday .. 6=Saturday**（PostgreSQL `EXTRACT(DOW)` 慣例，也是 JS `Date.getDay()` 慣例；詳見 §3.18）。404 若查無課程。
+`day_of_week` 為 **0=Sunday .. 6=Saturday**（PostgreSQL `EXTRACT(DOW)` 慣例，也是 JS `Date.getDay()` 慣例；詳見 §3.18）。404 若查無課程。已下架資源走公開明細一律 404，與不存在同形。
 
 **裁決**：`schedule_slots` 只在單一課程回應出現（本端點、`POST`、`PATCH`），`GET /courses`（列表）刻意不附加——避免對每筆課程多查一次 slots 造成 N+1。前端要顯示某課程週模式時，一律呼叫本端點取得該課程 detail。
 

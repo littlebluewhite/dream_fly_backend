@@ -60,6 +60,27 @@ async fn get_course_unknown_slug_returns_404(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn get_deactivated_course_public_detail_returns_404(db: PgPool) {
+    // Handler-wiring guard: `GET /courses/{slugOrId}` must call the
+    // active-scoped service function. `UpdateCourseRequest` has no
+    // `is_active` field (courses have no admin PATCH toggle for it, unlike
+    // products/venues/coaches), so deactivation here is a direct row update —
+    // same seeding style `list_courses_filters_out_inactive` already uses in
+    // service_courses.rs.
+    let app = spawn_test_app(db).await;
+    let id = seed_course(&app.db, "Retiring Course", None).await;
+
+    sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
+        .bind(id)
+        .execute(&app.db)
+        .await
+        .expect("deactivate course");
+
+    let resp = app.get(&format!("/api/v1/courses/{id}")).await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[sqlx::test]
 async fn create_course_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
 

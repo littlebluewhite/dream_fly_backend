@@ -109,6 +109,38 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::E
     .await
 }
 
+/// Public-facing lookup — only returns an active row. Template:
+/// `posts::repository::find_published_by_slug`.
+pub async fn find_active_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sqlx::Error> {
+    sqlx::query_as::<_, Course>(
+        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
+         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         FROM courses c WHERE LOWER(c.slug) = LOWER($1) AND c.is_active = true",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await
+}
+
+/// Public-facing lookup — only returns an active row. Template:
+/// `posts::repository::find_published_by_id`.
+pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::Error> {
+    sqlx::query_as::<_, Course>(
+        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
+         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         FROM courses c WHERE c.id = $1 AND c.is_active = true",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
 /// Row-lock pre-read for `update_course`'s single-tx "lock → merge →
 /// validate → write" flow. `FOR UPDATE` locks the whole course row (row
 /// locks are column-agnostic); the projection is only what the caller

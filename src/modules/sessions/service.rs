@@ -39,6 +39,7 @@ pub async fn list_course_sessions(
     course_id: Uuid,
     query: SessionsRangeQuery,
 ) -> Result<Vec<CourseSessionResponse>, AppError> {
+    // Deliberately unscoped: 下架=停售不是停課,已報名學員與教練仍需查下架課的場次。
     courses_repository::find_by_id(db, course_id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;

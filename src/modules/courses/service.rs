@@ -72,6 +72,26 @@ pub async fn get_course_by_slug_or_id(
     })
 }
 
+/// Public-facing lookup — only returns an active course. Template:
+/// `posts::service::get_published_by_slug_or_id`.
+pub async fn get_active_course_by_slug_or_id(
+    db: &PgPool,
+    param: &str,
+) -> Result<CourseDetailResponse, AppError> {
+    let course = if let Ok(id) = param.parse::<uuid::Uuid>() {
+        repository::find_active_by_id(db, id).await?
+    } else {
+        repository::find_active_by_slug(db, param).await?
+    }
+    .ok_or_else(|| AppError::NotFound("course not found".into()))?;
+
+    let schedule_slots = slots_response(db, course.id).await?;
+    Ok(CourseDetailResponse {
+        course: CourseResponse::from(course),
+        schedule_slots,
+    })
+}
+
 pub async fn create_course(
     db: &PgPool,
     req: CreateCourseRequest,

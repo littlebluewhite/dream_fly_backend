@@ -8,6 +8,8 @@
 //! - `get_course_by_slug_or_id` resolves both forms and returns same row
 //! - `update_course` allows slug update to a unique value and blocks on clash
 //! - `list_courses` filters out inactive rows
+//! - `get_active_course_by_slug_or_id` NotFound once deactivated, while
+//!   unscoped `get_course_by_slug_or_id` still resolves
 
 mod common;
 
@@ -179,6 +181,43 @@ async fn get_course_nonexistent_returns_not_found(db: PgPool) {
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
+}
+
+#[sqlx::test]
+async fn get_active_course_by_slug_or_id_not_found_when_inactive_but_unscoped_still_ok(
+    db: PgPool,
+) {
+    let created = service::create_course(&db, minimal_create("Deactivated Course"))
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
+        .bind(created.course.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        service::get_active_course_by_slug_or_id(&db, &created.course.slug)
+            .await
+            .unwrap_err(),
+        AppError::NotFound(_)
+    ));
+    assert!(matches!(
+        service::get_active_course_by_slug_or_id(&db, &created.course.id.to_string())
+            .await
+            .unwrap_err(),
+        AppError::NotFound(_)
+    ));
+
+    // Unscoped lookups must still resolve — pins down the scoped/unscoped
+    // branch itself, not just the WHERE clause.
+    service::get_course_by_slug_or_id(&db, &created.course.slug)
+        .await
+        .expect("unscoped lookup by slug must still resolve an inactive row");
+    service::get_course_by_slug_or_id(&db, &created.course.id.to_string())
+        .await
+        .expect("unscoped lookup by id must still resolve an inactive row");
 }
 
 #[sqlx::test]
