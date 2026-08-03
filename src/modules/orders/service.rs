@@ -157,6 +157,30 @@ pub async fn checkout(
         return Err(AppError::BadRequest("cart is empty".into()));
     }
 
+    // Purchasability gate (甲案): every line in the snapshot just locked
+    // above must still be active, or the whole checkout is rejected — 422,
+    // naming every deactivated line so the buyer knows what to remove (see
+    // `fulfilment::ensure_all_purchasable`). Three deliberate ordering
+    // decisions:
+    //   - AFTER the empty-cart check above, not before: a truly empty cart
+    //     still 400s exactly as before; a cart whose every line has since
+    //     gone inactive is non-empty at the snapshot level, so it lands
+    //     here instead — this 422 replaces what used to be a misleading
+    //     "cart is empty" 400 for that case.
+    //   - BEFORE the coupon load below (step 3): whether the cart's own
+    //     contents are still legal to buy is decided before any discount is
+    //     even considered.
+    //   - Deliberately NOT paired with a `TxReleased` release + idempotency
+    //     re-check, unlike the empty-cart branch above and the two unique-
+    //     violation branches further down this function: a product/course
+    //     going inactive is never *caused* by a concurrent checkout attempt
+    //     — it's an independent admin-side deactivation — so there is no
+    //     winning twin transaction to go replay here. This 422 is a business
+    //     rejection on the same footing as the coupon 422 right below it;
+    //     the idempotency pre-check already run at the top of this function
+    //     covers a genuine same-key replay.
+    fulfilment::ensure_all_purchasable(&cart_items)?;
+
     // 3. Coupon (optional), loaded and validated here — an unknown/
     //    inactive/expired code is rejected outright — the caller should not
     //    be silently charged full price while believing a discount applied.

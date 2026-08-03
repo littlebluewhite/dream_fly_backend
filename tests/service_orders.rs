@@ -130,6 +130,107 @@ async fn checkout_empty_cart_fails(db: PgPool) {
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
 }
 
+// ---------------------------------------------------------------------
+// Purchasability gate (甲案): a cart line that goes inactive AFTER being
+// added to the cart rejects the whole checkout batch — 422, naming the
+// culprit(s) — instead of the old silent-filter behavior. Fixtures use
+// `common::add_to_cart`/`add_course_to_cart` (bypassing `cart::service`'s
+// own active checks at add-time) followed by a direct `UPDATE ... SET
+// is_active = false`, simulating "added while available, delisted before
+// checkout".
+// ---------------------------------------------------------------------
+
+#[sqlx::test]
+async fn checkout_inactive_product_line_returns_422_listing_name(db: PgPool) {
+    let user = common::seed_member(&db, "inactive-line@example.com", "passw0rd!").await;
+    let active = common::seed_product(&db, "still-active", 1000, Some(5)).await;
+    let retired = common::seed_product(&db, "retired-widget", 1500, Some(5)).await;
+    common::add_to_cart(&db, user, active, 1).await;
+    common::add_to_cart(&db, user, retired, 1).await;
+
+    sqlx::query("UPDATE products SET is_active = false WHERE id = $1")
+        .bind(retired)
+        .execute(&db)
+        .await
+        .expect("deactivate product");
+
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+        .await
+        .expect_err("inactive line must reject checkout");
+    assert!(
+        matches!(
+            err,
+            AppError::Validation(ref m)
+                if m == "以下項目已下架,請先自購物車移除再結帳:「Test Product retired-widget」"
+        ),
+        "got: {err:?}"
+    );
+
+    assert_eq!(common::order_count(&db, user).await, 0);
+    assert_eq!(common::cart_count(&db, user).await, 2, "rejected checkout must not touch the cart");
+}
+
+#[sqlx::test]
+async fn checkout_fully_inactive_cart_returns_422_not_cart_is_empty(db: PgPool) {
+    let user = common::seed_member(&db, "fully-inactive@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "gone-product", 1000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    sqlx::query("UPDATE products SET is_active = false WHERE id = $1")
+        .bind(product)
+        .execute(&db)
+        .await
+        .expect("deactivate product");
+
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+        .await
+        .expect_err("a fully-deactivated cart must still reject checkout");
+
+    // The regression this closes: the snapshot is non-empty (it still holds
+    // the now-inactive line), so this must NOT fall into the empty-cart 400
+    // branch — it must surface the purchasability-gate 422 instead.
+    assert!(
+        !matches!(err, AppError::BadRequest(_)),
+        "must not be the empty-cart 400, got: {err:?}"
+    );
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+}
+
+#[sqlx::test]
+async fn checkout_mixed_cart_inactive_course_rejects_whole_batch_and_keeps_cart(db: PgPool) {
+    let course = seed_course_with_capacity(&db, "Mixed Gate Course", None, 12).await;
+    let product = common::seed_product(&db, "still-active-mix", 1000, Some(5)).await;
+    let user = common::seed_member(&db, "mixed-gate@example.com", "passw0rd!").await;
+    common::add_to_cart(&db, user, product, 1).await;
+    add_course_to_cart(&db, user, course).await;
+
+    sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
+        .bind(course)
+        .execute(&db)
+        .await
+        .expect("deactivate course");
+
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+        .await
+        .expect_err("inactive course line must reject the whole batch");
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+
+    assert_eq!(common::order_count(&db, user).await, 0);
+    assert_eq!(common::cart_count(&db, user).await, 2, "rejected checkout must not touch the cart");
+
+    let enrolment_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM enrolments WHERE user_id = $1 AND course_id = $2")
+            .bind(user)
+            .bind(course)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        enrolment_count, 0,
+        "the still-active product line must not partially check out either"
+    );
+}
+
 #[sqlx::test]
 async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
     // Step 10c: `order_items.stock_decremented` must reflect each line's

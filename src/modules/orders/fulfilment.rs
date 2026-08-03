@@ -101,6 +101,39 @@ pub fn plan(lines: &[CheckoutLine]) -> Result<FulfilmentPlan, AppError> {
     })
 }
 
+/// Purchasability gate (甲案), run by `orders::service::checkout` on the raw
+/// cart snapshot BEFORE `plan()`/`pricing::price` ever see it. `cart::
+/// repository::find_cart_items_for_checkout_tx` deliberately no longer
+/// filters its snapshot by `is_active` (see that function's doc), so a
+/// deactivated product/course line comes back like any other line instead
+/// of silently vanishing — this is the one place that turns "vanished" back
+/// into "rejected, by name". Collects every `!is_active` line's name, in
+/// the slice's own order (the cart snapshot's order — no sorting), and
+/// rejects the WHOLE batch if that list is non-empty: a single stale line
+/// blocks checkout of the entire cart, not just itself, matching this
+/// module's existing all-or-nothing posture (a full course/duplicate
+/// enrolment already rolls back the entire checkout — see `plan`'s module
+/// doc). An all-active slice (including the empty slice) is `Ok(())`; once
+/// this returns `Ok`, every line in `lines` is guaranteed active, and
+/// nothing downstream (`plan`, `pricing::price`, the `items_data` snapshot
+/// in `orders::service::checkout`) needs to look at `is_active` again.
+pub fn ensure_all_purchasable(lines: &[CheckoutLine]) -> Result<(), AppError> {
+    let names: Vec<String> = lines
+        .iter()
+        .filter(|line| !line.is_active)
+        .map(|line| format!("「{}」", line.name))
+        .collect();
+
+    if names.is_empty() {
+        return Ok(());
+    }
+
+    Err(AppError::Validation(format!(
+        "以下項目已下架,請先自購物車移除再結帳:{}",
+        names.join("、")
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +146,7 @@ mod tests {
             quantity: 2,
             price_cents: 1500,
             name: name.to_string(),
+            is_active: true,
         }
     }
 
@@ -124,6 +158,7 @@ mod tests {
             quantity: 1,
             price_cents: 8000,
             name: "Course".to_string(),
+            is_active: true,
         }
     }
 
@@ -191,6 +226,7 @@ mod tests {
             quantity: 1,
             price_cents: 100,
             name: "orphan".to_string(),
+            is_active: true,
         };
         let err = plan(&[line]).expect_err("must be Internal");
         assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
@@ -205,6 +241,7 @@ mod tests {
             quantity: 1,
             price_cents: 100,
             name: "orphan".to_string(),
+            is_active: true,
         };
         let err = plan(&[line]).expect_err("must be Internal");
         assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
@@ -215,5 +252,53 @@ mod tests {
         let plan = plan(&[]).expect("plans");
         assert!(plan.products.is_empty());
         assert!(plan.course_ids.is_empty());
+    }
+
+    // --- ensure_all_purchasable (甲案 gate) ---
+
+    #[test]
+    fn ensure_all_purchasable_ok_when_every_line_is_active() {
+        let p = product_line("Widget");
+        let c = course_line();
+        assert!(ensure_all_purchasable(&[p, c]).is_ok());
+    }
+
+    #[test]
+    fn ensure_all_purchasable_rejects_single_inactive_line_with_exact_message() {
+        let mut line = product_line("Retired Widget");
+        line.is_active = false;
+
+        let err = ensure_all_purchasable(&[line]).expect_err("must reject");
+        assert!(
+            matches!(
+                err,
+                AppError::Validation(ref m)
+                    if m == "以下項目已下架,請先自購物車移除再結帳:「Retired Widget」"
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_all_purchasable_lists_multiple_inactive_lines_in_snapshot_order() {
+        // Snapshot order, not sorted — "Zebra" precedes "Apple" in the slice,
+        // so it must precede it in the message too. The active line sitting
+        // in between must not appear in the list at all.
+        let mut first = product_line("Zebra");
+        first.is_active = false;
+        let mut middle = course_line();
+        middle.is_active = true;
+        let mut last = product_line("Apple");
+        last.is_active = false;
+
+        let err = ensure_all_purchasable(&[first, middle, last]).expect_err("must reject");
+        assert!(
+            matches!(
+                err,
+                AppError::Validation(ref m)
+                    if m == "以下項目已下架,請先自購物車移除再結帳:「Zebra」、「Apple」"
+            ),
+            "got: {err:?}"
+        );
     }
 }

@@ -130,6 +130,7 @@ pub struct CheckoutLine {
     pub quantity: i32,
     pub price_cents: i64,
     pub name: String,
+    pub is_active: bool,
 }
 
 /// 行小計的溢位安全乘法——pricing 與 CartResponse 共用,溢位文案各自保留。

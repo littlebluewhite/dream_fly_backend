@@ -155,6 +155,50 @@ async fn checkout_with_invalid_payment_method_returns_422(db: PgPool) {
     );
 }
 
+/// Purchasability gate (甲案): a cart line deactivated after being added
+/// (simulated here by flipping `products.is_active` directly, mirroring the
+/// service-level fixtures) rejects the whole checkout — 422, naming the
+/// delisted item — and leaves the cart untouched.
+#[sqlx::test]
+async fn checkout_with_inactive_cart_line_returns_422_and_lists_name(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("o10@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Retired Bundle", Some(10)).await;
+
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    sqlx::query("UPDATE products SET is_active = false WHERE id = $1")
+        .bind(pid)
+        .execute(&app.db)
+        .await
+        .expect("deactivate product");
+
+    let resp = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(
+        body["error"],
+        "以下項目已下架,請先自購物車移除再結帳:「Retired Bundle」"
+    );
+
+    // Rejected checkout must not clear the cart or create an order.
+    let cart = app
+        .get("/api/v1/cart")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(
+        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        1,
+        "cart must survive a rejected checkout"
+    );
+}
+
 #[sqlx::test]
 async fn my_orders_returns_only_mine(db: PgPool) {
     let app = spawn_test_app(db).await;

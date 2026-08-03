@@ -121,6 +121,7 @@ mod tests {
             quantity,
             price_cents,
             name: "Test Item".to_string(),
+            is_active: true,
         }
     }
 

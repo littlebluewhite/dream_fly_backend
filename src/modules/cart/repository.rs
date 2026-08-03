@@ -140,6 +140,13 @@ pub async fn clear_cart_tx(
 ///
 /// The product `FOR SHARE` locks are acquired by a dedicated pre-lock query
 /// in `product_id` ASCENDING order — see the comment on it below.
+///
+/// Returned lines are NOT filtered by `is_active` — every line the cart
+/// references comes back, active or not, with `is_active` riding along on
+/// each row, so a deactivated line can be named rather than just silently
+/// missing. The caller MUST run the result through
+/// `orders::fulfilment::ensure_all_purchasable` before treating any line as
+/// purchasable; nothing at this layer enforces that.
 pub async fn find_cart_items_for_checkout_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -149,11 +156,20 @@ pub async fn find_cart_items_for_checkout_tx(
     // reads (and re-locks) them in cart-creation order. Cross-buyer
     // deadlock-cycle rationale: see the "Cross-buyer dimension" anchor in
     // `orders::service::checkout` (ADR-0007 決策 5).
-    // Deliberately not filtered by `is_active`: locking a superset is
-    // harmless and leaves no window for a mid-checkout activation to enter
-    // the join unordered. Courses are not pre-locked — no compensation path
-    // takes multi-row course UPDATE locks, so no cross-path course cycle
-    // exists.
+    // Deliberately not filtered by `is_active` (甲案): the join below isn't
+    // filtered either — see the WHERE clauses — so this pre-lock query's
+    // product set and the join's `FOR SHARE OF p` set are now exactly equal
+    // (both are "every product_id this cart references"), not a superset/
+    // subset pair to reason about. The filter has to go from BOTH queries
+    // together: `fulfilment::ensure_all_purchasable` (called by
+    // `orders::service::checkout` right after this snapshot is read) is the
+    // gate that now decides purchasability, and it needs every deactivated
+    // line's name to build its 422 — a query that silently dropped inactive
+    // rows would hide exactly the rows that gate has to report. Courses are
+    // still not pre-locked — no compensation path takes multi-row course
+    // UPDATE locks, so locking whichever course rows the (also unfiltered)
+    // join below happens to touch introduces no cross-path course cycle
+    // either.
     sqlx::query(
         "SELECT id FROM products \
          WHERE id IN (SELECT product_id FROM cart_items \
@@ -167,10 +183,10 @@ pub async fn find_cart_items_for_checkout_tx(
 
     let mut lines = sqlx::query_as::<_, CheckoutLine>(
         "SELECT 'product'::cart_item_type AS item_type, ci.product_id, NULL::uuid AS course_id, \
-         ci.quantity, p.price_cents, p.name \
+         ci.quantity, p.price_cents, p.name, p.is_active \
          FROM cart_items ci \
          JOIN products p ON ci.product_id = p.id \
-         WHERE ci.user_id = $1 AND ci.item_type = 'product' AND p.is_active = true \
+         WHERE ci.user_id = $1 AND ci.item_type = 'product' \
          ORDER BY ci.created_at \
          FOR UPDATE OF ci \
          FOR SHARE OF p",
@@ -181,10 +197,10 @@ pub async fn find_cart_items_for_checkout_tx(
 
     let course_lines = sqlx::query_as::<_, CheckoutLine>(
         "SELECT 'course'::cart_item_type AS item_type, NULL::uuid AS product_id, ci.course_id, \
-         ci.quantity, c.price_cents, c.name \
+         ci.quantity, c.price_cents, c.name, c.is_active \
          FROM cart_items ci \
          JOIN courses c ON ci.course_id = c.id \
-         WHERE ci.user_id = $1 AND ci.item_type = 'course' AND c.is_active = true \
+         WHERE ci.user_id = $1 AND ci.item_type = 'course' \
          ORDER BY ci.created_at \
          FOR UPDATE OF ci \
          FOR SHARE OF c",
