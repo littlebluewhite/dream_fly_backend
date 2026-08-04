@@ -85,8 +85,9 @@ pub async fn list_coupons(
     })
 }
 
-/// `PATCH /coupons/{id}` — admin only (checked by the handler). `code` is
-/// immutable and not part of `UpdateCouponRequest`.
+/// `PATCH /coupons/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`). `code` is immutable and not part of
+/// `UpdateCouponRequest`.
 pub async fn update_coupon(
     db: &PgPool,
     id: Uuid,
@@ -99,9 +100,10 @@ pub async fn update_coupon(
     Ok(CouponResponse::from(coupon))
 }
 
-/// `DELETE /coupons/{id}` — admin only (checked by the handler). Hard
-/// delete; see `repository::delete`'s doc comment for why this is safe
-/// (orders keep a `code` string snapshot, no FK to this table).
+/// `DELETE /coupons/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`). Hard delete; see `repository::delete`'s
+/// doc comment for why this is safe (orders keep a `code` string snapshot,
+/// no FK to this table).
 pub async fn delete_coupon(db: &PgPool, id: Uuid) -> Result<(), AppError> {
     let deleted = repository::delete(db, id).await?;
     if !deleted {

@@ -12,17 +12,18 @@ fn to_response(rows: Vec<Setting>) -> SettingsResponse {
     }
 }
 
-/// `GET /settings` — admin-only (checked by the handler). An empty table
-/// yields `{ "settings": {} }`, not an error.
+/// `GET /settings` — admin only. Enforced by the `admin_api` route_layer
+/// (see `startup.rs`). An empty table yields `{ "settings": {} }`, not an
+/// error.
 pub async fn get_settings(db: &PgPool) -> Result<SettingsResponse, AppError> {
     let rows = repository::find_all(db).await?;
     Ok(to_response(rows))
 }
 
-/// `PUT /settings` — admin-only (checked by the handler). Upserts every key
-/// in `req.settings` inside a single transaction (brief requirement); keys
-/// absent from the body are left untouched — this is a partial update, never
-/// a full replace.
+/// `PUT /settings` — admin only. Enforced by the `admin_api` route_layer (see
+/// `startup.rs`). Upserts every key in `req.settings` inside a single
+/// transaction (brief requirement); keys absent from the body are left
+/// untouched — this is a partial update, never a full replace.
 ///
 /// An empty `settings` map opens and commits a transaction with zero writes
 /// (a no-op) rather than being rejected with 400: "upsert only the keys

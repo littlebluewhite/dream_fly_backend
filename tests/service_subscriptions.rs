@@ -403,10 +403,10 @@ async fn derived_status_matches_expected_shape(db: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 10e row 11: refunding the order that granted a subscription cancels it,
-// so a later redeem must 409. The subscription is created by a REAL checkout
-// (only checkout writes `subscriptions.order_id`, which the refund reverses
-// by `order_id`).
+// Refund/cancel compensation row 11: refunding the order that granted a
+// subscription cancels it, so a later redeem must 409. The subscription is
+// created by a REAL checkout (only checkout writes `subscriptions.order_id`,
+// which the refund reverses by `order_id`).
 // ---------------------------------------------------------------------------
 
 #[sqlx::test]

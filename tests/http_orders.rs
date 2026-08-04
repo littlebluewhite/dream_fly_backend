@@ -456,10 +456,10 @@ async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: P
 }
 
 // ---------------------------------------------------------------------
-// Step 10e row 12: admin refund over HTTP returns the cancelled artifacts —
-// `fetch_artifacts` re-reads the latest enrolment/subscription rows, and the
-// response DTOs are unchanged (their `status` fields simply now read
-// `cancelled`).
+// Refund/cancel compensation row 12: admin refund over HTTP returns the
+// cancelled artifacts — `fetch_artifacts` re-reads the latest
+// enrolment/subscription rows, and the response DTOs are unchanged (their
+// `status` fields simply now read `cancelled`).
 // ---------------------------------------------------------------------
 
 #[sqlx::test]

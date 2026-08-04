@@ -233,7 +233,7 @@ async fn checkout_mixed_cart_inactive_course_rejects_whole_batch_and_keeps_cart(
 
 #[sqlx::test]
 async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
-    // Step 10c: `order_items.stock_decremented` must reflect each line's
+    // `order_items.stock_decremented` must reflect each line's
     // own checkout-time fate, not "did this order touch stock at all" — a
     // mixed cart (finite-stock product, NULL-stock/unlimited product,
     // course) exercises all three outcomes in one checkout. The response
@@ -779,7 +779,7 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     // (double-click / client retry). Idempotency is scoped per user_id, so
     // both lock attempts land on the same `users` row first — the
     // unconditional `lock_balance_tx` call, taken before the cart read since
-    // Step 10b — so one blocks until the other commits (order created + cart
+    // ADR-0007 決策 5 — so one blocks until the other commits (order created + cart
     // cleared + idempotency row inserted, all in that one transaction). Once
     // unblocked, the loser's re-read always finds an empty cart — before the
     // fix, `orders/service.rs:96-98` returned `400 cart is empty` right there,
@@ -864,7 +864,7 @@ async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db:
     // checkout read takes product `FOR SHARE` locks, while checkout's
     // `reserve_stock_tx` and refund's `restore_stock_tx` take per-row
     // `FOR UPDATE` locks in `product_id` ASCENDING order. The users-first
-    // lock (Step 10b) only serializes SAME-buyer paths — for different
+    // lock (ADR-0007 決策 5) only serializes SAME-buyer paths — for different
     // buyers, a cart read acquiring SHARE locks in cart-creation order can
     // interleave with another order's refund in the opposite order and
     // deadlock. `find_cart_items_for_checkout_tx` therefore pre-locks the
@@ -1122,7 +1122,7 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
 }
 
 // ---------------------------------------------------------------------
-// Step 10e: refund/cancel compensation orchestration
+// Refund/cancel compensation orchestration
 // (`update_order_status` → `compensate_order_artifacts_tx`).
 // ---------------------------------------------------------------------
 

@@ -82,7 +82,7 @@ pub async fn adjust_balance_tx(
 
 /// Sum of one order's `checkout_earn`/`checkout_redeem` `point_ledger`
 /// rows, returned as two non-negative magnitudes — `(earned, redeemed)`.
-/// Refund/cancel compensation (Step 10d/10e) reverses these ledger sums
+/// Refund/cancel compensation (ADR-0007 決策 8) reverses these ledger sums
 /// rather than reading `orders.points_earned`/`points_used`: a seed/
 /// fixture-built order (or one predating the points ledger) can carry
 /// non-zero values in those denormalized columns with no backing ledger
@@ -95,7 +95,7 @@ pub async fn adjust_balance_tx(
 /// (`orders::service::checkout` calls `apply_delta_tx` with
 /// `-outcome.points_used`) — this negates the summed `checkout_redeem`
 /// delta before returning it, so both halves of the tuple come back
-/// `>= 0`; the caller (`refund::plan_refund`, Step 10d) assigns the sign
+/// `>= 0`; the caller (`refund::plan_refund`) assigns the sign
 /// itself. `COALESCE(..., 0)` covers the "no matching rows" case: an
 /// unconditional `SUM(...) FILTER (...)` over zero rows is `NULL`, not `0`.
 pub async fn find_order_flow_sums_tx(

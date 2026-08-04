@@ -121,11 +121,12 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
     to_response(db, product).await
 }
 
-/// `PATCH /products/{id}` — admin only (checked by the handler). Slug
-/// uniqueness is enforced by the DB's `uq_products_slug_lower` functional
-/// index; a violation surfaces as `sqlx::Error::Database` here and is
-/// translated to 409 — same idiom as `venues::service::update_venue` (see
-/// its comment for why the constraint name is matched explicitly).
+/// `PATCH /products/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`). Slug uniqueness is enforced by the DB's
+/// `uq_products_slug_lower` functional index; a violation surfaces as
+/// `sqlx::Error::Database` here and is translated to 409 — same idiom as
+/// `venues::service::update_venue` (see its comment for why the constraint
+/// name is matched explicitly).
 pub async fn update(
     db: &PgPool,
     id: Uuid,
@@ -218,7 +219,8 @@ pub async fn reserve_stock_tx(
 }
 
 /// Reverse a batch of stock reservations inside the caller's transaction —
-/// refund/cancel compensation's (Step 10e) mirror of `reserve_stock_tx`.
+/// refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
+/// mirror of `reserve_stock_tx`.
 /// Sorts by `product_id` ascending before touching any row — the same
 /// lock-ordering discipline `reserve_stock_tx` applies (see its doc comment
 /// above), same owner-per-site rule. Deadlock rationale: see the
@@ -227,7 +229,7 @@ pub async fn reserve_stock_tx(
 ///
 /// Contract: callers must pass only `(product_id, quantity)` pairs whose
 /// `order_items.stock_decremented` was `true` at checkout time —
-/// `refund::plan_refund` (Step 10d) is what produces that already-filtered
+/// `refund::plan_refund` is what produces that already-filtered
 /// list. This function does not itself check the flag (it has no access to
 /// `order_items` at all); handing it an unfiltered `lines` would restore
 /// stock into a product that was never actually decremented.

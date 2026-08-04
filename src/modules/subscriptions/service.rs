@@ -77,7 +77,8 @@ pub async fn list_by_order(
 }
 
 /// Passthrough to `repository::cancel_by_order_tx` — the ADR-0005 seam
-/// `orders::service`'s refund/cancel compensation (Step 10e) calls, so
+/// `orders::service`'s refund/cancel compensation
+/// (`compensate_order_artifacts_tx`) calls, so
 /// `orders` never imports this module's repository directly.
 pub async fn cancel_by_order_tx(
     tx: &mut Transaction<'_, Postgres>,

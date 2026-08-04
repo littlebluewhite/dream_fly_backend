@@ -46,7 +46,7 @@ impl OrderStatus {
     /// 判。[`REVENUE_STATUSES`] 是 SQL 綁定用的攣生陣列(products/reports
     /// 的查詢綁點),不是本函式讀的來源;兩者的一致性改由交叉測試
     /// `revenue_predicate_matches_revenue_statuses_array` 錨定。退款/取消
-    /// 補償(`refund::compensation_required`,Step 10d)用它判斷「這筆訂單
+    /// 補償(`refund::compensation_required`)用它判斷「這筆訂單
     /// 的*現況*算不算已成交」——只有從一個計入營收的狀態轉往終態,才有東
     /// 西需要撤銷。
     pub fn is_revenue(&self) -> bool {
@@ -123,12 +123,12 @@ pub struct OrderItem {
     pub unit_price_cents: i64,
     /// Whether this line actually decremented `products.stock` at checkout
     /// time — a snapshot of that checkout-time fact, not a read of the
-    /// product's *current* stock mode (Step 10a, migration
+    /// product's *current* stock mode (migration
     /// `20260717000004_order_items_stock_decremented.sql`). `true` only for
     /// product lines whose product had finite stock at checkout; `false`
     /// for course lines (never touch stock) and for product lines whose
     /// product had `stock IS NULL` (unlimited) at checkout time. Refund/
-    /// cancel compensation (Step 10d/10e) reads this instead of the
+    /// cancel compensation (`refund::plan_refund`) reads this instead of the
     /// product's current `stock` nullability, since an admin can change a
     /// product's stock mode after the sale and the snapshot must not drift
     /// with that later edit. Deliberately excluded from `OrderItemResponse`

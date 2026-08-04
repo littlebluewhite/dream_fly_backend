@@ -124,8 +124,8 @@ pub async fn checkout(
         // A concurrent request carrying the *same* idempotency key may have
         // already won this cart. Idempotency is scoped per user_id, so both
         // requests first contend on the SAME buyer's `users` row: the
-        // unconditional `lock_balance_tx` call above (Step
-        // 10b moved it ahead of the cart read) is what actually serializes
+        // unconditional `lock_balance_tx` call above (ADR-0007 決策 5 moved
+        // it ahead of the cart read) is what actually serializes
         // the two checkouts. The loser blocks there until the winner locks
         // these same cart rows, runs the whole checkout, clears the cart,
         // and commits (steps 11/12/`TxReleased::commit` below) — so by the time the
@@ -283,7 +283,7 @@ pub async fn checkout(
     //     course lines. `ci.name` becomes the order_items snapshot column,
     //     so later reads (OrderSummary/AdminOrderSummary `items`) never need
     //     to join the live product/course catalog. `stock_decremented`
-    //     (Step 10a/10c) snapshots whether this line actually decremented
+    //     snapshots whether this line actually decremented
     //     `products.stock` — read off `reserved`'s post-decrement row
     //     (`stock.is_some()` means the product had finite stock, so it
     //     really was decremented; `None` means the product was

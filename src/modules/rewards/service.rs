@@ -91,7 +91,8 @@ pub async fn my_redemptions(
     })
 }
 
-/// `POST /rewards` — admin only (checked by the handler).
+/// `POST /rewards` — admin only. Enforced by the `admin_api` route_layer
+/// (see `startup.rs`).
 pub async fn create(db: &PgPool, req: CreateRewardRequest) -> Result<RewardResponse, AppError> {
     let reward = repository::create(
         db,
@@ -108,7 +109,8 @@ pub async fn create(db: &PgPool, req: CreateRewardRequest) -> Result<RewardRespo
     Ok(RewardResponse::from(reward))
 }
 
-/// `PATCH /rewards/{id}` — admin only (checked by the handler).
+/// `PATCH /rewards/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`).
 pub async fn update(db: &PgPool, id: Uuid, req: UpdateRewardRequest) -> Result<RewardResponse, AppError> {
     let reward = repository::update(
         db,

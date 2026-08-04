@@ -54,12 +54,12 @@
 
 | 狀態碼 | 意義 | 常見情境 |
 | --- | --- | --- |
-| 400 Bad Request | 請求格式錯誤 / 非驗證類的業務規則拒絕 | 無效的 coupon、無法轉換的訂單狀態、購物車為空 |
+| 400 Bad Request | 請求格式錯誤 / 非驗證類的業務規則拒絕 | 無法轉換的訂單狀態、購物車為空 |
 | 401 Unauthorized | 未帶 token / token 無效或過期 / 帳密錯誤 | 缺少或錯誤的 `Authorization` header |
 | 403 Forbidden | 已認證但權限不足 | 一般會員呼叫 admin-only 端點 |
 | 404 Not Found | 資源不存在 | 課程 / 商品 / 優惠碼 / 訂單不存在 |
 | 409 Conflict | 唯一性衝突 / 併發衝突 | Email 已註冊、優惠碼重複、庫存不足、點數不足 |
-| 422 Unprocessable Entity | 欄位／跨欄位驗證失敗（DTO 或 service 層） | `validator` 規則不通過（長度、格式、必填）；service 層驗證——`end_time` 須晚於 `start_time`、年齡範圍 0–150、場次尚未開始、點名覆寫已核准請假 |
+| 422 Unprocessable Entity | 欄位／跨欄位驗證失敗（DTO 或 service 層） | `validator` 規則不通過（長度、格式、必填）；service 層驗證——無效優惠碼、`end_time` 須晚於 `start_time`、年齡範圍 0–150、場次尚未開始、點名覆寫已核准請假 |
 | 500 Internal Server Error | 未預期錯誤 | 一律回通用訊息，不洩漏內部細節 |
 
 **總則：admin-only 端點的角色閘門先於請求驗證。** admin 專屬端點在 route 層即檢查
@@ -578,7 +578,7 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 { "coupon_code": "string?", "use_points": "boolean?", "payment_method": "string?" }
 ```
 
-- `coupon_code` 不帶或空字串 = 不套用折扣。無效碼會整筆拒絕（400 `"invalid coupon"`），不會靜默略過。
+- `coupon_code` 不帶或空字串 = 不套用折扣。無效碼會整筆拒絕（422 `"invalid coupon"`），不會靜默略過。
 - `use_points: true` 時，會自動用掉「折扣後金額換算可扣的最大點數」（`min(目前餘額, 折扣後金額NT$)`），前端無法指定扣多少點——要嘛全扣（到可扣上限）要嘛不扣。
 - `payment_method` 不帶時預設 `credit_card`；值域見 §1.8。不在值域內的字串回 422，整筆結帳不會建立（購物車保留）。
 - 結帳對象為**當下購物車全部內容**，成功後購物車會被清空。購物車為空時回 400 `"cart is empty"`。
@@ -606,7 +606,7 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 
 `payment_method` 為 `null` 僅出現在此欄位新增（Round 4 Task P4-B1）前建立的歷史訂單。
 
-錯誤：400（購物車為空、無效優惠碼）；422（付款方式不在值域內；購物車內有已下架的商品或課程 — 訊息列出被下架的品項名稱，見上）；409（商品庫存不足、課程已滿或重複報名 — 整筆結帳一起回滾，不會部分成功）。
+錯誤：400（購物車為空）；422（無效優惠碼；付款方式不在值域內；購物車內有已下架的商品或課程 — 訊息列出被下架的品項名稱，見上）；409（商品庫存不足、課程已滿或重複報名 — 整筆結帳一起回滾，不會部分成功）。
 
 #### `GET /orders/me?page=&per_page=` — 需登入
 回應（`OrderListResponse`）：`{ "orders": [OrderSummary], "total", "page", "per_page" }`。

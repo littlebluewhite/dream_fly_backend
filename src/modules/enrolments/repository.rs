@@ -76,8 +76,8 @@ pub async fn cancel_if_active_tx(
 }
 
 /// Cancel every non-cancelled enrolment tied to `order_id` in one UPDATE —
-/// refund/cancel compensation's (Step 10e) order-scoped counterpart to
-/// [`cancel_if_active_tx`]'s single-enrolment cancel. `status <>
+/// refund/cancel compensation's (`compensate_order_artifacts_tx`)
+/// order-scoped counterpart to [`cancel_if_active_tx`]'s single-enrolment cancel. `status <>
 /// 'cancelled'` makes the UPDATE naturally idempotent (a same-status retry,
 /// or a second compensation attempt, affects zero rows instead of
 /// erroring), and also covers the case where the buyer already

@@ -58,11 +58,12 @@ pub async fn create_venue(
     Ok(VenueResponse::from(venue))
 }
 
-/// `PATCH /venues/{id}` — admin only (checked by the handler). Slug
-/// uniqueness is enforced by the DB's `uq_venues_slug_lower` functional
-/// index; a violation surfaces as `sqlx::Error::Database` here and is
-/// translated to 409 — same idiom as `create_venue` above (see its comment
-/// for why the constraint name is matched explicitly).
+/// `PATCH /venues/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`). Slug uniqueness is enforced by the DB's
+/// `uq_venues_slug_lower` functional index; a violation surfaces as
+/// `sqlx::Error::Database` here and is translated to 409 — same idiom as
+/// `create_venue` above (see its comment for why the constraint name is
+/// matched explicitly).
 pub async fn update_venue(
     db: &PgPool,
     id: Uuid,

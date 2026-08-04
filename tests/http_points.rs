@@ -133,7 +133,7 @@ async fn me_paginates_newest_first(db: PgPool) {
 }
 
 // ---------------------------------------------------------------------
-// Step 10f: `POST /points/adjustments` (admin)
+// `POST /points/adjustments` (admin)
 // ---------------------------------------------------------------------
 
 #[sqlx::test]

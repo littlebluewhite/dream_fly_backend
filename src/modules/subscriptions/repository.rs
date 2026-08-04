@@ -92,8 +92,8 @@ pub async fn find_by_order(
 }
 
 /// Cancel every non-cancelled subscription tied to `order_id` in one
-/// UPDATE — refund/cancel compensation's (Step 10e) mirror of
-/// `enrolments::repository::cancel_by_order_tx`. `cancelled` here is a real
+/// UPDATE — refund/cancel compensation's (`compensate_order_artifacts_tx`)
+/// mirror of `enrolments::repository::cancel_by_order_tx`. `cancelled` here is a real
 /// persisted `status` value, unlike `expired`, which
 /// `subscription_derived_status` derives at read time and never writes
 /// back (ADR-0003) — so this is a genuine state transition, not a derived

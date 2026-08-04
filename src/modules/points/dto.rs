@@ -38,7 +38,7 @@ pub struct PointsMeResponse {
     pub meta: PageMeta,
 }
 
-/// `POST /points/adjustments` request body (Step 10f, admin-only) — closes
+/// `POST /points/adjustments` request body (admin-only) — closes
 /// the refund/cancel compensation "點數不足" 409 repair loop, see
 /// `service::adjust_points` for the full CAS write-up. All three fields are
 /// required (a missing field fails JSON deserialization before `Validate`

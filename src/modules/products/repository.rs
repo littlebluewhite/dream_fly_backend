@@ -168,8 +168,8 @@ pub async fn try_decrement_stock_tx(
 }
 
 /// Reverses `try_decrement_stock_tx` — restores `quantity` back onto
-/// `stock`. Refund/cancel compensation's (Step 10e) mirror of the
-/// checkout-time decrement; same belt-and-suspenders NULL-preserving CASE
+/// `stock`. Refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
+/// mirror of the checkout-time decrement; same belt-and-suspenders NULL-preserving CASE
 /// (a NULL-stock — unlimited — product's `stock` stays NULL, never gets a
 /// concrete value handed to it by a restore).
 ///

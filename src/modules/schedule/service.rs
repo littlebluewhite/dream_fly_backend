@@ -118,10 +118,10 @@ pub async fn create_slots(
     Ok(slots.into_iter().map(TimeSlotResponse::from).collect())
 }
 
-/// `PATCH /schedule/slots/{id}` — admin only (checked by the handler via
-/// `admin_router()`). Sets/clears the `is_closed` intent flag; the derived
-/// `status` in the response reflects it immediately (`closed` takes
-/// priority over the booked/capacity computation — see
+/// `PATCH /schedule/slots/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`). Sets/clears the `is_closed` intent flag;
+/// the derived `status` in the response reflects it immediately (`closed`
+/// takes priority over the booked/capacity computation — see
 /// `SlotStatus::derive`).
 pub async fn update_slot(
     db: &PgPool,

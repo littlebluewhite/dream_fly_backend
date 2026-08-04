@@ -197,7 +197,8 @@ pub async fn try_spend_tx(
 }
 
 /// Passthrough to `repository::find_order_flow_sums_tx` — the ADR-0005 seam
-/// `orders::service`'s refund/cancel compensation (Step 10e) reads through,
+/// `orders::service`'s refund/cancel compensation
+/// (`compensate_order_artifacts_tx`) reads through,
 /// so `orders` never imports this module's repository directly.
 pub async fn find_order_flow_sums_tx(
     tx: &mut Transaction<'_, Postgres>,
@@ -230,10 +231,10 @@ pub async fn get_my_points(
     })
 }
 
-/// `POST /points/adjustments` (admin-only, Step 10f) — the minimal repair
+/// `POST /points/adjustments` (admin-only) — the minimal repair
 /// tool that closes the loop on refund/cancel compensation's clawback step
-/// 409ing with `Conflict("點數不足")` (`orders::service::compensate_order_artifacts_tx`,
-/// 10e): an admin restores the member's balance here, then retries the
+/// 409ing with `Conflict("點數不足")` (`orders::service::compensate_order_artifacts_tx`):
+/// an admin restores the member's balance here, then retries the
 /// refund PATCH. Consumes `PointReason::AdminAdjust`, previously a
 /// zero-call-site variant.
 ///
@@ -241,7 +242,7 @@ pub async fn get_my_points(
 /// `lock_balance_tx`, which compose into a caller's transaction) — this is
 /// a leaf operation, not a step inside a larger orchestrated write.
 ///
-/// **CAS, not idempotency** (ADR-0007, Step 10h, has the full write-up —
+/// **CAS, not idempotency** (ADR-0007 決策 10 has the full write-up —
 /// this doc comment is the summary it's referenced from). Comparing the
 /// locked balance against `req.expected_balance` before writing guards
 /// against *re-applying the same adjustment twice*; it is not a

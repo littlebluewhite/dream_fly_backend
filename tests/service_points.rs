@@ -479,7 +479,7 @@ async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
 }
 
 // ---------------------------------------------------------------------
-// Step 10f: `POST /points/adjustments` (admin) — service::adjust_points
+// `POST /points/adjustments` (admin) — service::adjust_points
 // ---------------------------------------------------------------------
 
 #[sqlx::test]
@@ -550,7 +550,7 @@ async fn adjust_points_negative_delta_decreases_balance_and_writes_admin_adjust_
     assert_eq!(ledger[0].order_id, None);
 }
 
-/// CAS mismatch (Step 10f's core new behaviour): `expected_balance` doesn't
+/// CAS mismatch (`adjust_points`'s core CAS behaviour): `expected_balance` doesn't
 /// match the actual locked balance → `Conflict`, nothing persisted. The
 /// message names both sides so an admin can immediately re-judge from the
 /// response without a follow-up query.

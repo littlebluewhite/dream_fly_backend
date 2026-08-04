@@ -55,7 +55,7 @@ pub async fn create_order(
 /// is the checkout-time display name (from the cart snapshot) — stored
 /// verbatim so later reads never need to join the live product/course
 /// catalog. `stock_decremented` is the checkout-time fact of whether this
-/// line actually decremented `products.stock` (Step 10a/10c) — the caller
+/// line actually decremented `products.stock` — the caller
 /// (`service::checkout`) computes it per line from `reserve_stock_tx`'s
 /// returned rows; always `false` for course lines.
 pub async fn create_order_items(
@@ -187,8 +187,9 @@ pub async fn find_items_by_order(
 }
 
 /// Transactional twin of [`find_items_by_order`] — reads an order's line
-/// items inside the caller's transaction. Refund/cancel compensation (Step
-/// 10e) calls this instead of the pool-backed version so the item read
+/// items inside the caller's transaction. Refund/cancel compensation
+/// (`orders::service::compensate_order_artifacts_tx`) calls this instead of
+/// the pool-backed version so the item read
 /// (including each line's `stock_decremented` snapshot) is part of the same
 /// transaction that already holds the order/user locks, not a separate pool
 /// connection. No row lock of its own: nothing in the compensation flow

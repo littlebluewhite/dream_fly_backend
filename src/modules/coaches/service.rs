@@ -96,9 +96,10 @@ pub async fn get_active_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailRespo
     })
 }
 
-/// `POST /coaches` (admin, checked by the handler). Binds an existing user
-/// (created via `POST /users`) to a new coach profile and assigns them the
-/// `coach` role, both inside one transaction so a role-assignment failure
+/// `POST /coaches` (admin — enforced by the `admin_api` route_layer, see
+/// `startup.rs`). Binds an existing user (created via `POST /users`) to a
+/// new coach profile and assigns them the `coach` role, both inside one
+/// transaction so a role-assignment failure
 /// can never leave an orphaned coach row (mirrors `users::service::create_user`
 /// assigning `member` in the same transaction as the user insert).
 ///
@@ -153,9 +154,9 @@ pub async fn create_coach(
     Ok(CoachResponse::from(coach))
 }
 
-/// `PATCH /coaches/{id}` (admin, checked by the handler). Coach-owned fields
-/// only — the coach's name lives on `users` and is edited via the existing
-/// `PATCH /users/{id}`.
+/// `PATCH /coaches/{id}` (admin — enforced by the `admin_api` route_layer,
+/// see `startup.rs`). Coach-owned fields only — the coach's name lives on
+/// `users` and is edited via the existing `PATCH /users/{id}`.
 pub async fn update_coach(
     db: &PgPool,
     id: Uuid,

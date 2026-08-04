@@ -43,10 +43,10 @@ pub async fn list_inquiries(
     })
 }
 
-/// `PATCH /contact/inquiries/{id}` — admin-only (checked by the handler),
-/// Round 4 Task B5 admin follow-up. `status`, when present, must parse as
-/// `InquiryStatus` (new/in_progress/resolved/closed) — mirrors
-/// `courses::service::create_course`'s `level` parsing.
+/// `PATCH /contact/inquiries/{id}` — admin only. Enforced by the `admin_api`
+/// route_layer (see `startup.rs`); Round 4 Task B5 admin follow-up. `status`,
+/// when present, must parse as `InquiryStatus` (new/in_progress/resolved/
+/// closed) — mirrors `courses::service::create_course`'s `level` parsing.
 pub async fn update_inquiry(
     db: &PgPool,
     id: Uuid,

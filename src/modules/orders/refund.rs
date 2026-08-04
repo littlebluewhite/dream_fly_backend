@@ -4,8 +4,8 @@
 //! 方向相反(undo vs do),所以獨立成檔,不塞進 `fulfilment.rs`。
 //!
 //! 同 `pricing`/`fulfilment` 的紀律:純函式、零 DB、零 async,只組裝資料給
-//! 編排端消費。唯一呼叫端是 Step 10e——`service::update_order_status` 內的
-//! 私有補償編排:先用 [`compensation_required`] 決定要不要補償,再讀
+//! 編排端消費。唯一呼叫端是 `service::update_order_status` 內的私有補償編排
+//! `compensate_order_artifacts_tx`:先用 [`compensation_required`] 決定要不要補償,再讀
 //! `orders::repository::find_items_by_order_tx` 的行項與
 //! `points::service::find_order_flow_sums_tx` 的 ledger 實錄餵給
 //! [`plan_refund`],最後把 [`RefundPlan`] 套進
@@ -22,7 +22,7 @@ use crate::modules::cart::model::CartItemType;
 use super::model::{Order, OrderItem, OrderStatus};
 
 /// 一個要回補庫存的商品行:`product_id` + 要加回去的量。刻意只留
-/// `products::service::restore_stock_tx`(Step 10c)的 `&[(Uuid, i32)]` 要的
+/// `products::service::restore_stock_tx` 的 `&[(Uuid, i32)]` 要的
 /// 兩個欄位——編排端逐一拆成 tuple 餵給它。
 #[derive(Debug)]
 pub struct StockRestore {
@@ -30,7 +30,7 @@ pub struct StockRestore {
     pub quantity: i32,
 }
 
-/// Step 10e 的補償編排要撤銷一筆訂單的 checkout 副作用時需要的一切:哪些
+/// `compensate_order_artifacts_tx` 補償編排要撤銷一筆訂單的 checkout 副作用時需要的一切:哪些
 /// 商品行要回補庫存、點數要沖回/沖銷多少。
 ///
 /// `restore_points`/`clawback_points` 是**幅度**(恆 ≥ 0),不是簽過名的
@@ -53,18 +53,19 @@ pub struct RefundPlan {
 /// `items` 依 `item_type` 過一個**窮盡** match(無 `_` arm,呼應
 /// `fulfilment::plan`):
 /// - `Product` 行只在該行 `stock_decremented = true`(checkout 當下是否真的
-///   扣過庫存的快照,Step 10a)時才產出一筆 [`StockRestore`]——`false`(無限
+///   扣過庫存的快照)時才產出一筆 [`StockRestore`]——`false`(無限
 ///   庫存商品,或 legacy 列)不回補。行上缺 `product_id` 一律
 ///   `AppError::Internal`,不論是否會產出回補:`order_items_one_target`
 ///   CHECK 下不可達,同 `fulfilment::plan` 的 belt 守衛,順帶把 `order.id`
 ///   織進錯誤訊息方便排查是哪張單踩到。
-/// - `Course` 行是顯式空 arm——報名/訂閱走 `order_id` 整批 UPDATE(Step 10c
-///   的 `cancel_by_order_tx` 一對),不是逐行處理,course 行本身不產生
+/// - `Course` 行是顯式空 arm——報名/訂閱走 `order_id` 整批 UPDATE
+///   (`enrolments::service`/`subscriptions::service` 各自的
+///   `cancel_by_order_tx`),不是逐行處理,course 行本身不產生
 ///   restock。
 ///
 /// **不排序**:`restocks` 保留 `items` 的輸入序。寫鎖的排序紀律屬於真正拿鎖
 /// 的那一端——`products::service::restore_stock_tx` 會排序自己收到的副本
-/// 再動任何一列(Step 10c),同一個不變式只該有一個 owner。
+/// 再動任何一列,同一個不變式只該有一個 owner。
 pub fn plan_refund(
     order: &Order,
     items: &[OrderItem],
@@ -93,8 +94,8 @@ pub fn plan_refund(
             CartItemType::Course => {
                 // 報名/訂閱走 order_id 整批 UPDATE(enrolments::service::
                 // cancel_by_order_tx / subscriptions::service::
-                // cancel_by_order_tx,Step 10e 呼叫),非逐行——course 行本身
-                // 不產生任何 restock。
+                // cancel_by_order_tx,由 `compensate_order_artifacts_tx` 呼叫),
+                // 非逐行——course 行本身不產生任何 restock。
             }
         }
     }
