@@ -20,13 +20,7 @@ pub async fn list(
     Query(params): Query<ProductQuery>,
     Query(page): Query<PaginationParams>,
 ) -> Result<Json<ProductListResponse>, AppError> {
-    let list = service::list(
-        &state.db,
-        params.product_type.as_deref(),
-        page.page,
-        page.per_page,
-    )
-    .await?;
+    let list = service::list(&state.db, params.product_type.as_deref(), &page).await?;
     Ok(Json(list))
 }
 

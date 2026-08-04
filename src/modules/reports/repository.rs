@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::modules::bookings::model::VENUE_REVENUE_STATUSES;
+use crate::modules::contact::model::InquiryType;
 use crate::modules::orders::model::REVENUE_STATUSES;
 use crate::modules::sessions::repository::{MaterializedDay, MaterializedRange};
 
@@ -542,7 +543,7 @@ pub async fn funnel(
     sqlx::query_as::<_, FunnelRow>(
         "SELECT \
            (SELECT COUNT(*) FROM contact_inquiries ci \
-             WHERE ci.inquiry_type = 'trial' \
+             WHERE ci.inquiry_type = $3 \
                AND (ci.created_at AT TIME ZONE $2)::date \
                    >= studio_today($1, $2) - 90)::bigint AS trial_inquiries, \
            (SELECT COUNT(*) FROM enrolments e \
@@ -552,6 +553,7 @@ pub async fn funnel(
     )
     .bind(now)
     .bind(tz_name)
+    .bind(InquiryType::Trial.as_str())
     .fetch_one(db)
     .await
 }

@@ -37,9 +37,6 @@ impl OrderStatus {
             (Paid, Processing) | (Paid, Refunded) | (Paid, Cancelled) => true,
             (Processing, Completed) | (Processing, Refunded) => true,
             (Completed, Refunded) => true,
-            // Idempotent no-op: same-status updates are accepted so retries
-            // of a webhook / admin action do not 422.
-            (a, b) if a.as_str() == b.as_str() => true,
             _ => false,
         }
     }
@@ -223,14 +220,18 @@ mod tests {
     }
 
     #[test]
-    fn can_transition_same_state_is_legal_for_every_status() {
-        // Idempotent no-op: a retried webhook/admin action re-applying the
-        // current status must not 422 — covers every variant, not just one.
+    fn can_transition_same_state_is_illegal_for_every_status() {
+        // `can_transition_to` has no same-status arm — a retried webhook/
+        // admin action re-applying the current status never reaches this
+        // check in production: `service::update_order_status` early-returns
+        // on same-status *before* calling `can_transition_to` at all, so the
+        // observable idempotent no-op is guaranteed there, not here. Covers
+        // every variant, not just one.
         for status in ALL_STATUSES {
             let same = status.clone();
             assert!(
-                status.can_transition_to(&same),
-                "{status:?} -> itself should be legal"
+                !status.can_transition_to(&same),
+                "{status:?} -> itself should be illegal (unreachable ghost arm removed)"
             );
         }
     }

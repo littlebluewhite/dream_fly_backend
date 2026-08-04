@@ -36,7 +36,7 @@ impl PaginationParams {
     pub fn meta(&self, total: i64) -> PageMeta {
         PageMeta {
             total,
-            page: self.page,
+            page: self.page.max(1),
             per_page: self.limit(),
         }
     }

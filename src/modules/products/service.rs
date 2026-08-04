@@ -4,7 +4,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::pagination::PageMeta;
+use crate::extractors::pagination::PaginationParams;
 use crate::utils::slug::slugify;
 
 use super::dto::{
@@ -26,16 +26,18 @@ async fn to_response(db: &PgPool, product: Product) -> Result<ProductResponse, A
 pub async fn list(
     db: &PgPool,
     product_type_filter: Option<&str>,
-    page: u32,
-    per_page: u32,
+    pagination: &PaginationParams,
 ) -> Result<ProductListResponse, AppError> {
-    let per_page = per_page.clamp(1, 100);
-    let offset = page.max(1).saturating_sub(1) * per_page;
-
     // Count first so a zero-total response doesn't need a second (empty)
     // result set; both queries share the same filter.
     let total = repository::count_active(db, product_type_filter).await?;
-    let products = repository::find_all_active(db, product_type_filter, per_page, offset).await?;
+    let products = repository::find_all_active(
+        db,
+        product_type_filter,
+        pagination.limit(),
+        pagination.offset(),
+    )
+    .await?;
 
     // One batched aggregate for every product on the page — not one query
     // per row (see `repository::find_sold_counts`'s doc comment).
@@ -50,11 +52,7 @@ pub async fn list(
                 ProductResponse::from_product(p, sold)
             })
             .collect(),
-        meta: PageMeta {
-            total,
-            page: page.max(1),
-            per_page,
-        },
+        meta: pagination.meta(total),
     })
 }
 

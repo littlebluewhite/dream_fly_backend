@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use common::fixtures::seed_order_with_item;
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::products::dto::{
     CreateProductRequest, UpdateProductRequest,
 };
@@ -153,7 +154,9 @@ async fn list_products_filters_inactive_and_by_type(db: PgPool) {
         .unwrap();
 
     // Use a big per_page so the test doesn't need to page through results.
-    let all_active = service::list(&db, None, 1, 100).await.unwrap();
+    let all_active = service::list(&db, None, &PaginationParams { page: 1, per_page: 100 })
+        .await
+        .unwrap();
     let all_ids: Vec<_> = all_active.products.iter().map(|p| p.id).collect();
     assert!(all_ids.contains(&tee.id));
     assert!(all_ids.contains(&pass.id));
@@ -169,9 +172,25 @@ async fn list_products_filters_inactive_and_by_type(db: PgPool) {
     assert_eq!(all_active.meta.page, 1);
     assert_eq!(all_active.meta.per_page, 100);
 
-    let only_tickets = service::list(&db, Some("ticket"), 1, 100).await.unwrap();
+    let only_tickets = service::list(
+        &db,
+        Some("ticket"),
+        &PaginationParams { page: 1, per_page: 100 },
+    )
+    .await
+    .unwrap();
     assert!(only_tickets.products.iter().any(|p| p.id == pass.id));
     assert!(!only_tickets.products.iter().any(|p| p.id == tee.id));
+}
+
+#[sqlx::test]
+async fn list_page_zero_clamps_meta_page_to_one(db: PgPool) {
+    // `PaginationParams::meta()` must clamp `page` the same way `offset()`
+    // already does — page=0 must not lie in the response's `meta.page`.
+    let list = service::list(&db, None, &PaginationParams { page: 0, per_page: 20 })
+        .await
+        .expect("list");
+    assert_eq!(list.meta.page, 1);
 }
 
 #[sqlx::test]
@@ -344,7 +363,9 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
     seed_order_with_item(&db, user, a.id, &a.name, 4, 1000, "paid").await;
     seed_order_with_item(&db, user, b.id, &b.name, 9, 1000, "completed").await;
 
-    let list = service::list(&db, None, 1, 100).await.expect("list");
+    let list = service::list(&db, None, &PaginationParams { page: 1, per_page: 100 })
+        .await
+        .expect("list");
     let a_resp = list.products.iter().find(|p| p.id == a.id).expect("a in list");
     let b_resp = list.products.iter().find(|p| p.id == b.id).expect("b in list");
     assert_eq!(a_resp.sold, 4);

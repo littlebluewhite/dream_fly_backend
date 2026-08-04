@@ -962,7 +962,9 @@ async fn my_orders_lists_items_per_order_without_cross_contamination(db: PgPool)
         .await
         .expect("checkout 2");
 
-    let list = service::my_orders(&db, user, 1, 10).await.expect("my_orders");
+    let list = service::my_orders(&db, user, &PaginationParams { page: 1, per_page: 10 })
+        .await
+        .expect("my_orders");
     assert_eq!(list.orders.len(), 2);
 
     // Newest first (ORDER BY created_at DESC): order 2 (item-b) then order 1 (item-a).
@@ -991,7 +993,9 @@ async fn my_orders_aggregates_multiple_items_in_one_order(db: PgPool) {
         .await
         .expect("checkout");
 
-    let list = service::my_orders(&db, user, 1, 10).await.expect("my_orders");
+    let list = service::my_orders(&db, user, &PaginationParams { page: 1, per_page: 10 })
+        .await
+        .expect("my_orders");
     assert_eq!(list.orders.len(), 1);
     let items = &list.orders[0].items;
     assert_eq!(items.len(), 2, "both cart lines must appear in the summary");

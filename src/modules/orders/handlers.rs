@@ -73,7 +73,7 @@ pub async fn my_orders(
     auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<OrderListResponse>, AppError> {
-    let list = service::my_orders(&state.db, auth.user_id, params.page, params.per_page).await?;
+    let list = service::my_orders(&state.db, auth.user_id, &params).await?;
     Ok(Json(list))
 }
 

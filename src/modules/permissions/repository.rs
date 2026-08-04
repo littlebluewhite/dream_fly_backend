@@ -121,19 +121,6 @@ pub async fn assign_role_by_name(
     Ok(RoleCacheDirty::new(user_id))
 }
 
-pub async fn find_user_roles(db: &PgPool, user_id: Uuid) -> Result<Vec<Role>, sqlx::Error> {
-    sqlx::query_as::<_, Role>(
-        "SELECT r.id, r.name, r.description, r.created_at \
-         FROM roles r \
-         JOIN user_roles ur ON r.id = ur.role_id \
-         WHERE ur.user_id = $1 \
-         ORDER BY r.name",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await
-}
-
 /// Role names only (no id/description/created_at) — used to populate
 /// `roles` on `UserResponse` (auth and users DTOs). Mirrors the query the
 /// `AuthUser` extractor uses for RBAC so JWT-derived access and response

@@ -36,6 +36,42 @@ impl std::str::FromStr for InquiryStatus {
     }
 }
 
+/// Round 4 Task B5's trial-booking value set — application-layer only, no
+/// DB enum/CHECK (`contact_inquiries.inquiry_type` stays a bare `TEXT`
+/// column; see `ContactInquiry::inquiry_type`'s own doc). Mirrors
+/// [`InquiryStatus`]'s `as_str`/`FromStr` shape, with one deliberate
+/// deviation: `FromStr` here does NOT lowercase before matching — the
+/// existing validation this replaces was case-sensitive (only the exact
+/// strings `"general"`/`"trial"` are accepted, per
+/// docs/api/integration-contract.md §3.17), and this refactor preserves
+/// that behavior rather than silently loosening it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InquiryType {
+    General,
+    Trial,
+}
+
+impl InquiryType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Trial => "trial",
+        }
+    }
+}
+
+impl std::str::FromStr for InquiryType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "general" => Ok(Self::General),
+            "trial" => Ok(Self::Trial),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct ContactInquiry {
     pub id: Uuid,

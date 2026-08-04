@@ -6,7 +6,7 @@ use validator::{Validate, ValidationError};
 use crate::extractors::pagination::PageMeta;
 use crate::utils::double_option::deserialize_some;
 
-use super::model::ContactInquiry;
+use super::model::{ContactInquiry, InquiryType};
 
 #[derive(Debug, Serialize)]
 pub struct InquiryResponse {
@@ -51,7 +51,7 @@ pub struct InquiryListResponse {
 }
 
 fn default_inquiry_type() -> String {
-    "general".to_string()
+    InquiryType::General.as_str().to_string()
 }
 
 /// Only `general` (default) and `trial` are supported today — the
@@ -60,11 +60,9 @@ fn default_inquiry_type() -> String {
 /// docs/api/integration-contract.md §3.17). Enforced in the application
 /// layer only — no DB CHECK/enum, matching this feature's migration.
 fn validate_inquiry_type(v: &str) -> Result<(), ValidationError> {
-    if v == "general" || v == "trial" {
-        Ok(())
-    } else {
-        Err(ValidationError::new("invalid_inquiry_type"))
-    }
+    v.parse::<InquiryType>()
+        .map(|_| ())
+        .map_err(|_| ValidationError::new("invalid_inquiry_type"))
 }
 
 #[derive(Debug, Deserialize, Validate)]

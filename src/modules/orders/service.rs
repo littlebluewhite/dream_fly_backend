@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::extractors::pagination::{PageMeta, PaginationParams};
+use crate::extractors::pagination::PaginationParams;
 use crate::kafka::events::{OrderCreatedPayload, OrderStatusChangedPayload};
 use crate::kafka::outbox;
 use crate::modules::cart::service as cart_service;
@@ -339,9 +339,9 @@ pub async fn checkout(
     //      (product_type/session_count/valid_days) are untouched by the
     //      stock decrement.
     for p in &plan.products {
-        let product = reserved
-            .get(&p.product_id)
-            .expect("product line was reserved in step 6");
+        let product = reserved.get(&p.product_id).ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("product line was reserved in step 6"))
+        })?;
         subscriptions_service::grant_from_purchase_tx(
             &mut tx,
             user_id,
@@ -543,24 +543,17 @@ pub async fn get_order(
 pub async fn my_orders(
     db: &PgPool,
     user_id: Uuid,
-    page: u32,
-    per_page: u32,
+    pagination: &PaginationParams,
 ) -> Result<OrderListResponse, AppError> {
-    let limit = per_page.clamp(1, 100);
-    let offset = (page.max(1).saturating_sub(1)) * limit;
-
-    let orders = repository::find_by_user(db, user_id, limit, offset).await?;
+    let orders =
+        repository::find_by_user(db, user_id, pagination.limit(), pagination.offset()).await?;
     let total = repository::count_by_user(db, user_id).await?;
 
     let summaries: Vec<OrderSummary> = orders.into_iter().map(OrderSummary::from).collect();
 
     Ok(OrderListResponse {
         orders: summaries,
-        meta: PageMeta {
-            total,
-            page: page.max(1),
-            per_page: limit,
-        },
+        meta: pagination.meta(total),
     })
 }
 

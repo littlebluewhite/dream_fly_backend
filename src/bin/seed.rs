@@ -42,6 +42,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::AppConfig;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
+use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::LedgerDelta;
 use dream_fly_backend::modules::points::service as points_service;
@@ -1784,7 +1785,7 @@ async fn main() -> anyhow::Result<()> {
                     phone: phone.clone(),
                     subject: format!("【試上申請】{category} 課程試上"),
                     message: "想為孩子預約一堂試上課程，請與我聯繫安排時間。",
-                    inquiry_type: "trial",
+                    inquiry_type: InquiryType::Trial.as_str(),
                     metadata: Some(json!({
                         "category": category,
                         "student_age": 5 + ((seq * 3 + k as usize) % 10),
@@ -1816,7 +1817,7 @@ async fn main() -> anyhow::Result<()> {
                     phone: format!("09{:08}", (k as usize * 53 + seq * 17) % 100_000_000),
                     subject: SUBJECTS[(seq + k as usize) % 4].to_string(),
                     message: "您好，想進一步了解相關資訊，再麻煩回覆，謝謝。",
-                    inquiry_type: "general",
+                    inquiry_type: InquiryType::General.as_str(),
                     metadata: None,
                     created_at,
                 },

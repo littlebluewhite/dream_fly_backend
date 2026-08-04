@@ -113,21 +113,23 @@ pub async fn update_post(
         })?;
     }
 
-    // Validate status if provided
-    let status_str = if let Some(ref status) = req.status {
-        let _: PostStatus = status.parse().map_err(|_| {
+    // Validate status if provided — parsed once into `PostStatus` so the
+    // published_at decision below matches on the enum instead of re-parsing
+    // the string a second time.
+    let new_status: Option<PostStatus> = req
+        .status
+        .as_deref()
+        .map(|s| s.parse::<PostStatus>())
+        .transpose()
+        .map_err(|_| {
             AppError::Validation(
                 "invalid status, must be one of: draft, published, archived".into(),
             )
         })?;
-        Some(status.to_lowercase())
-    } else {
-        None
-    };
 
     // If transitioning to published and currently not published, set published_at
     let published_at: Option<Option<chrono::DateTime<chrono::Utc>>> =
-        if status_str.as_deref() == Some("published") && existing.published_at.is_none() {
+        if should_stamp_published_at(new_status.as_ref(), existing.published_at) {
             Some(Some(chrono::Utc::now()))
         } else {
             None // don't touch published_at
@@ -141,7 +143,7 @@ pub async fn update_post(
         req.content.as_deref(),
         req.excerpt.as_ref().map(|o| o.as_deref()),
         req.category.as_deref(),
-        status_str.as_deref(),
+        new_status.as_ref().map(|s| s.as_str()),
         req.cover_image.as_ref().map(|o| o.as_deref()),
         published_at,
     )
@@ -152,6 +154,40 @@ pub async fn update_post(
 
     post.map(PostDetailResponse::from)
         .ok_or_else(|| AppError::NotFound("post not found".into()))
+}
+
+/// Whether a `PATCH /posts/{id}` status update should stamp `published_at`
+/// with the current time — true only the first time a post transitions into
+/// `published`; a post that was already published before, or isn't
+/// transitioning to `published` at all, leaves `published_at` untouched.
+fn should_stamp_published_at(
+    new_status: Option<&PostStatus>,
+    existing_published_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    matches!(new_status, Some(PostStatus::Published)) && existing_published_at.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_stamp_published_at_true_on_first_publish() {
+        assert!(should_stamp_published_at(Some(&PostStatus::Published), None));
+    }
+
+    #[test]
+    fn should_stamp_published_at_false_when_already_published_before() {
+        assert!(!should_stamp_published_at(
+            Some(&PostStatus::Published),
+            Some(chrono::Utc::now())
+        ));
+    }
+
+    #[test]
+    fn should_stamp_published_at_false_when_not_transitioning_to_published() {
+        assert!(!should_stamp_published_at(Some(&PostStatus::Draft), None));
+    }
 }
 
 pub async fn delete_post(db: &PgPool, id: Uuid) -> Result<(), AppError> {

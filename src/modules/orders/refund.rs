@@ -106,13 +106,15 @@ pub fn plan_refund(
     })
 }
 
-/// 從 `current` 轉往 `target` 是否需要補償(點數/庫存/報名/訂閱撤銷,Step
-/// 10e)——`current` 本身已計入營收([`OrderStatus::is_revenue`]:paid/
+/// 從 `current` 轉往 `target` 是否需要補償(點數/庫存/報名/訂閱撤銷)——
+/// `current` 本身已計入營收([`OrderStatus::is_revenue`]:paid/
 /// processing/completed)**且** `target` 是終態的「錢要退回去」狀態
 /// (cancelled 或 refunded)。一個謂詞同時排除兩個陷阱:
-/// - **same-status no-op**——`model.rs` `can_transition_to` 的冪等自環
-///   (例如 `Cancelled -> Cancelled`)永遠不會落在這裡:自環的 `current` 是
-///   Cancelled/Refunded,`is_revenue()` 就先擋掉了。
+/// - **same-status no-op**——same-status 對(例如 `Cancelled -> Cancelled`)
+///   在生產路徑上由 `service::update_order_status` 的同狀態早退擋下,根本
+///   不會呼叫到這個謂詞;即使繞開那道早退直接呼叫,current 為
+///   Cancelled/Refunded 時 `is_revenue()` 也已經先判 false,兩層防線指向
+///   同一個結論。
 /// - **pending -> cancelled**——`Pending` 從未成交、不計營收,取消它只是
 ///   單純的狀態翻轉,沒有東西可撤銷。
 pub fn compensation_required(current: &OrderStatus, target: &OrderStatus) -> bool {
