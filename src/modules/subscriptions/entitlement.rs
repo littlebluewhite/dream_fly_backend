@@ -193,8 +193,8 @@ mod tests {
     fn time_based_with_quantity_other_than_one_is_validation_error() {
         let product = fixture_product(ProductType::Membership, None, Some(90));
 
-        let err =
-            plan(&product, 2, Utc::now()).expect_err("quantity=2 for a time-based product must fail");
+        let err = plan(&product, 2, Utc::now())
+            .expect_err("quantity=2 for a time-based product must fail");
 
         match err {
             AppError::Validation(msg) => {

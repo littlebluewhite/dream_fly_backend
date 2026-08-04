@@ -58,8 +58,9 @@ notifications · contact
 ### 認證與授權
 
 - `src/extractors/auth.rs` 的 `AuthUser` extractor 驗證 Bearer JWT，從 Redis（`user_roles:{id}`，TTL 15 分鐘，fallback 回 DB）載入使用者角色
-- 受保護的 handler 加入 `auth: AuthUser` 參數，未加入則為公開端點
-- 角色檢查：`auth.require_role("admin")?` 或 `auth.is_admin()`
+- 角色檢查在 route 層：`src/startup.rs` 依角色分三個 router 區塊（`admin_api`/`staff_api`/`coach_api`），各掛 `middleware/` 的 `require_admin`/`require_staff`/`require_coach` route_layer；端點的保護等級由所屬區塊決定，不看 handler 簽章
+- 「需登入、不看角色」的端點以具名參數 `_login: LoginRequired` 宣告登入閘門；handler 收 `auth: AuthUser` 代表需要身分資料，不是授權訊號
+- 依請求資料而定的細粒度檢查（如 `require_course_coach`、`is_admin()` 分支）留在 service
 - 內建角色（由 migration seed）：`admin`、`coach`、`member`、`guest`
 
 ## 專案結構
