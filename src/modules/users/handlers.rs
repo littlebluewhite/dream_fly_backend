@@ -36,7 +36,6 @@ pub async fn update_me(
 #[tracing::instrument(skip_all)]
 pub async fn list(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<UserListResponse>, AppError> {
     let response = service::list_users(&state.db, &params).await?;
@@ -46,7 +45,6 @@ pub async fn list(
 #[tracing::instrument(skip_all)]
 pub async fn get_user(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserResponse>, AppError> {
     let response = service::get_user(&state.db, id).await?;
@@ -56,7 +54,6 @@ pub async fn get_user(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    _auth: AuthUser,
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
@@ -68,7 +65,6 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn admin_update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {

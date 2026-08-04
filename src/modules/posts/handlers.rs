@@ -68,7 +68,6 @@ pub async fn update(
 #[tracing::instrument(skip_all)]
 pub async fn delete(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id_str): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let id: Uuid = id_str

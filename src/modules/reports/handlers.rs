@@ -11,7 +11,6 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn admin_report(
     State(state): State<AppState>,
-    _auth: AuthUser,
 ) -> Result<Json<AdminReportResponse>, AppError> {
     let now = state.clock.now();
     let report = service::admin_report(&state.db, &state.config.server, now).await?;
@@ -45,7 +44,6 @@ pub async fn member_report(
 #[tracing::instrument(skip_all)]
 pub async fn admin_activity(
     State(state): State<AppState>,
-    _auth: AuthUser,
 ) -> Result<Json<ActivityResponse>, AppError> {
     let report = service::admin_activity(&state.db).await?;
     Ok(Json(report))

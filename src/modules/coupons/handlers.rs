@@ -6,7 +6,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
+use crate::extractors::auth::LoginRequired;
 use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
@@ -28,7 +28,7 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn validate(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    _login: LoginRequired, // 這就是登入閘門——見 `LoginRequired` 文件
     Path(code): Path<String>,
     params: Result<Query<ValidateCouponQuery>, QueryRejection>,
 ) -> Result<Json<CouponValidateResponse>, AppError> {
@@ -42,7 +42,6 @@ pub async fn validate(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateCouponRequest>,
 ) -> Result<Json<CouponResponse>, AppError> {
     let coupon = service::create_coupon(&state.db, req).await?;
@@ -53,7 +52,6 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn list(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<CouponListResponse>, AppError> {
     let result = service::list_coupons(&state.db, &params).await?;
@@ -65,7 +63,6 @@ pub async fn list(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateCouponRequest>,
 ) -> Result<Json<CouponResponse>, AppError> {
@@ -79,7 +76,6 @@ pub async fn update(
 #[tracing::instrument(skip_all)]
 pub async fn delete(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     service::delete_coupon(&state.db, id).await?;

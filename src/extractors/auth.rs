@@ -269,6 +269,21 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// 「需登入、不看角色」端點的具名閘門。掛在無閘門 router() 的 handler 用它,
+/// 讓「這個參數就是登入檢查」在簽章可見——與 37 個已刪除的儀式參數區隔。
+pub struct LoginRequired(pub AuthUser);
+
+impl FromRequestParts<AppState> for LoginRequired {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        AuthUser::from_request_parts(parts, state).await.map(LoginRequired)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

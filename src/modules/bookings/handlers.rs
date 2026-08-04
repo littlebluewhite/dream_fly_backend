@@ -67,7 +67,6 @@ pub async fn cancel(
 #[tracing::instrument(skip_all)]
 pub async fn list_all(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedBookingsResponse>, AppError> {
     let response = service::list_all(&state.db, &params).await?;

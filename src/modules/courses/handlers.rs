@@ -5,7 +5,6 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
@@ -34,7 +33,6 @@ pub async fn get_by_slug_or_id(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateCourseRequest>,
 ) -> Result<Json<CourseDetailResponse>, AppError> {
     let course = service::create_course(&state.db, req).await?;
@@ -44,7 +42,6 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id_str): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateCourseRequest>,
 ) -> Result<Json<CourseDetailResponse>, AppError> {

@@ -5,7 +5,6 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
@@ -48,7 +47,6 @@ pub async fn get_by_slug(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateProductRequest>,
 ) -> Result<Json<ProductResponse>, AppError> {
     let product = service::create(&state.db, req).await?;
@@ -58,7 +56,6 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateProductRequest>,
 ) -> Result<Json<ProductResponse>, AppError> {

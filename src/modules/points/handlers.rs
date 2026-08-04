@@ -29,7 +29,6 @@ pub async fn me(
 #[tracing::instrument(skip_all)]
 pub async fn adjust(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<AdjustPointsRequest>,
 ) -> Result<Json<PointsAdjustmentResponse>, AppError> {
     let result = service::adjust_points(&state.db, &req).await?;

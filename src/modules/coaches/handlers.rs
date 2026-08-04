@@ -36,7 +36,6 @@ pub async fn get_by_id(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateCoachRequest>,
 ) -> Result<Json<CoachResponse>, AppError> {
     let mut redis = state.redis.clone();
@@ -47,7 +46,6 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateCoachRequest>,
 ) -> Result<Json<CoachResponse>, AppError> {

@@ -5,7 +5,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
+use crate::extractors::auth::{AuthUser, LoginRequired};
 use crate::state::AppState;
 
 use super::dto::{
@@ -17,7 +17,7 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn list_course_sessions(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    _login: LoginRequired, // 這就是登入閘門——見 `LoginRequired` 文件
     Path(course_id): Path<Uuid>,
     Query(query): Query<SessionsRangeQuery>,
 ) -> Result<Json<Vec<CourseSessionResponse>>, AppError> {

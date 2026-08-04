@@ -5,7 +5,6 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
@@ -36,7 +35,6 @@ pub async fn get_availability(
 #[tracing::instrument(skip_all)]
 pub async fn create_slots(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateSlotsRequest>,
 ) -> Result<Json<Vec<TimeSlotResponse>>, AppError> {
     let now = state.clock.now();
@@ -47,7 +45,6 @@ pub async fn create_slots(
 #[tracing::instrument(skip_all)]
 pub async fn update_slot(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateSlotRequest>,
 ) -> Result<Json<TimeSlotResponse>, AppError> {

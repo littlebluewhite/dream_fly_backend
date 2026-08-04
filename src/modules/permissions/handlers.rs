@@ -6,7 +6,6 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
@@ -16,7 +15,6 @@ use super::service;
 #[tracing::instrument(skip_all)]
 pub async fn list_roles(
     State(state): State<AppState>,
-    _auth: AuthUser,
 ) -> Result<Json<Vec<RoleResponse>>, AppError> {
     let roles = service::list_roles(&state.db).await?;
     Ok(Json(roles))
@@ -25,7 +23,6 @@ pub async fn list_roles(
 #[tracing::instrument(skip_all)]
 pub async fn create_role(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateRoleRequest>,
 ) -> Result<Json<RoleResponse>, AppError> {
     let role = service::create_role(&state.db, &req.name, req.description.as_deref()).await?;
@@ -35,7 +32,6 @@ pub async fn create_role(
 #[tracing::instrument(skip_all)]
 pub async fn assign_role(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(role_id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<AssignRoleRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
@@ -49,7 +45,6 @@ pub async fn assign_role(
 #[tracing::instrument(skip_all)]
 pub async fn remove_role(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path((role_id, user_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
     let mut redis = state.redis.clone();

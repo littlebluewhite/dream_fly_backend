@@ -5,7 +5,6 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
@@ -29,7 +28,6 @@ pub async fn submit(
 #[tracing::instrument(skip_all)]
 pub async fn list(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<InquiryListResponse>, AppError> {
     let result = service::list_inquiries(&state.db, &params).await?;
@@ -41,7 +39,6 @@ pub async fn list(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateInquiryRequest>,
 ) -> Result<Json<InquiryResponse>, AppError> {

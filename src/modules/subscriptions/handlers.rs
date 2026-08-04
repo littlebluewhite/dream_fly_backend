@@ -26,7 +26,6 @@ pub async fn me(
 #[tracing::instrument(skip_all)]
 pub async fn redeem(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<SubscriptionResponse>, AppError> {
     let id: Uuid = id

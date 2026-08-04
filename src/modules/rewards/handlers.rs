@@ -61,7 +61,6 @@ pub async fn my_redemptions(
 #[tracing::instrument(skip_all)]
 pub async fn create(
     State(state): State<AppState>,
-    _auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateRewardRequest>,
 ) -> Result<Json<RewardResponse>, AppError> {
     let result = service::create(&state.db, req).await?;
@@ -72,7 +71,6 @@ pub async fn create(
 #[tracing::instrument(skip_all)]
 pub async fn update(
     State(state): State<AppState>,
-    _auth: AuthUser,
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateRewardRequest>,
 ) -> Result<Json<RewardResponse>, AppError> {
