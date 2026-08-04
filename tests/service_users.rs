@@ -15,6 +15,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use common::fixtures::set_points_balance;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::users::dto::UpdateProfileRequest;
@@ -45,12 +46,7 @@ async fn get_me_returns_seeded_profile(db: PgPool) {
 #[sqlx::test]
 async fn get_me_includes_points_balance(db: PgPool) {
     let user_id = common::seed_member(&db, "points@example.com", "hunter22-secret").await;
-    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
-        .bind(user_id)
-        .bind(750_i64)
-        .execute(&db)
-        .await
-        .expect("bump points_balance");
+    set_points_balance(&db, user_id, 750).await;
 
     let resp = service::get_me(&db, user_id).await.expect("get_me");
 

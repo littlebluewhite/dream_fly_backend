@@ -2,6 +2,7 @@
 
 mod common;
 
+use common::fixtures::set_points_balance;
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -53,12 +54,7 @@ async fn me_as_admin_returns_admin_role(db: PgPool) {
 async fn me_includes_points_balance(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("points@example.com", "Password!234").await;
-    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
-        .bind(user.user_id)
-        .bind(500_i64)
-        .execute(&app.db)
-        .await
-        .expect("bump points_balance");
+    set_points_balance(&app.db, user.user_id, 500).await;
 
     let resp = app
         .get("/api/v1/users/me")
@@ -182,12 +178,7 @@ async fn list_users_as_admin_includes_roles_per_user(db: PgPool) {
 async fn list_users_as_admin_includes_points_balance(db: PgPool) {
     let app = spawn_test_app(db).await;
     let member = app.register_member("listpoints@example.com", "Password!234").await;
-    sqlx::query("UPDATE users SET points_balance = $2 WHERE id = $1")
-        .bind(member.user_id)
-        .bind(300_i64)
-        .execute(&app.db)
-        .await
-        .expect("bump points_balance");
+    set_points_balance(&app.db, member.user_id, 300).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     let resp = app
