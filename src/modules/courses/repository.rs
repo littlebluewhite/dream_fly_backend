@@ -65,7 +65,7 @@ pub async fn find_all_active(
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
          FROM courses c WHERE c.is_active = true ORDER BY c.name \
          LIMIT $1 OFFSET $2",
     )
@@ -87,7 +87,7 @@ pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sql
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
          FROM courses c WHERE LOWER(c.slug) = LOWER($1)",
     )
     .bind(slug)
@@ -101,7 +101,7 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::E
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
          FROM courses c WHERE c.id = $1",
     )
     .bind(id)
@@ -117,7 +117,7 @@ pub async fn find_active_by_slug(db: &PgPool, slug: &str) -> Result<Option<Cours
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
          FROM courses c WHERE LOWER(c.slug) = LOWER($1) AND c.is_active = true",
     )
     .bind(slug)
@@ -133,7 +133,7 @@ pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, 
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
          FROM courses c WHERE c.id = $1 AND c.is_active = true",
     )
     .bind(id)
@@ -180,7 +180,7 @@ pub async fn create(
          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
+         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count",
     )
     .bind(input.name)
     .bind(input.slug)
@@ -260,7 +260,7 @@ pub async fn update(
           c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
           c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
           (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-          (SELECT COUNT(*) FROM waitlist_entries w WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count",
+          (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count",
     );
 
     qb.build_query_as::<Course>().fetch_optional(executor).await

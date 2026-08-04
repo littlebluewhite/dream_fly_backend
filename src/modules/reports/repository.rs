@@ -278,8 +278,8 @@ pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Er
                 (SELECT COUNT(*) FROM active_enrolments e \
                   WHERE e.course_id = c.id) AS enrolled, \
                 c.max_students, \
-                (SELECT COUNT(*) FROM waitlist_entries w \
-                  WHERE w.course_id = c.id AND w.status = 'waiting') AS waitlist_count \
+                (SELECT COUNT(*) FROM waiting_entries w \
+                  WHERE w.course_id = c.id) AS waitlist_count \
          FROM courses c \
          ORDER BY c.name, c.id",
     )

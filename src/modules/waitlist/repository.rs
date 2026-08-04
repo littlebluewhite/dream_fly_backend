@@ -13,7 +13,7 @@ pub async fn exists_waiting(
     course_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM waitlist_entries WHERE user_id = $1 AND course_id = $2 AND status = 'waiting')",
+        "SELECT EXISTS(SELECT 1 FROM waiting_entries WHERE user_id = $1 AND course_id = $2)",
     )
     .bind(user_id)
     .bind(course_id)
@@ -97,9 +97,9 @@ pub async fn find_by_course_waiting(
 ) -> Result<Vec<WaitlistEntryWithCourse>, sqlx::Error> {
     sqlx::query_as::<_, WaitlistEntryWithCourse>(
         "SELECT w.id, w.course_id, c.name AS course_name, w.status, w.created_at \
-         FROM waitlist_entries w \
+         FROM waiting_entries w \
          JOIN courses c ON c.id = w.course_id \
-         WHERE w.course_id = $1 AND w.status = 'waiting'::waitlist_status \
+         WHERE w.course_id = $1 \
          ORDER BY w.created_at ASC",
     )
     .bind(course_id)
