@@ -69,6 +69,7 @@
 
 - Query 參數：`page`（預設 1）、`per_page`（預設 20，最大 **100**，超過會被 clamp，不會報錯）。
 - 分頁回應形狀一律為：`{ "<items_key>": [...], "total": number, "page": number, "per_page": number }`。
+- `page` 若帶 `0`，一律視同 `1`（查詢照第 1 頁執行,不報錯）;回應 `meta` 的 `page` 欄位保證回報 clamp 後的值,恆 `>= 1`——不會出現「查的是第 1 頁、`page` 欄位卻回 `0`」這種欄位與實際查詢頁碼不一致的情況。
 - **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）、`GET /leave-requests`（admin/coach，見 §3.20）、`GET /conversations/{id}/messages`（見 §3.21）、`GET /rewards/redemptions/me`（見 §3.23）。
 - **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）、`GET /report-cards/me`、`GET /certificates/me`（後兩者見 §3.22）、`GET /rewards`（見 §3.23）。
 
