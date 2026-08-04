@@ -32,13 +32,17 @@ impl OrderStatus {
     /// shipped, once completed it cannot be reverted.
     pub fn can_transition_to(&self, next: &Self) -> bool {
         use OrderStatus::*;
-        match (self, next) {
-            (Pending, Paid) | (Pending, Cancelled) => true,
-            (Paid, Processing) | (Paid, Refunded) | (Paid, Cancelled) => true,
-            (Processing, Completed) | (Processing, Refunded) => true,
-            (Completed, Refunded) => true,
-            _ => false,
-        }
+        matches!(
+            (self, next),
+            (Pending, Paid)
+                | (Pending, Cancelled)
+                | (Paid, Processing)
+                | (Paid, Refunded)
+                | (Paid, Cancelled)
+                | (Processing, Completed)
+                | (Processing, Refunded)
+                | (Completed, Refunded)
+        )
     }
 
     /// 計入營收的狀態。本謂詞是窮盡 match(無 `_` arm)——新增

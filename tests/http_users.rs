@@ -375,11 +375,13 @@ async fn admin_create_user_writes_user_registered_outbox_event(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 
-    let correlation_id: String =
-        sqlx::query_scalar("SELECT payload->>'correlation_id' FROM events_outbox")
-            .fetch_one(&app.db)
-            .await
-            .expect("user_registered outbox row");
+    let correlation_id: String = sqlx::query_scalar(
+        "SELECT payload->>'correlation_id' FROM events_outbox \
+         WHERE payload->>'event_type' = 'user_registered'",
+    )
+    .fetch_one(&app.db)
+    .await
+    .expect("user_registered outbox row");
     assert_eq!(correlation_id, "rid-admin-create-1");
 }
 

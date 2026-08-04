@@ -113,7 +113,7 @@ pub async fn create_account(
     )
     .await?;
 
-    let dirty = permissions_repository::assign_role_by_name(&mut **tx, user.id, "member").await?;
+    let dirty = permissions_repository::assign_role_by_name(tx, user.id, "member").await?;
 
     outbox::insert_domain_event_tx(
         tx,

@@ -233,7 +233,7 @@ impl TestApp {
             // `revoke_user`) runs right after `commit` below and clears the
             // role + active cache unconditionally, so a per-call flush would
             // be redundant.
-            let _ = permissions_repository::assign_role_by_name(&mut tx, user.id, *role)
+            let _ = permissions_repository::assign_role_by_name(&mut tx, user.id, role)
                 .await
                 .expect("assign role");
         }

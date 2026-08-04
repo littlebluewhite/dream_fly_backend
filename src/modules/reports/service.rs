@@ -27,7 +27,11 @@ const COACH_ATTENDANCE_WINDOW_DAYS: i64 = 30;
 /// each query repeating its own "12"/"11 months" literal. `months` only
 /// exists as a SQL bind parameter so the three queries share one window
 /// idiom; it is not a tunable/configurable setting — every call site below
-/// passes this constant verbatim.
+/// passes this constant verbatim. The wire field names `revenue_cents_12m`
+/// and `income_sources_12m` bake the "12" in literally too — changing this
+/// constant's window length would require renaming those fields to match,
+/// which is the concrete reason this is "not tunable" rather than merely
+/// undocumented.
 const TRAILING_WINDOW_MONTHS: i32 = 12;
 
 /// Forward window for a member's "upcoming sessions" count. Mirrors

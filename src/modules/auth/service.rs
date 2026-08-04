@@ -97,8 +97,9 @@ pub async fn register(
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
 
-    // Build tokens before publishing: if token generation fails the entire
-    // transaction rolls back — no phantom user row.
+    // If token generation fails here, the entire transaction — including the
+    // event row `create_account` already queued — rolls back: no phantom
+    // user row.
     let response = issue_session(&mut tx, config, &provisioned.user).await?;
 
     tx.commit().await?;

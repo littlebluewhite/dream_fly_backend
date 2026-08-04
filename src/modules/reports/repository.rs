@@ -96,7 +96,7 @@ pub async fn member_stats(
 ///   排除)bucketed by the session's `session_date` (already a studio-local
 ///   date per contract §3.18), for the service's `attendance_rate` =
 ///   present/(present+absent),`leave` 不入分母;無資料月 → null (via
-///   `service::safe_ratio`).
+///   `assembly::safe_ratio`).
 pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiRow, sqlx::Error> {
     // new_enrolments_this/_last 刻意不換底至 active_enrolments view——量的是「報名事件」(status <> 'cancelled' + created_at 分桶),非「目前占位」,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, KpiRow>(
@@ -305,7 +305,7 @@ pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Er
 /// present/(present+absent),`leave` 不入分母**。These are the raw all-time
 /// present/absent counts across the coach's courses' sessions; the service
 /// derives `attendance_rate` = present/(present+absent) (無資料 → null) via
-/// `service::safe_ratio`. No date window (unlike the coach dashboard's
+/// `assembly::safe_ratio`. No date window (unlike the coach dashboard's
 /// `attendance_rate_30d`), per the task brief.
 pub async fn coach_reports(
     db: &PgPool,
@@ -474,7 +474,7 @@ pub async fn tier_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>, sqlx:
 /// month's active members whose **first-ever** active month is M;
 /// `returning_count` counts those with an earlier active month.
 /// `prev_active_count` = |上月活躍| and `retained_count` = |上月活躍 ∩
-/// 本月活躍| are the raw inputs `service` turns into `rate` via `safe_ratio`
+/// 本月活躍| are the raw inputs `reports::assembly` turns into `rate` via `safe_ratio`
 /// (上月空集合 → null). `first_active` scans *all* history (not just the
 /// 6-month window) so「首次活躍」is judged against the member's whole past.
 /// Session month uses `date_trunc` on `session_date` (already a studio-local

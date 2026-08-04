@@ -167,6 +167,14 @@ fn should_stamp_published_at(
     matches!(new_status, Some(PostStatus::Published)) && existing_published_at.is_none()
 }
 
+pub async fn delete_post(db: &PgPool, id: Uuid) -> Result<(), AppError> {
+    let deleted = repository::delete(db, id).await?;
+    if !deleted {
+        return Err(AppError::NotFound("post not found".into()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,12 +196,4 @@ mod tests {
     fn should_stamp_published_at_false_when_not_transitioning_to_published() {
         assert!(!should_stamp_published_at(Some(&PostStatus::Draft), None));
     }
-}
-
-pub async fn delete_post(db: &PgPool, id: Uuid) -> Result<(), AppError> {
-    let deleted = repository::delete(db, id).await?;
-    if !deleted {
-        return Err(AppError::NotFound("post not found".into()));
-    }
-    Ok(())
 }

@@ -31,7 +31,7 @@ pub struct AdminMembersSection {
 /// `fill_rate` is `None` when `max_students` is 0 — cannot happen through
 /// normal writes (`courses_max_students_pos CHECK (max_students > 0)`), but
 /// the divide-by-zero guard is defensive rather than trusting the DB
-/// constraint to hold forever (see `service::safe_ratio`).
+/// constraint to hold forever (see `assembly::safe_ratio`).
 #[derive(Debug, Serialize)]
 pub struct AdminCourseReportRow {
     pub course_id: Uuid,
@@ -48,7 +48,7 @@ pub struct AdminCourseReportRow {
 /// 月(與 `revenue.trend` 同窗)。
 ///
 /// `attendance_rate` (Round 4 Phase 4) 口徑:**該教練課程的 present/(present
-/// +absent),`leave` 不入分母**(全期,無出勤資料 → null,與 `service::
+/// +absent),`leave` 不入分母**(全期,無出勤資料 → null,與 `assembly::
 /// safe_ratio` 同語意)。
 #[derive(Debug, Serialize)]
 pub struct AdminCoachReportRow {
@@ -126,7 +126,7 @@ pub struct MonthPair {
 }
 
 /// A this/last studio-month ratio pair (0–1). `None` = 無資料月 → null —
-/// undefined, not zero (see `service::safe_ratio`).
+/// undefined, not zero (see `assembly::safe_ratio`).
 #[derive(Debug, Serialize)]
 pub struct RateMonthPair {
     pub this_month: Option<f64>,

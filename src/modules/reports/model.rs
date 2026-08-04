@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// One row of `GET /reports/admin`'s `courses` list, before `fill_rate` is
-/// derived (see `service::safe_ratio`).
+/// derived (see `assembly::safe_ratio`).
 #[derive(Debug, sqlx::FromRow)]
 pub struct AdminCourseRow {
     pub course_id: Uuid,
@@ -33,7 +33,7 @@ pub struct AdminCourseRow {
 /// `repository::coach_reports`. `att_present`/`att_absent` are the raw
 /// present/absent counts across the coach's courses (all-time, `leave`
 /// excluded) the service turns into `attendance_rate` = present/(present+
-/// absent) via `service::safe_ratio` (無資料 → null).
+/// absent) via `assembly::safe_ratio` (無資料 → null).
 #[derive(Debug, sqlx::FromRow)]
 pub struct AdminCoachRow {
     pub coach_id: Uuid,
@@ -62,7 +62,7 @@ pub struct BucketCountRow {
 /// active members (≥1 `present`) by whether this is their first-ever active
 /// month; `prev_active_count`/`retained_count` are the raw inputs the service
 /// turns into `rate` = |上月活躍 ∩ 本月活躍| / |上月活躍| via
-/// `service::safe_ratio` (上月空集合 → null). `month` is `YYYY-MM` in the
+/// `assembly::safe_ratio` (上月空集合 → null). `month` is `YYYY-MM` in the
 /// studio timezone.
 #[derive(Debug, sqlx::FromRow)]
 pub struct RetentionRow {
@@ -109,7 +109,7 @@ pub struct FunnelRow {
 /// One row of `repository::kpis`'s single multi-scalar-subquery SELECT —
 /// three this/last studio-month count pairs plus the raw present/absent
 /// counts the service turns into `attendance_rate` (present/(present+
-/// absent), `leave` 不入分母;無資料月 → null via `service::safe_ratio`).
+/// absent), `leave` 不入分母;無資料月 → null via `assembly::safe_ratio`).
 #[derive(Debug, sqlx::FromRow)]
 pub struct KpiRow {
     pub new_members_this: i64,
