@@ -1,11 +1,18 @@
-//! Course 讀寫。以下每個 SELECT 重複出現的 `enrolled_count` correlated
-//! subquery 是座位 COUNT 謂詞的**顯示用 inline 拷貝**;謂詞本身已下沉為
-//! `active_enrolments` view(migration `20260711000001`)單一持有——多處
-//! 拷貝共享同一份 view 定義,不再需要「先改 `courses::seats` 的謂詞、
-//! 再人肉同步這些拷貝」的慣例。拷貝仍刻意保留 inline(不函式化、不共用
-//! SQL const):函式化會把單查詢列表變成 N+1;共用 const 則需要 `format!`
-//! 組裝,犧牲字串 SQL 的可 grep 性(deletion-test 裁決;見 `seats.rs` 模組
-//! doc)。
+//! Course 讀寫。以下每個 SELECT 重複出現的 `enrolled_count`/`waitlist_count`
+//! correlated subquery 是座位/候補 COUNT 的**顯示用讀取**;COUNT 謂詞本身
+//! 已分別下沉為 `active_enrolments`(migration `20260711000001`)、
+//! `waiting_entries`(migration `20260803000002`)兩個 view 單一持有——座位
+//! 判斷邏輯的唯一 owner 是 `courses::seats`(見該模組 doc),本檔的子查詢
+//! 只是讀取該 view,不重複持有判斷邏輯。
+//!
+//! 18 欄 course 直接欄位 + 上述兩個相關子查詢,合計投影曾裁決刻意保留
+//! inline、不 const 化:函式化會把單查詢列表變成 N+1;共用 const 則需要
+//! `format!` 組裝,犧牲字串 SQL 的可 grep 性。`seats.rs` 模組 doc 已指出
+//! view 換底後這兩個反對理由皆不成立;本輪(Phase 7)據此推翻舊裁決——
+//! `COURSE_COLUMNS` const(fragment + `format!`;const 化慣例前例:
+//! `coupons::repository`,`src/modules/coupons/repository.rs:36`)單一持有
+//! 這 18+2 欄投影,套用到本檔全部 7 個投影站:`SELECT` 讀側與
+//! `create`/`update` 的 `RETURNING` 共用同一份定義,不再各自手抄。
 
 use chrono::NaiveTime;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -55,20 +62,28 @@ pub struct CourseUpdate<'a> {
     pub is_highlighted: Option<bool>,
 }
 
+/// courses 的 18 欄直接欄位 + `active_enrolments`/`waiting_entries` 兩個相關
+/// 子查詢,供本檔全部 7 個投影站共用(`SELECT` 讀側,以及 `create`/`update`
+/// 的 `RETURNING`)。子查詢引用外層別名 `c`——本檔每個使用點都以
+/// `FROM courses c`/`INSERT INTO courses AS c`/`UPDATE courses AS c` 提供
+/// 該別名。
+const COURSE_COLUMNS: &str =
+    "c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+     c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
+     c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
+     (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
+     (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count";
+
 pub async fn find_all_active(
     db: &PgPool,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<Course>, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
-        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
+    sqlx::query_as::<_, Course>(sqlx::AssertSqlSafe(format!(
+        "SELECT {COURSE_COLUMNS} \
          FROM courses c WHERE c.is_active = true ORDER BY c.name \
-         LIMIT $1 OFFSET $2",
-    )
+         LIMIT $1 OFFSET $2"
+    )))
     .bind(limit as i64)
     .bind(offset as i64)
     .fetch_all(db)
@@ -82,28 +97,18 @@ pub async fn count_active(db: &PgPool) -> Result<i64, sqlx::Error> {
 }
 
 pub async fn find_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
-        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
-         FROM courses c WHERE LOWER(c.slug) = LOWER($1)",
-    )
+    sqlx::query_as::<_, Course>(sqlx::AssertSqlSafe(format!(
+        "SELECT {COURSE_COLUMNS} FROM courses c WHERE LOWER(c.slug) = LOWER($1)"
+    )))
     .bind(slug)
     .fetch_optional(db)
     .await
 }
 
 pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
-        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
-         FROM courses c WHERE c.id = $1",
-    )
+    sqlx::query_as::<_, Course>(sqlx::AssertSqlSafe(format!(
+        "SELECT {COURSE_COLUMNS} FROM courses c WHERE c.id = $1"
+    )))
     .bind(id)
     .fetch_optional(db)
     .await
@@ -112,14 +117,10 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::E
 /// Public-facing lookup — only returns an active row. Template:
 /// `posts::repository::find_published_by_slug`.
 pub async fn find_active_by_slug(db: &PgPool, slug: &str) -> Result<Option<Course>, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
-        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
-         FROM courses c WHERE LOWER(c.slug) = LOWER($1) AND c.is_active = true",
-    )
+    sqlx::query_as::<_, Course>(sqlx::AssertSqlSafe(format!(
+        "SELECT {COURSE_COLUMNS} FROM courses c \
+         WHERE LOWER(c.slug) = LOWER($1) AND c.is_active = true"
+    )))
     .bind(slug)
     .fetch_optional(db)
     .await
@@ -128,14 +129,9 @@ pub async fn find_active_by_slug(db: &PgPool, slug: &str) -> Result<Option<Cours
 /// Public-facing lookup — only returns an active row. Template:
 /// `posts::repository::find_published_by_id`.
 pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Course>, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
-        "SELECT c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count \
-         FROM courses c WHERE c.id = $1 AND c.is_active = true",
-    )
+    sqlx::query_as::<_, Course>(sqlx::AssertSqlSafe(format!(
+        "SELECT {COURSE_COLUMNS} FROM courses c WHERE c.id = $1 AND c.is_active = true"
+    )))
     .bind(id)
     .fetch_optional(db)
     .await
@@ -171,17 +167,13 @@ pub async fn create(
     tx: &mut Transaction<'_, Postgres>,
     input: CourseCreate<'_>,
 ) -> Result<Course, sqlx::Error> {
-    sqlx::query_as::<_, Course>(
+    sqlx::query_as::<_, Course>(sqlx::AssertSqlSafe(format!(
         "INSERT INTO courses AS c (id, name, slug, level, description, duration_minutes, price_cents, \
          max_students, min_age, max_age, features, coach_id, category, schedule_text, is_highlighted, \
          created_at, updated_at) \
          VALUES (gen_random_uuid(), $1, $2, $3::course_level, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now()) \
-         RETURNING c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-         c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-         c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-         (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-         (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count",
-    )
+         RETURNING {COURSE_COLUMNS}"
+    )))
     .bind(input.name)
     .bind(input.slug)
     .bind(input.level.as_str())
@@ -255,13 +247,7 @@ pub async fn update(
     }
 
     qb.push(" WHERE c.id = ").push_bind(id);
-    qb.push(
-        " RETURNING c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
-          c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
-          c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
-          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
-          (SELECT COUNT(*) FROM waiting_entries w WHERE w.course_id = c.id) AS waitlist_count",
-    );
+    qb.push(format!(" RETURNING {COURSE_COLUMNS}"));
 
     qb.build_query_as::<Course>().fetch_optional(executor).await
 }
