@@ -355,6 +355,15 @@ pub fn validate_production_config(config: &AppConfig, env: &AppEnv) -> anyhow::R
              Set APP__AUTH__JWT_SECRET to a long random string."
         );
     }
+    // Unreachable on the real `main()` startup path: `AppConfig::load()`
+    // already runs this same predicate under its `!is_development()` gate
+    // (a strict superset of `is_production()`) and `?`-short-circuits
+    // before this function is ever called — a production secret containing
+    // "dev-only" is already rejected there, just with `load()`'s generic
+    // message instead of this one (net effect unchanged: both refuse to
+    // start). Kept as defense-in-depth: `validate_production_config` must
+    // hold on its own for *any* caller, not just `main()` — e.g. a
+    // hand-built `AppConfig` that never went through `load()`.
     if jwt_secret_is_placeholder(&config.auth.jwt_secret) {
         anyhow::bail!(
             "APP_ENV=production but auth.jwt_secret looks like a placeholder. Refusing to start."
