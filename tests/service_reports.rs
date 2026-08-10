@@ -25,6 +25,7 @@ use chrono_tz::Tz;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use dream_fly_backend::config::ServerConfig;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::reports::service;
 use dream_fly_backend::utils::studio_clock;
@@ -1330,6 +1331,128 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
         "oldest rows must have been dropped by the 20-cap, got {:?}",
         report.items.iter().map(|i| i.occurred_at).collect::<Vec<_>>()
     );
+}
+
+// ---------------------------------------------------------------------------
+// GET /reports/admin — Asia/Taipei 光源測試(studio timezone wiring anchor)
+// ---------------------------------------------------------------------------
+
+/// 錨定(anchoring)測試,不是紅綠:現行的 13 站 row 側 `AT TIME ZONE $2`
+/// (`revenue_trend`/`member_stats`/`kpis`/…)佈線本來就是對的,這個測試第一
+/// 次跑就該綠。它的價值不是抓現有 bug,而是把「未來有人把 studio timezone
+/// 佈線改壞」這一整類 bug 從結構上不可測變成可測——見下方「判別力」段落。
+///
+/// 動機:本檔其餘每個測試都呼叫 `test_server_config()`,把 `studio_timezone`
+/// 釘死在 `"UTC"`。`AT TIME ZONE 'UTC'` 對一個本來就以 UTC 儲存的
+/// `TIMESTAMPTZ` 是 no-op——不管 13 站查詢的 `tz_name` 綁定有沒有正確接上
+/// `server.studio_timezone`,SQL 算出來的結果都一樣,這一整類佈線 bug 因此
+/// 是 identity-input,結構上測不出來。本測試改用 `Asia/Taipei`(UTC+8,無
+/// DST)才能讓「該轉但沒轉」與「轉對了」產生可觀察的差異。
+///
+/// 樣本設計:`now` 與訂單/會員的兩個時間戳卡在 UTC `2026-06-30 16:00:00`
+/// 前後各 1 秒——這正是台北午夜的瞬間(`15:59:59Z` = 台北 6/30 23:59:59,
+/// studio 上月;`16:00:01Z` = 台北 7/1 00:00:01,studio 本月)。兩個瞬間在
+/// UTC 底下同屬 6/30、只差 2 秒;只有正確接上 `Asia/Taipei`,後者才會被推
+/// 過月界線分進 7 月桶。
+///
+/// 判別力(task report 附了把 `studio_timezone` 換回 `"UTC"` 重跑同一組樣
+/// 本的實驗紀錄):`studio_month_anchor(now, "UTC")` 退化成 6 月而非 7 月
+/// ——`revenue.trend` 尾桶月份標籤直接變成 `"2026-06"`("2026-07" 桶整個
+/// 從 12 個月窗消失);兩筆訂單的 `paid_at AT TIME ZONE 'UTC'` 都還落在
+/// 6/30、一起歸戶「本月」,`paid_orders_this` 從 1 錯成 2、`paid_orders_
+/// last` 從 1 錯成 0;會員 X/Y 與 buyer 三人 backdate 的瞬間同樣全數落回
+/// 「本月」,`new_this_month` 從 1 錯成 3。出勤這一站的 `session_date` 本
+/// 身是不經 `AT TIME ZONE` 轉換的裸日期(§3.18),`attendance_rate.
+/// this_month` 數字巧合仍是 `Some(1.0)`,但 `attendance_rate.last_month`
+/// 從 `Some(1.0)` 錯成 `None`(7 月場次在 UTC 的月界線兩側都對不上,直接
+/// 從統計消失)。整組斷言在 UTC 恆等式下無法全數通過,證明這批樣本確實逼
+/// 出了 13 站佈線的存在。
+#[sqlx::test]
+async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
+    let server = ServerConfig {
+        host: "0.0.0.0".into(),
+        port: 3000,
+        allowed_origins: vec![],
+        trust_proxy: false,
+        studio_timezone: "Asia/Taipei".into(),
+    };
+    let now = Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 30).unwrap();
+    // 台北 6/30 23:59:59 — studio 上月的瞬間。
+    let before_midnight = Utc.with_ymd_and_hms(2026, 6, 30, 15, 59, 59).unwrap();
+    // 台北 7/1 00:00:01 — studio 本月的瞬間。
+    let after_midnight = Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 1).unwrap();
+
+    // 訂單 A(上月)/ B(本月)。buyer 的 created_at 也 backdate 到兩個基準
+    // 瞬間之一——本測試 seed 出的所有 user 一律如此,避免真實牆鐘「今天」
+    // 污染 members.new_this_month。
+    let buyer = seed_member(&db, "tz-light-buyer@example.com", "Password!234").await;
+    backdate_user(&db, buyer, before_midnight).await;
+    seed_order_bare(&db, buyer, "paid", 10_000, Some(before_midnight)).await; // 訂單 A
+    seed_order_bare(&db, buyer, "paid", 3_000, Some(after_midnight)).await; // 訂單 B
+
+    // 會員 X(backdate 到本月瞬間)/ Y(backdate 到上月瞬間)。兩人同時充當
+    // 出勤場景的當事人,省下再造兩個新帳號、還要各自 backdate 的重複。
+    let member_x = seed_member(&db, "tz-light-member-x@example.com", "Password!234").await;
+    backdate_user(&db, member_x, after_midnight).await;
+    let member_y = seed_member(&db, "tz-light-member-y@example.com", "Password!234").await;
+    backdate_user(&db, member_y, before_midnight).await;
+
+    // 出勤:7/1(台北,本月)與 6/30(台北,上月)各一場 session + 各一筆
+    // present。`session_date` 已是 studio-local 裸日期(contract §3.18),
+    // 直接指定目標月份即可,不必再經過 UTC 換算。
+    let course_id = seed_course(&db, "TZ Light Course", None).await;
+    let enrolment_x = seed_enrolment(&db, member_x, course_id, "active", now).await;
+    let enrolment_y = seed_enrolment(&db, member_y, course_id, "active", now).await;
+    let session_this_month = seed_course_session(
+        &db,
+        course_id,
+        NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+        t(9, 0),
+        t(10, 0),
+    )
+    .await;
+    let session_last_month = seed_course_session(
+        &db,
+        course_id,
+        NaiveDate::from_ymd_opt(2026, 6, 30).unwrap(),
+        t(9, 0),
+        t(10, 0),
+    )
+    .await;
+    seed_attendance(&db, session_this_month, enrolment_x, "present", member_x).await;
+    seed_attendance(&db, session_last_month, enrolment_y, "present", member_y).await;
+
+    let report = service::admin_report(&db, &server, now).await.expect("admin_report");
+
+    // revenue.trend 尾桶(本月)/ 前一桶(上月)——UTC 恆等式下尾桶標籤會
+    // 直接變成 "2026-06","2026-07" 桶整個消失於 12 個月窗外。
+    let trend = &report.revenue.trend;
+    assert_eq!(trend.len(), 12);
+    let this_bucket = trend.last().unwrap();
+    assert_eq!(
+        this_bucket.month, "2026-07",
+        "studio this-month bucket must be July, not UTC's June"
+    );
+    assert_eq!(this_bucket.revenue_cents, 3_000, "訂單 B 落在本月桶");
+    let last_bucket = &trend[trend.len() - 2];
+    assert_eq!(last_bucket.month, "2026-06");
+    assert_eq!(last_bucket.revenue_cents, 10_000, "訂單 A 落在上月桶");
+
+    // kpi.paid_orders_this/last——UTC 恆等式下兩筆訂單會一起落進「本月」
+    // 變成 (2, 0),而非正確的 (1, 1)。
+    assert_eq!(report.kpis.paid_orders_count.this_month, 1);
+    assert_eq!(report.kpis.paid_orders_count.last_month, 1);
+
+    // members.new_this_month——UTC 恆等式下 X/Y/buyer 三人 backdate 的瞬間
+    // 同屬 6/30,會一起落進「本月」變成 3,而非正確的 1(只有 X)。
+    assert_eq!(report.members.new_this_month, 1);
+
+    // 出勤 present_this/present_last:DTO 沒有裸計數欄位,經
+    // `assembly::safe_ratio` 折算成 `kpis.attendance_rate`——present=1、
+    // absent=0 時比率必為 1.0,等價於「該月剛好 1 筆 present、0 筆
+    // absent」。
+    assert_eq!(report.kpis.attendance_rate.this_month, Some(1.0));
+    assert_eq!(report.kpis.attendance_rate.last_month, Some(1.0));
 }
 
 // ---------------------------------------------------------------------------

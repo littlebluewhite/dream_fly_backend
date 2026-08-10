@@ -50,6 +50,7 @@ pub async fn admin_report(
     now: DateTime<Utc>,
 ) -> Result<AdminReportResponse, AppError> {
     let tz_name = server.studio_timezone.as_str();
+    let tz = studio_clock::studio_tz(server);
 
     let trend_rows = repository::revenue_trend(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
     let member_stats = repository::member_stats(db, now, tz_name).await?;
@@ -70,14 +71,14 @@ pub async fn admin_report(
     // be materialized yet (future dates in the current month) — so idempotently
     // materialize the whole month for every course first, mirroring how the
     // coach/member reports materialize their own windows before counting.
-    let today = studio_clock::today(studio_clock::studio_tz(server), now);
+    let today = studio_clock::today(tz, now);
     let (month_start, month_end) = studio_month_bounds(today);
     let all_course_ids = sessions_repository::find_all_course_ids(db).await?;
     let mat =
         sessions_repository::materialize_range(db, &all_course_ids, month_start, month_end).await?;
     let venue_rows = repository::venue_usage(db, &mat).await?;
 
-    let current_month_key = studio_clock::month_key(studio_clock::studio_tz(server), now);
+    let current_month_key = studio_clock::month_key(tz, now);
     let inputs = assembly::AdminReportInputs {
         trend_rows,
         member_stats,
