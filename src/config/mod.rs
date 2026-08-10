@@ -220,13 +220,54 @@ fn env_source() -> config::Environment {
         .prefix("APP")
 }
 
+/// The running deployment environment (`APP_ENV`), e.g. `development`,
+/// `staging`, `production`. Single owner for reading/comparing the env name
+/// — previously read and compared ad hoc (and case-sensitively) at four
+/// separate sites: this module's `load()`, `main.rs`'s production guard,
+/// `main.rs`'s log-format switch, and `bin/seed.rs`'s production refusal.
+///
+/// Not to be confused with the `config` crate's `config::Environment`
+/// (`env_source()` above) — that's a config *source* that reads
+/// `APP__*`-prefixed process env vars into the config tree. This type is
+/// unrelated: it's just "which deployment tier is this process running as".
+pub struct AppEnv(String);
+
+impl AppEnv {
+    /// Reads `APP_ENV`; absent defaults to `"development"`.
+    pub fn from_env() -> Self {
+        Self(std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()))
+    }
+
+    /// Test/construction helper — builds directly from a raw string.
+    pub fn from_raw(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    /// The raw string as configured, case preserved. Used for the
+    /// `config/{env}.toml` overlay filename, which must match the file on
+    /// disk verbatim.
+    pub fn raw(&self) -> &str {
+        &self.0
+    }
+
+    /// Case-insensitive: `development`/`Development`/`DEVELOPMENT` all match.
+    pub fn is_development(&self) -> bool {
+        self.0.eq_ignore_ascii_case("development")
+    }
+
+    /// Case-insensitive: `production`/`Production`/`PRODUCTION` all match.
+    pub fn is_production(&self) -> bool {
+        self.0.eq_ignore_ascii_case("production")
+    }
+}
+
 impl AppConfig {
     pub fn load() -> Result<Self, config::ConfigError> {
-        let env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
+        let env = AppEnv::from_env();
 
         let config = config::Config::builder()
             .add_source(config::File::with_name("config/default"))
-            .add_source(config::File::with_name(&format!("config/{env}")).required(false))
+            .add_source(config::File::with_name(&format!("config/{}", env.raw())).required(false))
             .add_source(env_source())
             .build()?;
 
@@ -256,7 +297,7 @@ impl AppConfig {
         // 32 bytes is the minimum useful HS256 key length (equal to the
         // output size of the HMAC). Anything shorter is trivially
         // brute-forceable offline given any captured token.
-        if env != "development" && app_config.auth.jwt_secret.len() < 32 {
+        if !env.is_development() && app_config.auth.jwt_secret.len() < 32 {
             return Err(config::ConfigError::Message(
                 "auth.jwt_secret must be at least 32 characters outside development".to_string(),
             ));
@@ -264,16 +305,7 @@ impl AppConfig {
 
         // Reject shipped example / placeholder strings so they can't reach a
         // running server even if someone forgets to override them.
-        const FORBIDDEN_SECRETS: &[&str] = &[
-            "change-me-in-production-use-a-long-random-string",
-            "change-me",
-            "your-secret-here",
-        ];
-        if env != "development"
-            && FORBIDDEN_SECRETS
-                .iter()
-                .any(|f| app_config.auth.jwt_secret == *f)
-        {
+        if !env.is_development() && jwt_secret_is_placeholder(&app_config.auth.jwt_secret) {
             return Err(config::ConfigError::Message(
                 "auth.jwt_secret is a placeholder value; refusing to start".to_string(),
             ));
@@ -281,6 +313,99 @@ impl AppConfig {
 
         Ok(app_config)
     }
+}
+
+/// Placeholder/example JWT secrets that must never reach a running server:
+/// the exact strings shipped in docs/examples, plus anything containing
+/// `dev-only` (the convention used by local `.env` files). Shared by
+/// `AppConfig::load()`'s own check above and `validate_production_config`'s
+/// guard below — previously two separately-maintained lists (an exact-match
+/// set here, a `contains("dev-only") || == "change-me"` check in `main.rs`).
+fn jwt_secret_is_placeholder(secret: &str) -> bool {
+    const FORBIDDEN_SECRETS: &[&str] = &[
+        "change-me-in-production-use-a-long-random-string",
+        "change-me",
+        "your-secret-here",
+    ];
+    FORBIDDEN_SECRETS.contains(&secret) || secret.contains("dev-only")
+}
+
+/// Guard against footguns that have historically shipped to prod: weak JWT
+/// secrets, empty CORS whitelist, dev-only secrets leaking into prod,
+/// localhost DB/Redis URLs, missing SMTP credentials.
+pub fn validate_production_config(config: &AppConfig, env: &AppEnv) -> anyhow::Result<()> {
+    if !env.is_production() {
+        // Surface a footgun that applies in every env: trusting XFF without
+        // a reverse proxy that strips it lets clients spoof per-IP rate
+        // limits. We emit a warn rather than bail because legit dev setups
+        // (tunnels, staging behind a proxy) may legitimately want it on.
+        if config.server.trust_proxy {
+            tracing::warn!(
+                "APP__SERVER__TRUST_PROXY=true — this server is trusting X-Forwarded-For. \
+                 Per-IP rate limits can be spoofed unless a reverse proxy strips the header \
+                 for untrusted clients."
+            );
+        }
+        return Ok(());
+    }
+
+    if config.auth.jwt_secret.len() < 32 {
+        anyhow::bail!(
+            "APP_ENV=production but auth.jwt_secret is shorter than 32 chars. \
+             Set APP__AUTH__JWT_SECRET to a long random string."
+        );
+    }
+    if jwt_secret_is_placeholder(&config.auth.jwt_secret) {
+        anyhow::bail!(
+            "APP_ENV=production but auth.jwt_secret looks like a placeholder. Refusing to start."
+        );
+    }
+    if config.server.allowed_origins.is_empty() {
+        anyhow::bail!(
+            "APP_ENV=production but server.allowed_origins is empty. \
+             This would serve any origin via CORS. Set APP__SERVER__ALLOWED_ORIGINS."
+        );
+    }
+
+    // A localhost DB or Redis URL in production almost certainly means the
+    // env files weren't overridden at deploy time. The service would start,
+    // then fail on the first request with a connection error from outside
+    // the pod's network namespace.
+    if config.database.url.contains("localhost") || config.database.url.contains("127.0.0.1") {
+        anyhow::bail!(
+            "APP_ENV=production but database.url points at localhost. \
+             This is almost always a config-overlay mistake. Set APP__DATABASE__URL."
+        );
+    }
+    if config.redis.url.contains("localhost") || config.redis.url.contains("127.0.0.1") {
+        anyhow::bail!(
+            "APP_ENV=production but redis.url points at localhost. \
+             Set APP__REDIS__URL to the production Redis endpoint."
+        );
+    }
+
+    if config.email.smtp_password.is_empty() {
+        anyhow::bail!(
+            "APP_ENV=production but email.smtp_password is empty. \
+             Password reset and OTP emails would fail silently. Set APP__EMAIL__SMTP_PASSWORD."
+        );
+    }
+
+    if config.auth.google_client_id.is_empty() || config.auth.google_client_secret.is_empty() {
+        tracing::warn!(
+            "APP_ENV=production but Google OAuth credentials are missing. \
+             `/auth/google` will fail until APP__AUTH__GOOGLE_CLIENT_{{ID,SECRET}} are set."
+        );
+    }
+
+    if config.server.trust_proxy {
+        tracing::info!(
+            "APP__SERVER__TRUST_PROXY=true — relying on upstream proxy to strip \
+             X-Forwarded-For for untrusted clients. Verify this is the case."
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -408,5 +533,189 @@ mod tests {
             .expect("SmsConfig should deserialize from injected source");
 
         assert_eq!(parsed.sms.twilio_base_url, "https://api.twilio.com");
+    }
+
+    // ------------------------------------------------------------------
+    // AppEnv
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn app_env_is_production_matches_case_insensitively() {
+        assert!(AppEnv::from_raw("production").is_production());
+        assert!(AppEnv::from_raw("Production").is_production());
+        assert!(AppEnv::from_raw("PRODUCTION").is_production());
+    }
+
+    #[test]
+    fn app_env_is_development_matches_case_insensitively() {
+        assert!(AppEnv::from_raw("development").is_development());
+        assert!(AppEnv::from_raw("Development").is_development());
+        assert!(AppEnv::from_raw("DEVELOPMENT").is_development());
+    }
+
+    #[test]
+    fn app_env_from_env_defaults_to_development_when_unset() {
+        // `APP_ENV` is process-global; save/restore around the mutation.
+        // Safe in this binary: no other unit test in `src/**` reads any env
+        // var (`AppEnv::from_env`'s only other caller, `AppConfig::load`, is
+        // never invoked from a unit test — integration tests under `tests/`
+        // build `AppConfig` by hand and run as separate processes anyway, so
+        // they can't race with this one regardless).
+        let original = std::env::var("APP_ENV").ok();
+        unsafe {
+            std::env::remove_var("APP_ENV");
+        }
+
+        let env = AppEnv::from_env();
+
+        if let Some(val) = original {
+            unsafe {
+                std::env::set_var("APP_ENV", val);
+            }
+        }
+
+        assert!(env.is_development());
+    }
+
+    #[test]
+    fn app_env_staging_is_neither_production_nor_development() {
+        let env = AppEnv::from_raw("staging");
+        assert!(!env.is_production());
+        assert!(!env.is_development());
+    }
+
+    // ------------------------------------------------------------------
+    // validate_production_config
+    // ------------------------------------------------------------------
+
+    /// A hand-built `AppConfig` that satisfies every `validate_production_config`
+    /// guard — the baseline for the per-guard cases below, each of which
+    /// clones it and breaks exactly one field. Field shapes mirror
+    /// `tests/common/http.rs::test_app_config` (not reusable here — `tests/`
+    /// isn't reachable from this unit-test module), tuned to pass every
+    /// guard rather than to run against local infra.
+    fn valid_prod_config() -> AppConfig {
+        AppConfig {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 3000,
+                allowed_origins: vec!["https://dreamfly.tw".into()],
+                trust_proxy: false,
+                studio_timezone: "Asia/Taipei".into(),
+            },
+            database: DatabaseConfig {
+                url: "postgres://prod-db.internal:5432/dream_fly".into(),
+                max_connections: 10,
+                min_connections: 2,
+            },
+            redis: RedisConfig {
+                url: "redis://prod-redis.internal:6379".into(),
+            },
+            kafka: KafkaConfig {
+                brokers: "prod-kafka.internal:9092".into(),
+                group_id: "dreamfly".into(),
+                enabled: false,
+            },
+            auth: AuthConfig {
+                jwt_secret: "a-sufficiently-long-random-production-secret-1234".into(),
+                jwt_access_expiration_minutes: 15,
+                jwt_refresh_expiration_days: 30,
+                google_client_id: "prod-client-id".into(),
+                google_client_secret: "prod-client-secret".into(),
+                google_redirect_url: "https://dreamfly.tw/oauth/callback".into(),
+                google_token_url: "https://oauth2.googleapis.com/token".into(),
+                google_jwks_url: "https://www.googleapis.com/oauth2/v3/certs".into(),
+            },
+            email: EmailConfig {
+                smtp_host: "smtp.dreamfly.tw".into(),
+                smtp_port: 587,
+                smtp_username: "noreply@dreamfly.tw".into(),
+                smtp_password: "s3cr3t-smtp-password".into(),
+                from_email: "noreply@dreamfly.tw".into(),
+                from_name: "Dream Fly".into(),
+            },
+            sms: SmsConfig {
+                twilio_account_sid: "AC_prod".into(),
+                twilio_auth_token: "prod-token".into(),
+                twilio_from_number: "+14155551234".into(),
+                twilio_base_url: "https://api.twilio.com".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn validate_production_config_ok_for_non_production_even_with_weak_secret() {
+        let mut config = valid_prod_config();
+        config.auth.jwt_secret = "short".into();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("staging")).is_ok());
+    }
+
+    #[test]
+    fn validate_production_config_rejects_short_jwt_secret() {
+        let mut config = valid_prod_config();
+        config.auth.jwt_secret = "too-short".into();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_err());
+    }
+
+    #[test]
+    fn validate_production_config_rejects_placeholder_jwt_secret() {
+        let mut config = valid_prod_config();
+        config.auth.jwt_secret = "change-me-in-production-use-a-long-random-string".into();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_err());
+    }
+
+    #[test]
+    fn validate_production_config_rejects_empty_allowed_origins() {
+        let mut config = valid_prod_config();
+        config.server.allowed_origins = vec![];
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_err());
+    }
+
+    #[test]
+    fn validate_production_config_rejects_localhost_database_url() {
+        let mut config = valid_prod_config();
+        config.database.url = "postgres://localhost:5432/dream_fly".into();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_err());
+    }
+
+    #[test]
+    fn validate_production_config_rejects_localhost_redis_url() {
+        let mut config = valid_prod_config();
+        config.redis.url = "redis://localhost:6379".into();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_err());
+    }
+
+    #[test]
+    fn validate_production_config_rejects_empty_smtp_password() {
+        let mut config = valid_prod_config();
+        config.email.smtp_password = String::new();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_err());
+    }
+
+    #[test]
+    fn validate_production_config_ok_when_all_guards_satisfied() {
+        let config = valid_prod_config();
+        assert!(validate_production_config(&config, &AppEnv::from_raw("production")).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // jwt_secret_is_placeholder
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn jwt_secret_is_placeholder_matches_known_placeholders() {
+        assert!(jwt_secret_is_placeholder(
+            "change-me-in-production-use-a-long-random-string"
+        ));
+        assert!(jwt_secret_is_placeholder("change-me"));
+        assert!(jwt_secret_is_placeholder("your-secret-here"));
+        assert!(jwt_secret_is_placeholder("my-dev-only-secret-key"));
+    }
+
+    #[test]
+    fn jwt_secret_is_placeholder_rejects_qualified_secret() {
+        assert!(!jwt_secret_is_placeholder(
+            "a-sufficiently-long-random-production-secret-1234"
+        ));
     }
 }

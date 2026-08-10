@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-use dream_fly_backend::config::AppConfig;
+use dream_fly_backend::config::{AppConfig, AppEnv, validate_production_config};
 use dream_fly_backend::kafka;
 use dream_fly_backend::kafka::producer::KafkaPublisher;
 use dream_fly_backend::startup;
@@ -25,85 +25,6 @@ use dream_fly_backend::utils::sms::SmsClient;
 /// (e.g. Kubernetes `terminationGracePeriodSeconds` defaulting to 30s)
 /// will send SIGKILL if we take longer — exit earlier so they don't.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(25);
-
-/// Guard against footguns that have historically shipped to prod: weak JWT
-/// secrets, empty CORS whitelist, dev-only secrets leaking into prod,
-/// localhost DB/Redis URLs, missing SMTP credentials.
-fn validate_production_config(config: &AppConfig) -> anyhow::Result<()> {
-    let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
-    if app_env != "production" {
-        // Surface a footgun that applies in every env: trusting XFF without
-        // a reverse proxy that strips it lets clients spoof per-IP rate
-        // limits. We emit a warn rather than bail because legit dev setups
-        // (tunnels, staging behind a proxy) may legitimately want it on.
-        if config.server.trust_proxy {
-            tracing::warn!(
-                "APP__SERVER__TRUST_PROXY=true — this server is trusting X-Forwarded-For. \
-                 Per-IP rate limits can be spoofed unless a reverse proxy strips the header \
-                 for untrusted clients."
-            );
-        }
-        return Ok(());
-    }
-
-    if config.auth.jwt_secret.len() < 32 {
-        anyhow::bail!(
-            "APP_ENV=production but auth.jwt_secret is shorter than 32 chars. \
-             Set APP__AUTH__JWT_SECRET to a long random string."
-        );
-    }
-    if config.auth.jwt_secret.contains("dev-only") || config.auth.jwt_secret == "change-me" {
-        anyhow::bail!(
-            "APP_ENV=production but auth.jwt_secret looks like a placeholder. Refusing to start."
-        );
-    }
-    if config.server.allowed_origins.is_empty() {
-        anyhow::bail!(
-            "APP_ENV=production but server.allowed_origins is empty. \
-             This would serve any origin via CORS. Set APP__SERVER__ALLOWED_ORIGINS."
-        );
-    }
-
-    // A localhost DB or Redis URL in production almost certainly means the
-    // env files weren't overridden at deploy time. The service would start,
-    // then fail on the first request with a connection error from outside
-    // the pod's network namespace.
-    if config.database.url.contains("localhost") || config.database.url.contains("127.0.0.1") {
-        anyhow::bail!(
-            "APP_ENV=production but database.url points at localhost. \
-             This is almost always a config-overlay mistake. Set APP__DATABASE__URL."
-        );
-    }
-    if config.redis.url.contains("localhost") || config.redis.url.contains("127.0.0.1") {
-        anyhow::bail!(
-            "APP_ENV=production but redis.url points at localhost. \
-             Set APP__REDIS__URL to the production Redis endpoint."
-        );
-    }
-
-    if config.email.smtp_password.is_empty() {
-        anyhow::bail!(
-            "APP_ENV=production but email.smtp_password is empty. \
-             Password reset and OTP emails would fail silently. Set APP__EMAIL__SMTP_PASSWORD."
-        );
-    }
-
-    if config.auth.google_client_id.is_empty() || config.auth.google_client_secret.is_empty() {
-        tracing::warn!(
-            "APP_ENV=production but Google OAuth credentials are missing. \
-             `/auth/google` will fail until APP__AUTH__GOOGLE_CLIENT_{{ID,SECRET}} are set."
-        );
-    }
-
-    if config.server.trust_proxy {
-        tracing::info!(
-            "APP__SERVER__TRUST_PROXY=true — relying on upstream proxy to strip \
-             X-Forwarded-For for untrusted clients. Verify this is the case."
-        );
-    }
-
-    Ok(())
-}
 
 /// Wait for SIGTERM or Ctrl+C. Resolves when either fires.
 ///
@@ -139,13 +60,14 @@ async fn shutdown_signal() {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
+    let app_env = AppEnv::from_env();
+
     // Initialize tracing. Production emits structured JSON so the log
     // aggregator can parse fields; development uses the pretty formatter.
-    let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "dream_fly_backend=debug,tower_http=debug,axum=info".into());
 
-    if app_env == "production" {
+    if app_env.is_production() {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(
@@ -167,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load().context(
         "failed to load configuration — check APP_ENV, config/*.toml overlays, and APP__* env vars",
     )?;
-    validate_production_config(&config)?;
+    validate_production_config(&config, &app_env)?;
     tracing::info!("Configuration loaded");
 
     // Connect to PostgreSQL. `after_connect` pins session-level safety
