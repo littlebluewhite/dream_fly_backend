@@ -455,6 +455,57 @@ async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: P
     assert_eq!(order_count, 1, "replay must not create a second order");
 }
 
+/// A syntactically-illegal `Idempotency-Key` (here: an internal space —
+/// none of `ascii_graphic | '-' | '_'`) is rejected outright with 400
+/// instead of being silently downgraded to an unprotected checkout (the
+/// fail-open behavior this task removes — see
+/// `orders::handlers::extract_idempotency_key`). The request never reaches
+/// the transaction: no order is created and the cart survives untouched,
+/// same contract as the other pre-checkout 4xx rejections above.
+#[sqlx::test]
+async fn checkout_invalid_idempotency_key_returns_400(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app
+        .register_member("bad-idem-key@example.com", "Password!234")
+        .await;
+    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
+
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
+        .await;
+
+    let resp = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .add_header("idempotency-key", "bad key with spaces")
+        .await;
+    assert_eq!(resp.status_code(), 400, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(
+        body["error"],
+        "Idempotency-Key must be 1-128 ASCII printable characters"
+    );
+
+    let order_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user.user_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(order_count, 0, "invalid key must not create an order");
+
+    // Rejected checkout must not clear the cart.
+    let cart = app
+        .get("/api/v1/cart")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(
+        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        1,
+        "cart must survive a rejected checkout"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Refund/cancel compensation row 12: admin refund over HTTP returns the
 // cancelled artifacts — `fetch_artifacts` re-reads the latest

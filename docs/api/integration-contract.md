@@ -90,7 +90,7 @@
 
 ### 1.7 Idempotency-Key（`POST /orders`）
 
-- 結帳請求可帶 `Idempotency-Key` header（任意 1-128 字元的 ASCII 可見字元 / `-` / `_`；不合法格式會被忽略，等同未帶）。
+- 結帳請求可帶 `Idempotency-Key` header（合法格式為 1-128 字元的 ASCII 可見字元 / `-` / `_`，前後空白會先 trim 再驗證；存在但不合法 → 400，`{"error": "Idempotency-Key must be 1-128 ASCII printable characters"}`；**不帶 header 仍為無保護結帳**，見下一點）。
 - 同一使用者、同一 key 重放（無論購物車或 body 是否相同）都會回傳**第一次**呼叫產生的訂單（相同 `order_number`），不會重複扣款、重複建立報名/訂閱、重複發點。
 - 不帶 `Idempotency-Key` 時，每次呼叫都會建立新訂單（無防重放保護）— 前端結帳按鈕應永遠帶上此 header。
 
@@ -572,7 +572,7 @@ Body（皆選填，`UpdateCouponRequest`）：`{ discount_cents?, is_active?, ex
 ### 3.10 Orders
 
 #### `POST /orders` — 需登入（結帳）
-Header（建議）：`Idempotency-Key: <前端產生的唯一字串>`（見 §1.7）。
+Header（建議）：`Idempotency-Key: <前端產生的唯一字串>`（見 §1.7）。key 格式不合法時，整筆結帳回 400，詳見 §1.7 的驗證規則。
 Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body**）：
 
 ```jsonc

@@ -64,15 +64,10 @@ pub async fn checkout(
     // 1. Idempotency pre-check (outside tx). If we've already processed this
     //    key for this user, return the prior order (artifacts included).
     if let Some(key) = &idempotency_key {
-        if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
-            let order = repository::find_by_id(db, existing_id)
-                .await?
-                .ok_or_else(|| {
-                    AppError::Internal(anyhow::anyhow!(
-                        "idempotency row referenced missing order {existing_id}"
-                    ))
-                })?;
-            return assemble_response(db, order, tx_witness::TxReleased::no_open_tx()).await;
+        if let Some(response) =
+            replay_by_key(db, user_id, key, tx_witness::TxReleased::no_open_tx()).await?
+        {
+            return Ok(response);
         }
     }
 
@@ -143,15 +138,8 @@ pub async fn checkout(
         // exactly as before.
         if let Some(key) = &idempotency_key {
             let released = tx_witness::TxReleased::release(tx);
-            if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
-                let existing_order = repository::find_by_id(db, existing_id)
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::Internal(anyhow::anyhow!(
-                            "idempotency row referenced missing order {existing_id}"
-                        ))
-                    })?;
-                return assemble_response(db, existing_order, released).await;
+            if let Some(response) = replay_by_key(db, user_id, key, released).await? {
+                return Ok(response);
             }
         }
         return Err(AppError::BadRequest("cart is empty".into()));
@@ -385,22 +373,19 @@ pub async fn checkout(
             Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
                 // Concurrent retry beat us. Release the tx first — the replay
                 // path's `assemble_response` runs pool queries (shared
-                // self-deadlock rationale in `TxReleased`) — then let the
-                // caller re-read the winning row. On the fall-through
-                // `Conflict` path `released` simply drops unused (the witness
-                // is a permission, not a `#[must_use]` obligation).
+                // self-deadlock rationale in `TxReleased`) — then replay the
+                // winning row. `Ok(None)` here would be an invariant break,
+                // not a legitimate race outcome — see `replay_by_key`'s doc
+                // comment for the unreachability argument.
                 let released = tx_witness::TxReleased::release(tx);
-                if let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? {
-                    let existing_order = repository::find_by_id(db, existing_id)
-                        .await?
-                        .ok_or_else(|| {
-                            AppError::Internal(anyhow::anyhow!(
-                                "idempotency row referenced missing order {existing_id}"
-                            ))
-                        })?;
-                    return assemble_response(db, existing_order, released).await;
-                }
-                return Err(AppError::Conflict("duplicate checkout".into()));
+                let response = replay_by_key(db, user_id, key, released)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Internal(anyhow::anyhow!(
+                            "idempotency unique violation but no committed row"
+                        ))
+                    })?;
+                return Ok(response);
             }
             Err(e) => return Err(AppError::Database(e)),
         }
@@ -466,10 +451,9 @@ mod tx_witness {
     /// caller has to remember.
     ///
     /// Deliberately not `#[must_use]`: the witness is *permission* to call
-    /// `assemble_response`, not an obligation to do anything with it — a path
-    /// that releases its tx and then returns an error (e.g. the unique-
-    /// violation branch falling through to a `Conflict`) legitimately drops it
-    /// unused.
+    /// `assemble_response`, not an obligation to do anything with it —
+    /// `replay_by_key`'s `Ok(None)` arm (no committed row yet for this key)
+    /// legitimately drops a released witness unused.
     ///
     /// Honest residual seam: `no_open_tx` is a caller-attested assertion, not
     /// a machine-checked fact. The two read-only callers (`checkout`'s
@@ -523,6 +507,51 @@ async fn assemble_response(
     let items = repository::find_items_by_order(db, order.id).await?;
     let (enrolments, subscriptions) = fetch_artifacts(db, order.id).await?;
     Ok(OrderResponse::assemble(order, items, enrolments, subscriptions))
+}
+
+/// Look up the order already recorded for `(user_id, key)` and, if one
+/// exists, assemble its full response. This is the shared body of all three
+/// idempotency-replay sites in `checkout`: the pre-check (no tx open yet —
+/// `TxReleased::no_open_tx()`), the empty-cart branch, and the
+/// unique-violation branch (the latter two release their tx first, then
+/// call this).
+///
+/// `Ok(None)` means no row exists yet for `(user_id, key)` — the pre-check
+/// and empty-cart callers fall through and continue (or fail) the checkout
+/// they were already running.
+///
+/// Unreachable-`None` argument for the unique-violation caller specifically
+/// (moved here from that call site, since it justifies how *that caller*
+/// treats `Ok(None)` — see `checkout`'s unique-violation branch): a
+/// PostgreSQL unique-violation on `order_idempotency` means the *other*
+/// transaction that inserted the conflicting row has already committed — an
+/// uncommitted conflicting insert would still be holding its row lock, so
+/// our own insert would block waiting on it rather than fail immediately.
+/// And `order_idempotency` has no DELETE code path anywhere in this
+/// codebase, so a committed row is never removed. Together: by the time the
+/// unique-violation caller reaches this function, the row it is about to
+/// look up is guaranteed to exist — `Ok(None)` there is an invariant break,
+/// not a legitimate outcome to branch on, hence that caller maps it to
+/// `Internal` rather than falling through. **If `order_idempotency` ever
+/// grows a DELETE path, this argument no longer holds and that caller needs
+/// re-auditing.**
+async fn replay_by_key(
+    db: &PgPool,
+    user_id: Uuid,
+    key: &str,
+    released: tx_witness::TxReleased,
+) -> Result<Option<OrderResponse>, AppError> {
+    let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? else {
+        return Ok(None);
+    };
+    let order = repository::find_by_id(db, existing_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!(
+                "idempotency row referenced missing order {existing_id}"
+            ))
+        })?;
+    Ok(Some(assemble_response(db, order, released).await?))
 }
 
 pub async fn get_order(
