@@ -15,6 +15,9 @@
 //! - an event_type outside the known domain families falls back to
 //!   `data.resource` (or `"audit"` when absent) — the original
 //!   `AUDIT_LOG`-topic behavior
+//! - an unmodeled subtype of a known event-type family (e.g.
+//!   `order_refunded`) falls back the same way — no prefix-based shadow
+//!   mapping intercepts it
 //! - a missing `event_id` still writes successfully (fallback id)
 
 mod common;
@@ -258,6 +261,43 @@ async fn unknown_event_type_without_data_resource_defaults_to_audit(db: PgPool) 
     assert_eq!(resource, "audit");
     assert_eq!(row_resource_id, None);
     assert_eq!(row_user_id, None);
+}
+
+#[sqlx::test]
+async fn unmodeled_order_subtype_falls_back_to_data_resource(db: PgPool) {
+    let user_id = common::seed_member(&db, "unmodeled-order@example.com", "password123").await;
+    let resource_id = Uuid::now_v7();
+    let event_id = Uuid::now_v7();
+
+    // "order_refunded" is not in `ALL_SPECS` — only order_created and
+    // order_status_changed are modeled. The now-removed shadow mapping
+    // prefix-matched any `order_*` event_type to resource "order"; this
+    // pins that it's gone by asserting the *data.resource* value ("refund")
+    // wins instead.
+    let payload = json!({
+        "version": 1,
+        "event_id": event_id.to_string(),
+        "event_type": "order_refunded",
+        "data": {
+            "resource": "refund",
+            "resource_id": resource_id.to_string(),
+            "user_id": user_id.to_string(),
+        }
+    })
+    .to_string();
+
+    handle_audit_event(&db, &payload)
+        .await
+        .expect("unmodeled order_refunded subtype with data.resource should be accepted");
+
+    let (row_user_id, action, resource, row_resource_id) = audit_row(&db, event_id).await;
+    assert_eq!(action, "order_refunded");
+    assert_eq!(
+        resource, "refund",
+        "removed prefix shadow mapping must not intercept an unmodeled order_* subtype"
+    );
+    assert_eq!(row_resource_id, Some(resource_id));
+    assert_eq!(row_user_id, Some(user_id));
 }
 
 // ---------------------------------------------------------------------------

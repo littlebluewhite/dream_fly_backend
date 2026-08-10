@@ -23,11 +23,14 @@
 //! The 5 domain payloads don't carry a `data.resource` field the way
 //! hand-authored audit events do (none published today), so without a mapping step every domain
 //! event would collapse onto the generic `"audit"` fallback. [`domain_resource`]
-//! maps `event_type` to the `(resource, id_field)` pair used to populate
-//! `audit_log.resource` / `resource_id`. Anything it doesn't recognize
-//! returns `None`, and the caller falls back to reading `data.resource`
-//! directly (defaulting to `"audit"`) — the reserved `AUDIT_LOG`-topic
-//! behavior, ready for future hand-authored events.
+//! looks up `event_type` in [`spec_for_event_type`] — the same table
+//! producers use — and returns the `(resource, id_field)` pair used to
+//! populate `audit_log.resource` / `resource_id`. An `event_type` not in
+//! that table — including an unmodeled subtype of a known family, e.g. a
+//! future `order_refunded` — returns `None`, and the caller falls back to
+//! reading `data.resource` directly (defaulting to `"audit"`) — the
+//! reserved `AUDIT_LOG`-topic behavior, ready for future hand-authored
+//! events.
 //!
 //! ## Idempotency key
 //!
@@ -62,6 +65,7 @@ use std::collections::HashMap;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::message::BorrowedMessage;
 use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio_stream::StreamExt;
@@ -110,6 +114,61 @@ impl From<sqlx::Error> for ProcessingError {
 /// naturally (Postgres reconnect, Redis flush) but low enough that a truly
 /// poison record doesn't wedge the partition forever.
 const MAX_TRANSIENT_RETRIES: u32 = 5;
+
+/// Outcome of a single poll iteration, classified just enough for [`decide`]
+/// to pick the next [`LoopAction`]. `StreamError` (the stream itself
+/// yielding an error, not a message) rounds out the decision table even
+/// though [`start_consumer`] never constructs it — see the comment at that
+/// call site for why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollOutcome {
+    // Only constructed by the table test below — `start_consumer`'s
+    // stream-Err branch implements this policy directly (see the comment
+    // there) rather than constructing this variant, so it's allowed to be
+    // otherwise-unused rather than a sign of dead code.
+    #[allow(dead_code)]
+    StreamError,
+    NonUtf8Payload,
+    EmptyPayload,
+    HandledOk,
+    HandledPoison,
+    HandledTransient { attempts: u32 },
+}
+
+/// What the loop should do about the current message's offset and retry
+/// bookkeeping, given a [`PollOutcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopAction {
+    /// Commit the offset and drop this message's retry count.
+    CommitAndClear,
+    /// Leave the offset uncommitted (so the message is redelivered) and
+    /// keep the bumped retry count.
+    LeaveForRetry,
+    /// Not a message — just poll again. There's no offset or retry key to
+    /// act on.
+    PollAgain,
+}
+
+/// The consumer loop's full decision table, isolated from IO so it can be
+/// exhaustively unit tested (see `#[cfg(test)]` below) instead of living
+/// only as scattered match arms in [`start_consumer`]. Never logs or
+/// touches the network/DB — every branch's log text stays in the shell.
+fn decide(outcome: &PollOutcome) -> LoopAction {
+    match outcome {
+        PollOutcome::StreamError => LoopAction::PollAgain,
+        PollOutcome::NonUtf8Payload
+        | PollOutcome::EmptyPayload
+        | PollOutcome::HandledOk
+        | PollOutcome::HandledPoison => LoopAction::CommitAndClear,
+        PollOutcome::HandledTransient { attempts } => {
+            if *attempts >= MAX_TRANSIENT_RETRIES {
+                LoopAction::CommitAndClear
+            } else {
+                LoopAction::LeaveForRetry
+            }
+        }
+    }
+}
 
 /// Build a Kafka consumer configured for at-least-once processing:
 /// `enable.auto.commit=false` means we commit *after* we've successfully
@@ -188,6 +247,11 @@ pub async fn start_consumer(
                 let message = match result {
                     Ok(m) => m,
                     Err(e) => {
+                        // Policy: `decide(StreamError) → PollAgain`, pinned
+                        // by the table test on `decide` below. This early
+                        // `continue` is just the control-flow shortcut for
+                        // that policy — a stream error isn't a message, so
+                        // there's no `retry_key` yet and nothing to commit.
                         tracing::error!("Kafka consumer error: {e}");
                         continue;
                     }
@@ -210,14 +274,16 @@ pub async fn start_consumer(
                             poison = "non_utf8_payload",
                             "dropping poison Kafka message: {e}"
                         );
-                        let _ = consumer.commit_message(&message, CommitMode::Async);
-                        retry_counts.remove(&retry_key);
+                        if let LoopAction::CommitAndClear = decide(&PollOutcome::NonUtf8Payload) {
+                            commit_and_clear(&consumer, &message, &retry_key, &mut retry_counts);
+                        }
                         continue;
                     }
                     None => {
                         tracing::warn!(topic = %topic, partition, offset, "empty Kafka payload, skipping");
-                        let _ = consumer.commit_message(&message, CommitMode::Async);
-                        retry_counts.remove(&retry_key);
+                        if let LoopAction::CommitAndClear = decide(&PollOutcome::EmptyPayload) {
+                            commit_and_clear(&consumer, &message, &retry_key, &mut retry_counts);
+                        }
                         continue;
                     }
                 };
@@ -231,10 +297,9 @@ pub async fn start_consumer(
 
                 match handler_result {
                     Ok(()) => {
-                        if let Err(e) = consumer.commit_message(&message, CommitMode::Async) {
-                            tracing::error!(topic = %topic, partition, offset, "commit failed: {e}");
+                        if let LoopAction::CommitAndClear = decide(&PollOutcome::HandledOk) {
+                            commit_and_clear(&consumer, &message, &retry_key, &mut retry_counts);
                         }
-                        retry_counts.remove(&retry_key);
                     }
                     Err(ProcessingError::Poison(reason)) => {
                         // Deterministic failure (malformed JSON, missing
@@ -247,34 +312,44 @@ pub async fn start_consumer(
                             poison = %reason,
                             "dropping poison Kafka message"
                         );
-                        let _ = consumer.commit_message(&message, CommitMode::Async);
-                        retry_counts.remove(&retry_key);
+                        if let LoopAction::CommitAndClear = decide(&PollOutcome::HandledPoison) {
+                            commit_and_clear(&consumer, &message, &retry_key, &mut retry_counts);
+                        }
                     }
                     Err(ProcessingError::Transient(reason)) => {
-                        let attempts = retry_counts.entry(retry_key.clone()).or_insert(0);
-                        *attempts += 1;
+                        let attempts_slot = retry_counts.entry(retry_key.clone()).or_insert(0);
+                        *attempts_slot += 1;
+                        let attempts = *attempts_slot;
 
-                        if *attempts >= MAX_TRANSIENT_RETRIES {
-                            // Escape hatch: after N failed retries, commit
-                            // and log loudly so the partition isn't stuck.
-                            tracing::error!(
-                                topic = %topic,
-                                partition,
-                                offset,
-                                attempts = *attempts,
-                                "transient handler failure exceeded retry cap; dropping: {reason}"
-                            );
-                            let _ = consumer.commit_message(&message, CommitMode::Async);
-                            retry_counts.remove(&retry_key);
-                        } else {
-                            tracing::warn!(
-                                topic = %topic,
-                                partition,
-                                offset,
-                                attempt = *attempts,
-                                max = MAX_TRANSIENT_RETRIES,
-                                "transient handler failure, not committing (will retry): {reason}"
-                            );
+                        match decide(&PollOutcome::HandledTransient { attempts }) {
+                            LoopAction::CommitAndClear => {
+                                // Escape hatch: after N failed retries, commit
+                                // and log loudly so the partition isn't stuck.
+                                tracing::error!(
+                                    topic = %topic,
+                                    partition,
+                                    offset,
+                                    attempts,
+                                    "transient handler failure exceeded retry cap; dropping: {reason}"
+                                );
+                                commit_and_clear(&consumer, &message, &retry_key, &mut retry_counts);
+                            }
+                            LoopAction::LeaveForRetry => {
+                                tracing::warn!(
+                                    topic = %topic,
+                                    partition,
+                                    offset,
+                                    attempt = attempts,
+                                    max = MAX_TRANSIENT_RETRIES,
+                                    "transient handler failure, not committing (will retry): {reason}"
+                                );
+                            }
+                            LoopAction::PollAgain => {
+                                // Never returned for a `HandledTransient`
+                                // outcome — `decide`'s table test pins the
+                                // full mapping. No-op rather than a panic
+                                // if that ever changed.
+                            }
                         }
                     }
                 }
@@ -283,6 +358,30 @@ pub async fn start_consumer(
     }
 
     tracing::info!("Kafka consumer loop exited");
+}
+
+/// Single implementation of the `LoopAction::CommitAndClear` action: commit
+/// the offset and drop this message's retry count. Every branch that stops
+/// retrying (a clean handle, a poison record, a non-UTF-8/empty payload, or
+/// a transient failure that hit the retry cap) funnels through here instead
+/// of five hand-copied commit+remove pairs.
+///
+/// A commit failure is logged and otherwise ignored — the offset is simply
+/// retried on the next commit rather than treated as another processing
+/// failure, so it does not go through `decide` again.
+fn commit_and_clear(
+    consumer: &StreamConsumer,
+    message: &BorrowedMessage<'_>,
+    retry_key: &(String, i32, i64),
+    retry_counts: &mut HashMap<(String, i32, i64), u32>,
+) {
+    let topic = &retry_key.0;
+    let partition = retry_key.1;
+    let offset = retry_key.2;
+    if let Err(e) = consumer.commit_message(message, CommitMode::Async) {
+        tracing::error!(topic = %topic, partition, offset, "commit failed: {e}");
+    }
+    retry_counts.remove(retry_key);
 }
 
 /// Pull a required string field from a JSON value, returning Poison if
@@ -315,34 +414,22 @@ fn optional_uuid_from_data(event: &serde_json::Value, field: &str) -> Option<uui
 /// field the way hand-authored audit events do, so without this mapping
 /// every domain event would collapse onto the generic `"audit"` fallback.
 ///
-/// `order_*` and `booking_*` are prefix-matched (there are two event types
-/// in each family); `user_registered` is matched exactly since it's the
-/// only user-domain event type today. Anything not matched here returns
-/// `None`, and the caller falls back to reading `data.resource` directly
+/// A thin wrapper over [`spec_for_event_type`] — the same table the
+/// producer side uses. An `event_type` not in [`ALL_SPECS`] returns `None`,
+/// and the caller falls back to reading `data.resource` directly
 /// (defaulting to `"audit"`) — the pre-existing `AUDIT_LOG`-topic behavior,
 /// unchanged.
 ///
-/// Looks up [`spec_for_event_type`] first — the same table the producer
-/// side uses — and only falls back to the prefix/exact rules below when it
-/// misses. The fallback exists so an event subtype not (yet) modeled in
-/// `ALL_SPECS` (e.g. a future `order_refunded`) still resolves to the right
-/// resource family instead of collapsing to the generic `"audit"` bucket;
-/// behavior for such unknown subtypes is unchanged from before `EventSpec`
-/// existed.
+/// This used to also prefix-/exact-match `event_type` as a fallback when
+/// the spec lookup missed (`order_*` → `"order"`, `booking_*` →
+/// `"booking"`, `user_registered` → `"user"`). That fallback was dead code
+/// against the current 5 event types — every `order_*`/`booking_*` type
+/// that exists is already in `ALL_SPECS` — and has been removed so it can't
+/// silently shadow a not-yet-modeled subtype of a known family (e.g. a
+/// future `order_refunded`) into the wrong resource; such an event_type now
+/// falls through to `data.resource` like any other unmodeled type.
 fn domain_resource(event_type: &str) -> Option<(&'static str, &'static str)> {
-    if let Some(spec) = spec_for_event_type(event_type) {
-        return Some((spec.resource, spec.id_field));
-    }
-
-    if event_type.starts_with("order_") {
-        Some(("order", "order_id"))
-    } else if event_type.starts_with("booking_") {
-        Some(("booking", "booking_id"))
-    } else if event_type == "user_registered" {
-        Some(("user", "user_id"))
-    } else {
-        None
-    }
+    spec_for_event_type(event_type).map(|s| (s.resource, s.id_field))
 }
 
 /// Resolve the row id for this audit_log insert: the envelope's `event_id`
@@ -404,4 +491,55 @@ pub async fn handle_audit_event(db: &PgPool, payload: &str) -> Result<(), Proces
 
     tracing::debug!(%action, "Audit event recorded");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Table-driven check of `decide`'s full `PollOutcome` → `LoopAction`
+    /// mapping, including the `MAX_TRANSIENT_RETRIES` boundary: an attempt
+    /// count *equal to* the cap must already give up (commit), not just
+    /// counts strictly beyond it.
+    #[test]
+    fn decide_maps_every_poll_outcome_to_the_documented_loop_action() {
+        assert_eq!(
+            MAX_TRANSIENT_RETRIES, 5,
+            "test cases below assume MAX_TRANSIENT_RETRIES == 5"
+        );
+
+        let cases: [(PollOutcome, LoopAction); 9] = [
+            (PollOutcome::StreamError, LoopAction::PollAgain),
+            (PollOutcome::NonUtf8Payload, LoopAction::CommitAndClear),
+            (PollOutcome::EmptyPayload, LoopAction::CommitAndClear),
+            (PollOutcome::HandledOk, LoopAction::CommitAndClear),
+            (PollOutcome::HandledPoison, LoopAction::CommitAndClear),
+            (
+                PollOutcome::HandledTransient { attempts: 1 },
+                LoopAction::LeaveForRetry,
+            ),
+            (
+                PollOutcome::HandledTransient { attempts: 4 },
+                LoopAction::LeaveForRetry,
+            ),
+            (
+                // attempts == MAX_TRANSIENT_RETRIES: the boundary itself
+                // must already give up, not just counts beyond it.
+                PollOutcome::HandledTransient { attempts: 5 },
+                LoopAction::CommitAndClear,
+            ),
+            (
+                PollOutcome::HandledTransient { attempts: 6 },
+                LoopAction::CommitAndClear,
+            ),
+        ];
+
+        for (outcome, expected) in cases {
+            assert_eq!(
+                decide(&outcome),
+                expected,
+                "decide({outcome:?}) should be {expected:?}"
+            );
+        }
+    }
 }
