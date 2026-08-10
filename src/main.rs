@@ -199,31 +199,48 @@ async fn main() -> anyhow::Result<()> {
         background_tasks: background_tasks.clone(),
     };
 
-    // Background task: periodically delete expired/revoked refresh tokens
-    // to prevent the `refresh_tokens` table from growing unboundedly.
-    let cleanup_db = db.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(3600));
-        loop {
-            interval.tick().await;
-            match dream_fly_backend::modules::auth::repository::delete_expired_tokens(&cleanup_db)
-                .await
-            {
-                Ok(n) if n > 0 => {
-                    tracing::info!(deleted = n, "expired refresh tokens cleaned up");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!(error = ?e, "refresh token cleanup failed");
-                }
-            }
-        }
-    });
-
     // Shutdown signaling channel: broadcasts a single `true` when the
     // server needs to wind down, so both the HTTP layer and the Kafka
     // consumer can observe it.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Background task: periodically delete expired/revoked refresh tokens
+    // to prevent the `refresh_tokens` table from growing unboundedly.
+    let cleanup_db = db.clone();
+    let mut cleanup_shutdown = shutdown_rx.clone();
+    let cleanup_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            tokio::select! {
+                biased;
+
+                // Shutdown wins over the next tick: don't start a cleanup
+                // pass we cannot finish before the main task drops the DB pool.
+                _ = cleanup_shutdown.changed() => {
+                    if *cleanup_shutdown.borrow() {
+                        tracing::info!("token cleanup task received shutdown, exiting");
+                        break;
+                    }
+                }
+
+                _ = interval.tick() => {
+                    match dream_fly_backend::modules::auth::repository::delete_expired_tokens(
+                        &cleanup_db,
+                    )
+                    .await
+                    {
+                        Ok(n) if n > 0 => {
+                            tracing::info!(deleted = n, "expired refresh tokens cleaned up");
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::error!(error = ?e, "refresh token cleanup failed");
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     // Start Kafka consumer if enabled
     let consumer_handle = if config_arc.kafka.enabled {
@@ -330,6 +347,9 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = handle.await {
                 tracing::warn!("Kafka outbox dispatcher exited with error: {e}");
             }
+        }
+        if let Err(e) = cleanup_handle.await {
+            tracing::warn!("token cleanup task exited with error: {e}");
         }
         // Close the DB pool. This waits for in-flight queries to finish
         // (bounded by `statement_timeout` set in `after_connect`).
