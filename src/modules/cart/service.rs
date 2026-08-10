@@ -156,10 +156,9 @@ pub async fn clear(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
 /// shape. Strict pass-through with no error mapping, so checkout's error
 /// contract stays exactly the repository's.
 ///
-/// Returned lines are NOT filtered by `is_active` (same as the repository
-/// layer below) — the caller MUST run the result through
-/// `orders::fulfilment::ensure_all_purchasable` before treating any line as
-/// purchasable; nothing at this layer enforces that either.
+/// The `is_active` MUST clause (same requirement as the repository layer
+/// below) lives solely on `repository::find_cart_items_for_checkout_tx`'s
+/// doc comment — see that function, not repeated here.
 ///
 /// Takes `&BalanceLock` (`points::service`) rather than a bare `user_id` —
 /// the caller must already hold that user's points-balance row lock (the

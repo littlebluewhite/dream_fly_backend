@@ -268,36 +268,15 @@ pub async fn checkout(
     .await?;
 
     // 9. order_items from the (locked) cart snapshot — both product and
-    //     course lines. `ci.name` becomes the order_items snapshot column,
-    //     so later reads (OrderSummary/AdminOrderSummary `items`) never need
-    //     to join the live product/course catalog. `stock_decremented`
-    //     snapshots whether this line actually decremented
-    //     `products.stock` — read off `reserved`'s post-decrement row
-    //     (`stock.is_some()` means the product had finite stock, so it
-    //     really was decremented; `None` means the product was
-    //     unlimited-stock and untouched — `try_decrement_stock_tx`'s
-    //     NULL-preserving CASE, `products/repository.rs`). Always `false`
-    //     for course lines, which never have a `product_id` and so never
-    //     reach `reserved` at all.
-    let items_data: Vec<(Option<Uuid>, Option<Uuid>, i32, i64, String, bool)> = cart_items
-        .iter()
-        .map(|ci| {
-            let stock_decremented = ci
-                .product_id
-                .and_then(|pid| reserved.get(&pid))
-                .map(|p| p.stock.is_some())
-                .unwrap_or(false);
-            (
-                ci.product_id,
-                ci.course_id,
-                ci.quantity,
-                ci.price_cents,
-                ci.name.clone(),
-                stock_decremented,
-            )
-        })
-        .collect();
-    repository::create_order_items(&mut tx, order.id, &items_data).await?;
+    //     course lines. `fulfilment::order_lines` (plan()'s sister pure
+    //     function) turns the snapshot into named `OrderLine`s: `name`
+    //     becomes the order_items snapshot column, so later reads
+    //     (OrderSummary/AdminOrderSummary `items`) never need to join the
+    //     live product/course catalog; `stock_decremented` is derived from
+    //     `reserved`'s post-decrement rows — see that function's doc for
+    //     the exact rule.
+    let lines = fulfilment::order_lines(&cart_items, &reserved);
+    repository::create_order_items(&mut tx, order.id, &lines).await?;
 
     // 10. Artifacts.
     // 10a. Enrolments — course lines. `enrol_batch_from_purchase_tx` owns the

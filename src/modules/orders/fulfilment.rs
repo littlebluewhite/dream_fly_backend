@@ -35,10 +35,13 @@
 //! protects, not scattered here as well. Pure function, zero DB, zero async
 //! — same shape as `super::pricing` and `utils::studio_clock`.
 
+use std::collections::HashMap;
+
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::modules::cart::model::{CartItemType, CheckoutLine};
+use crate::modules::products::model::Product;
 
 /// One product line resolved for fulfilment: `product_id` unwrapped from the
 /// cart snapshot's `Option`, plus the `quantity`/`price_cents`/`name` the
@@ -134,9 +137,68 @@ pub fn ensure_all_purchasable(lines: &[CheckoutLine]) -> Result<(), AppError> {
     )))
 }
 
+/// One order line ready for `repository::create_order_items`: the checkout
+/// snapshot's `product_id`/`course_id`/`quantity`/`price_cents`/`name`
+/// carried over verbatim, plus the `stock_decremented` bit `order_lines`
+/// derives below. Named replacement for the anonymous six-tuple
+/// `(Option<Uuid>, Option<Uuid>, i32, i64, String, bool)` `checkout` used to
+/// build inline, field-for-field in the same order.
+#[derive(Debug)]
+pub struct OrderLine {
+    pub product_id: Option<Uuid>,
+    pub course_id: Option<Uuid>,
+    pub quantity: i32,
+    pub price_cents: i64,
+    pub name: String,
+    pub stock_decremented: bool,
+}
+
+/// Turn a checkout's cart snapshot into named order lines — `plan()`'s
+/// sister pure function, and the single owner of the `stock_decremented`
+/// derivation rule that used to live in an unnamed closure inside
+/// `service::checkout` (not unit-testable there). `lines` is the same slice
+/// `plan()` above just consumed; `reserved` is
+/// `products::service::reserve_stock_tx`'s result (step 6 of
+/// `service::checkout`) — the post-decrement row for every product line
+/// that got reserved.
+///
+/// `stock_decremented` is `true` only when the line is a product line
+/// (`product_id.is_some()`) *and* its id is in `reserved` *and* that row's
+/// `stock` is `Some(_)` — finite stock, so the decrement actually moved
+/// something (`None` means unlimited stock, untouched by
+/// `try_decrement_stock_tx`'s NULL-preserving CASE, `products/
+/// repository.rs`). A course line never carries a `product_id`, so it can
+/// never reach `reserved` and is always `false`; a product line whose id is
+/// missing from `reserved` (unreachable today — every product line is
+/// reserved in step 6 before this runs) is also `false` — the
+/// `.unwrap_or(false)` this replaces. Output preserves `lines`' order, same
+/// "no sorting here" posture as `plan()`.
+pub fn order_lines(lines: &[CheckoutLine], reserved: &HashMap<Uuid, Product>) -> Vec<OrderLine> {
+    lines
+        .iter()
+        .map(|line| {
+            let stock_decremented = line
+                .product_id
+                .and_then(|pid| reserved.get(&pid))
+                .map(|p| p.stock.is_some())
+                .unwrap_or(false);
+            OrderLine {
+                product_id: line.product_id,
+                course_id: line.course_id,
+                quantity: line.quantity,
+                price_cents: line.price_cents,
+                name: line.name.clone(),
+                stock_decremented,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::products::model::ProductType;
+    use chrono::Utc;
 
     fn product_line(name: &str) -> CheckoutLine {
         CheckoutLine {
@@ -300,5 +362,121 @@ mod tests {
             ),
             "got: {err:?}"
         );
+    }
+
+    // --- order_lines ---
+
+    /// Local fixture mirroring `products::model`'s `fixture_product` shape
+    /// — only `id`/`stock` vary per case, everything else is filler.
+    fn fixture_product(id: Uuid, stock: Option<i32>) -> Product {
+        Product {
+            id,
+            name: "Test Product".into(),
+            slug: "test-product".into(),
+            product_type: ProductType::Merchandise,
+            description: None,
+            price_cents: 1000,
+            original_price_cents: None,
+            features: vec![],
+            is_highlighted: false,
+            badge: None,
+            stock,
+            valid_days: None,
+            session_count: None,
+            is_active: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn order_lines_product_with_finite_stock_is_stock_decremented() {
+        // Finite stock (`stock: Some(n)`) on the reserved row means the
+        // decrement actually moved something. Also pins the field-for-field
+        // carry-over (name/quantity/price_cents/course_id) while we're here.
+        let line = product_line("Widget");
+        let pid = line.product_id.unwrap();
+        let mut reserved = HashMap::new();
+        reserved.insert(pid, fixture_product(pid, Some(4)));
+
+        let lines = order_lines(&[line], &reserved);
+
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].stock_decremented,
+            "finite stock must count as decremented"
+        );
+        assert_eq!(lines[0].product_id, Some(pid));
+        assert_eq!(lines[0].course_id, None);
+        assert_eq!(lines[0].quantity, 2);
+        assert_eq!(lines[0].price_cents, 1500);
+        assert_eq!(lines[0].name, "Widget");
+    }
+
+    #[test]
+    fn order_lines_product_with_unlimited_stock_is_not_stock_decremented() {
+        // `stock: None` means unlimited — `try_decrement_stock_tx`'s
+        // NULL-preserving CASE never touches it.
+        let line = product_line("Widget");
+        let pid = line.product_id.unwrap();
+        let mut reserved = HashMap::new();
+        reserved.insert(pid, fixture_product(pid, None));
+
+        let lines = order_lines(&[line], &reserved);
+
+        assert!(!lines[0].stock_decremented);
+    }
+
+    #[test]
+    fn order_lines_course_line_is_never_stock_decremented() {
+        // A course line never carries a `product_id`, so it can never reach
+        // `reserved` at all — always false, regardless of what `reserved`
+        // contains (here, empty).
+        let line = course_line();
+        let cid = line.course_id;
+        let reserved: HashMap<Uuid, Product> = HashMap::new();
+
+        let lines = order_lines(&[line], &reserved);
+
+        assert!(!lines[0].stock_decremented);
+        assert_eq!(lines[0].product_id, None);
+        assert_eq!(lines[0].course_id, cid);
+    }
+
+    #[test]
+    fn order_lines_preserves_input_order_for_mixed_lines() {
+        // product/course interleaved — output must land in the same slice
+        // order as the input, same "no sorting here" posture as `plan()`.
+        let a = product_line("first");
+        let b = course_line();
+        let c = product_line("second");
+        let (pid_a, cid_b, pid_c) = (
+            a.product_id.unwrap(),
+            b.course_id.unwrap(),
+            c.product_id.unwrap(),
+        );
+        let mut reserved = HashMap::new();
+        reserved.insert(pid_a, fixture_product(pid_a, Some(1)));
+        reserved.insert(pid_c, fixture_product(pid_c, Some(1)));
+
+        let lines = order_lines(&[a, b, c], &reserved);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].product_id, Some(pid_a), "first stays first");
+        assert_eq!(lines[1].course_id, Some(cid_b), "second stays second");
+        assert_eq!(lines[2].product_id, Some(pid_c), "third stays third");
+    }
+
+    #[test]
+    fn order_lines_product_missing_from_reserved_is_not_stock_decremented() {
+        // Not reachable in practice today (every product line is reserved
+        // before `order_lines` runs) — matches the `.unwrap_or(false)` this
+        // replaces.
+        let line = product_line("Widget");
+        let reserved: HashMap<Uuid, Product> = HashMap::new();
+
+        let lines = order_lines(&[line], &reserved);
+
+        assert!(!lines[0].stock_decremented);
     }
 }

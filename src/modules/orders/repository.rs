@@ -1,6 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::fulfilment::OrderLine;
 use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus, OrderSummaryRow};
 
 /// The four order-row amount fields that previously formed a run of
@@ -47,21 +48,20 @@ pub async fn create_order(
 }
 
 /// Insert order_items for both product and course lines in one bulk
-/// INSERT. Each tuple is `(product_id, course_id, quantity,
-/// unit_price_cents, name, stock_decremented)` with exactly one of
-/// `product_id`/`course_id` set; `item_type` is derived server-side from
-/// which one is present (rather than passed as a separate value) so the
-/// column can never disagree with the ids that actually got stored. `name`
-/// is the checkout-time display name (from the cart snapshot) — stored
-/// verbatim so later reads never need to join the live product/course
-/// catalog. `stock_decremented` is the checkout-time fact of whether this
-/// line actually decremented `products.stock` — the caller
-/// (`service::checkout`) computes it per line from `reserve_stock_tx`'s
-/// returned rows; always `false` for course lines.
+/// INSERT. Each `OrderLine` (`orders::fulfilment::OrderLine`) has exactly
+/// one of `product_id`/`course_id` set; `item_type` is derived server-side
+/// from which one is present (rather than passed as a separate value) so
+/// the column can never disagree with the ids that actually got stored.
+/// `name` is the checkout-time display name (from the cart snapshot) —
+/// stored verbatim so later reads never need to join the live
+/// product/course catalog. `stock_decremented` is the checkout-time fact of
+/// whether this line actually decremented `products.stock` — the caller
+/// (`service::checkout`) now gets it pre-derived per line from
+/// `fulfilment::order_lines`; always `false` for course lines.
 pub async fn create_order_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     order_id: Uuid,
-    items: &[(Option<Uuid>, Option<Uuid>, i32, i64, String, bool)],
+    items: &[OrderLine],
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     let len = items.len();
     let mut ids: Vec<Uuid> = Vec::with_capacity(len);
@@ -72,14 +72,14 @@ pub async fn create_order_items(
     let mut names: Vec<String> = Vec::with_capacity(len);
     let mut stock_decremented: Vec<bool> = Vec::with_capacity(len);
 
-    for (product_id, course_id, quantity, unit_price_cents, name, decremented) in items {
+    for line in items {
         ids.push(Uuid::now_v7());
-        product_ids.push(*product_id);
-        course_ids.push(*course_id);
-        quantities.push(*quantity);
-        prices.push(*unit_price_cents);
-        names.push(name.clone());
-        stock_decremented.push(*decremented);
+        product_ids.push(line.product_id);
+        course_ids.push(line.course_id);
+        quantities.push(line.quantity);
+        prices.push(line.price_cents);
+        names.push(line.name.clone());
+        stock_decremented.push(line.stock_decremented);
     }
 
     sqlx::query_as::<_, OrderItem>(

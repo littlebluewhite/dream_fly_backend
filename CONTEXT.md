@@ -23,7 +23,7 @@ _Avoid_: 把這條關係 gate 與單課 gate `require_course_coach` 混同
 `orders::pricing::price → PricingOutcome`,純函式,交易編排留 checkout。
 
 **行計畫(Line Fulfilment)**:
-`orders::fulfilment::plan → FulfilmentPlan`,純函式(pricing 的姊妹),對 `CartItemType` 一處 exhaustive match(無 `_` arm——新變體 = 此處編譯錯誤)把結帳購物車切成商品行(`ProductFulfilment`:reserve 庫存 + grant 訂閱)與課程 id(enrol),取代 checkout 原本兩次互斥 `.filter(matches!)`。**排序不在此**:寫入保留序(write-reservation order;type-major、id-minor)由拿寫鎖的 owner 各自負責——商品 `products::service::reserve_stock_tx`、課程 `enrolments::service::enrol_batch_from_purchase_tx`——plan() 只保留輸入序,不排序(一個 invariant 兩個 owner 比沒有 owner 更糟)。
+`orders::fulfilment::plan → FulfilmentPlan`,純函式(pricing 的姊妹),對 `CartItemType` 一處 exhaustive match(無 `_` arm——新變體 = 此處編譯錯誤)把結帳購物車切成商品行(`ProductFulfilment`:reserve 庫存 + grant 訂閱)與課程 id(enrol),取代 checkout 原本兩次互斥 `.filter(matches!)`。**排序不在此**:寫入保留序(write-reservation order;type-major、id-minor)由拿寫鎖的 owner 各自負責——商品 `products::service::reserve_stock_tx`、課程 `enrolments::service::enrol_batch_from_purchase_tx`——plan() 只保留輸入序,不排序(一個 invariant 兩個 owner 比沒有 owner 更糟)。`orders::fulfilment::order_lines → Vec<OrderLine>` 是 `plan()` 的姊妹純函式:把同一份結帳快照(連同 `reserve_stock_tx` 回傳的 `reserved` map)攤平成具名 `OrderLine`,`stock_decremented` 的推導規則(product 行且 `reserved[pid].stock.is_some()` 才算扣過;pid 不在 reserved、或 course 行,恆 false)單一歸戶於此,取代原本埋在 `service::checkout` 建構六元組的匿名 closure 裡、不可單測的判斷。
 _Avoid_: 分派/dispatch(那是動作,這裡指切出來的計畫結構)、鎖序/排序(不在此純函式,歸拿寫鎖的深函式)
 
 **營收狀態集(Revenue Statuses)**:
@@ -124,7 +124,7 @@ Cart 加入購物車路徑刻意不重用這條謂詞:`cart::service::add_produc
 _Avoid_: 把 cart 的 400 或結帳的 422 誤認為上架可見性謂詞沒收乾淨的殘留破口——三者是刻意不同語意,不該收斂成同一種寫法。
 
 **結帳快照(Checkout Snapshot)**:
-`cart::repository::find_cart_items_for_checkout_tx` 刻意不再以 `is_active` 過濾結帳快照——下架行原樣隨隊回傳(`is_active` 欄位隨行攜帶),不再靜默消失。`orders::fulfilment::ensure_all_purchasable`(甲案)是把「消失」改回「具名拒絕」的唯一站點:在購物車為空的 400 檢查之後、優惠碼載入之前執行,收集快照裡每個 `!is_active` 行的名稱(維持快照原序,不排序),清單非空就整批 422(`以下項目已下架,請先自購物車移除再結帳:「A」、「B」`);清單為空才放行進 `pricing`/`fulfilment::plan`。刻意不比照本函式其他分支接 `TxReleased` 重播——品項下架不是併發結帳造成的(是獨立的 admin 側操作),沒有「贏的孿生交易」可重播。
+`cart::repository::find_cart_items_for_checkout_tx` 刻意不再以 `is_active` 過濾結帳快照——下架行原樣隨隊回傳(`is_active` 欄位隨行攜帶),不再靜默消失。`orders::fulfilment::ensure_all_purchasable`(甲案)是把「消失」改回「具名拒絕」的唯一站點:在購物車為空的 400 檢查之後、優惠碼載入之前執行,收集快照裡每個 `!is_active` 行的名稱(維持快照原序,不排序),清單非空就整批 422(`以下項目已下架,請先自購物車移除再結帳:「A」、「B」`);清單為空才放行進 `pricing`/`fulfilment::plan`。刻意不比照本函式其他分支接 `TxReleased` 重播——品項下架不是併發結帳造成的(是獨立的 admin 側操作),沒有「贏的孿生交易」可重播。cart 側的 MUST 條款(呼叫端必須先跑過 `ensure_all_purchasable` 才能把這份快照視為可購買)單一 owner 是 `cart::repository::find_cart_items_for_checkout_tx` 的 doc comment,`cart::service` 同名轉手層不重複散文、只指回這裡。
 _Avoid_: 把這個 422 與空購物車的 400 混同(購物車非空、但全部品項下架時,回的是這個 422,不是「cart is empty」的 400)。
 
 **帳號誕生(Account Birth)**:
