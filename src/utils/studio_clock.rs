@@ -34,18 +34,11 @@ use chrono_tz::Tz;
 use crate::config::ServerConfig;
 use crate::error::AppError;
 
-/// Resolve the studio timezone. Falls back to UTC with a warning so a
-/// misconfigured deploy still runs, just without correct local-time rules.
-/// Startup validation (`AppConfig::load`) already rejects invalid timezone
-/// names, so the fallback only fires if a future refactor bypasses that.
+/// Resolve the studio timezone. `ServerConfig::studio_timezone` is now
+/// deserialized directly as a `Tz` (an invalid IANA name fails config
+/// loading instead of reaching here), so this is a plain field read.
 pub fn studio_tz(server: &ServerConfig) -> Tz {
-    server.studio_timezone.parse::<Tz>().unwrap_or_else(|_| {
-        tracing::warn!(
-            tz = %server.studio_timezone,
-            "invalid studio_timezone; falling back to UTC"
-        );
-        chrono_tz::UTC
-    })
+    server.studio_timezone
 }
 
 /// The studio-local calendar date of a UTC instant — "today" per contract
@@ -235,20 +228,15 @@ mod tests {
             port: 3000,
             allowed_origins: vec![],
             trust_proxy: false,
-            studio_timezone: tz.into(),
+            studio_timezone: tz.parse().expect("valid IANA name"),
         }
     }
 
     // --- studio_tz ---
 
     #[test]
-    fn studio_tz_parses_configured_zone() {
+    fn studio_tz_reads_configured_zone() {
         assert_eq!(studio_tz(&server("Asia/Taipei")), taipei());
-    }
-
-    #[test]
-    fn studio_tz_falls_back_to_utc_on_invalid_name() {
-        assert_eq!(studio_tz(&server("Not/AZone")), chrono_tz::UTC);
     }
 
     // --- today (ported from sessions::service::studio_date_at tests) ---

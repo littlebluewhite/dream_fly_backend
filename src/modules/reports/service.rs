@@ -49,7 +49,7 @@ pub async fn admin_report(
     server: &ServerConfig,
     now: DateTime<Utc>,
 ) -> Result<AdminReportResponse, AppError> {
-    let tz_name = server.studio_timezone.as_str();
+    let tz_name = server.studio_timezone.name();
     let tz = studio_clock::studio_tz(server);
 
     let trend_rows = repository::revenue_trend(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;

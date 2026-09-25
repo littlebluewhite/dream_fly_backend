@@ -1374,7 +1374,7 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
         port: 3000,
         allowed_origins: vec![],
         trust_proxy: false,
-        studio_timezone: "Asia/Taipei".into(),
+        studio_timezone: "Asia/Taipei".parse().unwrap(),
     };
     let now = Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 30).unwrap();
     // 台北 6/30 23:59:59 — studio 上月的瞬間。

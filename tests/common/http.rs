@@ -78,7 +78,7 @@ pub fn test_app_config<F: FnOnce(&mut AppConfig)>(adjust: F) -> AppConfig {
             // Enable so the rate limit middleware honors our synthetic XFF
             // header and gives each test its own bucket.
             trust_proxy: true,
-            studio_timezone: "UTC".into(),
+            studio_timezone: "UTC".parse().unwrap(),
         },
         database: DatabaseConfig {
             // `db` in AppState is passed separately by `spawn_test_app`, so

@@ -54,7 +54,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "for
 # Utilities
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.10"
+chrono-tz = { version = "0.10", features = ["serde"] }
 validator = { version = "0.20", features = ["derive"] }
 config = "0.15"
 dotenvy = "0.15"

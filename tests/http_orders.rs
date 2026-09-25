@@ -358,7 +358,7 @@ async fn admin_list_orders_as_admin_paginates_and_includes_user_info(db: PgPool)
 #[sqlx::test]
 async fn checkout_order_number_uses_studio_local_day_not_utc(db: PgPool) {
     let app = spawn_test_app_with(db, |cfg| {
-        cfg.server.studio_timezone = "Asia/Taipei".into();
+        cfg.server.studio_timezone = "Asia/Taipei".parse().unwrap();
     })
     .await;
     // 2026-07-14 16:30:00Z = 2026-07-15 00:30 Taipei — the studio's calendar
@@ -401,7 +401,7 @@ async fn checkout_order_number_uses_studio_local_day_not_utc(db: PgPool) {
 #[sqlx::test]
 async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: PgPool) {
     let app = spawn_test_app_with(db, |cfg| {
-        cfg.server.studio_timezone = "Asia/Taipei".into();
+        cfg.server.studio_timezone = "Asia/Taipei".parse().unwrap();
     })
     .await;
     // Pin to a fixed Taipei-evening instant — studio day D = 2026-07-15.

@@ -36,7 +36,7 @@ pub fn test_server_config() -> ServerConfig {
         port: 3000,
         allowed_origins: vec![],
         trust_proxy: false,
-        studio_timezone: "UTC".into(),
+        studio_timezone: "UTC".parse().unwrap(),
     }
 }
 

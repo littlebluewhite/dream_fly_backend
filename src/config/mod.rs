@@ -24,16 +24,19 @@ pub struct ServerConfig {
     /// that strips/rewrites these headers for untrusted clients.
     #[serde(default)]
     pub trust_proxy: bool,
-    /// IANA timezone name for the studio (e.g. "Asia/Taipei"). Used for
+    /// IANA timezone for the studio (e.g. "Asia/Taipei"). Used for
     /// human-facing rules such as the 24-hour cancellation window, where
     /// the stored naïve `date` + `time` must be interpreted in the studio's
-    /// local time. Defaults to `UTC` if unset.
+    /// local time. Defaults to `UTC` if unset. Deserialized directly as a
+    /// `chrono_tz::Tz` — an unparseable IANA name fails config loading
+    /// (`AppConfig::load`'s `try_deserialize`) instead of silently falling
+    /// back to UTC at request time.
     #[serde(default = "default_studio_timezone")]
-    pub studio_timezone: String,
+    pub studio_timezone: chrono_tz::Tz,
 }
 
-fn default_studio_timezone() -> String {
-    "UTC".to_string()
+fn default_studio_timezone() -> chrono_tz::Tz {
+    chrono_tz::UTC
 }
 
 /// Accepts either shape that can reach `server.allowed_origins`:
@@ -279,21 +282,6 @@ impl AppConfig {
             ));
         }
 
-        // Fail at startup rather than silently fall back to UTC at request
-        // time — a misspelled `server.studio_timezone` would otherwise
-        // produce bookings offset by hours with no operator-visible signal.
-        if app_config
-            .server
-            .studio_timezone
-            .parse::<chrono_tz::Tz>()
-            .is_err()
-        {
-            return Err(config::ConfigError::Message(format!(
-                "server.studio_timezone '{}' is not a valid IANA timezone name",
-                app_config.server.studio_timezone
-            )));
-        }
-
         // 32 bytes is the minimum useful HS256 key length (equal to the
         // output size of the HMAC). Anything shorter is trivially
         // brute-forceable offline given any captured token.
@@ -475,6 +463,51 @@ mod tests {
         );
     }
 
+    /// Builds a `ServerConfig` through the same `env_source()` builder used by
+    /// `AppConfig::load()`, injecting `APP__SERVER__STUDIO_TIMEZONE` (plus the
+    /// two other required `ServerConfig` fields) via an in-memory source.
+    fn server_config_from_studio_timezone_env(
+        value: Option<&str>,
+    ) -> Result<ServerConfig, config::ConfigError> {
+        let mut source = HashMap::new();
+        source.insert("APP__SERVER__HOST".to_string(), "0.0.0.0".to_string());
+        source.insert("APP__SERVER__PORT".to_string(), "3000".to_string());
+        if let Some(value) = value {
+            source.insert(
+                "APP__SERVER__STUDIO_TIMEZONE".to_string(),
+                value.to_string(),
+            );
+        }
+
+        let config = config::Config::builder()
+            .add_source(env_source().source(Some(source)))
+            .build()
+            .expect("config should build from injected in-memory source");
+
+        config
+            .try_deserialize::<ServerOnly>()
+            .map(|parsed| parsed.server)
+    }
+
+    #[test]
+    fn studio_timezone_parses_valid_iana_name() {
+        let server = server_config_from_studio_timezone_env(Some("Asia/Taipei"))
+            .expect("valid IANA name should deserialize");
+        assert_eq!(server.studio_timezone, chrono_tz::Asia::Taipei);
+    }
+
+    #[test]
+    fn studio_timezone_rejects_invalid_name() {
+        assert!(server_config_from_studio_timezone_env(Some("Not/AZone")).is_err());
+    }
+
+    #[test]
+    fn studio_timezone_defaults_to_utc_when_unset() {
+        let server =
+            server_config_from_studio_timezone_env(None).expect("default should deserialize");
+        assert_eq!(server.studio_timezone, chrono_tz::UTC);
+    }
+
     /// Regression guard for the `try_parsing` footgun: an E.164 phone number
     /// (`+14155551234`, the only format Twilio accepts) is a `String` field.
     /// With `Environment::try_parsing(true)` the `config` crate greedily parses
@@ -610,7 +643,7 @@ mod tests {
                 port: 3000,
                 allowed_origins: vec!["https://dreamfly.tw".into()],
                 trust_proxy: false,
-                studio_timezone: "Asia/Taipei".into(),
+                studio_timezone: "Asia/Taipei".parse().unwrap(),
             },
             database: DatabaseConfig {
                 url: "postgres://prod-db.internal:5432/dream_fly".into(),
