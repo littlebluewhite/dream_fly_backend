@@ -560,6 +560,91 @@ async fn google_auth_refetches_jwks_on_kid_rotation(db: PgPool) {
     );
 }
 
+/// Start a `wiremock` server that plays Google for one identity: the token
+/// exchange returns an id_token for `sub`/`email` signed under `kid`, and the
+/// JWKS endpoint serves that `kid`. Point `auth.google_token_url` /
+/// `auth.google_jwks_url` at `{uri}/oauth/token` / `{uri}/certs`.
+async fn mount_google(sub: &str, email: &str, kid: &str) -> MockServer {
+    let id_token = sign_google_test_id_token(sub, email, "test-client", kid);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id_token": id_token })))
+        .mount(&upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/certs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(google_test_jwks_body(kid)))
+        .mount(&upstream)
+        .await;
+    upstream
+}
+
+/// Hole 1: Google login used to skip the `is_active` gate that password
+/// login has, so a deactivated account could mint a fresh session just by
+/// signing in with Google again. `session::start` now refuses it, and the
+/// refusal rolls back the whole google_auth tx — no refresh token row, no
+/// `last_login` bump.
+#[sqlx::test]
+async fn google_auth_rejects_inactive_account(db: PgPool) {
+    let upstream = mount_google(
+        "google-sub-inactive",
+        "inactive-google@example.com",
+        "test-kid-google-inactive",
+    )
+    .await;
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.auth.google_token_url = format!("{}/oauth/token", upstream.uri());
+        cfg.auth.google_jwks_url = format!("{}/certs", upstream.uri());
+    })
+    .await;
+
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let user_id =
+        Uuid::parse_str(body["user"]["id"].as_str().expect("user.id")).expect("parse user id");
+
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&app.db)
+        .await
+        .expect("deactivate user");
+
+    let snapshot = |db: PgPool| async move {
+        let rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&db)
+                .await
+                .expect("count refresh tokens");
+        let last_login: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("SELECT last_login FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&db)
+                .await
+                .expect("read last_login");
+        (rows, last_login)
+    };
+    let before = snapshot(app.db.clone()).await;
+
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 401, "body={}", resp.text());
+
+    assert_eq!(
+        snapshot(app.db.clone()).await,
+        before,
+        "a refused Google login must not persist a refresh token or bump last_login"
+    );
+}
+
 // ---------------- /auth/otp/send ----------------
 
 #[sqlx::test]

@@ -44,6 +44,12 @@ pub(super) async fn start(
     config: &AuthConfig,
     user: &User,
 ) -> Result<AuthResponse, AppError> {
+    // Every issuance path crosses this gate, so no caller can hand a session
+    // to a deactivated account (Google login used to skip the check).
+    if !user.is_active {
+        return Err(AppError::Unauthorized);
+    }
+
     let access_token = jwt::encode_access_token(config, user.id, &user.email)?;
     let refresh_token = jwt::encode_refresh_token(config, user.id)?;
 
@@ -299,5 +305,30 @@ mod tests {
             stored_expires_at >= expected_min && stored_expires_at <= expected_max,
             "expires_at {stored_expires_at:?} not within [{expected_min:?}, {expected_max:?}]"
         );
+    }
+
+    /// `start` is the one gate every issuance path crosses, so an inactive
+    /// account is refused here — not only by `login`'s early check (Google
+    /// login used to issue a session to a deactivated account). Nothing may
+    /// be persisted on the refusal.
+    #[sqlx::test]
+    async fn start_refuses_inactive_account(db: PgPool) {
+        let config = test_config();
+        let mut user = insert_bare_user(&db, "inactive-start@example.com").await;
+        user.is_active = false;
+
+        let mut conn = db.acquire().await.expect("acquire conn");
+        let err = start(&mut conn, &config, &user)
+            .await
+            .expect_err("inactive account must be refused");
+        assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
+
+        let rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1")
+                .bind(user.id)
+                .fetch_one(&db)
+                .await
+                .expect("count refresh_tokens");
+        assert_eq!(rows, 0, "a refused start must not persist a refresh token");
     }
 }
