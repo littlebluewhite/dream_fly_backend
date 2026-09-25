@@ -645,6 +645,98 @@ async fn google_auth_rejects_inactive_account(db: PgPool) {
     );
 }
 
+/// Role names currently granted to `user_id`, straight from `user_roles`.
+async fn role_names(db: &PgPool, user_id: Uuid) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id \
+         WHERE ur.user_id = $1 ORDER BY r.name",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .expect("read role names")
+}
+
+/// Hole 4: every Google login used to re-run `assign_role_by_name("member")`,
+/// so a `member` role an admin had removed came back on the user's next
+/// Google sign-in. Only account birth (`LinkPlan::grant_member`, `Create`
+/// only) grants it now.
+#[sqlx::test]
+async fn google_auth_refresh_does_not_regrant_removed_member(db: PgPool) {
+    let upstream = mount_google(
+        "google-sub-regrant",
+        "regrant@example.com",
+        "test-kid-google-regrant",
+    )
+    .await;
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.auth.google_token_url = format!("{}/oauth/token", upstream.uri());
+        cfg.auth.google_jwks_url = format!("{}/certs", upstream.uri());
+    })
+    .await;
+
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let user_id =
+        Uuid::parse_str(body["user"]["id"].as_str().expect("user.id")).expect("parse user id");
+    assert_eq!(role_names(&app.db, user_id).await, vec!["member"]);
+
+    // Admin removes the member role.
+    sqlx::query(
+        "DELETE FROM user_roles WHERE user_id = $1 \
+         AND role_id = (SELECT id FROM roles WHERE name = 'member')",
+    )
+    .bind(user_id)
+    .execute(&app.db)
+    .await
+    .expect("remove member role");
+
+    // Returning Google user (`Refresh`) — must not get `member` back.
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["user"]["roles"], json!([]));
+    assert!(role_names(&app.db, user_id).await.is_empty());
+}
+
+/// Hole 4, `Link` branch: linking Google to an existing account (here a
+/// seeded admin with no `member` role) used to hand it `member` as a side
+/// effect. The linked account keeps exactly the roles it had.
+#[sqlx::test]
+async fn google_auth_link_does_not_grant_member_to_seeded_admin(db: PgPool) {
+    let upstream = mount_google(
+        "google-sub-link-admin",
+        "link-admin@example.com",
+        "test-kid-google-link-admin",
+    )
+    .await;
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.auth.google_token_url = format!("{}/oauth/token", upstream.uri());
+        cfg.auth.google_jwks_url = format!("{}/certs", upstream.uri());
+    })
+    .await;
+    let (admin_id, _) = app
+        .seed_user_with_roles("link-admin@example.com", &["admin"])
+        .await;
+
+    let resp = app
+        .post("/api/v1/auth/google")
+        .json(&json!({ "code": "fake-authorization-code" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["user"]["id"], json!(admin_id.to_string()));
+    assert_eq!(body["user"]["roles"], json!(["admin"]));
+    assert_eq!(role_names(&app.db, admin_id).await, vec!["admin"]);
+}
+
 // ---------------- /auth/otp/send ----------------
 
 #[sqlx::test]

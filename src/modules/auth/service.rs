@@ -240,8 +240,13 @@ pub async fn google_auth(
         }
     };
 
-    // 4. Assign "member" role (idempotent)
-    let dirty = permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?;
+    // 4. Assign "member" role — account birth (`Create`) only; Link/Refresh
+    //    leave an existing account's roles alone (see `linking`'s module doc).
+    let dirty = if plan.grant_member {
+        Some(permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?)
+    } else {
+        None
+    };
 
     // 5. Update last_login
     repository::update_last_login(&mut *tx, user.id).await?;
@@ -266,7 +271,9 @@ pub async fn google_auth(
 
     tx.commit().await?;
 
-    dirty.flush(redis).await;
+    if let Some(dirty) = dirty {
+        dirty.flush(redis).await;
+    }
 
     if plan.send_welcome {
         notify::user_welcomed(user.id).deliver(db).await;
