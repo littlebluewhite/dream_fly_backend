@@ -17,6 +17,19 @@ use super::dto::{
 };
 use super::model::LeaveStatus;
 use super::repository;
+use super::rules;
+
+/// `請假申請不存在` — shared by `cancel_leave_request`, `decide_leave_request`,
+/// and `book_makeup`'s initial leave-request lookup.
+const LEAVE_NOT_FOUND: &str = "請假申請不存在";
+
+/// `場次不存在` — shared by `create_leave_request`'s and `book_makeup`'s
+/// session-context/seat-lock lookups.
+const SESSION_NOT_FOUND: &str = "場次不存在";
+
+/// `僅待審核假單可審核` — shared by `decide_leave_request`'s pre-tx status
+/// check and its `decide_tx` race fallback.
+const DECIDE_NOT_PENDING: &str = "僅待審核假單可審核";
 
 /// `POST /leave-requests`. Resolves the caller's active enrolment from
 /// `session_id`'s course (404 `未報名此課程` if none), rejects sessions that
@@ -32,7 +45,7 @@ pub async fn create_leave_request(
     let StudioNow { tz, now } = at;
     let session = repository::find_session_context(db, req.session_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
+        .ok_or_else(|| AppError::NotFound(SESSION_NOT_FOUND.into()))?;
 
     let enrolment_id = repository::find_active_enrolment(db, auth.user_id, session.course_id)
         .await?
@@ -84,7 +97,7 @@ pub async fn cancel_leave_request(db: &PgPool, auth: &AuthUser, id: Uuid) -> Res
 
     let owner = repository::find_owner_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound("請假申請不存在".into()))?;
+        .ok_or_else(|| AppError::NotFound(LEAVE_NOT_FOUND.into()))?;
 
     auth.owner_only(owner.user_id, "僅本人可取消請假申請")?;
 
@@ -165,31 +178,23 @@ pub async fn decide_leave_request(
     id: Uuid,
     new_status_str: &str,
 ) -> Result<LeaveRequestResponse, AppError> {
-    let new_status = match new_status_str {
-        "approved" => LeaveStatus::Approved,
-        "rejected" => LeaveStatus::Rejected,
-        _ => {
-            return Err(AppError::Validation(
-                "status 僅接受 approved 或 rejected".into(),
-            ));
-        }
-    };
+    let new_status = rules::parse_decision(new_status_str)?;
 
     let ctx = repository::find_decision_context(db, id)
         .await?
-        .ok_or_else(|| AppError::NotFound("請假申請不存在".into()))?;
+        .ok_or_else(|| AppError::NotFound(LEAVE_NOT_FOUND.into()))?;
 
     coaches_service::require_course_coach(db, auth, ctx.coach_id, "非本課教練").await?;
 
     if ctx.status != LeaveStatus::Pending {
-        return Err(AppError::Conflict("僅待審核假單可審核".into()));
+        return Err(AppError::Conflict(DECIDE_NOT_PENDING.into()));
     }
 
     let mut tx = db.begin().await?;
 
     let updated = repository::decide_tx(&mut tx, id, new_status, auth.user_id)
         .await?
-        .ok_or_else(|| AppError::Conflict("僅待審核假單可審核".into()))?;
+        .ok_or_else(|| AppError::Conflict(DECIDE_NOT_PENDING.into()))?;
 
     if new_status == LeaveStatus::Approved {
         // Writing `leave` always passes the upsert guard's first branch
@@ -259,44 +264,27 @@ pub async fn book_makeup(
     id: Uuid,
     req: MakeupRequest,
 ) -> Result<LeaveRequestResponse, AppError> {
-    let StudioNow { tz, now } = at;
     let mut tx = db.begin().await?;
 
     let leave = repository::find_for_makeup_tx(&mut tx, id)
         .await?
-        .ok_or_else(|| AppError::NotFound("請假申請不存在".into()))?;
+        .ok_or_else(|| AppError::NotFound(LEAVE_NOT_FOUND.into()))?;
 
     auth.owner_only(leave.user_id, "僅本人可預約補課")?;
-    if leave.status != LeaveStatus::Approved {
-        return Err(AppError::Conflict("僅已核准的假單可預約補課".into()));
-    }
-    if leave.makeup_session_id.is_some() {
-        return Err(AppError::Conflict("此假單已預約過補課".into()));
-    }
+    rules::check_makeup_source(&leave)?;
 
     let target = repository::find_session_context(&mut *tx, req.session_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
+        .ok_or_else(|| AppError::NotFound(SESSION_NOT_FOUND.into()))?;
 
-    if target.course_id != leave.course_id {
-        return Err(AppError::Validation("補課場次須為同一課程".into()));
-    }
-
-    studio_clock::require_not_started(
-        tz,
-        now,
-        target.session_date,
-        target.start_time,
-        "session time",
-        AppError::Validation("補課場次已開始".into()),
-    )?;
+    rules::check_makeup_target(&leave, &target, at)?;
 
     // Serialize concurrent makeups into the same target session across
     // *different* leave requests before counting seats — the leave-request
     // row lock above only defends re-booking of the same request.
     let lock = seats::lock_session_tx(&mut tx, req.session_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
+        .ok_or_else(|| AppError::NotFound(SESSION_NOT_FOUND.into()))?;
 
     let session_seats = seats::session_seats_tx(&mut tx, &lock)
         .await?
@@ -310,7 +298,7 @@ pub async fn book_makeup(
 
     let updated = repository::set_makeup_session_tx(&mut tx, id, req.session_id)
         .await?
-        .ok_or_else(|| AppError::Conflict("此假單已預約過補課".into()))?;
+        .ok_or_else(|| AppError::Conflict(rules::MAKEUP_ALREADY_BOOKED.into()))?;
 
     tx.commit().await?;
 
