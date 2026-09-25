@@ -31,18 +31,7 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
-
-/// Resolve the studio timezone. `ServerConfig::studio_timezone` is now
-/// deserialized directly as a `Tz` (an invalid IANA name fails config
-/// loading instead of reaching here), so this is a plain field read.
-///
-/// Kept only for `reports::service`, which still takes `server`/`now`
-/// separately pending its own migration to [`StudioNow`].
-pub fn studio_tz(server: &ServerConfig) -> Tz {
-    server.studio_timezone
-}
 
 /// The studio time context: the configured timezone bundled with a sampled
 /// clock instant, as a single `Copy` value. Services take `at: StudioNow`
@@ -234,23 +223,6 @@ mod tests {
 
     fn t(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
-    }
-
-    fn server(tz: &str) -> ServerConfig {
-        ServerConfig {
-            host: "0.0.0.0".into(),
-            port: 3000,
-            allowed_origins: vec![],
-            trust_proxy: false,
-            studio_timezone: tz.parse().expect("valid IANA name"),
-        }
-    }
-
-    // --- studio_tz ---
-
-    #[test]
-    fn studio_tz_reads_configured_zone() {
-        assert_eq!(studio_tz(&server("Asia/Taipei")), taipei());
     }
 
     // --- today (ported from sessions::service::studio_date_at tests) ---

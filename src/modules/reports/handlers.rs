@@ -12,8 +12,7 @@ use super::service;
 pub async fn admin_report(
     State(state): State<AppState>,
 ) -> Result<Json<AdminReportResponse>, AppError> {
-    let now = state.clock.now();
-    let report = service::admin_report(&state.db, &state.config.server, now).await?;
+    let report = service::admin_report(&state.db, state.studio_now()).await?;
     Ok(Json(report))
 }
 
@@ -24,8 +23,7 @@ pub async fn coach_report(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<CoachReportResponse>, AppError> {
-    let now = state.clock.now();
-    let report = service::coach_report(&state.db, &state.config.server, now, &auth).await?;
+    let report = service::coach_report(&state.db, state.studio_now(), &auth).await?;
     Ok(Json(report))
 }
 
@@ -35,8 +33,7 @@ pub async fn member_report(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<MemberReportResponse>, AppError> {
-    let now = state.clock.now();
-    let report = service::member_report(&state.db, &state.config.server, now, auth.user_id).await?;
+    let report = service::member_report(&state.db, state.studio_now(), auth.user_id).await?;
     Ok(Json(report))
 }
 

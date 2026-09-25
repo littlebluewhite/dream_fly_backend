@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::NaiveDate;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -6,6 +6,7 @@ use crate::modules::bookings::model::VENUE_REVENUE_STATUSES;
 use crate::modules::contact::model::InquiryType;
 use crate::modules::orders::model::REVENUE_STATUSES;
 use crate::modules::sessions::repository::{MaterializedDay, MaterializedRange};
+use crate::utils::studio_clock::StudioNow;
 
 use super::model::{
     ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
@@ -29,8 +30,7 @@ use super::model::{
 /// can "disappear" for lack of matching rows.
 pub async fn revenue_trend(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
     months: i32,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     sqlx::query_as::<_, (String, i64)>(
@@ -47,8 +47,8 @@ pub async fn revenue_trend(
          GROUP BY m.month_start \
          ORDER BY m.month_start",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
@@ -61,8 +61,7 @@ pub async fn revenue_trend(
 /// enrolment.
 pub async fn member_stats(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
 ) -> Result<(i64, i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT COUNT(*), \
@@ -73,8 +72,8 @@ pub async fn member_stats(
                 (SELECT COUNT(DISTINCT user_id) FROM active_enrolments) \
          FROM users u",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .fetch_one(db)
     .await
 }
@@ -97,7 +96,7 @@ pub async fn member_stats(
 ///   date per contract §3.18), for the service's `attendance_rate` =
 ///   present/(present+absent),`leave` 不入分母;無資料月 → null (via
 ///   `assembly::safe_ratio`).
-pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiRow, sqlx::Error> {
+pub async fn kpis(db: &PgPool, at: StudioNow) -> Result<KpiRow, sqlx::Error> {
     // new_enrolments_this/_last 刻意不換底至 active_enrolments view——量的是「報名事件」(status <> 'cancelled' + created_at 分桶),非「目前占位」,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, KpiRow>(
         "WITH anchor AS ( \
@@ -148,8 +147,8 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
                  = a.this_m - interval '1 month') AS absent_last \
          FROM anchor a",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .bind(&REVENUE_STATUSES[..])
     .fetch_one(db)
     .await
@@ -182,8 +181,7 @@ pub async fn kpis(db: &PgPool, now: DateTime<Utc>, tz_name: &str) -> Result<KpiR
 /// [`recent_activity`].
 pub async fn income_by_source(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
     months: i32,
 ) -> Result<Vec<IncomeSourceRow>, sqlx::Error> {
     sqlx::query_as::<_, IncomeSourceRow>(
@@ -232,8 +230,8 @@ pub async fn income_by_source(
           GROUP BY m.month_start, s.source, s.ord \
           ORDER BY m.month_start, s.ord",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .bind(&VENUE_REVENUE_STATUSES[..])
@@ -251,8 +249,7 @@ pub async fn income_by_source(
 /// not a DB enum, so there is no fixed list to zero-fill against.
 pub async fn payment_split(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     sqlx::query_as::<_, (String, i64)>(
         "SELECT COALESCE(o.payment_method, 'unknown') AS method, COUNT(*)::bigint AS orders \
@@ -263,8 +260,8 @@ pub async fn payment_split(
          GROUP BY 1 \
          ORDER BY orders DESC, method",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
     .await
@@ -309,8 +306,7 @@ pub async fn course_reports(db: &PgPool) -> Result<Vec<AdminCourseRow>, sqlx::Er
 /// `attendance_rate_30d`), per the task brief.
 pub async fn coach_reports(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
     months: i32,
 ) -> Result<Vec<AdminCoachRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminCoachRow>(
@@ -346,8 +342,8 @@ pub async fn coach_reports(
          JOIN users u ON u.id = co.user_id \
          ORDER BY u.name, co.id",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .fetch_all(db)
@@ -409,8 +405,7 @@ pub async fn attendance_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>,
 /// zero-fills all 6 buckets.
 pub async fn age_distribution(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
 ) -> Result<Vec<BucketCountRow>, sqlx::Error> {
     sqlx::query_as::<_, BucketCountRow>(
         "WITH brackets(bucket, lo, hi, ord) AS ( \
@@ -429,8 +424,8 @@ pub async fn age_distribution(
           GROUP BY b.bucket, b.ord \
           ORDER BY b.ord",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .fetch_all(db)
     .await
 }
@@ -481,8 +476,7 @@ pub async fn tier_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>, sqlx:
 /// date per §3.18), matching [`kpis`]'s attendance bucketing.
 pub async fn retention(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
 ) -> Result<Vec<RetentionRow>, sqlx::Error> {
     sqlx::query_as::<_, RetentionRow>(
         "WITH months AS ( \
@@ -520,8 +514,8 @@ pub async fn retention(
            FROM months m \
           ORDER BY m.m",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .fetch_all(db)
     .await
 }
@@ -536,8 +530,7 @@ pub async fn retention(
 /// stages are fabricated.
 pub async fn funnel(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
 ) -> Result<FunnelRow, sqlx::Error> {
     // new_enrolments 刻意不換底至 active_enrolments view——同 kpis 的「報名事件」口徑,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, FunnelRow>(
@@ -551,8 +544,8 @@ pub async fn funnel(
                AND (e.created_at AT TIME ZONE $2)::date \
                    >= studio_today($1, $2) - 90)::bigint AS new_enrolments",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .bind(InquiryType::Trial.as_str())
     .fetch_one(db)
     .await
@@ -570,8 +563,7 @@ pub async fn funnel(
 /// LEFT JOIN zero-fills all 7 days.
 pub async fn weekday_load(
     db: &PgPool,
-    now: DateTime<Utc>,
-    tz_name: &str,
+    at: StudioNow,
 ) -> Result<Vec<WeekdayLoadRow>, sqlx::Error> {
     sqlx::query_as::<_, WeekdayLoadRow>(
         "WITH weekdays(weekday) AS ( \
@@ -593,8 +585,8 @@ pub async fn weekday_load(
            LEFT JOIN present_by_day p ON p.weekday = w.weekday \
           ORDER BY w.weekday",
     )
-    .bind(now)
-    .bind(tz_name)
+    .bind(at.now)
+    .bind(at.tz.name())
     .fetch_all(db)
     .await
 }

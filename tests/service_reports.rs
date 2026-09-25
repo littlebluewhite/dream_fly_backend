@@ -25,10 +25,10 @@ use chrono_tz::Tz;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use dream_fly_backend::config::ServerConfig;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::reports::service;
 use dream_fly_backend::utils::studio_clock;
+use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use common::fixtures::{
     SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
@@ -38,7 +38,7 @@ use common::fixtures::{
     seed_order_with_items, seed_venue_rentals, seed_waitlist_entry, set_birth_date,
     set_points_balance,
 };
-use common::{seed_member, seed_product, seed_time_slot_on, test_server_config};
+use common::{seed_member, seed_product, seed_time_slot_on};
 
 fn t(h: u32, m: u32) -> chrono::NaiveTime {
     chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -98,7 +98,7 @@ async fn seed_inquiry(
 
 #[sqlx::test]
 async fn admin_report_empty_db_is_all_zero(db: PgPool) {
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -205,7 +205,7 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
     seed_order_bare(&db, user_id, "cancelled", 999_999, Some(now)).await;
     seed_order_bare(&db, user_id, "pending", 999_999, None).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -224,7 +224,7 @@ async fn admin_report_revenue_trend_buckets_by_month(db: PgPool) {
     seed_order_bare(&db, user_id, "paid", 2_000, Some(last_month)).await;
     seed_order_bare(&db, user_id, "paid", 3_000, Some(oldest_month)).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -251,7 +251,7 @@ async fn admin_report_members_total_new_and_active(db: PgPool) {
     seed_enrolment(&db, old_user, course_id, "active", Utc::now()).await;
     seed_enrolment(&db, new_active_user, course_id, "active", Utc::now()).await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -279,7 +279,7 @@ async fn admin_report_course_fill_rate_and_waitlist(db: PgPool) {
     seed_enrolment(&db, u3, course_id, "cancelled", Utc::now()).await; // must not count
     seed_waitlist_entry(&db, w1, course_id, "waiting", Utc::now()).await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -313,7 +313,7 @@ async fn admin_report_coach_course_and_student_count_scoped_per_coach(db: PgPool
     seed_enrolment(&db, student_1, course_a2, "active", Utc::now()).await;
     seed_enrolment(&db, student_2, course_b1, "active", Utc::now()).await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -372,7 +372,7 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
     seed_attendance(&db, s2, enrolment_b, "absent", student).await;
     seed_attendance(&db, s3, enrolment_c, "leave", student).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -412,7 +412,7 @@ async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
     )
     .await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -459,7 +459,7 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
     let slot_id = seed_time_slot_on(&db, 10, months_ago(now, 0).date_naive()).await;
     seed_booking(&db, buyer, slot_id, "confirmed", 100_000).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -508,7 +508,7 @@ async fn admin_report_venue_rental_counts_only_confirmed_completed(db: PgPool) {
     // Booked *now*, but the slot's use date is last month — 歸屬 slot 使用日.
     seed_venue_rentals(&db, last_month_date, &[("confirmed", 7_000)]).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -545,7 +545,7 @@ async fn admin_report_income_sources_12m_buckets_by_paid_month(db: PgPool) {
     // 12 months back = outside the 12-slot window (current + 11 previous).
     seed_order_with_items(&db, buyer, "paid", None, Some(months_ago(now, 12)), &line).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -585,7 +585,7 @@ async fn admin_report_payment_split_null_method_is_unknown(db: PgPool) {
     seed_order_with_items(&db, buyer, "paid", Some("line_pay"), Some(months_ago(now, 1)), &[])
         .await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -641,7 +641,7 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
     // A coachless course's line is attributed to nobody (and must not 500).
     seed_course_revenue(&db, buyer, course_orphan, 7_777, "paid", Some(now)).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -689,7 +689,7 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
     // A member enrolled but never marked -> excluded.
     let _m_unmarked = seed_member(&db, "attdist-unmarked@example.com", "Password!234").await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -722,7 +722,7 @@ async fn admin_report_retention_new_returning_and_null_rate(db: PgPool) {
     seed_attendance(&db, s_last, enrolment_id, "present", user_id).await;
     seed_attendance(&db, s_this, enrolment_id, "present", user_id).await;
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -751,7 +751,7 @@ async fn admin_report_age_dist_excludes_null_birth_date(db: PgPool) {
     // NULL birth_date -> excluded from the distribution entirely.
     let _m_null = seed_member(&db, "age-null@example.com", "Password!234").await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -785,7 +785,7 @@ async fn admin_report_funnel_honest_two_stages_90_day_window(db: PgPool) {
     seed_enrolment(&db, user_id, c2, "cancelled", now - Duration::days(5)).await; // excluded
     seed_enrolment(&db, user_id, c3, "active", now - Duration::days(91)).await; // out of window
 
-    let report = service::admin_report(&db, &test_server_config(), now)
+    let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
@@ -824,7 +824,7 @@ async fn admin_report_weekday_load_indexes_sunday_as_zero(db: PgPool) {
     seed_attendance(&db, s_sun, e2, "present", u2).await;
     seed_attendance(&db, s_wed, e3, "present", u3).await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -850,7 +850,7 @@ async fn admin_report_tier_dist_threshold_boundaries(db: PgPool) {
         set_points_balance(&db, u, *balance).await;
     }
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -886,7 +886,7 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
     let month_start = Utc::now().date_naive().with_day(1).unwrap();
     seed_course_session(&db, course_d, month_start, t(23, 0), t(23, 30)).await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -933,7 +933,7 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
     seed_attendance(&db, s2, enrolment_id, "absent", coach_user).await;
     seed_attendance(&db, s3, enrolment_id, "leave", coach_user).await;
 
-    let report = service::admin_report(&db, &test_server_config(), Utc::now())
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
@@ -956,7 +956,7 @@ async fn coach_report_no_coach_row_returns_not_found(db: PgPool) {
     let user_id = seed_member(&db, "no-coach-row@example.com", "Password!234").await;
     let auth = common::coach_auth(user_id);
 
-    let err = service::coach_report(&db, &test_server_config(), Utc::now(), &auth)
+    let err = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect_err("expected NotFound");
 
@@ -969,7 +969,7 @@ async fn coach_report_empty_domain_is_all_zero_or_null(db: PgPool) {
     seed_coach(&db, user_id, "Empty Coach").await;
     let auth = common::coach_auth(user_id);
 
-    let report = service::coach_report(&db, &test_server_config(), Utc::now(), &auth)
+    let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report");
 
@@ -994,7 +994,7 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
     seed_enrolment(&db, student, course_id, "active", Utc::now()).await;
 
     let auth = common::coach_auth(coach_user);
-    let report = service::coach_report(&db, &test_server_config(), Utc::now(), &auth)
+    let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report (before marking)");
 
@@ -1018,7 +1018,7 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
             .unwrap();
     seed_attendance(&db, session_id, enrolment_id, "present", coach_user).await;
 
-    let report_after = service::coach_report(&db, &test_server_config(), Utc::now(), &auth)
+    let report_after = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report (after marking)");
     assert_eq!(report_after.today_sessions, 1);
@@ -1054,7 +1054,7 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
     seed_attendance(&db, session_out, enrolment_a, "present", coach_user).await;
 
     let auth = common::coach_auth(coach_user);
-    let report = service::coach_report(&db, &test_server_config(), Utc::now(), &auth)
+    let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report");
 
@@ -1086,7 +1086,7 @@ async fn coach_report_scoped_to_own_domain(db: PgPool) {
     seed_enrolment(&db, student_b, course_b, "active", Utc::now()).await;
 
     let auth_a = common::coach_auth(coach_a_user);
-    let report_a = service::coach_report(&db, &test_server_config(), Utc::now(), &auth_a)
+    let report_a = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth_a)
         .await
         .expect("coach_report for coach A");
 
@@ -1122,7 +1122,7 @@ async fn coach_report_unread_messages_counts_only_incoming_unread(db: PgPool) {
     seed_message(&db, conversation_id, member_user, "please read 2", None, Utc::now()).await;
 
     let auth = common::coach_auth(coach_user);
-    let report = service::coach_report(&db, &test_server_config(), Utc::now(), &auth)
+    let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report");
 
@@ -1137,7 +1137,7 @@ async fn coach_report_unread_messages_counts_only_incoming_unread(db: PgPool) {
 async fn member_report_empty_is_all_zero_or_null(db: PgPool) {
     let user_id = seed_member(&db, "empty-member@example.com", "Password!234").await;
 
-    let report = service::member_report(&db, &test_server_config(), Utc::now(), user_id)
+    let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
         .expect("member_report");
 
@@ -1163,7 +1163,7 @@ async fn member_report_attendance_rate_excludes_leave(db: PgPool) {
     seed_attendance(&db, session_2, enrolment_id, "present", user_id).await;
     seed_attendance(&db, session_3, enrolment_id, "leave", user_id).await;
 
-    let report = service::member_report(&db, &test_server_config(), Utc::now(), user_id)
+    let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
         .expect("member_report");
 
@@ -1180,7 +1180,7 @@ async fn member_report_points_balance_reflects_users_table(db: PgPool) {
     let user_id = seed_member(&db, "points-member@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 1_250).await;
 
-    let report = service::member_report(&db, &test_server_config(), Utc::now(), user_id)
+    let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
         .expect("member_report");
 
@@ -1195,7 +1195,7 @@ async fn member_report_active_enrolments_excludes_cancelled(db: PgPool) {
     seed_enrolment(&db, user_id, course_1, "active", Utc::now()).await;
     seed_enrolment(&db, user_id, course_2, "cancelled", Utc::now()).await;
 
-    let report = service::member_report(&db, &test_server_config(), Utc::now(), user_id)
+    let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
         .expect("member_report");
 
@@ -1216,7 +1216,7 @@ async fn member_report_upcoming_sessions_7d_materializes_and_respects_window(db:
     let dow_far = far_date.weekday().num_days_from_sunday() as i16;
     seed_course_schedule_slot(&db, course_id, dow_far, t(11, 0), t(12, 0)).await;
 
-    let report = service::member_report(&db, &test_server_config(), Utc::now(), user_id)
+    let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
         .expect("member_report");
 
@@ -1342,10 +1342,10 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
 /// 次跑就該綠。它的價值不是抓現有 bug,而是把「未來有人把 studio timezone
 /// 佈線改壞」這一整類 bug 從結構上不可測變成可測——見下方「判別力」段落。
 ///
-/// 動機:本檔其餘每個測試都呼叫 `test_server_config()`,把 `studio_timezone`
-/// 釘死在 `"UTC"`。`AT TIME ZONE 'UTC'` 對一個本來就以 UTC 儲存的
+/// 動機:本檔其餘每個測試都呼叫 `common::studio_now_utc(...)`,把 `tz` 釘
+/// 死在 `"UTC"`。`AT TIME ZONE 'UTC'` 對一個本來就以 UTC 儲存的
 /// `TIMESTAMPTZ` 是 no-op——不管 13 站查詢的 `tz_name` 綁定有沒有正確接上
-/// `server.studio_timezone`,SQL 算出來的結果都一樣,這一整類佈線 bug 因此
+/// `at.tz`,SQL 算出來的結果都一樣,這一整類佈線 bug 因此
 /// 是 identity-input,結構上測不出來。本測試改用 `Asia/Taipei`(UTC+8,無
 /// DST)才能讓「該轉但沒轉」與「轉對了」產生可觀察的差異。
 ///
@@ -1369,14 +1369,11 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
 /// 出了 13 站佈線的存在。
 #[sqlx::test]
 async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
-    let server = ServerConfig {
-        host: "0.0.0.0".into(),
-        port: 3000,
-        allowed_origins: vec![],
-        trust_proxy: false,
-        studio_timezone: "Asia/Taipei".parse().unwrap(),
-    };
     let now = Utc.with_ymd_and_hms(2026, 6, 30, 16, 0, 30).unwrap();
+    let at = StudioNow {
+        tz: "Asia/Taipei".parse().unwrap(),
+        now,
+    };
     // 台北 6/30 23:59:59 — studio 上月的瞬間。
     let before_midnight = Utc.with_ymd_and_hms(2026, 6, 30, 15, 59, 59).unwrap();
     // 台北 7/1 00:00:01 — studio 本月的瞬間。
@@ -1422,7 +1419,7 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
     seed_attendance(&db, session_this_month, enrolment_x, "present", member_x).await;
     seed_attendance(&db, session_last_month, enrolment_y, "present", member_y).await;
 
-    let report = service::admin_report(&db, &server, now).await.expect("admin_report");
+    let report = service::admin_report(&db, at).await.expect("admin_report");
 
     // revenue.trend 尾桶(本月)/ 前一桶(上月)——UTC 恆等式下尾桶標籤會
     // 直接變成 "2026-06","2026-07" 桶整個消失於 12 個月窗外。

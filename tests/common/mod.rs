@@ -21,28 +21,12 @@ use chrono::{Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use dream_fly_backend::config::{AuthConfig, ServerConfig};
+use dream_fly_backend::config::AuthConfig;
 use dream_fly_backend::extractors::auth::AuthUser;
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
-
-/// Pin the server config tests use to UTC so naïve date+time arithmetic
-/// in booking/cancel tests lines up with `Utc::now()` regardless of the
-/// host's configured timezone.
-///
-/// Kept only for `tests/service_reports.rs`, pending its own migration to
-/// [`studio_now_utc`].
-pub fn test_server_config() -> ServerConfig {
-    ServerConfig {
-        host: "0.0.0.0".into(),
-        port: 3000,
-        allowed_origins: vec![],
-        trust_proxy: false,
-        studio_timezone: "UTC".parse().unwrap(),
-    }
-}
 
 /// Build a `StudioNow` pinned to UTC for the given instant — the test-side
 /// mechanical replacement for `&common::test_server_config(), <now>`.

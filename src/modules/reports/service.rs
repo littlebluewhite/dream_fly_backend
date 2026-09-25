@@ -1,15 +1,14 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{Datelike, Duration, NaiveDate};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::service as coaches_service;
 use crate::modules::messages::repository as messages_repository;
 use crate::modules::sessions::repository as sessions_repository;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::assembly::{self, safe_ratio};
 use super::dto::{
@@ -44,28 +43,22 @@ const MEMBER_UPCOMING_WINDOW_DAYS: i64 = 7;
 /// `GET /reports/admin`. Role gating (`admin` only) happens in the
 /// handler, not here (mirrors `sessions::today_sessions`'s division of
 /// responsibility). Pure aggregation — no writes.
-pub async fn admin_report(
-    db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
-) -> Result<AdminReportResponse, AppError> {
-    let tz_name = server.studio_timezone.name();
-    let tz = studio_clock::studio_tz(server);
+pub async fn admin_report(db: &PgPool, at: StudioNow) -> Result<AdminReportResponse, AppError> {
+    let StudioNow { tz, now } = at;
 
-    let trend_rows = repository::revenue_trend(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
-    let member_stats = repository::member_stats(db, now, tz_name).await?;
+    let trend_rows = repository::revenue_trend(db, at, TRAILING_WINDOW_MONTHS).await?;
+    let member_stats = repository::member_stats(db, at).await?;
     let course_rows = repository::course_reports(db).await?;
-    let coach_rows = repository::coach_reports(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
-    let kpi = repository::kpis(db, now, tz_name).await?;
-    let income_rows =
-        repository::income_by_source(db, now, tz_name, TRAILING_WINDOW_MONTHS).await?;
-    let payment_rows = repository::payment_split(db, now, tz_name).await?;
+    let coach_rows = repository::coach_reports(db, at, TRAILING_WINDOW_MONTHS).await?;
+    let kpi = repository::kpis(db, at).await?;
+    let income_rows = repository::income_by_source(db, at, TRAILING_WINDOW_MONTHS).await?;
+    let payment_rows = repository::payment_split(db, at).await?;
     let attendance_dist_rows = repository::attendance_distribution(db).await?;
-    let age_dist_rows = repository::age_distribution(db, now, tz_name).await?;
+    let age_dist_rows = repository::age_distribution(db, at).await?;
     let tier_dist_rows = repository::tier_distribution(db).await?;
-    let retention_rows = repository::retention(db, now, tz_name).await?;
-    let funnel_row = repository::funnel(db, now, tz_name).await?;
-    let weekday_rows = repository::weekday_load(db, now, tz_name).await?;
+    let retention_rows = repository::retention(db, at).await?;
+    let funnel_row = repository::funnel(db, at).await?;
+    let weekday_rows = repository::weekday_load(db, at).await?;
 
     // `venue_usage` is over *this studio month's* sessions, which may not all
     // be materialized yet (future dates in the current month) — so idempotently
@@ -121,15 +114,16 @@ fn studio_month_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
 /// only, no admin bypass — see task brief) happens in the handler.
 pub async fn coach_report(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     auth: &AuthUser,
 ) -> Result<CoachReportResponse, AppError> {
+    let StudioNow { tz, now } = at;
+
     let coach = coaches_service::resolve(db, auth)
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
-    let today = studio_clock::today(studio_clock::studio_tz(server), now);
+    let today = studio_clock::today(tz, now);
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
     let day = sessions_repository::materialize_day(db, &course_ids, today).await?;
 
@@ -155,11 +149,12 @@ pub async fn coach_report(
 /// role gate beyond being logged in.
 pub async fn member_report(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     user_id: Uuid,
 ) -> Result<MemberReportResponse, AppError> {
-    let today = studio_clock::today(studio_clock::studio_tz(server), now);
+    let StudioNow { tz, now } = at;
+
+    let today = studio_clock::today(tz, now);
 
     let (present, absent) = repository::member_attendance(db, user_id).await?;
     let points_balance = repository::points_balance(db, user_id).await?;
