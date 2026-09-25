@@ -204,8 +204,10 @@ async fn main() -> anyhow::Result<()> {
     // consumer can observe it.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Background task: periodically delete expired/revoked refresh tokens
-    // to prevent the `refresh_tokens` table from growing unboundedly.
+    // Background task: periodically delete expired refresh tokens to prevent
+    // the `refresh_tokens` table from growing unboundedly. Revoked-but-
+    // unexpired rows are kept — reuse detection needs them (see
+    // `auth::session::purge_expired`).
     let cleanup_db = db.clone();
     let mut cleanup_shutdown = shutdown_rx.clone();
     let cleanup_handle = tokio::spawn(async move {

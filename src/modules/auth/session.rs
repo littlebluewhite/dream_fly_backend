@@ -14,6 +14,9 @@
 //!   效期是時鐘 seam 記錄在案的 carve-out,直呼 `Utc::now()`)。
 //! - 輪替原子化:舊 token revoke、新 token 簽發在同一 tx 內同進同出。
 //! - reuse detection:已 revoke 的 token 再次出現視為竊取重放,整族撤銷。
+//! - 停用帳號(`!is_active`)在任何簽發路徑都拿不到 session(`start` 首行)。
+//! - retention:清理只刪過期列;已 revoke 未過期的列保留到過期,reuse
+//!   detection 才認得出重放(過期後由 JWT `exp` 先擋)。
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{PgConnection, PgPool};
@@ -169,11 +172,18 @@ pub(crate) async fn end_all(conn: &mut PgConnection, user_id: Uuid) -> Result<()
     Ok(())
 }
 
+/// Deletes expired refresh-token rows only. Revoked-but-unexpired rows are
+/// kept on purpose: reuse detection in `rotate` needs the revoked row to
+/// recognise a replayed rotated-out token (a missing row is a plain 401 with
+/// no family revoke). Once a row has expired, the JWT's own `exp` (same
+/// `jwt_refresh_expiration_days` horizon) already rejects the token in
+/// `jwt::decode_refresh_token` before any lookup, so the row is no longer
+/// needed. Backed by the full `idx_refresh_tokens_expires_at` index
+/// (migration `20260926000002`).
 pub async fn purge_expired(db: &PgPool) -> Result<u64, sqlx::Error> {
-    let result =
-        sqlx::query("DELETE FROM refresh_tokens WHERE expires_at < NOW() OR revoked = true")
-            .execute(db)
-            .await?;
+    let result = sqlx::query("DELETE FROM refresh_tokens WHERE expires_at < NOW()")
+        .execute(db)
+        .await?;
     Ok(result.rows_affected())
 }
 

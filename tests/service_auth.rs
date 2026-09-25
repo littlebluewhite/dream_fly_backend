@@ -7,6 +7,8 @@
 //! - login with nonexistent email also returns Unauthorized
 //! - refresh rotates tokens and revokes the old one
 //! - refresh token reuse detection revokes the entire token family
+//! - `session::purge_expired` keeps rotated-out (revoked, unexpired) rows,
+//!   so reuse detection still fires after a purge
 //! - forgot_password reissue invalidates the previous outstanding token
 //! - reset_password tokens are single-use (GETDEL semantics)
 //! - reset_password revokes the entire refresh-token family, not just the
@@ -28,6 +30,7 @@ use dream_fly_backend::modules::auth::dto::{
     ForgotPasswordRequest, LoginRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
 };
 use dream_fly_backend::modules::auth::service;
+use dream_fly_backend::modules::auth::session;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::jwt;
 
@@ -292,6 +295,67 @@ async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
     .await
     .expect("count active tokens");
     assert_eq!(active_count, 0, "all tokens should be revoked");
+}
+
+/// Hole 3: the hourly purge used to delete revoked rows too, so once it ran,
+/// replaying a rotated-out token found no row at all — a plain 401 with no
+/// family revoke, silently disabling reuse detection. Purge now deletes only
+/// expired rows; a revoked-but-unexpired row must survive so the replay is
+/// still recognised.
+#[sqlx::test]
+async fn purge_expired_keeps_rotated_tokens_so_reuse_still_revokes_family(db: PgPool) {
+    let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
+
+    let r1 = service::register(
+        &db,
+        &mut redis,
+        &cfg,
+        RegisterRequest {
+            email: "purge@example.com".into(),
+            name: "Purge".into(),
+            password: "sup3rsecret".into(),
+        },
+        None,
+    )
+    .await
+    .expect("register");
+
+    let r2 = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r1.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect("first refresh");
+
+    session::purge_expired(&db).await.expect("purge");
+
+    // Replay the rotated-out r1: still recognised as reuse …
+    let reuse_err = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r1.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect_err("reuse should fail");
+    assert!(matches!(reuse_err, AppError::Unauthorized));
+
+    // … so the whole family, including the live r2, is revoked.
+    let r2_err = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r2.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect_err("family should be dead after reuse");
+    assert!(matches!(r2_err, AppError::Unauthorized));
 }
 
 // ---------------- forgot_password / reset_password token protocol ----------------
