@@ -274,7 +274,7 @@ pub async fn book_makeup(
         return Err(AppError::Conflict("此假單已預約過補課".into()));
     }
 
-    let target = repository::find_session_context_tx(&mut tx, req.session_id)
+    let target = repository::find_session_context(&mut *tx, req.session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
 

@@ -7,11 +7,11 @@ use super::model::{
 };
 
 /// `course_sessions` JOINed with its course's `name` — used both by
-/// `POST /leave-requests` (plain read) and the makeup endpoint's
-/// target-session validation (`_tx` variant below, reading through the same
-/// open transaction as the leave-request row lock).
+/// `POST /leave-requests` (plain pool read) and the makeup endpoint's
+/// target-session validation (called through the open transaction that
+/// holds the leave-request row lock).
 pub async fn find_session_context(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     session_id: Uuid,
 ) -> Result<Option<SessionContext>, sqlx::Error> {
     sqlx::query_as::<_, SessionContext>(
@@ -21,23 +21,7 @@ pub async fn find_session_context(
          WHERE cs.id = $1",
     )
     .bind(session_id)
-    .fetch_optional(db)
-    .await
-}
-
-/// Transactional counterpart of [`find_session_context`] — see its doc comment.
-pub async fn find_session_context_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    session_id: Uuid,
-) -> Result<Option<SessionContext>, sqlx::Error> {
-    sqlx::query_as::<_, SessionContext>(
-        "SELECT cs.course_id, c.name AS course_name, cs.session_date, cs.start_time \
-         FROM course_sessions cs \
-         JOIN courses c ON c.id = cs.course_id \
-         WHERE cs.id = $1",
-    )
-    .bind(session_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(executor)
     .await
 }
 
