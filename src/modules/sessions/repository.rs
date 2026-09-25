@@ -1,5 +1,5 @@
 use chrono::{NaiveDate, NaiveTime};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use super::model::{CourseSession, MyScheduleRow, TodaySessionRow};
@@ -256,4 +256,73 @@ pub async fn find_my_weekly_schedule(
     .bind(user_id)
     .fetch_all(db)
     .await
+}
+
+/// Reconcile a course's future `course_sessions` rows against its current
+/// `course_schedule_slots` after `courses::service::update_course` has
+/// replaced them (`replace_slots_tx`) in the same transaction — called
+/// only when the PATCH body carried `schedule_slots`. "Future" = strictly
+/// after `today` (the studio-local calendar date); today's sessions are
+/// never touched, and no new session is materialized here (the read side
+/// still does that lazily via `materialize_range`).
+///
+/// Two steps, same `(course_id, day_of_week, start_time)` correspondence
+/// `materialize_range`/`find_today_sessions_in` use (`day_of_week` =
+/// `EXTRACT(DOW FROM session_date)`, 0=Sunday..6=Saturday):
+/// 1. UPDATE — a future session whose `(day_of_week, start_time)` still
+///    matches a slot has its `end_time` synced to that slot's current
+///    `end_time` (a slot edit that only changes `end_time` must not orphan
+///    the session).
+/// 2. DELETE — a future session with no matching slot at all is an orphan.
+///    It's only deleted when nothing references it: no `leave_requests`
+///    row (any status) via `session_id` *or* `makeup_session_id` — both
+///    are `NO ACTION` FKs, so deleting a referenced row would 23503 — and
+///    no `attendance_records` row (that FK is `ON DELETE CASCADE`, so this
+///    guard is the only thing standing between an orphan session and
+///    silently vanishing attendance history).
+pub async fn reconcile_future_sessions_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    course_id: Uuid,
+    today: NaiveDate,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE course_sessions cs \
+         SET end_time = s.end_time \
+         FROM course_schedule_slots s \
+         WHERE cs.course_id = $1 \
+           AND cs.session_date > $2 \
+           AND s.course_id = cs.course_id \
+           AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
+           AND s.start_time = cs.start_time \
+           AND s.end_time <> cs.end_time",
+    )
+    .bind(course_id)
+    .bind(today)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM course_sessions cs \
+         WHERE cs.course_id = $1 \
+           AND cs.session_date > $2 \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM course_schedule_slots s \
+             WHERE s.course_id = cs.course_id \
+               AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
+               AND s.start_time = cs.start_time \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM leave_requests lr \
+             WHERE lr.session_id = cs.id OR lr.makeup_session_id = cs.id \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM attendance_records ar WHERE ar.session_id = cs.id \
+           )",
+    )
+    .bind(course_id)
+    .bind(today)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }

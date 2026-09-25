@@ -2,8 +2,10 @@ use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::slug::slugify;
 use crate::utils::studio_clock;
+use crate::utils::studio_clock::StudioNow;
 
 use super::dto::{
     CourseDetailResponse, CourseListResponse, CourseResponse, CourseScheduleSlotEntry,
@@ -167,6 +169,7 @@ pub async fn create_course(
 /// name is matched explicitly).
 pub async fn update_course(
     db: &PgPool,
+    at: StudioNow,
     id: uuid::Uuid,
     req: UpdateCourseRequest,
 ) -> Result<CourseDetailResponse, AppError> {
@@ -231,6 +234,7 @@ pub async fn update_course(
 
     if let Some(slots) = &parsed_slots {
         repository::replace_slots_tx(&mut tx, course.id, slots).await?;
+        sessions_repository::reconcile_future_sessions_tx(&mut tx, course.id, at.today()).await?;
     }
 
     tx.commit().await?;

@@ -44,6 +44,14 @@ pub struct StudioNow {
     pub now: DateTime<Utc>,
 }
 
+impl StudioNow {
+    /// Convenience wrapper around the free function [`today`] — the
+    /// studio-local calendar date of this `now`/`tz` pair.
+    pub fn today(self) -> NaiveDate {
+        today(self.tz, self.now)
+    }
+}
+
 /// The studio-local calendar date of a UTC instant — "today" per contract
 /// §3.18 裁決 2: at 23:00 UTC the studio (Asia/Taipei, UTC+8) is already
 /// 07:00 the *next* day, and a coach checking their morning

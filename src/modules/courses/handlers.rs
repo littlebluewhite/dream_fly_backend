@@ -48,6 +48,6 @@ pub async fn update(
     let id: Uuid = id_str
         .parse()
         .map_err(|_| AppError::BadRequest("invalid course id".into()))?;
-    let course = service::update_course(&state.db, id, req).await?;
+    let course = service::update_course(&state.db, state.studio_now(), id, req).await?;
     Ok(Json(course))
 }
