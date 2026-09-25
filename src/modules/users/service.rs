@@ -5,6 +5,7 @@ use crate::error::AppError;
 use crate::extractors::auth::revoke_user;
 use crate::extractors::pagination::PaginationParams;
 use crate::modules::auth::provisioning as auth_provisioning;
+use crate::modules::auth::session as auth_session;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
 
@@ -148,7 +149,10 @@ pub async fn create_user(
 /// When `is_active` is part of the request, invalidates the target user's
 /// `user_active`/`user_roles` Redis cache (`extractors::auth::revoke_user`)
 /// so a disable takes effect immediately instead of waiting out the
-/// extractor's 60s cache TTL.
+/// extractor's 60s cache TTL. A deactivation (`is_active: false`) also ends
+/// the user's whole refresh-token family (`auth::session::end_all`) in the
+/// same tx as the update, so reactivating the account later does not bring
+/// the old refresh tokens back.
 pub async fn admin_update_user(
     db: &PgPool,
     redis: &mut redis::aio::ConnectionManager,
@@ -159,8 +163,10 @@ pub async fn admin_update_user(
         return Err(AppError::Validation("至少提供一個欄位".into()));
     }
 
+    let mut tx = db.begin().await?;
+
     let user = repository::admin_update(
-        db,
+        &mut *tx,
         user_id,
         req.name.as_deref(),
         req.phone.as_deref(),
@@ -168,6 +174,14 @@ pub async fn admin_update_user(
     )
     .await?
     .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    // Deactivation ends every session in the same tx; otherwise a later
+    // reactivation would resurrect the old refresh tokens.
+    if req.is_active == Some(false) {
+        auth_session::end_all(&mut tx, user_id).await?;
+    }
+
+    tx.commit().await?;
 
     if req.is_active.is_some() {
         revoke_user(redis, user_id).await;

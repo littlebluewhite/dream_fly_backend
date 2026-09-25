@@ -557,6 +557,48 @@ async fn admin_deactivate_user_then_login_is_rejected(db: PgPool) {
     assert_eq!(login_resp.status_code(), 401, "body={}", login_resp.text());
 }
 
+/// Hole 2: deactivation used to leave the refresh-token family alive — it
+/// was only revoked lazily if the user happened to call `/auth/refresh`
+/// while inactive. Reactivating the account then resurrected every old
+/// refresh token. The test deliberately does NOT refresh during the
+/// deactivated window: that lazy path would revoke the family and mask the
+/// hole.
+#[sqlx::test]
+async fn admin_deactivate_ends_sessions_so_reactivation_does_not_resurrect_refresh_token(
+    db: PgPool,
+) {
+    let app = spawn_test_app(db).await;
+    let target = app.register_member("resurrect@example.com", "Password!234").await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    for is_active in [false, true] {
+        let resp = app
+            .patch(&format!("/api/v1/users/{}", target.user_id))
+            .authorization_bearer(&admin_token)
+            .json(&json!({ "is_active": is_active }))
+            .await;
+        assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    }
+
+    let live: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked = false",
+    )
+    .bind(target.user_id)
+    .fetch_one(&app.db)
+    .await
+    .expect("count live refresh tokens");
+    assert_eq!(
+        live, 0,
+        "deactivation must revoke the whole refresh-token family"
+    );
+
+    let resp = app
+        .post("/api/v1/auth/refresh")
+        .json(&json!({ "refresh_token": target.refresh_token }))
+        .await;
+    assert_eq!(resp.status_code(), 401, "body={}", resp.text());
+}
+
 #[sqlx::test]
 async fn admin_update_user_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;

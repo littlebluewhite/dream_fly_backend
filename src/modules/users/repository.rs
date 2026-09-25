@@ -42,7 +42,7 @@ pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {
 /// below — an admin-set phone number is exactly as unverified as a
 /// self-service one until OTP confirms it.
 pub async fn admin_update(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     name: Option<&str>,
     phone: Option<&str>,
@@ -67,7 +67,7 @@ pub async fn admin_update(
     .bind(name)
     .bind(phone)
     .bind(is_active)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await
 }
 
