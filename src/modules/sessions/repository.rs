@@ -280,6 +280,13 @@ pub async fn find_my_weekly_schedule(
 ///    no `attendance_records` row (that FK is `ON DELETE CASCADE`, so this
 ///    guard is the only thing standing between an orphan session and
 ///    silently vanishing attendance history).
+///
+/// Accepted race: a leave/makeup request can be INSERTed against this same
+/// session between step 2's `NOT EXISTS` check and its `DELETE` — the FK
+/// then makes the DELETE fail with `23503` (surfaces as 500) instead of
+/// silently orphaning the new leave row. Rare, no bad data results, and a
+/// retry (which re-evaluates `NOT EXISTS` and now sees the row referenced)
+/// succeeds.
 pub async fn reconcile_future_sessions_tx(
     tx: &mut Transaction<'_, Postgres>,
     course_id: Uuid,

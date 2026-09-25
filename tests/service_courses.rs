@@ -432,26 +432,44 @@ async fn list_courses_filters_out_inactive(db: PgPool) {
 #[sqlx::test]
 async fn update_course_slot_edit_deletes_only_future_unreferenced_orphans(db: PgPool) {
     let course_id = seed_course(&db, "Orphan Delete Course", None).await;
-    let future_date = (Utc::now() + Duration::days(10)).date_naive();
+    let at = common::studio_now_utc(Utc::now());
+    let today = at.today();
+    // +7 days keeps the same weekday as `today`, so a single slot
+    // definition can be shared by both the future and today fixtures in
+    // this file without needing a second `day_of_week`.
+    let future_date = today + Duration::days(7);
     let dow = future_date.weekday().num_days_from_sunday() as i16;
     seed_course_schedule_slot(&db, course_id, dow, t(9, 0), t(10, 0)).await;
     let orphan_id = seed_course_session(&db, course_id, future_date, t(9, 0), t(10, 0)).await;
 
+    // A same-shape unreferenced orphan dated today, and one dated
+    // yesterday — the `session_date > today` boundary means neither is
+    // ever a reconciliation candidate, orphaned or not. Without this pair
+    // of assertions, a bug that widened either SQL statement's boundary to
+    // `>=` (or dropped it) would still pass every other assertion in this
+    // test.
+    let today_id = seed_course_session(&db, course_id, today, t(11, 0), t(12, 0)).await;
+    let yesterday_id =
+        seed_course_session(&db, course_id, today - Duration::days(1), t(9, 0), t(10, 0)).await;
+
     // Replacing the slots wholesale (empty set) leaves nothing matching
     // `orphan_id`'s (day_of_week, start_time) — and it's unreferenced, so
     // it must be deleted.
-    service::update_course(
-        &db,
-        common::studio_now_utc(Utc::now()),
-        course_id,
-        slots_only_update(Some(vec![])),
-    )
-    .await
-    .expect("update_course");
+    service::update_course(&db, at, course_id, slots_only_update(Some(vec![])))
+        .await
+        .expect("update_course");
 
     assert!(
         !session_exists(&db, orphan_id).await,
         "unreferenced future orphan session must be deleted"
+    );
+    assert!(
+        session_exists(&db, today_id).await,
+        "today's session must never be touched by reconciliation, orphan or not"
+    );
+    assert!(
+        session_exists(&db, yesterday_id).await,
+        "a past session must never be touched by reconciliation, orphan or not"
     );
 }
 
@@ -518,17 +536,27 @@ async fn update_course_slot_edit_keeps_referenced_future_orphans(db: PgPool) {
 #[sqlx::test]
 async fn update_course_slot_end_time_change_syncs_future_sessions(db: PgPool) {
     let course_id = seed_course(&db, "End Time Sync Course", None).await;
-    let future_date = (Utc::now() + Duration::days(10)).date_naive();
+    let at = common::studio_now_utc(Utc::now());
+    let today = at.today();
+    // +7 days keeps the same weekday as `today`, so the single slot below
+    // also matches the today-dated fixture.
+    let future_date = today + Duration::days(7);
     let dow = future_date.weekday().num_days_from_sunday() as i16;
     seed_course_schedule_slot(&db, course_id, dow, t(9, 0), t(10, 0)).await;
     let session_id = seed_course_session(&db, course_id, future_date, t(9, 0), t(10, 0)).await;
+
+    // Same (day_of_week, start_time) match and same stale end_time, but
+    // dated today — must NOT be synced. Without the `session_date > today`
+    // boundary on the UPDATE statement, this session's end_time would be
+    // rewritten right along with the future one.
+    let today_session_id = seed_course_session(&db, course_id, today, t(9, 0), t(10, 0)).await;
 
     // Same (day_of_week, start_time) as before, but a new end_time — the
     // session still corresponds to a slot, so it must be synced, not
     // deleted.
     service::update_course(
         &db,
-        common::studio_now_utc(Utc::now()),
+        at,
         course_id,
         slots_only_update(Some(vec![CourseScheduleSlotEntry {
             day_of_week: dow,
@@ -542,6 +570,11 @@ async fn update_course_slot_end_time_change_syncs_future_sessions(db: PgPool) {
 
     assert!(session_exists(&db, session_id).await, "matching session must survive");
     assert_eq!(session_end_time(&db, session_id).await, t(10, 30));
+    assert_eq!(
+        session_end_time(&db, today_session_id).await,
+        t(10, 0),
+        "today's session must not be synced even though it matches the slot"
+    );
 }
 
 #[sqlx::test]
