@@ -1,4 +1,3 @@
-use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -10,14 +9,12 @@ use crate::modules::notifications::service as notify;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::email::EmailSender;
 use crate::utils::google_oauth;
-use crate::utils::jwt;
 use crate::utils::password;
 use crate::utils::sms::SmsClient;
 
 use super::dto::{
     AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, LoginRequest, MessageResponse,
     OtpSendRequest, OtpVerifyRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
-    UserResponse,
 };
 use super::linking;
 use super::model::normalize_email;
@@ -26,39 +23,7 @@ use super::provisioning;
 use super::rate_limit;
 use super::repository;
 use super::reset_tokens;
-
-// Single session-issuance owner: encodes the access + refresh JWTs, computes
-// the refresh expiry (`now + jwt_refresh_expiration_days` — auth token expiry
-// is the documented clock-seam carve-out, so a direct `Utc::now()` is fine
-// here), hashes the refresh token with SHA-256 before persisting it (so a
-// database compromise does not leak live refresh credentials), loads the
-// user's roles, and assembles the `AuthResponse`. Callers own the
-// transaction/connection boundary and pass it in as `&mut PgConnection`
-// (`&mut tx` deref-coerces for the three transactional callers; `login`
-// acquires a plain pooled connection instead). Every internal query reborrows
-// `&mut *conn` — passing `conn` straight through would move it out on the
-// first use.
-async fn issue_session(
-    conn: &mut sqlx::PgConnection,
-    config: &AuthConfig,
-    user: &super::model::User,
-) -> Result<AuthResponse, AppError> {
-    let access_token = jwt::encode_access_token(config, user.id, &user.email)?;
-    let refresh_token = jwt::encode_refresh_token(config, user.id)?;
-
-    let expires_at = Utc::now() + Duration::days(config.jwt_refresh_expiration_days as i64);
-    let token_hash = jwt::hash_token(&refresh_token);
-
-    repository::save_refresh_token(&mut *conn, user.id, &token_hash, expires_at).await?;
-
-    let roles = permissions_repository::find_role_names_by_user(&mut *conn, user.id).await?;
-
-    Ok(AuthResponse {
-        access_token,
-        refresh_token,
-        user: UserResponse::new(user.clone(), roles),
-    })
-}
+use super::session;
 
 pub async fn register(
     db: &PgPool,
@@ -100,7 +65,7 @@ pub async fn register(
     // If token generation fails here, the entire transaction — including the
     // event row `create_account` already queued — rolls back: no phantom
     // user row.
-    let response = issue_session(&mut tx, config, &provisioned.user).await?;
+    let response = session::start(&mut tx, config, &provisioned.user).await?;
 
     tx.commit().await?;
 
@@ -174,7 +139,7 @@ pub async fn login(
     let mut conn = db.acquire().await?;
     repository::update_last_login(&mut *conn, user.id).await?;
 
-    issue_session(&mut conn, config, &user).await
+    session::start(&mut conn, config, &user).await
 }
 
 #[derive(serde::Deserialize)]
@@ -282,7 +247,7 @@ pub async fn google_auth(
     repository::update_last_login(&mut *tx, user.id).await?;
 
     // 6. Generate tokens (inside the same tx)
-    let response = issue_session(&mut tx, &config.auth, &user).await?;
+    let response = session::start(&mut tx, &config.auth, &user).await?;
 
     // 7. Queue user_registered event atomically with the user row — see
     //    `linking`'s module doc for why Create and Link both emit it.
@@ -315,86 +280,11 @@ pub async fn refresh_token(
     config: &AuthConfig,
     req: RefreshRequest,
 ) -> Result<AuthResponse, AppError> {
-    // 1. Decode refresh token JWT (verifies signature + claims)
-    let claims = jwt::decode_refresh_token(config, &req.refresh_token)?;
-
-    // 2. Look up by SHA-256 hash, never by raw token
-    let token_hash = jwt::hash_token(&req.refresh_token);
-
-    // 3. Atomically: find + revoke old, create new — everything in one tx
-    let mut tx = db.begin().await?;
-
-    let stored = repository::find_refresh_token_tx(&mut tx, &token_hash)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
-
-    if stored.revoked {
-        // Reuse detection: if a revoked token is seen again, treat it as a
-        // stolen-token replay and invalidate the user's entire token family.
-        //
-        // Log at ERROR with a distinct `security_event` field so SIEM rules
-        // can alert on this specifically — token reuse is a strong
-        // indicator of credential theft rather than a benign retry.
-        let _ = repository::revoke_all_user_tokens_tx(&mut tx, stored.user_id).await;
-        tx.commit().await?;
-        tracing::error!(
-            security_event = "refresh_token_reuse",
-            user_id = %stored.user_id,
-            "refresh token reuse detected; all sessions revoked"
-        );
-        return Err(AppError::Unauthorized);
-    }
-
-    if stored.expires_at < Utc::now() {
-        return Err(AppError::Unauthorized);
-    }
-
-    repository::revoke_refresh_token(&mut *tx, &token_hash).await?;
-
-    // 4. Load user from JWT sub
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-    if user_id != stored.user_id {
-        // JWT sub does not match stored record — refuse.
-        return Err(AppError::Unauthorized);
-    }
-
-    let user = repository::find_user_by_id_tx(&mut tx, user_id)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
-
-    // Deactivated users cannot mint new access tokens, even with a valid
-    // refresh token. This closes the window where a disabled user could
-    // keep refreshing until the cached is_active flag expires.
-    if !user.is_active {
-        repository::revoke_all_user_tokens_tx(&mut tx, user.id).await?;
-        tx.commit().await?;
-        return Err(AppError::Unauthorized);
-    }
-
-    // 5. Issue + persist the new refresh token, still inside the same tx.
-    // Behavior fix: roles used to be read from the pool *after* commit — if
-    // that query had failed, the old token was already revoked and the new
-    // one never reached the client, so the client's next request with the
-    // now-dead old token would trip reuse detection and revoke the whole
-    // family. Routing this through `issue_session` (same tx, pre-commit)
-    // makes issuance atomic with the rest of the rotation.
-    let response = issue_session(&mut tx, config, &user).await?;
-
-    tx.commit().await?;
-
-    Ok(response)
+    session::rotate(db, config, &req.refresh_token).await
 }
 
 pub async fn logout(db: &PgPool, config: &AuthConfig, req: RefreshRequest) -> Result<(), AppError> {
-    // Verify the JWT first so random strings cannot be used to revoke tokens.
-    // If it doesn't parse, treat as success so logout is idempotent client-side.
-    if jwt::decode_refresh_token(config, &req.refresh_token).is_err() {
-        return Ok(());
-    }
-
-    let token_hash = jwt::hash_token(&req.refresh_token);
-    repository::revoke_refresh_token(db, &token_hash).await?;
-    Ok(())
+    session::end(db, config, &req.refresh_token).await
 }
 
 pub async fn send_otp(
@@ -494,99 +384,10 @@ pub async fn reset_password(
     //    cannot leave old sessions valid after a password change.
     let mut tx = db.begin().await?;
     repository::update_password_tx(&mut tx, user_id, &hashed).await?;
-    repository::revoke_all_user_tokens_tx(&mut tx, user_id).await?;
+    session::end_all(&mut tx, user_id).await?;
     tx.commit().await?;
 
     Ok(MessageResponse {
         message: "password reset successfully".into(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Deliberately not the `30` used by `common::test_auth_config` elsewhere
-    /// in the suite, so the expiry assertion below can't pass by coincidence
-    /// against some other hardcoded constant.
-    fn test_config() -> AuthConfig {
-        AuthConfig {
-            jwt_secret: "owner-test-secret-at-least-32-chars-0000".into(),
-            jwt_access_expiration_minutes: 15,
-            jwt_refresh_expiration_days: 14,
-            google_client_id: "test-client".into(),
-            google_client_secret: "test-secret".into(),
-            google_redirect_url: "http://localhost/oauth/callback".into(),
-            google_token_url: "http://127.0.0.1:1/oauth/token".into(),
-            google_jwks_url: "http://127.0.0.1:1/certs".into(),
-        }
-    }
-
-    /// `refresh_tokens.user_id` carries a `REFERENCES users(id)` FK, so
-    /// `issue_session` needs a real `users` row to attach to. Reuses
-    /// `repository::create_user_tx` rather than hand-rolling a parallel
-    /// INSERT.
-    async fn insert_bare_user(db: &PgPool, email: &str) -> super::super::model::User {
-        let mut tx = db.begin().await.expect("begin tx");
-        let user = repository::create_user_tx(
-            &mut tx,
-            email,
-            "Owner Test User",
-            None,
-            "owner-test-hash",
-            None,
-        )
-        .await
-        .expect("insert bare user");
-        tx.commit().await.expect("commit user insert");
-        user
-    }
-
-    /// The owner invariant this refactor exists to guarantee, asserted
-    /// directly against `issue_session`'s observable effects rather than
-    /// through `register`/`login`/etc (which only exercise it indirectly):
-    /// - the persisted refresh token is a SHA-256 hash, never the raw JWT
-    /// - the access and refresh tokens are issued as a matched pair (same
-    ///   subject, distinct strings)
-    /// - the persisted expiry is `now + jwt_refresh_expiration_days`
-    #[sqlx::test]
-    async fn issue_session_hashes_pairs_and_expires_at_now_plus_n_days(db: PgPool) {
-        let config = test_config();
-        let user = insert_bare_user(&db, "owner-invariant@example.com").await;
-
-        let mut conn = db.acquire().await.expect("acquire conn");
-        let before = Utc::now();
-        let response = issue_session(&mut conn, &config, &user)
-            .await
-            .expect("issue_session");
-        let after = Utc::now();
-
-        // Paired issuance: both halves decode and agree on the same subject.
-        let access_claims =
-            jwt::decode_access_token(&config, &response.access_token).expect("decode access token");
-        let refresh_claims = jwt::decode_refresh_token(&config, &response.refresh_token)
-            .expect("decode refresh token");
-        assert_eq!(access_claims.sub, user.id.to_string());
-        assert_eq!(refresh_claims.sub, user.id.to_string());
-        assert_ne!(response.access_token, response.refresh_token);
-
-        // Must-hash-before-store: the persisted row never holds the raw JWT.
-        let (stored_hash, stored_expires_at): (String, chrono::DateTime<Utc>) =
-            sqlx::query_as("SELECT token_hash, expires_at FROM refresh_tokens WHERE user_id = $1")
-                .bind(user.id)
-                .fetch_one(&db)
-                .await
-                .expect("read refresh_token row");
-        assert_eq!(stored_hash, jwt::hash_token(&response.refresh_token));
-        assert_ne!(stored_hash, response.refresh_token);
-
-        // Expiry = now + N days, bracketed by the wall-clock window around
-        // the call so this can't be flaky.
-        let expected_min = before + Duration::days(config.jwt_refresh_expiration_days as i64);
-        let expected_max = after + Duration::days(config.jwt_refresh_expiration_days as i64);
-        assert!(
-            stored_expires_at >= expected_min && stored_expires_at <= expected_max,
-            "expires_at {stored_expires_at:?} not within [{expected_min:?}, {expected_max:?}]"
-        );
-    }
 }

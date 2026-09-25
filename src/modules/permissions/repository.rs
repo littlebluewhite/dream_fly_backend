@@ -95,8 +95,7 @@ pub async fn remove_role_from_user(
 /// callers include the seed binary, which has no ambient transaction. A
 /// transactional caller passes `&mut tx` (deref-coerces); a plain-pool
 /// caller passes a pool-`acquire`d connection. Naming follows the
-/// executor-typed convention of `auth::service::issue_session`/
-/// `auth::repository::save_refresh_token`.
+/// executor-typed convention of `auth::session::start`.
 ///
 /// Returns a [`RoleCacheDirty`] witness — the caller MUST `.flush(redis)` it
 /// after `tx.commit()` (or immediately, for a non-transactional caller with

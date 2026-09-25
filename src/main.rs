@@ -224,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 _ = interval.tick() => {
-                    match dream_fly_backend::modules::auth::repository::delete_expired_tokens(
+                    match dream_fly_backend::modules::auth::session::purge_expired(
                         &cleanup_db,
                     )
                     .await

@@ -9,3 +9,4 @@ pub mod repository;
 mod reset_tokens;
 pub mod routes;
 pub mod service;
+pub mod session;

@@ -1,8 +1,8 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::NaiveDate;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::{RefreshToken, User};
+use super::model::User;
 
 /// Task 6B: absorbed `users::repository::create_user_tx`'s shape — same
 /// 10-column `INSERT`, with `phone`/`birth_date` alongside the original 4
@@ -64,61 +64,6 @@ pub async fn update_last_login(
     sqlx::query("UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = $1")
         .bind(user_id)
         .execute(executor)
-        .await?;
-    Ok(())
-}
-
-pub async fn save_refresh_token(
-    executor: impl sqlx::PgExecutor<'_>,
-    user_id: Uuid,
-    token_hash: &str,
-    expires_at: DateTime<Utc>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked, created_at)
-        VALUES ($1, $2, $3, $4, false, NOW())
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(user_id)
-    .bind(token_hash)
-    .bind(expires_at)
-    .execute(executor)
-    .await?;
-    Ok(())
-}
-
-pub async fn find_refresh_token_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    token_hash: &str,
-) -> Result<Option<RefreshToken>, sqlx::Error> {
-    sqlx::query_as::<_, RefreshToken>(
-        "SELECT * FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE",
-    )
-    .bind(token_hash)
-    .fetch_optional(&mut **tx)
-    .await
-}
-
-pub async fn revoke_refresh_token(
-    executor: impl sqlx::PgExecutor<'_>,
-    token_hash: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE refresh_tokens SET revoked = true WHERE token_hash = $1")
-        .bind(token_hash)
-        .execute(executor)
-        .await?;
-    Ok(())
-}
-
-pub async fn revoke_all_user_tokens_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE refresh_tokens SET revoked = true WHERE user_id = $1 AND revoked = false")
-        .bind(user_id)
-        .execute(&mut **tx)
         .await?;
     Ok(())
 }
@@ -204,12 +149,4 @@ pub async fn link_google_account_tx(
     .bind(avatar_url)
     .fetch_one(&mut **tx)
     .await
-}
-
-pub async fn delete_expired_tokens(db: &PgPool) -> Result<u64, sqlx::Error> {
-    let result =
-        sqlx::query("DELETE FROM refresh_tokens WHERE expires_at < NOW() OR revoked = true")
-            .execute(db)
-            .await?;
-    Ok(result.rows_affected())
 }
