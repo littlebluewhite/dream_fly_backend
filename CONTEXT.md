@@ -78,7 +78,7 @@ _Avoid_: 與「出席口徑(Countable Attendance)」混同——本核決定的�
 _Avoid_: 把「請假投影出的 `leave` 出勤列」(有核准單背書、受守衛保護不可被點名覆寫)與「口頭請假的 `leave` 出勤列」(無單、可自由覆寫)當成同一種;把「核准恆勝」誤讀成雙向覆寫(只有 decide→attendance 恆勝,點名→已核准 leave 恆敗,方向刻意不對稱)。
 
 **場次物化(Session Materialization)**:
-「先物化、再讀取」呼叫順序 invariant 的單一 owner:`sessions::repository::materialize_range` 回傳 `MaterializedRange` witness(欄位私有,僅該函式能建構;唯讀存取 `course_ids()`/`from_date()`/`to_date()`),兩個 early-return 路徑也回傳 witness。讀取端(`sessions::find_sessions_in`、`reports::venue_usage`/`upcoming_session_count`)改收 `&MaterializedRange`,不再各自靠 doc 前置條件維繫呼叫順序。witness 只擔保「此範圍已物化」,**不**擔保每個讀取端都按 `course_ids` 過濾——`venue_usage` 只用其日期窗(全場館聚合由查詢本身表達),`find_sessions_in`/`upcoming_session_count` 才綁 `course_ids`。日期軸再分一支:`sessions::find_today_sessions_in`/`reports::coach_today_and_pending` 額外要求單日(`TodaySessionRow` 無日期欄、「今天」本身無多日語意),這個前提由姊妹型別 `MaterializedDay` 在建構點一次成立——`materialize_day` 是唯一建構點,內部呼叫 `materialize_range(db, ids, date, date)` 重用同一套冪等/早退邏輯,兩個消費端改收 `&MaterializedDay`,原本各自的 `mat.from_date() == mat.to_date()` debug_assert 已退役。
+「先物化、再讀取」呼叫順序 invariant 的單一 owner:`sessions::repository::materialize_range` 回傳 `MaterializedRange` witness(欄位私有,僅該函式能建構;唯讀存取 `course_ids()`/`from_date()`/`to_date()`),兩個 early-return 路徑也回傳 witness。讀取端(`sessions::find_sessions_in`、`reports::venue_usage`/`upcoming_session_count`)改收 `&MaterializedRange`,不再各自靠 doc 前置條件維繫呼叫順序。witness 只擔保「此範圍已物化」,**不**擔保每個讀取端都按 `course_ids` 過濾——`venue_usage` 只用其日期窗(全場館聚合由查詢本身表達),`find_sessions_in`/`upcoming_session_count` 才綁 `course_ids`。日期軸再分一支:`sessions::find_today_sessions_in`/`reports::coach_today_and_pending` 額外要求單日(`TodaySessionRow` 無日期欄、「今天」本身無多日語意),這個前提由姊妹型別 `MaterializedDay` 在建構點一次成立——`materialize_day` 是唯一建構點,內部呼叫 `materialize_range(db, ids, date, date)` 重用同一套冪等/早退邏輯,兩個消費端改收 `&MaterializedDay`,原本各自的 `mat.from_date() == mat.to_date()` debug_assert 已退役。物化只加不減(`ON CONFLICT DO NOTHING` 的單向 INSERT);週課表變動後的反向清理由 `sessions::repository::reconcile_future_sessions_tx` 承接——`courses::service::update_course` 在 `replace_slots_tx` 之後、同一 tx 內呼叫,對該課程 `session_date > today` 的未來場次同步 `end_time`,並刪除不再對應任何 slot、且無請假單(`session_id`/`makeup_session_id`,任何狀態)或點名紀錄引用的孤兒場次,今天以前(含今天)的場次不動,也不在此預先物化新時段。
 _Avoid_: 把 witness 當作 course 範圍過濾的保證(它只保證「已物化」)、materialize_range 呼叫順序仍是文件慣例(已收進型別系統)
 
 **有效報名(Active Enrolments)**:
@@ -94,7 +94,7 @@ _Avoid_: 遞補佇列(「佇列」暗示自動出隊消費,與人工遞補定案
 _Avoid_: 把 `studio_clock` 也算進這層 seam(它的函式簽章未變,只是呼叫端現在傳的是 handler 取樣值)
 
 **週課表(Weekly Schedule)**:
-`course_schedule_slots` 表(型別 + CRUD)的單一 owner 是 `courses`(`courses::model::CourseScheduleSlot`、`courses::repository::find_slots_by_course`/`replace_slots_tx`),courses 的 create/update/get 是唯一消費端。`sessions::repository` 以原生 SQL 直接讀這張表做物化(`materialize_range`)、今日場次(`find_today_sessions_in`)、我的課表(`find_my_weekly_schedule`)——三者皆不碰這組 Rust 型別,是記錄在案的跨模組讀表慣例(與 `find_all_course_ids` 直接讀 `courses` 表同款)。
+`course_schedule_slots` 表(型別 + CRUD)的單一 owner 是 `courses`(`courses::model::CourseScheduleSlot`、`courses::repository::find_slots_by_course`/`replace_slots_tx`),courses 的 create/update/get 是唯一消費端。`sessions::repository` 以原生 SQL 直接讀這張表做物化(`materialize_range`)、今日場次(`find_today_sessions_in`)、我的課表(`find_my_weekly_schedule`)——三者皆不碰這組 Rust 型別,是記錄在案的跨模組讀表慣例(與 `find_all_course_ids` 直接讀 `courses` 表同款)。`PATCH /courses/{id}` 帶 `schedule_slots` 時,`replace_slots_tx` 換完新一批 slots 後,同一 tx 內接著呼叫 `sessions::repository::reconcile_future_sessions_tx` 把既有未來場次對齊新週課表(見「場次物化」詞條);`create_course` 不會有這一步——新課還沒有任何場次可對齊。
 _Avoid_: 把 `time_slots`(場租,見『場租(Venue Rental)』詞條)也稱作 schedule——兩者是完全不同的表。
 
 **時段狀態(Slot Status)**:

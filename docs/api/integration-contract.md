@@ -361,7 +361,7 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 Body（`CreateCourseRequest`）：`{ name, slug?, level, description?, duration_minutes, price_cents, max_students, min_age?, max_age?, features?, coach_id?, category?, schedule_text?, is_highlighted?, schedule_slots? }`。`schedule_slots`（選填）：`[{ day_of_week, start_time: "HH:MM", end_time: "HH:MM", venue? }]`——不帶則建立的課程沒有任何週模式。回應：`CourseDetailResponse`。
 
 #### `PATCH /courses/{id}` — admin
-Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。`min_age`/`max_age`/`coach_id`/`category`/`schedule_text` 可明確傳 `null` 清空，欄位不帶則維持原值不動。**`schedule_slots` 為整組替換語意**：帶此欄位（即使是空陣列 `[]`）會在同一交易內刪除該課程現有全部 slots 並以新內容取代；**不帶此欄位（欄位整個不存在於 JSON body）則完全不動現有 slots**。回應：`CourseDetailResponse`。錯誤：409（`slug` 與其他課程衝突）。
+Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。`min_age`/`max_age`/`coach_id`/`category`/`schedule_text` 可明確傳 `null` 清空，欄位不帶則維持原值不動。**`schedule_slots` 為整組替換語意**：帶此欄位（即使是空陣列 `[]`）會在同一交易內刪除該課程現有全部 slots 並以新內容取代；**不帶此欄位（欄位整個不存在於 JSON body）則完全不動現有 slots**。帶此欄位時同一交易內還會對齊該課程未來場次（`session_date` 晚於 studio 今天，今天本身不動）：仍對應到新 slot 的場次同步 `end_time`，不再對應任何 slot、且沒有請假單或點名紀錄引用的孤兒場次會被刪除，有引用的孤兒場次則保留；不物化新場次。回應：`CourseDetailResponse`。錯誤：409（`slug` 與其他課程衝突）。
 
 ---
 
