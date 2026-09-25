@@ -13,7 +13,6 @@ use chrono::{Duration, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use dream_fly_backend::config::ServerConfig;
 use dream_fly_backend::modules::leave::dto::MakeupRequest;
 use dream_fly_backend::modules::leave::service;
 
@@ -25,7 +24,6 @@ fn t(h: u32, m: u32) -> NaiveTime {
 
 async fn attempt_makeup(
     db: PgPool,
-    server: ServerConfig,
     user_id: Uuid,
     leave_id: Uuid,
     target_session_id: Uuid,
@@ -33,8 +31,7 @@ async fn attempt_makeup(
     let auth = common::member_auth(user_id);
     service::book_makeup(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         &auth,
         leave_id,
         MakeupRequest { session_id: target_session_id },
@@ -49,7 +46,6 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     // request, both targeting the same (roomy-capacity) session. The
     // `FOR UPDATE OF lr` lock in `find_for_makeup_tx` must serialize them so
     // only the first can observe `makeup_session_id IS NULL` and win.
-    let server = common::test_server_config();
     let course_id = seed_course_with_capacity(&db, "Makeup Race Course", None, 10).await;
     let user_id = common::seed_member(&db, "makeup-race@example.com", "Password!234").await;
     let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
@@ -64,14 +60,12 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     let (res_a, res_b) = tokio::join!(
         tokio::spawn(attempt_makeup(
             db.clone(),
-            server.clone(),
             user_id,
             leave_id,
             target_session_id
         )),
         tokio::spawn(attempt_makeup(
             db.clone(),
-            server.clone(),
             user_id,
             leave_id,
             target_session_id
@@ -100,7 +94,6 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
     // lock (`lock_session_tx`, controller ruling 2026-07-06) must serialize
     // the two capacity checks: the loser recounts after the winner's commit,
     // sees remaining = 3 - 2 + 0 - 1 = 0, and gets the capacity 409.
-    let server = common::test_server_config();
     let course_id = seed_course_with_capacity(&db, "Makeup Last Seat Course", None, 3).await;
     let user_a = common::seed_member(&db, "makeup-last-seat-a@example.com", "Password!234").await;
     let user_b = common::seed_member(&db, "makeup-last-seat-b@example.com", "Password!234").await;
@@ -119,14 +112,12 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
     let (res_a, res_b) = tokio::join!(
         tokio::spawn(attempt_makeup(
             db.clone(),
-            server.clone(),
             user_a,
             leave_a,
             target_session_id
         )),
         tokio::spawn(attempt_makeup(
             db.clone(),
-            server.clone(),
             user_b,
             leave_b,
             target_session_id

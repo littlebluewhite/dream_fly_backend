@@ -13,7 +13,7 @@ _Avoid_: alert, push(本系統無外部推播通道), message
 _Avoid_: notification, message
 
 **工作室時鐘(Studio Clock)**:
-牆鐘語意的單一歸屬,`utils::studio_clock`,契約 §3.18 裁決 2。
+牆鐘語意的單一歸屬,`utils::studio_clock`,契約 §3.18 裁決 2。`StudioNow { tz, now }`(`Copy`)是這個時間情境本身的單一值化——取代逐 service 各自收 `server: &ServerConfig, now: DateTime<Utc>` 兩個參數的舊形狀;唯一 production 建構點是 `AppState::studio_now()`(取樣一次 `clock.now()`,配上 `config.server.studio_timezone`)。`studio_clock` 模組內的自由函式(`today`/`has_started`/`require_not_started`/…)簽章不變,仍各自收 `(tz, now)`——`StudioNow` 只是呼叫端把這兩個值一起攜帶的容器,不改變這一層純函式的介面。`ServerConfig::studio_timezone` 本身也從 `String` 改型別為 `chrono_tz::Tz`(直接 deserialize,非法 IANA 名稱在 config 載入當下就拒絕,不再是 runtime fallback)。
 
 **課程教練所有權(Course-Coach Ownership)**:
 `coaches::service::resolve/require_course_coach`;三態政策=所有權 gate 403 / 範圍列表空集合 / 儀表板 404。所有權 gate 有**第二形狀**——教練—學員**關係** gate(契約 §3.22「教過此生,active 或 cancelled 皆算」),刻意 inline 於 `certificates::service::create_certificate`(src/modules/certificates/service.rs:80-90:`coaches::service::resolve` + `user_has_enrolment_with_coach` EXISTS 查詢),**不歸戶 coaches 模組**——單一呼叫端,依 ADR-0005 判準,為它建姊妹 helper 是淺模組;出現第二個「教練發給自己學員」類端點時再歸戶。對照:單課 gate `require_course_coach`(coaches/service.rs:44-64)已歸戶,`create_report_card`(certificates/service.rs:29)是其消費端。
@@ -90,7 +90,7 @@ _Avoid_: 現役報名、未取消報名
 _Avoid_: 遞補佇列(「佇列」暗示自動出隊消費,與人工遞補定案相悖;僅避自動化暗示,不避「依序」語意本身)、waiting list promotion(`Promotion` 在本系統另指 `notifications`/`posts` 的行銷促銷分類,語意不同)
 
 **時鐘 seam(Clock Seam)**:
-`utils::clock`——handler 在請求開始經 `state.clock.now()` 取樣一次,以 `now: DateTime<Utc>` 參數往下傳入 service;牆鐘語意的 service 不再自行呼叫 `Utc::now()`；非牆鐘語意站點(auth token 效期、posts 發佈時戳)為記錄在案的 carve-out。`subscriptions` 的 entitlement 到期計算原本也列在這份 carve-out 名單裡,現已收斂進 seam——`entitlement::plan`(見「權益授予」詞條)改收 `now` 參數,不再自行讀鐘;這個 `now` 經 `grant_from_purchase_tx` 透傳,溯源仍是 checkout 自己的 handler-取樣值,故從 carve-out 名單移除。`utils::studio_clock` 的純函式(`today`/`has_started`/…)本身不變,一樣收 `now` 參數——這層只是把「由誰取樣」從 service 上移到 handler 一層。
+`utils::clock`——handler 在請求開始經 `state.clock.now()` 取樣一次,以 `now: DateTime<Utc>` 參數往下傳入 service;牆鐘語意的 service 不再自行呼叫 `Utc::now()`；非牆鐘語意站點(auth token 效期、posts 發佈時戳)為記錄在案的 carve-out。`subscriptions` 的 entitlement 到期計算原本也列在這份 carve-out 名單裡,現已收斂進 seam——`entitlement::plan`(見「權益授予」詞條)改收 `now` 參數,不再自行讀鐘;這個 `now` 經 `grant_from_purchase_tx` 透傳,溯源仍是 checkout 自己的 handler-取樣值,故從 carve-out 名單移除。`utils::studio_clock` 的純函式(`today`/`has_started`/…)本身不變,一樣收 `now` 參數——這層只是把「由誰取樣」從 service 上移到 handler 一層。牆鐘語意「且」需要 studio 時區的一批 service(attendance、schedule、bookings、sessions、orders::checkout、leave)不再各自收裸 `now: DateTime<Utc>`,而是收單一 `at: StudioNow`(見「工作室時鐘」詞條)——同一顆 seam,只是把「取樣哪個值」從一顆 `now` 換成一顆 `StudioNow`(tz 隨附,不必再各自呼叫 `studio_tz(server)` 或讀 `server.studio_timezone`)。
 _Avoid_: 把 `studio_clock` 也算進這層 seam(它的函式簽章未變,只是呼叫端現在傳的是 handler 取樣值)
 
 **週課表(Weekly Schedule)**:

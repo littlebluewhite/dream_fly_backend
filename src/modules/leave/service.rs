@@ -1,8 +1,6 @@
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
@@ -11,7 +9,7 @@ use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::service as coaches_service;
 use crate::modules::courses::seats;
 use crate::modules::notifications::service as notify;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{
     AdminLeaveRequestResponse, CreateLeaveRequestRequest, LeaveRequestListResponse,
@@ -27,11 +25,11 @@ use super::repository;
 /// no pre-check SELECT, since the mapped message is identical either way.
 pub async fn create_leave_request(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     auth: &AuthUser,
     req: CreateLeaveRequestRequest,
 ) -> Result<LeaveRequestResponse, AppError> {
+    let StudioNow { tz, now } = at;
     let session = repository::find_session_context(db, req.session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("場次不存在".into()))?;
@@ -41,7 +39,7 @@ pub async fn create_leave_request(
         .ok_or_else(|| AppError::NotFound("未報名此課程".into()))?;
 
     studio_clock::require_not_started(
-        studio_clock::studio_tz(server),
+        tz,
         now,
         session.session_date,
         session.start_time,
@@ -256,13 +254,12 @@ pub async fn decide_leave_request(
 /// `seats::session_seats_tx`).
 pub async fn book_makeup(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     auth: &AuthUser,
     id: Uuid,
     req: MakeupRequest,
 ) -> Result<LeaveRequestResponse, AppError> {
-    let tz = studio_clock::studio_tz(server);
+    let StudioNow { tz, now } = at;
     let mut tx = db.begin().await?;
 
     let leave = repository::find_for_makeup_tx(&mut tx, id)

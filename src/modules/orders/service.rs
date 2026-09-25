@@ -1,8 +1,6 @@
-use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
@@ -19,7 +17,7 @@ use crate::modules::points::service as points_service;
 use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
 use crate::modules::subscriptions::service as subscriptions_service;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{
     AdminOrderListResponse, AdminOrderSummary, CheckoutRequest, OrderListResponse, OrderResponse,
@@ -48,7 +46,7 @@ use super::repository::{self, OrderAmounts};
 ///
 /// The transactional cart/coupon reads and the enrolment/subscription DTO
 /// assembly go through their owning modules' service seams (ADR-0005), so
-/// this module holds no sibling repository imports. `server`/`now` are the
+/// this module holds no sibling repository imports. `at` is the
 /// handler-supplied studio timezone + sampled clock: the order number's date
 /// stamp is the studio-LOCAL calendar day (contract §3.18 裁決 2 wall-clock
 /// semantics), not the UTC day.
@@ -58,9 +56,9 @@ pub async fn checkout(
     idempotency_key: Option<String>,
     req: CheckoutRequest,
     correlation_id: Option<String>,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
 ) -> Result<OrderResponse, AppError> {
+    let StudioNow { tz, now } = at;
     // 1. Idempotency pre-check (outside tx). If we've already processed this
     //    key for this user, return the prior order (artifacts included).
     if let Some(key) = &idempotency_key {
@@ -245,7 +243,7 @@ pub async fn checkout(
         let suffix = Uuid::now_v7().as_u128() as u32;
         format!(
             "DF-{}{:08X}",
-            studio_clock::today(studio_clock::studio_tz(server), now).format("%Y%m%d"),
+            studio_clock::today(tz, now).format("%Y%m%d"),
             suffix
         )
     };

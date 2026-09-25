@@ -36,7 +36,7 @@ async fn checkout_creates_order_and_clears_cart(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -74,7 +74,7 @@ async fn checkout_decrements_stock(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -89,7 +89,7 @@ async fn checkout_unlimited_stock_unchanged(db: PgPool) {
     let product = common::seed_product(&db, "ticket-1", 500, None).await;
     common::add_to_cart(&db, user, product, 10).await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -102,7 +102,7 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1000, Some(1)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("insufficient stock should fail");
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
@@ -124,7 +124,7 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
 async fn checkout_empty_cart_fails(db: PgPool) {
     let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("empty cart should fail");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
@@ -154,7 +154,7 @@ async fn checkout_inactive_product_line_returns_422_listing_name(db: PgPool) {
         .await
         .expect("deactivate product");
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("inactive line must reject checkout");
     assert!(
@@ -182,7 +182,7 @@ async fn checkout_fully_inactive_cart_returns_422_not_cart_is_empty(db: PgPool) 
         .await
         .expect("deactivate product");
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("a fully-deactivated cart must still reject checkout");
 
@@ -210,7 +210,7 @@ async fn checkout_mixed_cart_inactive_course_rejects_whole_batch_and_keeps_cart(
         .await
         .expect("deactivate course");
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("inactive course line must reject the whole batch");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
@@ -254,7 +254,7 @@ async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
     )
     .await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -312,7 +312,7 @@ async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
     )
     .await;
 
-    let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -373,7 +373,7 @@ async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now()).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
 
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.coupon_code, Some("DREAMFLY100".to_string()));
@@ -399,7 +399,7 @@ async fn checkout_coupon_over_half_subtotal_succeeds(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now()).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
 
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.total_cents, 5_000);
@@ -418,7 +418,7 @@ async fn checkout_coupon_at_or_above_subtotal_clamps_to_free_order(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now()).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
 
     assert_eq!(resp.discount_cents, 5_000, "discount clamps to the subtotal");
     assert_eq!(resp.total_cents, 0);
@@ -450,7 +450,7 @@ async fn checkout_coupon_plus_points_can_reach_zero_total(db: PgPool) {
         use_points: Some(true),
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now()).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
 
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.points_used, 100);
@@ -472,7 +472,7 @@ async fn checkout_with_invalid_coupon_returns_validation_error(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let err = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("invalid coupon should fail");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
@@ -508,7 +508,7 @@ async fn checkout_with_deactivated_coupon_returns_validation_error(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let err = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("deactivated coupon should fail checkout");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
@@ -530,7 +530,7 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
         use_points: Some(true),
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now()).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
 
     assert_eq!(resp.points_used, 500);
     assert_eq!(resp.total_cents, 300_000 - 50_000);
@@ -553,7 +553,7 @@ async fn checkout_use_points_zero_balance_uses_none(db: PgPool) {
         use_points: Some(true),
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now()).await.expect("checkout");
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
 
     assert_eq!(resp.points_used, 0);
     assert_eq!(resp.total_cents, 1000);
@@ -593,7 +593,7 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
         payment_method: None,
     };
 
-    let err = service::checkout(&db, user, None, req, None, &common::test_server_config(), chrono::Utc::now())
+    let err = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect_err("full course must reject the whole checkout");
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
@@ -652,8 +652,7 @@ async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool
         key.clone(),
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("first checkout");
@@ -665,8 +664,7 @@ async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool
         key,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("replayed checkout");
@@ -715,30 +713,24 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
     let db_b = Arc::new(db.clone());
 
     let task_a = tokio::spawn(async move {
-        // Build the server config inside each task — a borrow can't cross the
-        // `tokio::spawn` boundary into a `'static` future.
-        let server = common::test_server_config();
         service::checkout(
             db_a.as_ref(),
             user_a,
             None,
             CheckoutRequest::default(),
             None,
-            &server,
-            chrono::Utc::now(),
+            common::studio_now_utc(chrono::Utc::now()),
         )
         .await
     });
     let task_b = tokio::spawn(async move {
-        let server = common::test_server_config();
         service::checkout(
             db_b.as_ref(),
             user_b,
             None,
             CheckoutRequest::default(),
             None,
-            &server,
-            chrono::Utc::now(),
+            common::studio_now_utc(chrono::Utc::now()),
         )
         .await
     });
@@ -818,27 +810,23 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     let handle_b = handle_a.clone();
 
     let task_a = tokio::task::spawn_blocking(move || {
-        let server = common::test_server_config();
         handle_a.block_on(service::checkout(
             db_a.as_ref(),
             user,
             key_a,
             CheckoutRequest::default(),
             None,
-            &server,
-            chrono::Utc::now(),
+            common::studio_now_utc(chrono::Utc::now()),
         ))
     });
     let task_b = tokio::task::spawn_blocking(move || {
-        let server = common::test_server_config();
         handle_b.block_on(service::checkout(
             db_b.as_ref(),
             user,
             key_b,
             CheckoutRequest::default(),
             None,
-            &server,
-            chrono::Utc::now(),
+            common::studio_now_utc(chrono::Utc::now()),
         ))
     });
 
@@ -953,12 +941,12 @@ async fn my_orders_lists_items_per_order_without_cross_contamination(db: PgPool)
     let product_b = common::seed_product(&db, "item-b", 2000, Some(10)).await;
 
     common::add_to_cart(&db, user, product_a, 3).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout 1");
 
     common::add_to_cart(&db, user, product_b, 1).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout 2");
 
@@ -989,7 +977,7 @@ async fn my_orders_aggregates_multiple_items_in_one_order(db: PgPool) {
 
     common::add_to_cart(&db, user, product_a, 2).await;
     common::add_to_cart(&db, user, product_b, 5).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -1017,7 +1005,7 @@ async fn admin_list_orders_includes_items(db: PgPool) {
     let user = common::seed_member(&db, "admin-items-buyer@example.com", "passw0rd!").await;
     let product = common::seed_product(&db, "admin-item", 1000, Some(10)).await;
     common::add_to_cart(&db, user, product, 4).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -1045,7 +1033,7 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
 
-    let order = service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    let order = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
     assert_eq!(order.status, "paid");
@@ -1087,8 +1075,7 @@ async fn checkout_with_correlation_id_appears_in_outbox_payload(db: PgPool) {
         None,
         CheckoutRequest::default(),
         Some("rid-test-1".to_string()),
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");
@@ -1107,7 +1094,7 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
     let product = common::seed_product(&db, "nocorr-prod", 1000, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, &common::test_server_config(), chrono::Utc::now())
+    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
 
@@ -1161,8 +1148,7 @@ async fn checkout_mixed_with_points(db: &PgPool, email: &str) -> (Uuid, OrderRes
         None,
         req,
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");
@@ -1318,8 +1304,7 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
         None,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");
@@ -1505,8 +1490,7 @@ async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
         None,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout a");
@@ -1533,8 +1517,7 @@ async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
         None,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout b");
@@ -1594,8 +1577,7 @@ async fn refund_keeps_unlimited_stock_null(db: PgPool) {
         None,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");
@@ -1629,8 +1611,7 @@ async fn refund_skips_restock_when_sold_unlimited_then_stock_set(db: PgPool) {
         None,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");
@@ -1716,8 +1697,7 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
         None,
         req,
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");
@@ -1807,7 +1787,6 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
         .await
         .expect("build single-connection pool on the test database");
 
-    let server = common::test_server_config();
     let key = Some("single-conn-key".to_string());
 
     // 1. Checkout happy path: commit → assemble. The tx commits (freeing the
@@ -1818,8 +1797,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
         key.clone(),
         CheckoutRequest::default(),
         None,
-        &server,
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout must complete on a 1-connection pool (commit→assemble)");
@@ -1851,8 +1829,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
         key,
         CheckoutRequest::default(),
         None,
-        &server,
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("same-key replay must complete on a 1-connection pool (no_open_tx pre-check)");

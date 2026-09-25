@@ -75,8 +75,7 @@ pub async fn checkout(
         idempotency_key,
         req,
         request_id.0,
-        &state.config.server,
-        state.clock.now(),
+        state.studio_now(),
     )
     .await?;
     Ok(Json(order))

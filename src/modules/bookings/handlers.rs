@@ -21,11 +21,9 @@ pub async fn create(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<CreateBookingRequest>,
 ) -> Result<Json<BookingResponse>, AppError> {
-    let now = state.clock.now();
     let booking = service::create_booking(
         &state.db,
-        &state.config.server,
-        now,
+        state.studio_now(),
         auth.user_id,
         req,
         request_id.0,
@@ -51,11 +49,9 @@ pub async fn cancel(
     request_id: RequestId,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BookingResponse>, AppError> {
-    let now = state.clock.now();
     let booking = service::cancel_booking(
         &state.db,
-        &state.config.server,
-        now,
+        state.studio_now(),
         &auth,
         id,
         request_id.0,

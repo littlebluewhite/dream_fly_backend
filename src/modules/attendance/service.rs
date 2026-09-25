@@ -1,14 +1,12 @@
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::coaches::service as coaches_service;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{AttendanceRecordEntry, MyStudentResponse, RosterEntryResponse};
 use super::marking;
@@ -47,12 +45,12 @@ pub async fn get_roster(
 /// each record in one transaction and returns the updated roster.
 pub async fn bulk_upsert_attendance(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     auth: &AuthUser,
     session_id: Uuid,
     records: Vec<AttendanceRecordEntry>,
 ) -> Result<Vec<RosterEntryResponse>, AppError> {
+    let StudioNow { tz, now } = at;
     let session_course = repository::find_session_course(db, session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("session not found".into()))?;
@@ -65,7 +63,7 @@ pub async fn bulk_upsert_attendance(
     .await?;
 
     studio_clock::require_started(
-        studio_clock::studio_tz(server),
+        tz,
         now,
         session_course.session_date,
         session_course.start_time,

@@ -426,8 +426,7 @@ async fn redeem_after_refund_is_conflict(db: PgPool) {
         None,
         CheckoutRequest::default(),
         None,
-        &common::test_server_config(),
-        chrono::Utc::now(),
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("checkout");

@@ -37,8 +37,7 @@ pub async fn create_slots(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<CreateSlotsRequest>,
 ) -> Result<Json<Vec<TimeSlotResponse>>, AppError> {
-    let now = state.clock.now();
-    let slots = service::create_slots(&state.db, &state.config.server, now, req).await?;
+    let slots = service::create_slots(&state.db, state.studio_now(), req).await?;
     Ok(Json(slots))
 }
 

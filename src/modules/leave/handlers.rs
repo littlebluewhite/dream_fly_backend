@@ -25,9 +25,8 @@ pub async fn create(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateLeaveRequestRequest>,
 ) -> Result<Json<LeaveRequestResponse>, AppError> {
-    let now = state.clock.now();
     let created =
-        service::create_leave_request(&state.db, &state.config.server, now, &auth, req).await?;
+        service::create_leave_request(&state.db, state.studio_now(), &auth, req).await?;
     Ok(Json(created))
 }
 
@@ -86,8 +85,6 @@ pub async fn makeup(
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<MakeupRequest>,
 ) -> Result<Json<LeaveRequestResponse>, AppError> {
-    let now = state.clock.now();
-    let updated =
-        service::book_makeup(&state.db, &state.config.server, now, &auth, id, req).await?;
+    let updated = service::book_makeup(&state.db, state.studio_now(), &auth, id, req).await?;
     Ok(Json(updated))
 }

@@ -33,11 +33,9 @@ pub async fn bulk_upsert_attendance(
     Path(session_id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<BulkUpsertAttendanceRequest>,
 ) -> Result<Json<Vec<RosterEntryResponse>>, AppError> {
-    let now = state.clock.now();
     let roster = service::bulk_upsert_attendance(
         &state.db,
-        &state.config.server,
-        now,
+        state.studio_now(),
         &auth,
         session_id,
         req.records,

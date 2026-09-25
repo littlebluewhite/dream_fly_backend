@@ -37,8 +37,22 @@ use crate::error::AppError;
 /// Resolve the studio timezone. `ServerConfig::studio_timezone` is now
 /// deserialized directly as a `Tz` (an invalid IANA name fails config
 /// loading instead of reaching here), so this is a plain field read.
+///
+/// Kept only for `reports::service`, which still takes `server`/`now`
+/// separately pending its own migration to [`StudioNow`].
 pub fn studio_tz(server: &ServerConfig) -> Tz {
     server.studio_timezone
+}
+
+/// The studio time context: the configured timezone bundled with a sampled
+/// clock instant, as a single `Copy` value. Services take `at: StudioNow`
+/// in place of the `server: &ServerConfig, now: DateTime<Utc>` pair they
+/// used to take separately; the single production construction point is
+/// `AppState::studio_now`, so handlers sample the clock exactly once.
+#[derive(Debug, Clone, Copy)]
+pub struct StudioNow {
+    pub tz: Tz,
+    pub now: DateTime<Utc>,
 }
 
 /// The studio-local calendar date of a UTC instant — "today" per contract

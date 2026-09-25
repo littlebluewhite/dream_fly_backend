@@ -1,10 +1,8 @@
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{
     AvailabilityQuery, CreateSlotsRequest, DaySchedule, ScheduleQuery, TimeSlotResponse,
@@ -62,11 +60,10 @@ pub async fn get_availability(
 
 pub async fn create_slots(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     req: CreateSlotsRequest,
 ) -> Result<Vec<TimeSlotResponse>, AppError> {
-    let tz = studio_clock::studio_tz(server);
+    let StudioNow { tz, now } = at;
 
     let mut parsed_slots = Vec::with_capacity(req.slots.len());
 

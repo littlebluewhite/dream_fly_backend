@@ -21,14 +21,12 @@ use dream_fly_backend::modules::bookings::service;
 
 #[sqlx::test]
 async fn create_booking_increments_slot_booked(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
 
     let booking = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -52,14 +50,12 @@ async fn create_booking_increments_slot_booked(db: PgPool) {
 
 #[sqlx::test]
 async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
 
     service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -72,8 +68,7 @@ async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
 
     let err = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -93,15 +88,13 @@ async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
 
 #[sqlx::test]
 async fn full_slot_rejects_new_booking(db: PgPool) {
-    let server = common::test_server_config();
     let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
     let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 1).await;
 
     service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user_a,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -114,8 +107,7 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
 
     let err = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user_b,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -134,7 +126,6 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
 /// shared across all three.
 #[sqlx::test]
 async fn closed_slot_rejects_new_booking(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
     sqlx::query("UPDATE time_slots SET is_closed = true WHERE id = $1")
@@ -145,8 +136,7 @@ async fn closed_slot_rejects_new_booking(db: PgPool) {
 
     let err = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -166,15 +156,13 @@ async fn closed_slot_rejects_new_booking(db: PgPool) {
 
 #[sqlx::test]
 async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
     let auth = common::member_auth(user);
 
     let booking = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -187,7 +175,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
 
     assert_eq!(common::slot_booked(&db, slot).await, 1);
 
-    service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
+    service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect("first cancel");
     assert_eq!(common::slot_booked(&db, slot).await, 0);
@@ -200,7 +188,7 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
 
     // Second cancel of the same booking should fail cleanly (not underflow
     // the slot's booked counter).
-    let err = service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
+    let err = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect_err("second cancel should fail");
     // Either BadRequest("booking is already cancelled") or Conflict, both
@@ -226,7 +214,6 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
 
 #[sqlx::test]
 async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let auth = common::member_auth(user);
 
@@ -245,8 +232,7 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
 
     let booking = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -257,7 +243,7 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     .await
     .expect("create booking");
 
-    let err = service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
+    let err = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect_err("within 24h should be rejected");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
@@ -272,7 +258,6 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
 
 #[sqlx::test]
 async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
 
@@ -288,8 +273,7 @@ async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) 
 
     let booking = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -324,7 +308,6 @@ async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) 
 
 #[sqlx::test]
 async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
     sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
@@ -337,8 +320,7 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
 
     let booking = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -350,7 +332,7 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
     .expect("create booking");
     assert_eq!(booking.price_cents, 12_345);
 
-    let cancelled = service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
+    let cancelled = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect("cancel booking");
     assert_eq!(
@@ -369,15 +351,11 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
 
     let db_a = Arc::new(db.clone());
     let db_b = Arc::new(db.clone());
-    let server = Arc::new(common::test_server_config());
-    let server_a = server.clone();
-    let server_b = server.clone();
 
     let task_a = tokio::spawn(async move {
         service::create_booking(
             db_a.as_ref(),
-            server_a.as_ref(),
-            Utc::now(),
+            common::studio_now_utc(Utc::now()),
             user_a,
             CreateBookingRequest {
                 time_slot_id: slot,
@@ -390,8 +368,7 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
     let task_b = tokio::spawn(async move {
         service::create_booking(
             db_b.as_ref(),
-            server_b.as_ref(),
-            Utc::now(),
+            common::studio_now_utc(Utc::now()),
             user_b,
             CreateBookingRequest {
                 time_slot_id: slot,
@@ -431,14 +408,12 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
 /// 進同一個 `None`,一律報同一句 400,不升級為 404。
 #[sqlx::test]
 async fn create_booking_missing_slot_maps_to_full_or_closed_bad_request(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let missing_slot = Uuid::now_v7();
 
     let err = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: missing_slot,
@@ -459,7 +434,6 @@ async fn create_booking_missing_slot_maps_to_full_or_closed_bad_request(db: PgPo
 /// 既滿又已開始的 slot 必須報「已滿」,不是「已開始」。
 #[sqlx::test]
 async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let past_date = (Utc::now() - Duration::days(1)).date_naive();
     let past_time = (Utc::now() - Duration::days(1)).time();
@@ -472,8 +446,7 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
 
     let err = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -494,15 +467,13 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
 /// 事後關閉的 slot,既有預約仍必須能正常取消並釋出座位。
 #[sqlx::test]
 async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
-    let server = common::test_server_config();
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = common::seed_time_slot(&db, 5).await;
     let auth = common::member_auth(user);
 
     let booking = service::create_booking(
         &db,
-        &server,
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         user,
         CreateBookingRequest {
             time_slot_id: slot,
@@ -521,7 +492,7 @@ async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
         .await
         .expect("close slot");
 
-    service::cancel_booking(&db, &server, Utc::now(), &auth, booking.id, None)
+    service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect("cancel on closed slot should still succeed");
 

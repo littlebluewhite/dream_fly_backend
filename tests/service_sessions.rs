@@ -71,16 +71,15 @@ async fn materialize_range_is_idempotent(db: PgPool) {
 
 #[sqlx::test]
 async fn list_course_sessions_materializes_todays_slot(db: PgPool) {
-    // Server config pinned to UTC (common::test_server_config), so the
-    // service's studio-local "today" equals the UTC date used for seeding.
+    // StudioNow pinned to UTC (common::studio_now_utc), so the service's
+    // studio-local "today" equals the UTC date used for seeding.
     let course_id = seed_course(&db, "Weekly Course", None).await;
     let today = Utc::now().date_naive();
     seed_course_schedule_slot(&db, course_id, dow_of(today), t(9, 0), t(10, 0)).await;
 
     let sessions = service::list_course_sessions(
         &db,
-        &common::test_server_config(),
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         course_id,
         SessionsRangeQuery { from: None, to: None },
     )
@@ -99,8 +98,7 @@ async fn list_course_sessions_materializes_todays_slot(db: PgPool) {
 async fn list_course_sessions_nonexistent_course_returns_not_found(db: PgPool) {
     let err = service::list_course_sessions(
         &db,
-        &common::test_server_config(),
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         Uuid::now_v7(),
         SessionsRangeQuery { from: None, to: None },
     )
@@ -114,8 +112,7 @@ async fn list_course_sessions_rejects_to_before_from(db: PgPool) {
     let course_id = seed_course(&db, "Range Course A", None).await;
     let err = service::list_course_sessions(
         &db,
-        &common::test_server_config(),
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         course_id,
         SessionsRangeQuery {
             from: Some("2026-08-01".into()),
@@ -135,8 +132,7 @@ async fn list_course_sessions_rejects_range_over_60_days(db: PgPool) {
     let course_id = seed_course(&db, "Range Course B", None).await;
     let err = service::list_course_sessions(
         &db,
-        &common::test_server_config(),
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         course_id,
         SessionsRangeQuery {
             from: Some("2026-01-01".into()),
@@ -158,8 +154,7 @@ async fn list_course_sessions_allows_exactly_60_days(db: PgPool) {
     let course_id = seed_course(&db, "Range Course C", None).await;
     service::list_course_sessions(
         &db,
-        &common::test_server_config(),
-        Utc::now(),
+        common::studio_now_utc(Utc::now()),
         course_id,
         SessionsRangeQuery {
             from: Some("2026-01-01".into()),
@@ -222,7 +217,7 @@ async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPo
     seed_enrolment(&db, m3, own_course, "cancelled", Utc::now()).await;
 
     let auth = common::coach_auth(coach_user);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
 
@@ -241,7 +236,7 @@ async fn today_sessions_coach_role_without_coach_row_returns_empty(db: PgPool) {
     // anomaly) must get an empty list, not an error.
     let user_id = common::seed_member(&db, "phantom-coach@example.com", "hunter22-secret").await;
     let auth = common::coach_auth(user_id);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
     assert!(sessions.is_empty());
@@ -269,7 +264,7 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
 
     let admin_id = common::seed_member(&db, "coach-name-admin@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
 
@@ -297,7 +292,7 @@ async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
 
     let admin_id = common::seed_member(&db, "venue-match-admin@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
 
@@ -318,7 +313,7 @@ async fn today_sessions_venue_is_null_when_no_matching_slot(db: PgPool) {
 
     let admin_id = common::seed_member(&db, "venue-no-match-admin@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
 
@@ -341,7 +336,7 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
 
     let admin_id = common::seed_member(&db, "admin-today@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("admin today sessions");
 
@@ -364,7 +359,7 @@ async fn today_sessions_materializes_todays_slot_without_preexisting_session(db:
     let admin_id =
         common::seed_member(&db, "materialize-today-admin@example.com", "hunter22-secret").await;
     let auth = common::admin_auth(admin_id);
-    let sessions = service::today_sessions(&db, &common::test_server_config(), Utc::now(), &auth)
+    let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
 

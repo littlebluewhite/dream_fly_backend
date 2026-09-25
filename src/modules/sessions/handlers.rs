@@ -21,10 +21,8 @@ pub async fn list_course_sessions(
     Path(course_id): Path<Uuid>,
     Query(query): Query<SessionsRangeQuery>,
 ) -> Result<Json<Vec<CourseSessionResponse>>, AppError> {
-    let now = state.clock.now();
     let sessions =
-        service::list_course_sessions(&state.db, &state.config.server, now, course_id, query)
-            .await?;
+        service::list_course_sessions(&state.db, state.studio_now(), course_id, query).await?;
     Ok(Json(sessions))
 }
 
@@ -35,8 +33,7 @@ pub async fn today(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<TodaySessionResponse>>, AppError> {
-    let now = state.clock.now();
-    let sessions = service::today_sessions(&state.db, &state.config.server, now, &auth).await?;
+    let sessions = service::today_sessions(&state.db, state.studio_now(), &auth).await?;
     Ok(Json(sessions))
 }
 

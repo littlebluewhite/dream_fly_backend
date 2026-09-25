@@ -9,6 +9,7 @@ use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
 use crate::utils::google_oauth::JwksCache;
 use crate::utils::sms::SmsClient;
+use crate::utils::studio_clock::StudioNow;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -64,4 +65,18 @@ pub struct AppState {
     /// returns once the tracker is both closed AND empty, so a loop that
     /// never exits would make shutdown/drain hang forever.
     pub background_tasks: TaskTracker,
+}
+
+impl AppState {
+    /// Single production construction point for [`StudioNow`]: samples
+    /// `now` once via the clock seam and pairs it with the configured
+    /// studio timezone. Handlers call this once and pass the result down,
+    /// rather than each service re-reading `config.server.studio_timezone`
+    /// and re-sampling `clock.now()` separately.
+    pub fn studio_now(&self) -> StudioNow {
+        StudioNow {
+            tz: self.config.server.studio_timezone,
+            now: self.clock.now(),
+        }
+    }
 }

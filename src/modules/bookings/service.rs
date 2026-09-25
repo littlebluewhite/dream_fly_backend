@@ -1,8 +1,6 @@
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
@@ -10,7 +8,7 @@ use crate::kafka::events::{BookingCancelledPayload, BookingCreatedPayload};
 use crate::kafka::outbox;
 use crate::modules::notifications::service as notify;
 use crate::modules::schedule;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{BookingResponse, CreateBookingRequest, PaginatedBookingsResponse};
 use super::occupancy;
@@ -18,13 +16,12 @@ use super::repository;
 
 pub async fn create_booking(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     user_id: Uuid,
     req: CreateBookingRequest,
     correlation_id: Option<String>,
 ) -> Result<BookingResponse, AppError> {
-    let tz = studio_clock::studio_tz(server);
+    let StudioNow { tz, now } = at;
 
     // Everything happens inside one transaction so capacity and duplicate
     // checks share a consistent snapshot.
@@ -91,13 +88,12 @@ pub async fn create_booking(
 
 pub async fn cancel_booking(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     auth: &AuthUser,
     booking_id: Uuid,
     correlation_id: Option<String>,
 ) -> Result<BookingResponse, AppError> {
-    let tz = studio_clock::studio_tz(server);
+    let StudioNow { tz, now } = at;
 
     // 1. Open the tx first so the ownership check, status check, 24-hour
     //    check, and conditional UPDATE all see a consistent snapshot.

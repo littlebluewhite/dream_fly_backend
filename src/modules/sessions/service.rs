@@ -1,13 +1,12 @@
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::coaches::service as coaches_service;
 use crate::modules::courses::repository as courses_repository;
-use crate::utils::studio_clock;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{
     CourseSessionResponse, MyScheduleEntryResponse, SessionsRangeQuery, TodaySessionResponse,
@@ -34,17 +33,16 @@ fn parse_query_date(s: &str) -> Result<NaiveDate, AppError> {
 /// the span exceeds `MAX_RANGE_DAYS`. 404 if the course doesn't exist.
 pub async fn list_course_sessions(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     course_id: Uuid,
     query: SessionsRangeQuery,
 ) -> Result<Vec<CourseSessionResponse>, AppError> {
+    let StudioNow { tz, now } = at;
     // Deliberately unscoped: 下架=停售不是停課,已報名學員與教練仍需查下架課的場次。
     courses_repository::find_by_id(db, course_id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
-    let tz = studio_clock::studio_tz(server);
     let today = studio_clock::today(tz, now);
     let from = match query.from {
         Some(s) => parse_query_date(&s)?,
@@ -83,11 +81,10 @@ pub async fn list_course_sessions(
 /// (`admin`/`coach` only) happens in the handler, not here.
 pub async fn today_sessions(
     db: &PgPool,
-    server: &ServerConfig,
-    now: DateTime<Utc>,
+    at: StudioNow,
     auth: &AuthUser,
 ) -> Result<Vec<TodaySessionResponse>, AppError> {
-    let tz = studio_clock::studio_tz(server);
+    let StudioNow { tz, now } = at;
     let today = studio_clock::today(tz, now);
 
     let course_ids = if auth.is_admin() {
