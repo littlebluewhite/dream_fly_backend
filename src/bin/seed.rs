@@ -514,9 +514,11 @@ async fn insert_venue(db: &PgPool, seed: &VenueSeed) -> anyhow::Result<()> {
 
 /// `date` at `HH:00:00` UTC. 04:00 UTC = 12:00 Asia/Taipei — mid-day keeps
 /// the timestamp inside the same calendar day/month whether reports bucket
-/// in UTC (dev `STUDIO_TIMEZONE`) or Asia/Taipei.
+/// in UTC (dev `STUDIO_TIMEZONE`) or Asia/Taipei. Clamped to now: `today` is
+/// the studio-tz date, which can run up to a day ahead of the UTC date, so a
+/// today-dated seed row would otherwise land hours in the future.
 fn at_utc(date: NaiveDate, hour: u32) -> DateTime<Utc> {
-    date.and_hms_opt(hour, 0, 0).expect("valid seed hour").and_utc()
+    date.and_hms_opt(hour, 0, 0).expect("valid seed hour").and_utc().min(Utc::now())
 }
 
 /// Insert a reporting-dataset member (idempotent on `email`) and return its
