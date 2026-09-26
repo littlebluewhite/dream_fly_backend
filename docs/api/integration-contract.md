@@ -968,7 +968,7 @@ Body：`{ status: "approved" | "rejected" }`（其他任何值，包含 `pending
 錯誤：404（不存在）；403（非本課教練且非 admin）；409（非 pending）；422（`status` 非 `approved`/`rejected`）。
 
 #### `POST /leave-requests/{id}/makeup` — 需登入（僅本人 owner）
-Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順序：假單須為 `approved` 且尚未預約過補課（`makeup_session_id IS NULL`，否則 409）→ 目標場次須與原假單同一課程（否則 422）→ 目標場次須尚未開始（否則 422）→ 名額檢查（見下，否則 409）。成功寫入 `makeup_session_id`，回應更新後的 `LeaveRequestResponse`（`makeup_session_date`/`makeup_start_time` 補上目標場次的日期/時間）。
+Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順序：假單須為 `approved` 且尚未預約過補課（`makeup_session_id IS NULL`，否則 409）→ 目標場次須與原假單同一課程（否則 422）→ 目標場次不可為請假場次本身（否則 422）→ 目標場次須尚未開始（否則 422）→ 名額檢查（見下，否則 409）。成功寫入 `makeup_session_id`，回應更新後的 `LeaveRequestResponse`（`makeup_session_date`/`makeup_start_time` 補上目標場次的日期/時間）。
 
 **名額公式（物理座位模型，controller 定案 2026-07-06）**：目標場次剩餘座位 = `course.max_students − 該課程 active enrolments 數 + 該場次核准請假數 − 已補進該場次的補課數`，剩餘 `> 0` 才允許預約——**請假釋出座位、補課佔用座位**。兩個計數皆只計 enrolment 仍為 `active` 者：請假後退課的人不釋出幽靈座位，補課後退課的人不繼續佔位。範例：`max_students=10`、active 10 人（滿班）、該場次 3 人核准請假、0 人補課 → 剩餘 `10−10+3−0=3`，可補課；`max_students=10`、active 8 人、0 請假、已 2 人補進 → 剩餘 `10−8+0−2=0`，409。
 

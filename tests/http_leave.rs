@@ -640,6 +640,25 @@ async fn makeup_target_session_different_course_returns_422(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn makeup_into_own_leave_session_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-makeup-own-session@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "Leave Makeup Own Session Course", None, 10).await;
+    let session_date = (Utc::now() + Duration::days(2)).date_naive();
+    let session_id = seed_course_session(&app.db, course_id, session_date, t(9, 0), t(10, 0)).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
+
+    let resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": session_id}))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+#[sqlx::test]
 async fn makeup_target_session_already_started_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-makeup-started@example.com", "Password!234").await;

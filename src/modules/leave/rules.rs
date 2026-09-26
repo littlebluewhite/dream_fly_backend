@@ -72,10 +72,13 @@ pub fn check_makeup_source(leave: &LeaveRequestForMakeup) -> Result<(), AppError
 /// Check the caller-resolved target session against a leave request already
 /// passed through [`check_makeup_source`]: the target must belong to the
 /// same course as the original leave (422 otherwise — no cross-course
-/// makeups), and must not have already started (422 `補課場次已開始`, or
-/// 400 if its studio-local start time is DST-ambiguous — see
-/// `studio_clock::require_not_started`). Order matches `service::book_makeup`'s
-/// original inline checks: course first, then already-started.
+/// makeups), must not be the very session the leave was taken for (422
+/// `補課場次不可為請假場次` — a makeup into the leave's own session would
+/// just cancel the leave, not make it up), and must not have already
+/// started (422 `補課場次已開始`, or 400 if its studio-local start time is
+/// DST-ambiguous — see `studio_clock::require_not_started`). Order matches
+/// `service::book_makeup`'s original inline checks: course, then own-session,
+/// then already-started.
 pub fn check_makeup_target(
     leave: &LeaveRequestForMakeup,
     target: &SessionContext,
@@ -84,6 +87,9 @@ pub fn check_makeup_target(
     let StudioNow { tz, now } = at;
     if target.course_id != leave.course_id {
         return Err(AppError::Validation("補課場次須為同一課程".into()));
+    }
+    if target.id == leave.session_id {
+        return Err(AppError::Validation("補課場次不可為請假場次".into()));
     }
     studio_clock::require_not_started(
         tz,
@@ -134,6 +140,7 @@ mod tests {
 
     fn session_context(course_id: Uuid, session_date: NaiveDate, start_time: NaiveTime) -> SessionContext {
         SessionContext {
+            id: Uuid::now_v7(),
             course_id,
             course_name: "Course".into(),
             session_date,
@@ -275,6 +282,41 @@ mod tests {
         let err = check_makeup_target(&leave, &target, ny_at).expect_err("must reject");
         assert!(
             matches!(err, AppError::BadRequest(ref m) if m == "session time falls on an ambiguous local time"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_makeup_target_rejects_own_leave_session_as_422() {
+        // makeup_into_own_leave_session_returns_422 (tests/http_leave.rs)
+        let course_id = Uuid::now_v7();
+        let leave = leave(LeaveStatus::Approved, None);
+        let leave = LeaveRequestForMakeup { course_id, ..leave };
+        let mut target = session_context(course_id, d(2026, 7, 10), t(14, 0));
+        target.id = leave.session_id;
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 0, 0, 0).unwrap();
+        let err = check_makeup_target(&leave, &target, at(now)).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m == "補課場次不可為請假場次"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_makeup_target_checks_own_session_before_already_started() {
+        // Error ordering: the leave's own session is also already-started
+        // (it's in the past, being the session the member took leave for),
+        // yet the own-session error must surface, not the already-started
+        // one — mirrors service::book_makeup's original inline check order.
+        let course_id = Uuid::now_v7();
+        let leave = leave(LeaveStatus::Approved, None);
+        let leave = LeaveRequestForMakeup { course_id, ..leave };
+        let mut target = session_context(course_id, leave.session_date, leave.start_time);
+        target.id = leave.session_id;
+        let now = Utc.with_ymd_and_hms(2026, 7, 5, 9, 0, 0).unwrap();
+        let err = check_makeup_target(&leave, &target, at(now)).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m == "補課場次不可為請假場次"),
             "got: {err:?}"
         );
     }

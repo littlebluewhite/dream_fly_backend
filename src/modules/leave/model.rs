@@ -59,6 +59,7 @@ pub struct LeaveRequest {
 /// session in one query.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionContext {
+    pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
     pub session_date: NaiveDate,

@@ -15,7 +15,7 @@ pub async fn find_session_context(
     session_id: Uuid,
 ) -> Result<Option<SessionContext>, sqlx::Error> {
     sqlx::query_as::<_, SessionContext>(
-        "SELECT cs.course_id, c.name AS course_name, cs.session_date, cs.start_time \
+        "SELECT cs.id, cs.course_id, c.name AS course_name, cs.session_date, cs.start_time \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
          WHERE cs.id = $1",
