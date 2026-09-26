@@ -440,3 +440,45 @@ invariant 需要型別擔保；user 的正確歸屬已經是 `BalanceLock` witne
 `points::repository::find_order_flow_sums_tx` 讀回，斷言兩個方向皆為正幅度——把「寫入端寫負值
 （`checkout_redeem`）/ SQL 讀取端 `COALESCE(-(SUM(...)))` 取負還原」這對攣生從只能靠 e2e
 checkout/refund 場景間接覆蓋，拉到接縫本地直接斷言。
+
+## Addendum（2026-09-26）：訂單決策純件——轉移決策、點數帳順序收進純函式；不做 `plan_checkout`
+
+**遷移登記**（行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序、ledger 列序逐位元等價）：
+
+- 決策 2 / 決策 9 的轉移判定：`update_order_status` 原本三段（同狀態早退 →
+  `OrderStatus::can_transition_to` → `refund::compensation_required`）收成一個
+  `match refund::decide_transition(&current.status, &target)?`，回
+  `TransitionDecision { NoOp, Flip, FlipAndCompensate }`，非法轉移仍是
+  400「cannot transition order from '…' to '…'」。同狀態 `NoOp` 先於合法性檢查（決策 9
+  的可觀測冪等不變）；`FOR UPDATE` 讀 `current` 仍在決策之前（決策 5 鎖序骨架不動）。
+  `compensation_required` 轉為 `decide_transition` 的私有細節；`can_transition_to` 保留為
+  邊表 owner。`OrderStatus` 加 `PartialEq, Eq`。
+- 決策 4 的點數反轉順序：`compensate_order_artifacts_tx` 內兩個 `if` 收進
+  `RefundPlan::ledger_deltas(order_id)`（restore 先、clawback 後、幅度 0 跳過），編排端只剩
+  一個迴圈；vec 順序即 ledger 列序。`find_order_flow_sums_tx` 的 `(i64, i64)` 換成
+  `points::model::OrderPointsFlow { earned, redeemed }`（`sqlx::FromRow`，SQL 不變），
+  `plan_refund` 改收它——消滅 earned/redeemed 位置對調的可能。
+- 結帳側對稱件：`PricingOutcome::ledger_deltas(order_id)`（redeem 先、earn 後、幅度 0 跳過）；
+  `checkout` 的請求解析（付款方式值域 422、coupon trim、`use_points` 預設）收進
+  `orders::service` 私有的 `parse_request → CheckoutIntent`，仍在 idempotency 預查之後、開交易之前；
+  `pricing::price` 直接收 `BalanceLock` 鎖到的餘額（它本就只在 `use_points` 時讀）。
+
+**退役測試**（以純測試取代，不疊加）：`http_orders::checkout_with_invalid_payment_method_returns_422`
+→ `parse_request_rejects_payment_method_outside_the_value_domain`；
+`service_orders::checkout_use_points_zero_balance_uses_none` → `ledger_deltas_skip_zero_magnitudes`；
+`service_orders::refund_restore_before_clawback_covers_midrange_balance` →
+`ledger_deltas_restore_before_clawback`（逐語句 CHECK 的 409 語意仍由
+`refund_clawback_insufficient_balance_conflicts_and_rolls_back_all` 在 DB 層釘住）；
+`service_orders::pending_to_cancelled_does_not_compensate`、`model.rs` 四個 `can_transition_*`
+與 `refund.rs` 舊 6×6 `compensation_required` 測試 → `decide_transition_covers_all_36_status_pairs`
+（36 格逐一列出期望值）；`refunded_terminal_rejects_further_transitions` 縮成一次 checkout
+（cancelled→refunded 那半由表格覆蓋）。
+
+**評估後不做 `plan_checkout`**：曾考慮把 checkout 的前置判斷整批抽成一個純
+`plan_checkout`。不做，因為它是淺模組——checkout 的錯誤優先序是純檢查與 DB 檢查交錯的一條
+清單（idempotency 重放 → 付款方式 422 → 使用者 404（鎖）→ 空車 400 → 下架行 422 → coupon 422
+（載入）→ 小計溢位 422 → 庫存 409 → 課程 409），能純化的只有其中幾格；抽出來會把同一條優先序
+拆成「plan 內」與「plan 外」兩半，各自再也看不到完整順序。改為讓優先序只有一個權威：
+`checkout` 的 doc 重寫為真實的結果優先序清單（刪掉函式體的步驟編號與隨之漂移的指涉），純件只
+收那些本身就自成一體的決策（請求解析、定價、點數帳順序、轉移決策）。「Cross-buyer dimension」
+anchor 區塊原位保留，只把其中已失效的步驟編號改指函式名。本檔其餘敘述維持決策當下狀態。
