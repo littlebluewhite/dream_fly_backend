@@ -65,7 +65,7 @@ use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::orders::model::PAYMENT_METHODS;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
-use dream_fly_backend::modules::points::model::LedgerDelta;
+use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
 use dream_fly_backend::utils::password;
@@ -576,6 +576,23 @@ async fn upsert_seed_member(
         .with_context(|| format!("commit tx for seed member {email}"))?;
 
     Ok(user_id)
+}
+
+/// Points-tier target balance for reporting member `i` (1..=24): members
+/// block into `PointsTier::ALL` six at a time on `(i-1)/6`, and each lands
+/// a fixed step above its tier's `floor()` — so the report's 4-tier /
+/// 6-members-each shape follows the tier owner rather than a second copy
+/// of its boundaries.
+fn member_points_target(i: usize) -> i64 {
+    let tier = PointsTier::ALL[(i - 1) / 6];
+    let j = ((i - 1) % 6 + 1) as i64; // 1..=6 within the tier
+    let above_floor = match tier {
+        PointsTier::Regular => 100 + j * 50, //  150-400
+        PointsTier::Bronze => j * 200,       //  700-1700
+        PointsTier::Silver => j * 400,       // 2400-4400
+        PointsTier::Gold => j * 500,         // 5500-8000
+    };
+    tier.floor() + above_floor
 }
 
 /// Fetch a product's id by slug — mirrors `course_id_by_slug`, used to build
@@ -1478,8 +1495,9 @@ async fn main() -> anyhow::Result<()> {
     // -- members ×24 -------------------------------------------------------
     // Age buckets (6-12 / 13-17 / 18-25 / 26-40) rotate on (i-1)%4 — six
     // members each, so the age-distribution report always has every bucket.
-    // Points tiers (<500 / 500-1999 / 2000-4999 / ≥5000) block on (i-1)/6 —
-    // six members each. Different index bases so age and tier decorrelate.
+    // Points tiers (`PointsTier`) block on (i-1)/6 — six members each, see
+    // `member_points_target`. Different index bases so age and tier
+    // decorrelate.
     let member_hash = password::hash_password("Member#2026".to_string())
         .await
         .map_err(|e| anyhow::anyhow!("hashing seed member password: {e}"))?;
@@ -1507,17 +1525,11 @@ async fn main() -> anyhow::Result<()> {
         let birth_date = today
             .checked_sub_months(Months::new(age * 12 + 1 + (i as u32 % 9)))
             .expect("valid seed birth_date");
-        let points_balance: i64 = match (i - 1) / 6 {
-            0 => 100 + i as i64 * 50,          //  150-400   (<500)
-            1 => 500 + (i as i64 - 6) * 200,   //  700-1700  (500-1999)
-            2 => 2000 + (i as i64 - 12) * 400, // 2400-4400  (2000-4999)
-            _ => 5000 + (i as i64 - 18) * 500, // 5500-8000  (≥5000)
-        };
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
         let user_id = upsert_seed_member(&db, &email, &name, &member_hash, birth_date).await?;
         assign_role(&db, user_id, "member").await?;
-        member_targets.push((user_id, points_balance));
+        member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);
     }
     println!("[members]  24 seed members ready (seed-member-01..24@dreamfly.tw / Member#2026)");
@@ -1937,4 +1949,34 @@ async fn main() -> anyhow::Result<()> {
 
     db.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_points_targets_match_the_legacy_formula() {
+        // The 24 targets the old inline `match (i - 1) / 6` produced — the
+        // PointsTier-derived formula must reproduce them exactly.
+        let legacy: [i64; 24] = [
+            150, 200, 250, 300, 350, 400, // <500
+            700, 900, 1_100, 1_300, 1_500, 1_700, // 500-1999
+            2_400, 2_800, 3_200, 3_600, 4_000, 4_400, // 2000-4999
+            5_500, 6_000, 6_500, 7_000, 7_500, 8_000, // ≥5000
+        ];
+        for (i, expected) in (1..=24usize).zip(legacy) {
+            assert_eq!(member_points_target(i), expected, "member {i}");
+        }
+    }
+
+    #[test]
+    fn member_points_targets_put_six_members_in_each_tier() {
+        for tier in PointsTier::ALL {
+            let members = (1..=24usize)
+                .filter(|&i| PointsTier::from_balance(member_points_target(i)) == tier)
+                .count();
+            assert_eq!(members, 6, "{tier:?}");
+        }
+    }
 }
