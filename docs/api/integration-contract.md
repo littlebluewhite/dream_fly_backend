@@ -850,7 +850,7 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 ]
 ```
 
-`enrolled_count` 為即時計算（該課程 `enrolments.status='active'` 筆數）。`coach_name`（Round 4 Task B8 新增）為 `null` 表示該課程尚未指定教練，語意同 `GET /schedule/me` 的 `coach_name`。`venue`（同批新增）由該場次的日期反推 `day_of_week` + `start_time`，回頭 JOIN `course_schedule_slots`（`course_schedule_slots_unique (course_id, day_of_week, start_time)` 為可逆鍵）取得；找不到對應 slot（slot 已被修改或刪除）時為 `null`。
+`enrolled_count` 為即時計算（該課程 `enrolments.status='active'` 筆數）。`coach_name`（Round 4 Task B8 新增）為 `null` 表示該課程尚未指定教練，語意同 `GET /schedule/me` 的 `coach_name`。`venue`（同批新增）是**場次自身的場地快照**（`course_sessions.venue`）：場次物化當下從對應 slot 的 `venue` 抄入，之後不再回頭 JOIN `course_schedule_slots`。`PATCH /courses/{id}` 帶 `schedule_slots` 時，只有**未來**（`session_date` 晚於今天，studio 時區）且仍對應某 slot 的場次會同步成新 `venue`；今天與過去的場次保留物化當下的場地——slot 事後改開課時間或改場地，都不會讓已發生/今天的場次場地變 `null` 或被改名。slot 當時未設場地（或早於此欄位、backfill 時對不到 slot 的舊場次）時為 `null`。
 
 #### `GET /schedule/me` — 需登入
 回呼叫者「active enrolments 對應課程」的週模式（**不物化，直接讀 `course_schedule_slots`**——與上面兩個端點不同，這裡回的是週模式本身，不是實際日期場次）。回應（`MyScheduleEntryResponse[]`，純陣列，依 `day_of_week, start_time` 排序）：
@@ -1217,7 +1217,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 - `retention`：**近 6 studio 月**出席 cohort（由舊到新，6 桶零填）。會員某月有 ≥1 筆 `present` 即「該月活躍」；`new_count`=首次活躍月落在該月者、`returning_count`=該月活躍且此前已有活躍月者；`rate`=`|上月活躍 ∩ 本月活躍| / |上月活躍|`，**上月為空集合 → `null`**。首次活躍判定掃全期歷史（非僅 6 月窗）。
 - `funnel`：誠實 **2 段**、近 **90 studio 天**：`trial_inquiries`（`contact_inquiries` 之 `inquiry_type='trial'` 計數）→ `new_enrolments`（`enrolments` created 且 `status <> 'cancelled'`）。不造中間段。
 - `weekday_load`：近 **30 天**已物化場次的 `present` **出席人次**按星期分 **7 桶**（`weekday` `0=週日`..`6=週六`，§3.18 慣例），零填。
-- `venue_usage`：**本月**（呼叫時先冪等物化本月場次）已物化場次 JOIN `course_schedule_slots`（`course_id`+DOW+`start_time` 可逆鍵）取 `venue`、SUM 場次分鐘數；**`venue` 為 NULL（或無對應 slot）的場次不入**。非固定桶——無場次的場地不出列。此為**整月投影口徑**（先冪等物化整月場次、含未來場次），與其他段落「月初至今」的實績計算不同。
+- `venue_usage`：**本月**（呼叫時先冪等物化本月場次）已物化場次依各自的場地快照 `course_sessions.venue`（語意見 §3.18 `GET /sessions/today` 的 `venue`）分組、SUM 場次分鐘數；**`venue` 為 NULL 的場次不入**。非固定桶——無場次的場地不出列。此為**整月投影口徑**（先冪等物化整月場次、含未來場次），與其他段落「月初至今」的實績計算不同。
 - `members`：`total`/`new_this_month` 為 `users` 全體計數（不分角色）；`active` 為擁有至少一筆 `active` enrolment 的 distinct 使用者數。
 - `courses`：全部課程（不篩 `is_active`），依名稱排序；`enrolled` 為該課程 `active` enrolments 數；`waitlist_count` 為 `waiting` 筆數。
 - `coaches`：全部教練（不篩 `is_active`），依姓名排序；`course_count` 為其 `courses.coach_id` 對應課程數；`student_count` 為其課程 active enrolments 之 distinct 學員數（同一學員修該教練多堂課只算一次）；`revenue_cents_12m`=**course 類** order-line 毛額歸 `courses.coach_id`（票券/裝備/場租不歸因），近 12 studio 月（與 `revenue.trend` 同窗）；`attendance_rate`=該教練課程 `present/(present+absent)`（`leave` 不入分母，全期；無資料 → `null`）。
