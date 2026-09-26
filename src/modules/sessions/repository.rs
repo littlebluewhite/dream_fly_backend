@@ -290,6 +290,12 @@ pub async fn find_my_weekly_schedule(
 /// silently orphaning the new leave row. Rare, no bad data results, and a
 /// retry (which re-evaluates `NOT EXISTS` and now sees the row referenced)
 /// succeeds.
+///
+/// Same class of race on the materialize side: `materialize_range`'s own
+/// slot SELECT → INSERT window can straddle an `update_course` commit. A
+/// future session materialized from the pre-commit slot snapshot then keeps
+/// the old venue (like the old `end_time`) until the next course edit runs
+/// this reconcile again.
 pub async fn reconcile_future_sessions_tx(
     tx: &mut Transaction<'_, Postgres>,
     course_id: Uuid,

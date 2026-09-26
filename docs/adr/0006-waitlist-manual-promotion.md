@@ -49,3 +49,5 @@ repo 裡唯一出現「Promotion」字樣的地方是 `notifications::model::Not
 - 若未來要自動化遞補，或只是先補上聯絡欄位，都需要重開本 ADR、另立設計輪，至少涵蓋：通知策略（站內
   in-app 或外部 email/SMS）、座位保留與到期模型、以及與 `courses::seats` 鎖協定（`lock_course_seats_tx`
   ／無鎖 `course_seats`）的互動——這些不是在現有結構上加一個欄位就能拼湊出來的，需要一次完整的設計輪。
+  （`lock_course_seats_tx` 已由 ADR-0007 Addendum「鎖協定取代逐站排序與『不做共用 helper』裁決」取代：
+  座位鎖改由 `CourseLocks`/`lock_courses_tx` 持有。）

@@ -160,9 +160,11 @@ async fn upsert_user(
 /// `INSERT` (seed has no ambient transaction to reuse).
 ///
 /// The returned `AccessDirty` witness is consumed with `assume_uncached`:
-/// seed has no Redis connection to flush it through, a freshly seeded user
-/// has no pre-existing cache entry to invalidate in the first place, and the
-/// 15-minute role-cache TTL self-heals regardless.
+/// seed has no Redis connection to flush it through. This is a dev-only
+/// exception, not the "provably uncached" case the witness is meant for —
+/// on a seed re-run the target user may already have a cached entry — but a
+/// stale entry just lives out its TTL (60s active flag / 15-minute roles)
+/// before self-correcting.
 async fn assign_role(db: &PgPool, user_id: Uuid, role_name: &str) -> anyhow::Result<()> {
     let mut conn = db
         .acquire()

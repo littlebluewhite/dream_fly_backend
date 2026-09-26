@@ -565,7 +565,7 @@ anchor 與 CONTEXT「行計畫」詞條）。本則推翻該裁決：取鎖收�
 `products::service::restore_stock_tx` 與 `points::service::apply_delta_tx`。本則把每一項撤銷搬回
 痕跡的 owner：誰寫下痕跡，誰讀回、誰撤銷。
 
-**遷移登記**（行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序、ledger 列序逐位元等價）：
+**遷移登記**（對外行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序、ledger 列序逐位元等價）：
 
 - 決策 4：`RefundPlan::ledger_deltas` → `points::model::OrderPointsFlow::reversal_deltas(order_id)`
   （restore 先、clawback 後、幅度 0 跳過；vec 順序即 ledger 列序）。新增

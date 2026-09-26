@@ -32,6 +32,8 @@ impl CartItemType {
     ///   'course'` into the `course` revenue bucket
     /// - `bin/seed.rs` order-line `CASE` — the same product/course derivation
     ///   for the deterministic reporting dataset
+    /// - `products::repository::find_stock_traces_by_order_tx` — `item_type =
+    ///   'product'::cart_item_type` filter
     ///
     /// Adding a variant — the full checklist:
     /// 1. `ALTER TYPE cart_item_type ADD VALUE '…'` migration.

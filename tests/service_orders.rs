@@ -946,8 +946,9 @@ async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPo
     .await;
 
     // Refund-shaped locker: another buyer's refund holding its FIRST
-    // ascending product lock (UPDATE on p_low), exactly like
-    // `products::service::lock_restock_for_order_tx` mid-flight.
+    // ascending product lock (UPDATE on p_low) — stronger than the
+    // `FOR NO KEY UPDATE` `products::service::lock_restock_for_order_tx`
+    // actually takes mid-flight, but blocks the same way for this test.
     let mut refund_tx = db.begin().await.unwrap();
     sqlx::query("SELECT id FROM products WHERE id = $1 FOR UPDATE")
         .bind(p_low)
