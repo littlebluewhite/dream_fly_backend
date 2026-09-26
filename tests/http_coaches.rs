@@ -4,7 +4,7 @@ mod common;
 
 use common::fixtures::seed_coach;
 use common::http::spawn_test_app;
-use dream_fly_backend::modules::auth::access::{self, RedisAccessCache};
+use dream_fly_backend::modules::auth::access;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -451,8 +451,7 @@ async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
     let (_admin, token) = app.seed_admin().await;
     let target = app.register_member("bind-cache@example.com", "Password!234").await;
 
-    let cache = RedisAccessCache::new(app.redis_conn().await);
-    let warm = access::resolve(&app.db, &cache, target.user_id)
+    let warm = access::resolve(&app.db, &*app.access_cache, target.user_id)
         .await
         .expect("resolve");
     assert_eq!(warm, Some(vec!["member".to_string()]));
@@ -464,7 +463,7 @@ async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 
-    let after = access::resolve(&app.db, &cache, target.user_id)
+    let after = access::resolve(&app.db, &*app.access_cache, target.user_id)
         .await
         .expect("resolve");
     assert_eq!(

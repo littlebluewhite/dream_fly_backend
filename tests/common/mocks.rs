@@ -7,15 +7,22 @@
 //! send recorded in the `Mutex<Vec<_>>` here is just `{to, token}` — the
 //! rendered HTML body lives below the seam, covered by `utils::email`'s own
 //! unit tests, not re-rendered here.
+//!
+//! `InMemoryAccessCache`/`FailingAccessCache` are the test adapters for the
+//! `auth::access::AccessCache` seam; `tests/service_access.rs` runs the same
+//! scenarios against them and the production Redis adapter.
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
 
@@ -105,5 +112,69 @@ impl Default for MockClock {
 impl Clock for MockClock {
     fn now(&self) -> DateTime<Utc> {
         self.pinned.read().unwrap().unwrap_or_else(Utc::now)
+    }
+}
+
+/// In-memory `AccessCache`: a `Mutex<HashMap>` of value + deadline, expired
+/// lazily on read (same observable semantics as Redis `SET EX`/`GET`).
+#[derive(Default)]
+pub struct InMemoryAccessCache {
+    entries: Mutex<HashMap<String, (String, Instant)>>,
+}
+
+impl InMemoryAccessCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl AccessCache for InMemoryAccessCache {
+    async fn get(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let mut entries = self.entries.lock().expect("access cache lock");
+        match entries.get(key) {
+            Some((val, deadline)) if Instant::now() < *deadline => Ok(Some(val.clone())),
+            Some(_) => {
+                entries.remove(key);
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn set_ex(&self, key: &str, val: &str, ttl_secs: u64) -> anyhow::Result<()> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(ttl_secs);
+        self.entries
+            .lock()
+            .expect("access cache lock")
+            .insert(key.to_string(), (val.to_string(), deadline));
+        Ok(())
+    }
+
+    async fn del(&self, keys: &[String]) -> anyhow::Result<()> {
+        let mut entries = self.entries.lock().expect("access cache lock");
+        for key in keys {
+            entries.remove(key);
+        }
+        Ok(())
+    }
+}
+
+/// `AccessCache` whose every call fails — pins the fail-open policy in
+/// `auth::access` (errors are a miss, never an error to the caller).
+pub struct FailingAccessCache;
+
+#[async_trait]
+impl AccessCache for FailingAccessCache {
+    async fn get(&self, _key: &str) -> anyhow::Result<Option<String>> {
+        Err(anyhow::anyhow!("access cache unavailable"))
+    }
+
+    async fn set_ex(&self, _key: &str, _val: &str, _ttl_secs: u64) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("access cache unavailable"))
+    }
+
+    async fn del(&self, _keys: &[String]) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("access cache unavailable"))
     }
 }

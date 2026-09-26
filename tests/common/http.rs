@@ -38,7 +38,7 @@ use dream_fly_backend::config::{
     AppConfig, AuthConfig, DatabaseConfig, EmailConfig, KafkaConfig, RedisConfig, ServerConfig,
     SmsConfig,
 };
-use dream_fly_backend::modules::auth::access::RedisAccessCache;
+use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
@@ -48,7 +48,7 @@ use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::google_oauth::JwksCache;
 use dream_fly_backend::utils::sms::SmsClient;
 
-use super::mocks::{MockClock, MockEmailClient};
+use super::mocks::{InMemoryAccessCache, MockClock, MockEmailClient};
 
 /// Client IP counter so every `TestApp` gets a unique synthetic source IP.
 /// Combined with `trust_proxy=true`, this gives each test its own rate-limit
@@ -138,6 +138,10 @@ pub struct TestApp {
     pub config: Arc<AppConfig>,
     pub email: Arc<MockEmailClient>,
     pub clock: Arc<MockClock>,
+    /// The in-memory account access cache the router's `AuthUser` extractor
+    /// reads (`AppState::access_cache`), so tests can drive
+    /// `auth::access::resolve` against the same cache.
+    pub access_cache: Arc<InMemoryAccessCache>,
     /// Synthetic source IP used as `X-Forwarded-For` on every request.
     pub client_ip: IpAddr,
     /// Clone of the same `TaskTracker` held by `AppState::background_tasks`
@@ -309,6 +313,8 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     let email_state: Arc<dyn EmailSender> = email.clone();
     let clock = Arc::new(MockClock::new());
     let clock_state: Arc<dyn Clock> = clock.clone();
+    let access_cache = Arc::new(InMemoryAccessCache::new());
+    let access_cache_state: Arc<dyn AccessCache> = access_cache.clone();
 
     let http_client = reqwest::Client::new();
     // Real client, not a mock: SMS tests redirect it to a `wiremock` server
@@ -328,7 +334,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
 
     let state = AppState {
         db: db.clone(),
-        access_cache: Arc::new(RedisAccessCache::new(redis.clone())),
+        access_cache: access_cache_state,
         redis,
         kafka_producer: None,
         config: config_arc.clone(),
@@ -355,6 +361,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         config: config_arc,
         email,
         clock,
+        access_cache,
         client_ip,
         background,
     }
