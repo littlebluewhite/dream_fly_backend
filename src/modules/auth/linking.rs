@@ -140,11 +140,9 @@ mod tests {
 
     #[test]
     fn google_hit_refreshes_with_all_flags_false() {
-        // google_auth_refetches_jwks_on_kid_rotation phase 2
-        // (tests/http_auth.rs): the same google-sub logging in a second time
-        // is the only existing exercise of a returning Google user, albeit
-        // incidental to that test's real purpose (JWKS kid-rotation) — it is
-        // what makes phase 2's success possible at all.
+        // google_auth_refresh_does_not_regrant_removed_member
+        // (tests/service_auth.rs): the same google-sub logging in a second
+        // time is a returning Google user.
         let google_user = fixture_user(Uuid::now_v7(), Some("google-sub-1"));
         let plan = plan(Some(&google_user), None).expect("plans");
         assert_eq!(plan.action, LinkAction::Refresh);
@@ -155,8 +153,8 @@ mod tests {
 
     #[test]
     fn email_hit_already_linked_is_conflict() {
-        // No existing test anywhere (http or unit) exercises this branch —
-        // this is its first coverage, per the module doc.
+        // google_auth_email_bound_to_another_google_account_conflicts
+        // (tests/service_auth.rs) covers the same branch end to end.
         let existing = fixture_user(Uuid::now_v7(), Some("other-google-sub"));
         let err = plan(None, Some(&existing)).expect_err("must reject");
         assert!(
@@ -171,7 +169,7 @@ mod tests {
     #[test]
     fn email_hit_unlinked_links_with_event_but_no_member_or_welcome() {
         // google_auth_linking_existing_account_does_not_resend_welcome
-        // (tests/http_auth.rs): a password account with no google_id gets
+        // (tests/service_auth.rs): a password account with no google_id gets
         // linked, not created — the event fires, the welcome does not
         // (already sent at register time).
         let existing = fixture_user(Uuid::now_v7(), None);
@@ -189,9 +187,10 @@ mod tests {
 
     #[test]
     fn double_miss_creates_with_all_flags_true() {
-        // google_auth_new_user_gets_welcome_notification (tests/http_auth.rs)
-        // + phase 1 of google_auth_refetches_jwks_on_kid_rotation: neither
-        // lookup hits — a genuinely brand-new Google user.
+        // google_auth_new_user_gets_welcome_notification
+        // (tests/service_auth.rs) + google_auth_route_end_to_end
+        // (tests/http_auth.rs): neither lookup hits — a genuinely brand-new
+        // Google user.
         let plan = plan(None, None).expect("plans");
         assert_eq!(plan.action, LinkAction::Create);
         assert!(plan.grant_member);

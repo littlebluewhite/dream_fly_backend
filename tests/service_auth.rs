@@ -18,6 +18,12 @@
 //!   the user logged in with afterwards
 //! - forgot_password's per-account rate limit silently swallows the 4th
 //!   request within the window (still an Ok response, but no email sent)
+//! - google_auth login rules, with `FakeGoogleIdentity` standing in for
+//!   Google (the real adapter is covered in `tests/google_identity.rs`):
+//!   welcome on Create only, Link keeps roles and doesn't resend welcome,
+//!   inactive accounts refused with zero writes, Refresh doesn't regrant
+//!   `member`, an email bound to another Google account is a Conflict, and a
+//!   provider rejection writes nothing
 
 mod common;
 
@@ -31,14 +37,17 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::auth::access;
 use dream_fly_backend::modules::auth::dto::{
-    ForgotPasswordRequest, LoginRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
+    AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, LoginRequest, RefreshRequest,
+    RegisterRequest, ResetPasswordRequest,
 };
+use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::auth::service;
 use dream_fly_backend::modules::auth::session;
+use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::jwt;
 
-use common::mocks::MockEmailClient;
+use common::mocks::{FakeGoogleIdentity, InMemoryAccessCache, MockEmailClient};
 
 #[sqlx::test]
 async fn register_creates_user_with_hashed_password(db: PgPool) {
@@ -815,4 +824,252 @@ async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool)
         3,
         "the 4th request must be swallowed silently — no 4th email sent"
     );
+}
+
+// ------- google_auth login rules (fake `GoogleIdentityProvider`) -------
+
+/// Run `service::google_auth` with `google` standing in for Google.
+async fn google_login(db: &PgPool, google: &FakeGoogleIdentity) -> Result<AuthResponse, AppError> {
+    service::google_auth(
+        db,
+        &InMemoryAccessCache::new(),
+        &common::test_auth_config(),
+        google,
+        GoogleAuthRequest {
+            code: "fake-authorization-code".into(),
+        },
+        None,
+    )
+    .await
+}
+
+async fn welcome_count(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notifications \
+         WHERE user_id = $1 AND type = 'system'::notification_type \
+         AND title = 'Welcome to Dream Fly'",
+    )
+    .bind(user_id)
+    .fetch_one(db)
+    .await
+    .expect("count welcome notifications")
+}
+
+/// Role names currently granted to `user_id`, straight from `user_roles`.
+async fn role_names(db: &PgPool, user_id: Uuid) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id \
+         WHERE ur.user_id = $1 ORDER BY r.name",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .expect("read role names")
+}
+
+/// `linking::plan`'s `Create` case (`send_welcome: true`): a brand-new Google
+/// user is born as a `member` and gets a welcome notification.
+#[sqlx::test]
+async fn google_auth_new_user_gets_welcome_notification(db: PgPool) {
+    let google = FakeGoogleIdentity::verified("google-sub-new-user", "NewGoogle@example.com");
+
+    let resp = google_login(&db, &google).await.expect("google login");
+
+    assert_eq!(resp.user.email, "newgoogle@example.com");
+    assert_eq!(resp.user.roles, vec!["member"]);
+    let welcome = common::latest_notification(&db, resp.user.id, "system")
+        .await
+        .expect("welcome notification row");
+    assert_eq!(welcome.0, "Welcome to Dream Fly");
+}
+
+/// Deliberate asymmetry (see `auth::linking`'s module doc): linking Google to
+/// an existing password account resolves to that account and does not resend
+/// the welcome it already got at registration.
+#[sqlx::test]
+async fn google_auth_linking_existing_account_does_not_resend_welcome(db: PgPool) {
+    let registered = service::register(
+        &db,
+        &common::test_auth_config(),
+        RegisterRequest {
+            email: "linkme@example.com".into(),
+            name: "Link Me".into(),
+            password: "Password!234".into(),
+        },
+        None,
+    )
+    .await
+    .expect("register");
+    assert_eq!(welcome_count(&db, registered.user.id).await, 1);
+
+    let google = FakeGoogleIdentity::verified("google-sub-link-user", "linkme@example.com");
+    let resp = google_login(&db, &google).await.expect("google link");
+
+    assert_eq!(
+        resp.user.id, registered.user.id,
+        "google link must resolve to the same existing user"
+    );
+    assert_eq!(
+        welcome_count(&db, registered.user.id).await,
+        1,
+        "linking Google to an existing password account must not resend the welcome notification"
+    );
+}
+
+/// Google login used to skip the `is_active` gate that password login has.
+/// `session::start` refuses it, and the refusal rolls back the whole
+/// google_auth tx — no refresh token row, no `last_login` bump.
+#[sqlx::test]
+async fn google_auth_rejects_inactive_account(db: PgPool) {
+    let google = FakeGoogleIdentity::verified("google-sub-inactive", "inactive-google@example.com");
+    let user_id = google_login(&db, &google)
+        .await
+        .expect("first login")
+        .user
+        .id;
+
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&db)
+        .await
+        .expect("deactivate user");
+
+    let snapshot = |db: &PgPool| {
+        let db = db.clone();
+        async move {
+            let rows: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_one(&db)
+                    .await
+                    .expect("count refresh tokens");
+            let last_login: Option<chrono::DateTime<chrono::Utc>> =
+                sqlx::query_scalar("SELECT last_login FROM users WHERE id = $1")
+                    .bind(user_id)
+                    .fetch_one(&db)
+                    .await
+                    .expect("read last_login");
+            (rows, last_login)
+        }
+    };
+    let before = snapshot(&db).await;
+
+    let err = google_login(&db, &google)
+        .await
+        .expect_err("inactive account must be refused");
+    assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
+    assert_eq!(
+        snapshot(&db).await,
+        before,
+        "a refused Google login must not persist a refresh token or bump last_login"
+    );
+}
+
+/// Only account birth (`LinkPlan::grant_member`, `Create` only) grants
+/// `member`: a returning Google user (`Refresh`) whose `member` role an admin
+/// removed does not get it back.
+#[sqlx::test]
+async fn google_auth_refresh_does_not_regrant_removed_member(db: PgPool) {
+    let google = FakeGoogleIdentity::verified("google-sub-regrant", "regrant@example.com");
+    let user_id = google_login(&db, &google)
+        .await
+        .expect("first login")
+        .user
+        .id;
+    assert_eq!(role_names(&db, user_id).await, vec!["member"]);
+
+    sqlx::query(
+        "DELETE FROM user_roles WHERE user_id = $1 \
+         AND role_id = (SELECT id FROM roles WHERE name = 'member')",
+    )
+    .bind(user_id)
+    .execute(&db)
+    .await
+    .expect("remove member role");
+
+    let resp = google_login(&db, &google).await.expect("returning login");
+    assert!(resp.user.roles.is_empty(), "got: {:?}", resp.user.roles);
+    assert!(role_names(&db, user_id).await.is_empty());
+}
+
+/// `Link` branch: linking Google to an existing account (here a seeded admin
+/// with no `member` role) keeps exactly the roles it had.
+#[sqlx::test]
+async fn google_auth_link_does_not_grant_member_to_seeded_admin(db: PgPool) {
+    let hash = common::hashed("Password!234").await;
+    let mut tx = db.begin().await.expect("begin tx");
+    let admin = repository::create_user_tx(
+        &mut tx,
+        "link-admin@example.com",
+        "Admin",
+        None,
+        &hash,
+        None,
+    )
+    .await
+    .expect("insert admin");
+    // The user row was created in this very tx, so no access-cache entry can
+    // exist for it yet.
+    permissions_repository::assign_role_by_name(&mut tx, admin.id, "admin")
+        .await
+        .expect("assign admin")
+        .assume_uncached();
+    tx.commit().await.expect("commit admin seed");
+
+    let google = FakeGoogleIdentity::verified("google-sub-link-admin", "link-admin@example.com");
+    let resp = google_login(&db, &google).await.expect("google link");
+
+    assert_eq!(resp.user.id, admin.id);
+    assert_eq!(resp.user.roles, vec!["admin"]);
+    assert_eq!(role_names(&db, admin.id).await, vec!["admin"]);
+}
+
+/// An email already bound to a different Google account is a 409 — the new
+/// Google identity is neither linked nor created.
+#[sqlx::test]
+async fn google_auth_email_bound_to_another_google_account_conflicts(db: PgPool) {
+    let first = FakeGoogleIdentity::verified("google-sub-first", "shared@example.com");
+    google_login(&db, &first).await.expect("first login");
+
+    let second = FakeGoogleIdentity::verified("google-sub-second", "shared@example.com");
+    let err = google_login(&db, &second)
+        .await
+        .expect_err("a second Google account must not take the email");
+    match err {
+        AppError::Conflict(msg) => {
+            assert_eq!(msg, "email already associated with another account")
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    let google_ids: Vec<Option<String>> = sqlx::query_scalar("SELECT google_id FROM users")
+        .fetch_all(&db)
+        .await
+        .expect("read google_ids");
+    assert_eq!(google_ids, vec![Some("google-sub-first".to_string())]);
+}
+
+/// A code the provider refuses fails before anything is written: no user,
+/// no session, no outbox event.
+#[sqlx::test]
+async fn google_auth_provider_rejection_writes_nothing(db: PgPool) {
+    let err = google_login(&db, &FakeGoogleIdentity::rejecting())
+        .await
+        .expect_err("a refused code must fail");
+    match err {
+        AppError::BadRequest(msg) => assert_eq!(msg, "Google authentication failed"),
+        other => panic!("expected BadRequest, got {other:?}"),
+    }
+
+    for count_sql in [
+        "SELECT COUNT(*) FROM users",
+        "SELECT COUNT(*) FROM refresh_tokens",
+        "SELECT COUNT(*) FROM events_outbox",
+    ] {
+        let rows: i64 = sqlx::query_scalar(count_sql)
+            .fetch_one(&db)
+            .await
+            .expect("count rows");
+        assert_eq!(rows, 0, "`{count_sql}` must be 0");
+    }
 }

@@ -11,6 +11,10 @@
 //! `InMemoryAccessCache`/`FailingAccessCache` are the test adapters for the
 //! `auth::access::AccessCache` seam; `tests/service_access.rs` runs the same
 //! scenarios against them and the production Redis adapter.
+//!
+//! `FakeGoogleIdentity` stands in for `utils::google_oauth::
+//! GoogleIdentityProvider` in service-level login-rule tests; the real
+//! adapter is covered against `wiremock` in `tests/google_identity.rs`.
 
 #![allow(dead_code)]
 
@@ -25,6 +29,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
+use dream_fly_backend::utils::google_oauth::{GoogleIdentity, GoogleIdentityProvider};
 
 #[derive(Debug, Clone)]
 pub struct SentPasswordReset {
@@ -176,5 +181,39 @@ impl AccessCache for FailingAccessCache {
 
     async fn del(&self, _keys: &[String]) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("access cache unavailable"))
+    }
+}
+
+/// `GoogleIdentityProvider` that ignores the code and either returns a fixed
+/// verified identity or rejects like the real adapter does on a bad code.
+pub struct FakeGoogleIdentity {
+    identity: Option<GoogleIdentity>,
+}
+
+impl FakeGoogleIdentity {
+    /// Every code verifies as `sub`/`email` (no name, no picture).
+    pub fn verified(sub: &str, email: &str) -> Self {
+        Self {
+            identity: Some(GoogleIdentity {
+                sub: sub.to_string(),
+                email: email.to_string(),
+                name: None,
+                picture: None,
+            }),
+        }
+    }
+
+    /// Every code is refused with the adapter's generic BadRequest.
+    pub fn rejecting() -> Self {
+        Self { identity: None }
+    }
+}
+
+#[async_trait]
+impl GoogleIdentityProvider for FakeGoogleIdentity {
+    async fn verify_code(&self, _code: &str) -> Result<GoogleIdentity, AppError> {
+        self.identity
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("Google authentication failed".into()))
     }
 }

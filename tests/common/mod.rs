@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 pub mod fixtures;
+pub mod google;
 pub mod http;
 pub mod mocks;
 pub mod twilio;
