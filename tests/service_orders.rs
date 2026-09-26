@@ -542,34 +542,6 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn checkout_use_points_zero_balance_uses_none(db: PgPool) {
-    let user = common::seed_member(&db, "nopoints-buyer@example.com", "passw0rd!").await;
-    // No `set_points_balance` call — a fresh user's balance defaults to 0.
-    let product = common::seed_product(&db, "nopoints-prod", 1000, Some(5)).await;
-    common::add_to_cart(&db, user, product, 1).await;
-
-    let req = CheckoutRequest {
-        coupon_code: None,
-        use_points: Some(true),
-        payment_method: None,
-    };
-    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
-
-    assert_eq!(resp.points_used, 0);
-    assert_eq!(resp.total_cents, 1000);
-
-    // No redeem ledger row should exist since points_used == 0 is skipped.
-    let redeem_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM point_ledger WHERE user_id = $1 AND reason = 'checkout_redeem'::point_reason",
-    )
-    .bind(user)
-    .fetch_one(&db)
-    .await
-    .unwrap();
-    assert_eq!(redeem_count, 0);
-}
-
-#[sqlx::test]
 async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     let full_course = seed_full_course(&db, "Full Class", 1).await;
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;

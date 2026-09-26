@@ -16,9 +16,12 @@
 //! already-assembled cart — pure function, zero DB, zero async, same shape
 //! as `utils::studio_clock`.
 
+use uuid::Uuid;
+
 use crate::error::AppError;
 use crate::modules::cart::model::{CheckoutLine, checked_line_subtotal};
 use crate::modules::coupons::model::Coupon;
+use crate::modules::points::model::LedgerDelta;
 
 /// Everything `checkout` needs from pricing to create the order row and
 /// drive the points ledger.
@@ -30,6 +33,22 @@ pub struct PricingOutcome {
     pub points_used: i64,
     pub total_cents: i64,
     pub points_earned: i64,
+}
+
+impl PricingOutcome {
+    /// The order's checkout ledger writes, in apply order: redeem
+    /// (negative) first, then earn (positive), each skipped when zero —
+    /// `apply_delta_tx` rejects a zero delta.
+    pub fn ledger_deltas(&self, order_id: Uuid) -> Vec<LedgerDelta> {
+        let mut deltas = Vec::new();
+        if self.points_used > 0 {
+            deltas.push(LedgerDelta::checkout_redeem(self.points_used, order_id));
+        }
+        if self.points_earned > 0 {
+            deltas.push(LedgerDelta::checkout_earn(self.points_earned, order_id));
+        }
+        deltas
+    }
 }
 
 /// The coupon-discount clamp rule, single-sourced here so `price()` below
@@ -111,6 +130,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::modules::cart::model::CartItemType;
+    use crate::modules::points::model::PointReason;
 
     fn line(price_cents: i64, quantity: i32) -> CheckoutLine {
         CheckoutLine {
@@ -294,5 +314,40 @@ mod tests {
 
         let at = price(&[line(3_000, 1)], None, 0, false).expect("prices");
         assert_eq!(at.points_earned, 2, "30 NT * 5% = 1.5 rounds up to 2");
+    }
+
+    // --- ledger_deltas ---
+
+    #[test]
+    fn ledger_deltas_redeem_before_earn() {
+        // after_coupon 10_000, balance 50 -> points_used 50, total 5_000,
+        // earns (50*5+50)/100 = 3.
+        let order_id = Uuid::now_v7();
+        let outcome = price(&[line(10_000, 1)], None, 50, true).expect("prices");
+        let deltas = outcome.ledger_deltas(order_id);
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0].reason(), PointReason::CheckoutRedeem);
+        assert_eq!(deltas[0].delta(), -50);
+        assert_eq!(deltas[0].order_id(), Some(order_id));
+        assert_eq!(deltas[1].reason(), PointReason::CheckoutEarn);
+        assert_eq!(deltas[1].delta(), 3);
+        assert_eq!(deltas[1].order_id(), Some(order_id));
+    }
+
+    #[test]
+    fn ledger_deltas_skip_zero_magnitudes() {
+        // use_points with a zero balance redeems nothing — no redeem delta,
+        // only the earn (10 NT -> (10*5+50)/100 = 1).
+        let outcome = price(&[line(1_000, 1)], None, 0, true).expect("prices");
+        assert_eq!(outcome.points_used, 0);
+        assert_eq!(outcome.total_cents, 1_000);
+        let deltas = outcome.ledger_deltas(Uuid::now_v7());
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].reason(), PointReason::CheckoutEarn);
+        assert_eq!(deltas[0].delta(), 1);
+
+        // A free order redeems and earns nothing — no deltas at all.
+        let free = price(&[line(5_000, 1)], Some(&coupon(5_000)), 0, false).expect("prices");
+        assert!(free.ledger_deltas(Uuid::now_v7()).is_empty());
     }
 }

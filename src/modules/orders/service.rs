@@ -359,23 +359,10 @@ pub async fn checkout(
         .await?;
     }
 
-    // Points ledger — redeem (negative) then earn (positive), each
-    // skipped when zero (`apply_delta_tx` rejects a zero delta).
-    if outcome.points_used > 0 {
-        points_service::apply_delta_tx(
-            &mut tx,
-            user_id,
-            LedgerDelta::checkout_redeem(outcome.points_used, order.id),
-        )
-        .await?;
-    }
-    if outcome.points_earned > 0 {
-        points_service::apply_delta_tx(
-            &mut tx,
-            user_id,
-            LedgerDelta::checkout_earn(outcome.points_earned, order.id),
-        )
-        .await?;
+    // Points ledger — `PricingOutcome::ledger_deltas` owns the order
+    // (redeem before earn) and the zero-skip.
+    for delta in outcome.ledger_deltas(order.id) {
+        points_service::apply_delta_tx(&mut tx, user_id, delta).await?;
     }
 
     // Clear the cart within the same transaction.
