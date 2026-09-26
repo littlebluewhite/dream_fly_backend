@@ -4,10 +4,12 @@
 //! 快取錯誤一律當 miss(fail-open)全部私有於此,呼叫端看不到 Redis。
 
 use redis::AsyncCommands;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::modules::permissions::repository as permissions_repository;
+
+use super::session;
 
 /// Sentinel value stored in the role cache when a user has *no* roles.
 /// Distinguishes "cache miss" (key absent) from "cache hit, no roles"
@@ -94,6 +96,45 @@ pub async fn resolve(
     };
 
     Ok(Some(roles))
+}
+
+/// Deactivate an account: `is_active = false` plus the end of every session
+/// (`session::end_all`), in the caller's tx — user row first, the same lock
+/// order as `session::rotate` and `reset_password`. Ending the sessions here
+/// means a later [`reactivate_tx`] cannot bring old refresh tokens back.
+/// Flush the returned witness after commit so live access tokens stop
+/// working on their very next request.
+pub async fn deactivate_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<AccessDirty, sqlx::Error> {
+    set_active_tx(tx, user_id, false).await?;
+    session::end_all(tx, user_id).await?;
+    Ok(AccessDirty::new(user_id))
+}
+
+/// Reactivate an account (`is_active = true`). Sessions ended by
+/// [`deactivate_tx`] stay ended — the user has to log in again. Flush the
+/// returned witness after commit.
+pub async fn reactivate_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<AccessDirty, sqlx::Error> {
+    set_active_tx(tx, user_id, true).await?;
+    Ok(AccessDirty::new(user_id))
+}
+
+async fn set_active_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    is_active: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET is_active = $2, updated_at = NOW() WHERE id = $1")
+        .bind(user_id)
+        .bind(is_active)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// Witness that a write changing a user's access (a `user_roles` row, the

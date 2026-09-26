@@ -29,6 +29,7 @@ use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::auth::access;
 use dream_fly_backend::modules::auth::dto::{
     ForgotPasswordRequest, LoginRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
 };
@@ -759,11 +760,10 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
     .await
     .expect("register");
 
-    // The admin's deactivation, held open: user row updated, not committed.
+    // The admin's deactivation, held open: user row updated and sessions
+    // ended, not committed.
     let mut admin_tx = db.begin().await.expect("begin admin tx");
-    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
-        .bind(r1.user.id)
-        .execute(&mut *admin_tx)
+    let dirty = access::deactivate_tx(&mut admin_tx, r1.user.id)
         .await
         .expect("deactivate");
 
@@ -780,13 +780,8 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
         "refresh must wait for the in-flight deactivation"
     );
 
-    // What `session::end_all` does, then commit.
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
-        .bind(r1.user.id)
-        .execute(&mut *admin_tx)
-        .await
-        .expect("end sessions");
     admin_tx.commit().await.expect("commit deactivation");
+    dirty.flush(&mut redis).await;
 
     let err = refresh
         .await

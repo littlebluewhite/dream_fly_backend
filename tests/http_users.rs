@@ -599,6 +599,40 @@ async fn admin_deactivate_ends_sessions_so_reactivation_does_not_resurrect_refre
     assert_eq!(resp.status_code(), 401, "body={}", resp.text());
 }
 
+/// Deactivation must revoke an already-issued access token on the very next
+/// request, not after the 60s `user_active` cache TTL: warm the account
+/// access cache with a 200, deactivate, replay the same token (401), then
+/// reactivate and replay again (200).
+#[sqlx::test]
+async fn admin_deactivate_revokes_live_access_token_immediately(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let target = app
+        .register_member("live-token@example.com", "Password!234")
+        .await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let me = |token: String| {
+        let req = app.get("/api/v1/users/me").authorization_bearer(token);
+        async move { req.await.status_code() }
+    };
+
+    assert_eq!(me(target.access_token.clone()).await, 200, "warm cache");
+
+    let set_active = |is_active: bool| {
+        let req = app
+            .patch(&format!("/api/v1/users/{}", target.user_id))
+            .authorization_bearer(&admin_token)
+            .json(&json!({ "is_active": is_active }));
+        async move { req.await.status_code() }
+    };
+
+    assert_eq!(set_active(false).await, 200);
+    assert_eq!(me(target.access_token.clone()).await, 401, "deactivated");
+
+    assert_eq!(set_active(true).await, 200);
+    assert_eq!(me(target.access_token.clone()).await, 200, "reactivated");
+}
+
 #[sqlx::test]
 async fn admin_update_user_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;

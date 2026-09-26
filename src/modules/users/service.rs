@@ -3,9 +3,8 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::auth::access::AccessDirty;
+use crate::modules::auth::access;
 use crate::modules::auth::provisioning as auth_provisioning;
-use crate::modules::auth::session as auth_session;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
 
@@ -146,13 +145,12 @@ pub async fn create_user(
 /// aren't fields on `UpdateUserRequest`, so a body that includes them is
 /// silently ignored rather than rejected.
 ///
-/// When `is_active` is part of the request, invalidates the target user's
-/// account access cache (`auth::access::AccessDirty::flush`)
-/// so a disable takes effect immediately instead of waiting out the
-/// extractor's 60s cache TTL. A deactivation (`is_active: false`) also ends
-/// the user's whole refresh-token family (`auth::session::end_all`) in the
-/// same tx as the update, so reactivating the account later does not bring
-/// the old refresh tokens back.
+/// `is_active` goes through `auth::access::{deactivate_tx, reactivate_tx}`
+/// in the same tx as the field update; the returned witness is flushed after
+/// commit, so a disable revokes the user's live access tokens on their very
+/// next request. Deactivation also ends the whole refresh-token family, so
+/// reactivating the account later does not bring the old refresh tokens
+/// back.
 pub async fn admin_update_user(
     db: &PgPool,
     redis: &mut redis::aio::ConnectionManager,
@@ -165,26 +163,24 @@ pub async fn admin_update_user(
 
     let mut tx = db.begin().await?;
 
-    let user = repository::admin_update(
-        &mut *tx,
-        user_id,
-        req.name.as_deref(),
-        req.phone.as_deref(),
-        req.is_active,
-    )
-    .await?
-    .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+    // Before `admin_update`, so its `RETURNING *` already carries the new
+    // `is_active`. An unknown id updates nothing here and 404s just below,
+    // rolling the tx back.
+    let dirty = match req.is_active {
+        Some(false) => Some(access::deactivate_tx(&mut tx, user_id).await?),
+        Some(true) => Some(access::reactivate_tx(&mut tx, user_id).await?),
+        None => None,
+    };
 
-    // Deactivation ends every session in the same tx; otherwise a later
-    // reactivation would resurrect the old refresh tokens.
-    if req.is_active == Some(false) {
-        auth_session::end_all(&mut tx, user_id).await?;
-    }
+    let user =
+        repository::admin_update(&mut *tx, user_id, req.name.as_deref(), req.phone.as_deref())
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
     tx.commit().await?;
 
-    if req.is_active.is_some() {
-        AccessDirty::new(user_id).flush(redis).await;
+    if let Some(dirty) = dirty {
+        dirty.flush(redis).await;
     }
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;

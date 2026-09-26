@@ -182,7 +182,7 @@ pub(super) async fn end(
 /// then wipe the new sessions too. With the rows gone, an old token is a
 /// plain 401. DB only — the caller owns the tx boundary and, after commit,
 /// any access-cache invalidation (`auth::access::AccessDirty::flush`).
-pub(crate) async fn end_all(conn: &mut PgConnection, user_id: Uuid) -> Result<(), sqlx::Error> {
+pub(super) async fn end_all(conn: &mut PgConnection, user_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
         .bind(user_id)
         .execute(conn)

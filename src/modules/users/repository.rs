@@ -41,12 +41,15 @@ pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {
 /// Resetting `phone_verified` on a real phone change mirrors `update_profile`
 /// below — an admin-set phone number is exactly as unverified as a
 /// self-service one until OTP confirms it.
+///
+/// `is_active` is deliberately not a column here: deactivation/reactivation
+/// go through `auth::access::{deactivate_tx, reactivate_tx}`, which also end
+/// sessions and hand back the cache-invalidation witness.
 pub async fn admin_update(
     executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     name: Option<&str>,
     phone: Option<&str>,
-    is_active: Option<bool>,
 ) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>(
         r#"
@@ -57,7 +60,6 @@ pub async fn admin_update(
                 WHEN $3 IS NOT NULL AND $3 IS DISTINCT FROM phone THEN false
                 ELSE phone_verified
             END,
-            is_active = COALESCE($4, is_active),
             updated_at = NOW()
         WHERE id = $1
         RETURNING *
@@ -66,7 +68,6 @@ pub async fn admin_update(
     .bind(user_id)
     .bind(name)
     .bind(phone)
-    .bind(is_active)
     .fetch_optional(executor)
     .await
 }
