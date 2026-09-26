@@ -13,7 +13,8 @@
 //!   unscoped `get_course_by_slug_or_id` still resolves
 //! - `update_course` slot edits reconcile future sessions: unreferenced
 //!   orphans deleted, referenced orphans (cancelled leave / makeup target /
-//!   attendance) kept, `end_time` synced on still-matching sessions, and
+//!   attendance) kept, `end_time`/`venue` synced on still-matching future
+//!   sessions (today's untouched), and
 //!   sessions left untouched entirely when `schedule_slots` is absent
 
 mod common;
@@ -30,8 +31,9 @@ use dream_fly_backend::modules::courses::dto::{
 use dream_fly_backend::modules::courses::service;
 
 use common::fixtures::{
-    seed_attendance, seed_course, seed_course_schedule_slot, seed_course_session, seed_enrolment,
-    seed_leave_request, set_makeup_session,
+    seed_attendance, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
+    seed_course_session, seed_course_session_with_venue, seed_enrolment, seed_leave_request,
+    set_makeup_session,
 };
 
 fn t(h: u32, m: u32) -> NaiveTime {
@@ -575,6 +577,58 @@ async fn update_course_slot_end_time_change_syncs_future_sessions(db: PgPool) {
         t(10, 0),
         "today's session must not be synced even though it matches the slot"
     );
+}
+
+#[sqlx::test]
+async fn update_course_slot_venue_change_syncs_future_sessions_only(db: PgPool) {
+    let course_id = seed_course(&db, "Venue Sync Course", None).await;
+    let at = common::studio_now_utc(Utc::now());
+    let today = at.today();
+    // +7 days keeps the same weekday as `today`, so the single slot below
+    // also matches the today-dated fixture.
+    let future_date = today + Duration::days(7);
+    let dow = future_date.weekday().num_days_from_sunday() as i16;
+    seed_course_schedule_slot_with_venue(&db, course_id, dow, t(9, 0), t(10, 0), "Old Hall").await;
+    let future_id =
+        seed_course_session_with_venue(&db, course_id, future_date, t(9, 0), t(10, 0), "Old Hall")
+            .await;
+    // Same slot match, dated today — the `session_date > today` boundary
+    // keeps its venue snapshot as-is.
+    let today_id =
+        seed_course_session_with_venue(&db, course_id, today, t(9, 0), t(10, 0), "Old Hall").await;
+
+    // Venue-only edit: same (day_of_week, start_time, end_time).
+    service::update_course(
+        &db,
+        at,
+        course_id,
+        slots_only_update(Some(vec![CourseScheduleSlotEntry {
+            day_of_week: dow,
+            start_time: "09:00".into(),
+            end_time: "10:00".into(),
+            venue: Some("New Hall".into()),
+        }])),
+    )
+    .await
+    .expect("update_course");
+
+    assert_eq!(
+        session_venue(&db, future_id).await.as_deref(),
+        Some("New Hall")
+    );
+    assert_eq!(
+        session_venue(&db, today_id).await.as_deref(),
+        Some("Old Hall"),
+        "today's session must keep its venue snapshot"
+    );
+}
+
+async fn session_venue(db: &PgPool, session_id: Uuid) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT venue FROM course_sessions WHERE id = $1")
+        .bind(session_id)
+        .fetch_one(db)
+        .await
+        .expect("fetch venue")
 }
 
 #[sqlx::test]

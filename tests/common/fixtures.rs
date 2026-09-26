@@ -191,6 +191,36 @@ pub async fn seed_course_session(
     id
 }
 
+/// Same as [`seed_course_session`] but with a caller-supplied `venue`
+/// snapshot (that fixture leaves the column `NULL`) — mirrors what
+/// `materialize_range` writes for a slot that has a venue.
+pub async fn seed_course_session_with_venue(
+    db: &PgPool,
+    course_id: Uuid,
+    session_date: NaiveDate,
+    start_time: NaiveTime,
+    end_time: NaiveTime,
+    venue: &str,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, venue, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        "#,
+    )
+    .bind(id)
+    .bind(course_id)
+    .bind(session_date)
+    .bind(start_time)
+    .bind(end_time)
+    .bind(venue)
+    .execute(db)
+    .await
+    .expect("insert course_session with venue");
+    id
+}
+
 pub async fn seed_venue_category(db: &PgPool, name: &str) -> Uuid {
     let id = Uuid::now_v7();
     let slug = format!("{}-{}", slugify(name), &id.to_string()[..8]);
@@ -1103,8 +1133,9 @@ pub struct SessionScene {
 /// 列。`name`/`coach_id` 顯式入參，同 `seed_course`——課名與是否指派教練皆
 /// 是呼叫端才知道的變異點。`session_date`/`start_time` 顯式入參：測試常需
 /// 要場次精確落在「今天」或某個未來/過去日期，composite 沒辦法代猜是哪一
-/// 天。`venue` 給 `Some` 時額外落在 slot 上（供 venue 解析測試比對），
-/// `None` 同 `seed_course_schedule_slot` 原生的 NULL 預設。**不適用**於
+/// 天。`venue` 給 `Some` 時同時落在 slot 與場次的 venue 快照上（同
+/// `materialize_range` 物化時的寫法，供 venue 解析測試比對），`None` 兩
+/// 者皆同原生的 NULL 預設。**不適用**於
 /// 「slot 本身有無存在就是測試標的」（例如場次無對應 slot 時 venue 應為
 /// null 的測試——需要真的沒有 slot）或「materialize 本身就是測試標的」
 /// （例如 materialize 冪等測試——需要 ACT 呼叫自己把場次物化出來）的案
@@ -1128,6 +1159,11 @@ pub async fn seed_session_scene(
         }
         None => seed_course_schedule_slot(db, course, day_of_week, start_time, end_time).await,
     };
-    let session = seed_course_session(db, course, session_date, start_time, end_time).await;
+    let session = match venue {
+        Some(v) => {
+            seed_course_session_with_venue(db, course, session_date, start_time, end_time, v).await
+        }
+        None => seed_course_session(db, course, session_date, start_time, end_time).await,
+    };
     SessionScene { course, slot, session }
 }

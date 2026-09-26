@@ -2,6 +2,7 @@
 //!
 //! Covered paths:
 //! - `materialize_range` is idempotent (repeat calls don't duplicate rows)
+//!   and snapshots the slot's `venue` onto the session at creation time
 //! - `list_course_sessions` materializes and returns a course's sessions;
 //!   404 on an unknown course; 422 on `to < from` or a >60-day span
 //! - `my_weekly_schedule` includes only courses the caller holds an *active*
@@ -23,8 +24,8 @@ use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{repository as sessions_repository, service};
 
 use common::fixtures::{
-    seed_coach, seed_course, seed_course_schedule_slot, seed_course_session, seed_enrolment,
-    seed_session_scene,
+    seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
+    seed_course_session, seed_enrolment, seed_session_scene,
 };
 
 /// PostgreSQL `EXTRACT(DOW)` / this module's `day_of_week` convention:
@@ -67,6 +68,55 @@ async fn materialize_range_is_idempotent(db: PgPool) {
         count_2, 1,
         "repeat materialize_range calls must not duplicate sessions"
     );
+}
+
+#[sqlx::test]
+async fn materialize_snapshots_slot_venue(db: PgPool) {
+    let course_id = seed_course(&db, "Venue Snapshot Course", None).await;
+    let today = Utc::now().date_naive();
+    let slot_id = seed_course_schedule_slot_with_venue(
+        &db,
+        course_id,
+        dow_of(today),
+        t(9, 0),
+        t(10, 0),
+        "Main Hall",
+    )
+    .await;
+
+    sessions_repository::materialize_range(&db, &[course_id], today, today)
+        .await
+        .expect("first materialize");
+    assert_eq!(
+        session_venues(&db, course_id).await,
+        vec![Some("Main Hall".to_string())]
+    );
+
+    // A later slot venue edit must not rewrite an already-materialized
+    // session: re-materializing hits `ON CONFLICT DO NOTHING`, so the row
+    // keeps the venue it was snapshotted with.
+    sqlx::query("UPDATE course_schedule_slots SET venue = 'Side Room' WHERE id = $1")
+        .bind(slot_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    sessions_repository::materialize_range(&db, &[course_id], today, today)
+        .await
+        .expect("second materialize");
+    assert_eq!(
+        session_venues(&db, course_id).await,
+        vec![Some("Main Hall".to_string())]
+    );
+}
+
+async fn session_venues(db: &PgPool, course_id: Uuid) -> Vec<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT venue FROM course_sessions WHERE course_id = $1 ORDER BY session_date",
+    )
+    .bind(course_id)
+    .fetch_all(db)
+    .await
+    .expect("fetch session venues")
 }
 
 #[sqlx::test]

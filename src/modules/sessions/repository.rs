@@ -76,7 +76,11 @@ impl MaterializedDay {
 /// Materialize `course_sessions` rows for every date in `[from, to]` whose
 /// weekday matches one of `course_ids`' weekly slots. Idempotent — calling
 /// this twice for the same range never creates duplicate rows, thanks to
-/// `ON CONFLICT DO NOTHING` on `course_sessions_unique`. Returns a
+/// `ON CONFLICT DO NOTHING` on `course_sessions_unique`. Each new row
+/// snapshots its slot's `venue` — an already-materialized session keeps the
+/// venue it was created with (the conflict skips it); only
+/// `reconcile_future_sessions_tx` re-syncs it, and only for future dates.
+/// Returns a
 /// [`MaterializedRange`] witness for this exact `(course_ids, from, to)` —
 /// including on both early-return paths — so callers thread it into the
 /// matching read function instead of re-stating the "materialize first"
@@ -99,8 +103,8 @@ pub async fn materialize_range(
         return Ok(witness);
     }
 
-    let candidates = sqlx::query_as::<_, (Uuid, NaiveDate, NaiveTime, NaiveTime)>(
-        "SELECT s.course_id, gs.d::date, s.start_time, s.end_time \
+    let candidates = sqlx::query_as::<_, (Uuid, NaiveDate, NaiveTime, NaiveTime, Option<String>)>(
+        "SELECT s.course_id, gs.d::date, s.start_time, s.end_time, s.venue \
          FROM generate_series($2::date, $3::date, interval '1 day') AS gs(d) \
          JOIN course_schedule_slots s \
            ON s.course_id = ANY($1::uuid[]) \
@@ -121,19 +125,21 @@ pub async fn materialize_range(
     let mut dates: Vec<NaiveDate> = Vec::with_capacity(candidates.len());
     let mut starts: Vec<NaiveTime> = Vec::with_capacity(candidates.len());
     let mut ends: Vec<NaiveTime> = Vec::with_capacity(candidates.len());
+    let mut venues: Vec<Option<String>> = Vec::with_capacity(candidates.len());
 
-    for (course_id, session_date, start_time, end_time) in &candidates {
+    for (course_id, session_date, start_time, end_time, venue) in &candidates {
         ids.push(Uuid::now_v7());
         c_ids.push(*course_id);
         dates.push(*session_date);
         starts.push(*start_time);
         ends.push(*end_time);
+        venues.push(venue.clone());
     }
 
     sqlx::query(
-        "INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, created_at) \
-         SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::date[], $4::time[], $5::time[], \
-         ARRAY_FILL(now(), ARRAY[$6::int])::timestamptz[]) \
+        "INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, venue, created_at) \
+         SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::date[], $4::time[], $5::time[], $6::text[], \
+         ARRAY_FILL(now(), ARRAY[$7::int])::timestamptz[]) \
          ON CONFLICT (course_id, session_date, start_time) DO NOTHING",
     )
     .bind(&ids)
@@ -141,6 +147,7 @@ pub async fn materialize_range(
     .bind(&dates)
     .bind(&starts)
     .bind(&ends)
+    .bind(&venues)
     .bind(candidates.len() as i32)
     .execute(db)
     .await?;
@@ -270,9 +277,10 @@ pub async fn find_my_weekly_schedule(
 /// `materialize_range`/`find_today_sessions_in` use (`day_of_week` =
 /// `EXTRACT(DOW FROM session_date)`, 0=Sunday..6=Saturday):
 /// 1. UPDATE — a future session whose `(day_of_week, start_time)` still
-///    matches a slot has its `end_time` synced to that slot's current
-///    `end_time` (a slot edit that only changes `end_time` must not orphan
-///    the session).
+///    matches a slot has its `end_time` and `venue` synced to that slot's
+///    current values (a slot edit that only changes `end_time`/`venue` must
+///    not orphan the session; today's and past sessions keep their venue
+///    snapshot).
 /// 2. DELETE — a future session with no matching slot at all is an orphan.
 ///    It's only deleted when nothing references it: no `leave_requests`
 ///    row (any status) via `session_id` *or* `makeup_session_id` — both
@@ -294,14 +302,14 @@ pub async fn reconcile_future_sessions_tx(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE course_sessions cs \
-         SET end_time = s.end_time \
+         SET end_time = s.end_time, venue = s.venue \
          FROM course_schedule_slots s \
          WHERE cs.course_id = $1 \
            AND cs.session_date > $2 \
            AND s.course_id = cs.course_id \
            AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
            AND s.start_time = cs.start_time \
-           AND s.end_time <> cs.end_time",
+           AND (s.end_time <> cs.end_time OR s.venue IS DISTINCT FROM cs.venue)",
     )
     .bind(course_id)
     .bind(today)
