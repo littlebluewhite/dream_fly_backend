@@ -37,7 +37,6 @@
 use chrono::NaiveDate;
 use sqlx::{Postgres, Transaction};
 
-use super::access::AccessDirty;
 use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
 use crate::modules::permissions::repository as permissions_repository;
@@ -56,25 +55,6 @@ pub struct NewAccount<'a> {
     pub phone: Option<&'a str>,
     pub birth_date: Option<NaiveDate>,
     pub password_hash: &'a str,
-}
-
-/// The freshly-created row plus the [`AccessDirty`] witness from its
-/// `member`-role grant.
-///
-/// `#[must_use]` here only guards against the whole value being discarded
-/// outright — and even that case is already subsumed by `create_account`'s
-/// `Result` return type, which is `#[must_use]` on its own. It does NOT
-/// catch a caller that binds the result, reads `.user`, and never touches
-/// `.dirty`: Rust has no field-level must-use, so that specific mistake
-/// compiles silently. The caller MUST still, by convention rather than
-/// compiler enforcement, call `dirty.flush(redis)` after `tx.commit()` (see
-/// [`AccessDirty`]'s own doc for why). Both current call sites
-/// (`auth::service::register`, `users::service::create_user`) do this
-/// correctly.
-#[must_use]
-pub struct ProvisionedAccount {
-    pub user: User,
-    pub dirty: AccessDirty,
 }
 
 /// The account-birth owner: one atomic INSERT + role grant + outbox event,
@@ -100,7 +80,7 @@ pub async fn create_account(
     tx: &mut Transaction<'_, Postgres>,
     account: NewAccount<'_>,
     correlation_id: Option<String>,
-) -> Result<ProvisionedAccount, sqlx::Error> {
+) -> Result<User, sqlx::Error> {
     let email = normalize_email(account.email);
 
     let user = repository::create_user_tx(
@@ -113,7 +93,11 @@ pub async fn create_account(
     )
     .await?;
 
-    let dirty = permissions_repository::assign_role_by_name(tx, user.id, "member").await?;
+    // The row was inserted a line above in this very tx, so no access-cache
+    // entry can exist for its id — nothing to flush after commit.
+    permissions_repository::assign_role_by_name(tx, user.id, "member")
+        .await?
+        .assume_uncached();
 
     outbox::insert_domain_event_tx(
         tx,
@@ -126,5 +110,5 @@ pub async fn create_account(
     )
     .await?;
 
-    Ok(ProvisionedAccount { user, dirty })
+    Ok(user)
 }

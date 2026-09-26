@@ -27,7 +27,6 @@ use super::session;
 
 pub async fn register(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
     config: &AuthConfig,
     req: RegisterRequest,
     correlation_id: Option<String>,
@@ -48,7 +47,7 @@ pub async fn register(
     // step (including the email normalization). Rely on the DB unique
     // constraint for the duplicate check so existence enumeration is not
     // possible via race condition probing.
-    let provisioned = provisioning::create_account(
+    let user = provisioning::create_account(
         &mut tx,
         provisioning::NewAccount {
             email: &req.email,
@@ -65,14 +64,12 @@ pub async fn register(
     // If token generation fails here, the entire transaction — including the
     // event row `create_account` already queued — rolls back: no phantom
     // user row.
-    let response = session::start(&mut tx, config, &provisioned.user).await?;
+    let response = session::start(&mut tx, config, &user).await?;
 
     tx.commit().await?;
 
-    provisioned.dirty.flush(redis).await;
-
     // Welcome notification is written synchronously after commit.
-    notify::user_welcomed(provisioned.user.id).deliver(db).await;
+    notify::user_welcomed(user.id).deliver(db).await;
 
     Ok(response)
 }
@@ -242,6 +239,9 @@ pub async fn google_auth(
 
     // 4. Assign "member" role — account birth (`Create`) only; Link/Refresh
     //    leave an existing account's roles alone (see `linking`'s module doc).
+    //    Unlike `provisioning::create_account`, the witness is really flushed:
+    //    the `ON CONFLICT (google_id)` upsert may have landed on a row a
+    //    concurrent first login already committed, whose access may be cached.
     let dirty = if plan.grant_member {
         Some(permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?)
     } else {

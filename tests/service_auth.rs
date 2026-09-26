@@ -43,11 +43,9 @@ use common::mocks::MockEmailClient;
 #[sqlx::test]
 async fn register_creates_user_with_hashed_password(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
 
     let resp = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "alice@example.com".into(),
@@ -104,11 +102,9 @@ async fn register_creates_user_with_hashed_password(db: PgPool) {
 #[sqlx::test]
 async fn register_duplicate_email_returns_conflict(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
 
     service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "bob@example.com".into(),
@@ -122,7 +118,6 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
 
     let err = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             // Different case, same email — lowercase normalization must still
@@ -184,11 +179,9 @@ async fn login_nonexistent_email_returns_unauthorized(db: PgPool) {
 #[sqlx::test]
 async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
 
     let r1 = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "dave@example.com".into(),
@@ -239,11 +232,9 @@ async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
 #[sqlx::test]
 async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
 
     let r1 = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "eve@example.com".into(),
@@ -309,11 +300,9 @@ async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
 #[sqlx::test]
 async fn purge_expired_keeps_rotated_tokens_so_reuse_still_revokes_family(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
 
     let r1 = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "purge@example.com".into(),
@@ -368,11 +357,9 @@ async fn purge_expired_keeps_rotated_tokens_so_reuse_still_revokes_family(db: Pg
 #[sqlx::test]
 async fn purge_expired_deletes_expired_rows_revoked_or_not(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
 
     let r1 = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "purge-expired@example.com".into(),
@@ -561,7 +548,6 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
 
     let r1 = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: email.clone(),
@@ -657,7 +643,6 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
 
     let old = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: email.clone(),
@@ -748,7 +733,6 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
 
     let r1 = service::register(
         &db,
-        &mut redis,
         &cfg,
         RegisterRequest {
             email: "deactivate-race@example.com".into(),

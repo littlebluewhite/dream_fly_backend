@@ -57,8 +57,7 @@ pub async fn create(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let response = service::create_user(&state.db, &mut redis, req, request_id.0).await?;
+    let response = service::create_user(&state.db, req, request_id.0).await?;
     Ok(Json(response))
 }
 

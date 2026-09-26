@@ -106,7 +106,6 @@ pub async fn get_user(db: &PgPool, user_id: Uuid) -> Result<UserResponse, AppErr
 /// action to welcome them for.
 pub async fn create_user(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
     req: CreateUserRequest,
     correlation_id: Option<String>,
 ) -> Result<UserResponse, AppError> {
@@ -116,7 +115,7 @@ pub async fn create_user(
 
     let mut tx = db.begin().await?;
 
-    let provisioned = auth_provisioning::create_account(
+    let user = auth_provisioning::create_account(
         &mut tx,
         auth_provisioning::NewAccount {
             email: &req.email,
@@ -130,14 +129,11 @@ pub async fn create_user(
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "Email 已被使用"))?;
 
-    let roles =
-        permissions_repository::find_role_names_by_user(&mut *tx, provisioned.user.id).await?;
+    let roles = permissions_repository::find_role_names_by_user(&mut *tx, user.id).await?;
 
     tx.commit().await?;
 
-    provisioned.dirty.flush(redis).await;
-
-    Ok(UserResponse::new(provisioned.user, roles))
+    Ok(UserResponse::new(user, roles))
 }
 
 /// `PATCH /users/{id}` (admin). `name`/`phone`/`is_active` only — `email`,
