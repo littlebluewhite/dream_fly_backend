@@ -5,8 +5,8 @@
 //! Refresh 既有 Google 使用者的 profile——連同三個驅動 member 角色授予、
 //! event、歡迎通知發送的布林旗標。純函式,零 DB、零 async,同 `orders::pricing`/
 //! `orders::fulfilment`/`attendance::marking`/`messages::pairing`的形狀:
-//! `service::google_auth`仍擁有兩次查詢本身(google_id 路走 pool、email 路
-//! 惰性——只在 google miss 時才查,且落在 tx 內)與其後的 repo 呼叫、role
+//! `service::google_auth`仍擁有兩次查詢本身(兩路皆落在 tx 內;email 路
+//! 惰性——只在 google miss 時才查)與其後的 repo 呼叫、role
 //! 指派、session 簽發、tx commit、event/通知投遞——那些都是 DB 協調,不是
 //! 連結決策。
 //!

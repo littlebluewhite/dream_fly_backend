@@ -48,12 +48,12 @@ pub async fn find_user_by_email(
 }
 
 pub async fn find_user_by_google_id(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     google_id: &str,
 ) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE google_id = $1")
         .bind(google_id)
-        .fetch_optional(db)
+        .fetch_optional(executor)
         .await
 }
 

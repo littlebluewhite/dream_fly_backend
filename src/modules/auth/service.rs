@@ -166,8 +166,9 @@ pub async fn google_auth(
     // Look up the existing user by google_id, then — lazily, only on a
     // google_id miss — by email, so `linking::plan` can decide between
     // create, link, and refresh. See `linking`'s module doc for the full
-    // decision and its truth table.
-    let existing_by_google = repository::find_user_by_google_id(db, &identity.sub).await?;
+    // decision and its truth table. Both lookups run on the tx's own
+    // connection rather than borrowing a second one from the pool.
+    let existing_by_google = repository::find_user_by_google_id(&mut *tx, &identity.sub).await?;
     let existing_by_email = if existing_by_google.is_none() {
         repository::find_user_by_email(&mut *tx, &email).await?
     } else {
