@@ -704,9 +704,10 @@ pub async fn update_order_status(
 ///    `users` only implicitly, via a points UPDATE that never happens).
 /// 2. Read the checkout *traces* — line items (each carrying its checkout-time
 ///    `stock_decremented` snapshot) and the order's `checkout_earn`/
-///    `checkout_redeem` ledger flow sums, both keyed by `order_id`. A seed /
-///    history / directly-built order that never went through checkout carries
-///    none of these, so `plan_refund` computes an all-zero plan and the whole
+///    `checkout_redeem` ledger flow sums, both keyed by `order_id`. Fixture /
+///    directly-built orders, and orders from seed runs before this change
+///    (the seed now writes checkout ledger rows), never went through checkout
+///    and carry none of these, so `plan_refund` computes an all-zero plan and the whole
 ///    body no-ops (the legacy-data policy — no special-casing).
 /// 3. Points reversal — RESTORE (positive, reverses `checkout_redeem`) FIRST,
 ///    then CLAWBACK (negative, reverses `checkout_earn`). Under this one tx

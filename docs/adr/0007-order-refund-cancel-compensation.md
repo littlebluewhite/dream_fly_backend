@@ -482,3 +482,5 @@ checkout/refund 場景間接覆蓋，拉到接縫本地直接斷言。
 `checkout` 的 doc 重寫為真實的結果優先序清單（刪掉函式體的步驟編號與隨之漂移的指涉），純件只
 收那些本身就自成一體的決策（請求解析、定價、點數帳順序、轉移決策）。「Cross-buyer dimension」
 anchor 區塊原位保留，只把其中已失效的步驟編號改指函式名。本檔其餘敘述維持決策當下狀態。
+
+**Seed 訂單不再是 no-op 單**：`cargo run --bin seed` 現在為報表訂單寫入 `checkout_earn`（退款單另有 `refund_clawback`）ledger 列，seed 訂單因此帶有 checkout 痕跡——對它們退款會走真正的補償流程，會員已結算餘額低於該單賺得點數時會 409（點數不足）；決策 8「seed fixture 三種痕跡全部缺席、補償 no-op」的推論只剩 fixture／直接建構的訂單與此變更前 seed 建的單適用。

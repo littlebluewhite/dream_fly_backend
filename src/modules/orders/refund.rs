@@ -69,7 +69,7 @@ impl RefundPlan {
 /// 算一筆訂單的補償方案。`items` 是 `order` 的 `order_items` 行,`flow` 是
 /// `points::service::find_order_flow_sums_tx` 讀回的 [`OrderPointsFlow`]
 /// ledger 實錄——**不是** `order.points_earned`/`points_used` 欄位:
-/// seed/歷史直建單沒有 ledger 列,讀欄位會沖銷從未發生過的點數流,讀 ledger
+/// fixture/直建單、以及此變更前 seed 建的單沒有 ledger 列,讀欄位會沖銷從未發生過的點數流,讀 ledger
 /// 則對這種單自然算出全 0(遺留資料政策,ADR-0007)。
 ///
 /// `items` 依 `item_type` 過一個**窮盡** match(無 `_` arm,呼應

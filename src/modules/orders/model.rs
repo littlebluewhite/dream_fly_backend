@@ -27,9 +27,10 @@ impl OrderStatus {
         }
     }
 
-    /// Allowed transitions. Terminal states (completed, cancelled, refunded)
-    /// have no outgoing edges — once an order is refunded it cannot be
-    /// shipped, once completed it cannot be reverted.
+    /// Allowed transitions. Cancelled and refunded are terminal (no outgoing
+    /// edges) — once an order is refunded it cannot be shipped. Completed
+    /// cannot be reverted to an earlier state; its only outgoing edge is
+    /// `Completed → Refunded`.
     pub fn can_transition_to(&self, next: &Self) -> bool {
         use OrderStatus::*;
         matches!(

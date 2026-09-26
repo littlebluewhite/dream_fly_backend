@@ -238,7 +238,8 @@ Body：`{ email, password }`。回應：`AuthResponse`。
 
 #### `POST /auth/google` — 公開
 Body：`{ code }`（Google OAuth authorization code）。回應：`AuthResponse`。
-首次登入自動建立帳號並指派 `member`；若該 email 已是密碼帳號則自動關聯 Google 身分。
+首次登入自動建立帳號並指派 `member`；若該 email 已是密碼帳號則自動關聯 Google 身分。只有首次建立帳號會指派 `member`——關聯既有帳號（Link）與既有 Google 帳號再次登入都不會新增任何角色。
+錯誤：401（帳號已停用——停用帳號無法經 Google 登入取得 session）。
 
 #### `POST /auth/refresh` — 公開（帶 refresh token）
 Body：`{ refresh_token }`。回應：`AuthResponse`（含輪替後的新 token 組）。
@@ -302,7 +303,7 @@ Body（`CreateUserRequest`）：`{ email, name, phone?, password, birth_date? }`
 #### `PATCH /users/{id}` — admin
 Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phone 8-20 字；phone 異動會重置 `phone_verified = false`，與 `PATCH /users/me` 同一規則）。**不可改 `email`／`roles`／`password`／`birth_date`**——這幾者不是本端點的欄位，body 中帶了也會被忽略（v1 範圍外；`birth_date` 只能透過使用者本人的 `PATCH /users/me` 或建立當下的 `POST /users` 設定）。回應：`UserResponse`。
 錯誤：422（`name`/`phone`/`is_active` 皆未提供，訊息 `"至少提供一個欄位"`）；404（查無此使用者）。
-備註：`is_active` 有變動時，後端會立即清除該使用者的 Redis 快取（角色 + `is_active`），停用在下一次請求即生效，不必等待 `AuthUser` extractor 的 60 秒快取 TTL。
+備註：`is_active` 有變動時，後端會立即清除該使用者的 Redis 快取（角色 + `is_active`），停用在下一次請求即生效，不必等待 `AuthUser` extractor 的 60 秒快取 TTL。停用（`is_active: false`）同時撤銷該使用者的所有 refresh token；帳號重新啟用後，使用者必須重新登入（舊 refresh token 不會復活）。
 
 ---
 

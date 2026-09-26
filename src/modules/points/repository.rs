@@ -83,8 +83,9 @@ pub async fn adjust_balance_tx(
 /// Sum of one order's `checkout_earn`/`checkout_redeem` `point_ledger`
 /// rows, returned as two non-negative magnitudes — `(earned, redeemed)`.
 /// Refund/cancel compensation (ADR-0007 決策 8) reverses these ledger sums
-/// rather than reading `orders.points_earned`/`points_used`: a seed/
-/// fixture-built order (or one predating the points ledger) can carry
+/// rather than reading `orders.points_earned`/`points_used`: a fixture/
+/// directly-built order, an order from a seed run before this change, or
+/// one predating the points ledger can carry
 /// non-zero values in those denormalized columns with no backing ledger
 /// row, and reversing against the columns would claw back or restore
 /// points that were never actually moved. Reading the ledger itself means
@@ -92,8 +93,9 @@ pub async fn adjust_balance_tx(
 /// legacy-data special case needed.
 ///
 /// `checkout_redeem` rows are written with a *negative* `delta`
-/// (`orders::service::checkout` calls `apply_delta_tx` with
-/// `-outcome.points_used`) — this negates the summed `checkout_redeem`
+/// (`orders::service::checkout` applies the deltas from
+/// `PricingOutcome::ledger_deltas`, whose redeem delta is
+/// `-points_used`) — this negates the summed `checkout_redeem`
 /// delta before returning it, so both fields of the [`OrderPointsFlow`]
 /// come back `>= 0`; the caller (`refund::plan_refund`) assigns the sign
 /// itself. `COALESCE(..., 0)` covers the "no matching rows" case: an
