@@ -52,11 +52,11 @@ impl PointReason {
 /// 不收 `magnitude`,也沒有非負斷言。
 ///
 /// **幅度非負是 defense-in-depth,不是型別保證**:五個固定符號建構子收
-/// `magnitude: i64`(不是 `u64`),也不回傳 `Result`——四個呼叫端的幅度來源
-/// 各自已有 owner 級保證(`orders::pricing::PricingOutcome` 的核測試、
+/// `magnitude: i64`(不是 `u64`),也不回傳 `Result`——三個幅度來源各自已
+/// 有 owner 級保證(`orders::pricing::PricingOutcome` 的核測試、
 /// [`OrderPointsFlow`] 的 `earned`/`redeemed` doc 與 SQL 讀回測試皆載明恆
-/// `>= 0`、`rewards.points_cost` 的 DB `CHECK > 0`、seed 的
-/// 字面正值),在型別層再收一次是不必要的重複防線。`debug_assert!(magnitude
+/// `>= 0`、`rewards.points_cost` 的 DB `CHECK > 0`;seed 的訂單點數也經前
+/// 兩者取得),在型別層再收一次是不必要的重複防線。`debug_assert!(magnitude
 /// >= 0, ...)` 只在 debug/測試 build 存在、release build 會被編掉——這是有
 /// owner 兜底之後「順手多檢查一次」的 defense-in-depth,不是唯一防線,
 /// release build 少了這道斷言不影響正確性(對照 `sessions::repository` 的

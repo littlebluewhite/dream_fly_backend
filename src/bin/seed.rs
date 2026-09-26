@@ -37,10 +37,13 @@
 //! reporting members (`upsert_seed_member`) instead earn theirs the way a
 //! real member would: `insert_order_if_absent` writes a `checkout_earn` row
 //! (and, for refunded orders, a `refund_clawback` row on top) for every
-//! seeded order touching that member, in the same transaction as the order;
+//! seeded order touching that member, in the same transaction as the order
+//! — amounts priced by `orders::pricing::price`, rows taken from
+//! `PricingOutcome::ledger_deltas` / `OrderPointsFlow::reversal_deltas`;
 //! once every order is inserted, **every** member (not just ones newly
 //! created this run) gets a `admin_adjust(target − balance)` settling it to
-//! its points-tier target, every run — new-month orders keep adding
+//! its points-tier target (`member_points_target`, derived from
+//! `PointsTier`), every run — new-month orders keep adding
 //! `checkout_earn` for existing members too (the 12-month window slides),
 //! so without an every-run settlement their balance would drift past its
 //! tier boundary over time. A same-month re-run computes `delta = 0` and
@@ -660,19 +663,20 @@ async fn insert_enrolment_if_absent(
     Ok(id)
 }
 
-/// A checkout-shaped order. Field consistency mirrors `orders::pricing`:
-/// `total_cents = Σ(line qty × unit price) − discount_cents` (points_used is
-/// always 0 in seed data) and `points_earned = (total_nt × 5 + 50) / 100`
-/// for the paid family (0 for the pending contrast rows, which also carry
-/// `paid_at = NULL`; refunded keeps its original `paid_at`, matching
-/// `update_status_and_paid_at_tx`). `insert_order_if_absent` also writes
-/// `points_earned` as a `checkout_earn` ledger row for paid/completed/
-/// refunded orders (and, for refunded, a `refund_clawback` of the same
-/// magnitude on top — net zero, mirroring `OrderPointsFlow::reversal_deltas`'s
-/// clawback of `flow.earned`) in the same transaction; pending orders
-/// get neither, matching their `points_earned = 0` — nor does a paid/
-/// completed/refunded order whose `points_earned` happens to be `0` (a
-/// fully-discounted order), since `apply_delta_tx` rejects a zero delta.
+/// A checkout-shaped order. `lines` are the same `CheckoutLine`s checkout
+/// prices, and `pricing` is `orders::pricing::price`'s outcome for them
+/// (the optional coupon loaded via `coupons::repository::find_valid_by_code`,
+/// never redeeming points) — so amounts, discount, applied code and
+/// `points_earned` come from the pricing owner, not a seed-side copy of its
+/// arithmetic. `insert_order_if_absent` maps `status` exhaustively: the
+/// paid family (and refunded, which keeps its original `paid_at`, matching
+/// `update_status_and_paid_at_tx`) records `paid_at = created_at`, the
+/// priced `points_earned` and `PricingOutcome::ledger_deltas` (a
+/// `checkout_earn` row); refunded additionally applies
+/// `OrderPointsFlow::reversal_deltas` for that flow (a `refund_clawback` of
+/// the same magnitude — net zero); pending contrast rows record
+/// `paid_at = NULL`, `points_earned = 0` and no ledger rows. Both delta
+/// owners skip zero magnitudes, so a fully-discounted order writes none.
 struct SeedOrder {
     order_number: String,
     user_id: Uuid,
