@@ -51,11 +51,13 @@ use uuid::Uuid;
 use dream_fly_backend::config::{AppConfig, AppEnv};
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::contact::model::InquiryType;
+use dream_fly_backend::modules::orders::model::PAYMENT_METHODS;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::LedgerDelta;
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
 use dream_fly_backend::utils::password;
+use dream_fly_backend::utils::studio_clock;
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
 /// to bind a Postgres `TEXT[]` column.
@@ -1456,7 +1458,7 @@ async fn main() -> anyhow::Result<()> {
     // produce the identical set (and the per-table idempotency keys make
     // re-runs no-ops regardless).
     // =====================================================================
-    let today: NaiveDate = Utc::now().date_naive();
+    let today: NaiveDate = studio_clock::today(config.server.studio_timezone, Utc::now());
 
     // -- members ×24 -------------------------------------------------------
     // Age buckets (6-12 / 13-17 / 18-25 / 26-40) rotate on (i-1)%4 — six
@@ -1556,18 +1558,20 @@ async fn main() -> anyhow::Result<()> {
         product_ids.push(product_id_by_slug(&db, seed.slug).await?);
     }
     // seq-keyed payment_method weights: credit_card ×5, line_pay ×2,
-    // atm / jkopay / cash ×1 each.
+    // atm / jkopay / cash ×1 each. Indexes into `PAYMENT_METHODS` (the same
+    // domain `orders::dto`/`orders::service` validate against) rather than
+    // repeating the literal strings, so the two can't drift out of sync.
     const PM_CYCLE: [&str; 10] = [
-        "credit_card",
-        "credit_card",
-        "line_pay",
-        "credit_card",
-        "atm",
-        "credit_card",
-        "jkopay",
-        "line_pay",
-        "credit_card",
-        "cash",
+        PAYMENT_METHODS[0], // credit_card
+        PAYMENT_METHODS[0], // credit_card
+        PAYMENT_METHODS[1], // line_pay
+        PAYMENT_METHODS[0], // credit_card
+        PAYMENT_METHODS[2], // atm
+        PAYMENT_METHODS[0], // credit_card
+        PAYMENT_METHODS[3], // jkopay
+        PAYMENT_METHODS[1], // line_pay
+        PAYMENT_METHODS[0], // credit_card
+        PAYMENT_METHODS[4], // cash
     ];
     let mut order_total = 0usize;
     for m in 0..12u32 {
