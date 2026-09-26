@@ -4,8 +4,9 @@
 //! 方向相反(undo vs do),所以獨立成檔,不塞進 `fulfilment.rs`。
 //!
 //! 同 `pricing`/`fulfilment` 的紀律:純函式、零 DB、零 async,只組裝資料給
-//! 編排端消費。唯一呼叫端是 `service::update_order_status` 內的私有補償編排
-//! `compensate_order_artifacts_tx`:先用 [`compensation_required`] 決定要不要補償,再讀
+//! 編排端消費。`service::update_order_status` 先用 [`decide_transition`]
+//! 決定這次狀態轉移是 no-op、單純翻轉,還是翻轉加補償;補償時私有補償編排
+//! `compensate_order_artifacts_tx` 再讀
 //! `orders::repository::find_items_by_order_tx` 的行項與
 //! `points::service::find_order_flow_sums_tx` 的 ledger 實錄餵給
 //! [`plan_refund`],最後把 [`RefundPlan`] 套進
@@ -127,18 +128,55 @@ pub fn plan_refund(
     })
 }
 
+/// `service::update_order_status` 對一次狀態轉移的決定。
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransitionDecision {
+    /// 同狀態:原樣回傳訂單——不 UPDATE、不寫 outbox、不通知、不補償,讓重試
+    /// 成為可觀測的冪等 no-op(ADR-0007 決策 9)。
+    NoOp,
+    /// 合法轉移,單純翻轉狀態。
+    Flip,
+    /// 合法轉移,且要先撤銷結帳副作用再翻轉(Cancelled ≡ Refunded 補償語意)。
+    FlipAndCompensate,
+}
+
+/// 決定 `current -> target` 這次轉移怎麼處理,優先序:同狀態 → `NoOp`(先於
+/// 合法性檢查);[`OrderStatus::can_transition_to`] 不允許 → 400「cannot
+/// transition order from '…' to '…'」;`compensation_required` →
+/// `FlipAndCompensate`;其餘 `Flip`。純函式——呼叫端在 `FOR UPDATE` 讀到
+/// `current` 之後才呼叫,鎖序不受影響。
+pub fn decide_transition(
+    current: &OrderStatus,
+    target: &OrderStatus,
+) -> Result<TransitionDecision, AppError> {
+    if current == target {
+        return Ok(TransitionDecision::NoOp);
+    }
+    if !current.can_transition_to(target) {
+        return Err(AppError::BadRequest(format!(
+            "cannot transition order from '{}' to '{}'",
+            current.as_str(),
+            target.as_str()
+        )));
+    }
+    if compensation_required(current, target) {
+        Ok(TransitionDecision::FlipAndCompensate)
+    } else {
+        Ok(TransitionDecision::Flip)
+    }
+}
+
 /// 從 `current` 轉往 `target` 是否需要補償(點數/庫存/報名/訂閱撤銷)——
 /// `current` 本身已計入營收([`OrderStatus::is_revenue`]:paid/
 /// processing/completed)**且** `target` 是終態的「錢要退回去」狀態
 /// (cancelled 或 refunded)。一個謂詞同時排除兩個陷阱:
 /// - **same-status no-op**——same-status 對(例如 `Cancelled -> Cancelled`)
-///   在生產路徑上由 `service::update_order_status` 的同狀態早退擋下,根本
-///   不會呼叫到這個謂詞;即使繞開那道早退直接呼叫,current 為
-///   Cancelled/Refunded 時 `is_revenue()` 也已經先判 false,兩層防線指向
-///   同一個結論。
+///   由 [`decide_transition`] 的同狀態 `NoOp` 先擋下,根本不會呼叫到這個
+///   謂詞;即使直接呼叫,current 為 Cancelled/Refunded 時 `is_revenue()` 也
+///   已經先判 false,兩層防線指向同一個結論。
 /// - **pending -> cancelled**——`Pending` 從未成交、不計營收,取消它只是
 ///   單純的狀態翻轉,沒有東西可撤銷。
-pub fn compensation_required(current: &OrderStatus, target: &OrderStatus) -> bool {
+fn compensation_required(current: &OrderStatus, target: &OrderStatus) -> bool {
     current.is_revenue() && matches!(target, OrderStatus::Cancelled | OrderStatus::Refunded)
 }
 
@@ -354,50 +392,78 @@ mod tests {
         assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
     }
 
-    // --- compensation_required ---
+    // --- decide_transition ---
 
     #[test]
-    fn compensation_required_is_true_for_exactly_revenue_to_terminal_pairs() {
-        // 6x6 = 36 (current, target) combinations. True for exactly the 3
-        // revenue statuses (paid/processing/completed) x 2 terminal targets
-        // (cancelled/refunded) = 6 — see the function doc for the two traps
-        // this single predicate excludes.
-        //
-        // Business note (not enforced by this predicate alone): intersected
-        // with `OrderStatus::can_transition_to`'s legal edges, only 4 of
-        // these 6 are actually reachable — `Processing -> Cancelled` and
-        // `Completed -> Cancelled` are compensation_required=true but
-        // illegal transitions (can_transition_to 400s before compensation
-        // is ever considered), leaving Paid->Cancelled, Paid->Refunded,
-        // Processing->Refunded, Completed->Refunded.
+    fn decide_transition_covers_all_36_status_pairs() {
+        // Every (current, target) pair over the 6 statuses — `None` means
+        // the 400 "cannot transition" rejection. Same-status pairs are the
+        // idempotent NoOp (checked before legality); the 4 compensating
+        // edges are exactly the legal revenue -> cancelled/refunded ones.
+        // `Processing -> Cancelled` and `Completed -> Cancelled` would
+        // compensate but are illegal, so they 400 before compensation is
+        // ever considered.
         use OrderStatus::*;
-        let statuses = [Pending, Paid, Processing, Completed, Cancelled, Refunded];
-        let expected_true: [(&str, &str); 6] = [
-            ("paid", "cancelled"),
-            ("paid", "refunded"),
-            ("processing", "cancelled"),
-            ("processing", "refunded"),
-            ("completed", "cancelled"),
-            ("completed", "refunded"),
+        use TransitionDecision::*;
+        let table: [(OrderStatus, OrderStatus, Option<TransitionDecision>); 36] = [
+            (Pending, Pending, Some(NoOp)),
+            (Pending, Paid, Some(Flip)),
+            (Pending, Processing, None),
+            (Pending, Completed, None),
+            (Pending, Cancelled, Some(Flip)),
+            (Pending, Refunded, None),
+            (Paid, Pending, None),
+            (Paid, Paid, Some(NoOp)),
+            (Paid, Processing, Some(Flip)),
+            (Paid, Completed, None),
+            (Paid, Cancelled, Some(FlipAndCompensate)),
+            (Paid, Refunded, Some(FlipAndCompensate)),
+            (Processing, Pending, None),
+            (Processing, Paid, None),
+            (Processing, Processing, Some(NoOp)),
+            (Processing, Completed, Some(Flip)),
+            (Processing, Cancelled, None),
+            (Processing, Refunded, Some(FlipAndCompensate)),
+            (Completed, Pending, None),
+            (Completed, Paid, None),
+            (Completed, Processing, None),
+            (Completed, Completed, Some(NoOp)),
+            (Completed, Cancelled, None),
+            (Completed, Refunded, Some(FlipAndCompensate)),
+            (Cancelled, Pending, None),
+            (Cancelled, Paid, None),
+            (Cancelled, Processing, None),
+            (Cancelled, Completed, None),
+            (Cancelled, Cancelled, Some(NoOp)),
+            (Cancelled, Refunded, None),
+            (Refunded, Pending, None),
+            (Refunded, Paid, None),
+            (Refunded, Processing, None),
+            (Refunded, Completed, None),
+            (Refunded, Cancelled, None),
+            (Refunded, Refunded, Some(NoOp)),
         ];
 
-        let mut true_count = 0;
-        for current in &statuses {
-            for target in &statuses {
-                let got = compensation_required(current, target);
-                let want = expected_true.contains(&(current.as_str(), target.as_str()));
-                assert_eq!(
-                    got, want,
-                    "compensation_required({current:?}, {target:?}) = {got}, want {want}"
-                );
-                if got {
-                    true_count += 1;
+        for (current, target, want) in table {
+            let got = decide_transition(&current, &target);
+            match want {
+                Some(decision) => assert_eq!(
+                    got.as_ref().ok(),
+                    Some(&decision),
+                    "{current:?} -> {target:?}: got {got:?}"
+                ),
+                None => {
+                    let expected = format!(
+                        "cannot transition order from '{}' to '{}'",
+                        current.as_str(),
+                        target.as_str()
+                    );
+                    assert!(
+                        matches!(got, Err(AppError::BadRequest(ref m)) if *m == expected),
+                        "{current:?} -> {target:?}: got {got:?}"
+                    );
                 }
             }
         }
-        assert_eq!(
-            true_count, 6,
-            "expected exactly 6 true combinations (3 revenue statuses x 2 terminal targets)"
-        );
     }
 }

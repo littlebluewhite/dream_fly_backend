@@ -25,7 +25,7 @@ use super::dto::{
 use super::fulfilment;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
-use super::refund;
+use super::refund::{self, TransitionDecision};
 use super::repository::{self, OrderAmounts};
 
 /// The checkout request after every check that needs no database: the
@@ -614,8 +614,9 @@ pub async fn update_order_status(
         .parse()
         .map_err(|_| AppError::Validation(format!("invalid order status: {status_str}")))?;
 
-    // Everything in a single tx: read+lock current status → (same-status
-    // early-return) → check transition → compensate → single atomic UPDATE
+    // Everything in a single tx: read+lock current status →
+    // `refund::decide_transition` (same-status no-op / 400 / flip / flip +
+    // compensate) → single atomic UPDATE
     // with conditional `paid_at` → outbox. Reading `current` under `FOR
     // UPDATE` is also the `orders`-row lock that opens the refund lock order
     // (orders → users → products → enrolments → subscriptions, see
@@ -627,33 +628,28 @@ pub async fn update_order_status(
         .await?
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
 
-    // Same-status no-op: return the order unchanged — no UPDATE, no outbox, no
-    // notification, no compensation — so a retried webhook/admin PATCH is an
-    // *observable* idempotent no-op (the old path re-UPDATEd + re-queued the
-    // outbox + re-notified on every same-status call; and re-running here
-    // would try to compensate a second time). Release the tx before
-    // `assemble_response` (shared self-deadlock rationale in `TxReleased`).
-    if current.status.as_str() == target.as_str() {
-        let released = tx_witness::TxReleased::release(tx);
-        return assemble_response(db, current, released).await;
-    }
-
-    if !current.status.can_transition_to(&target) {
-        return Err(AppError::BadRequest(format!(
-            "cannot transition order from '{}' to '{}'",
-            current.status.as_str(),
-            target.as_str()
-        )));
-    }
-
-    // Refund/cancel compensation: undo the checkout side effects when a
-    // revenue order moves into a terminal cancelled/refunded state, BEFORE the
-    // status UPDATE and in this same tx. A `users_points_balance_check`
-    // violation on the clawback surfaces as `Conflict("點數不足")` and rolls
-    // the WHOLE transaction back — status flip included — so there is no
-    // half-applied refund (Cancelled ≡ Refunded compensation semantics).
-    if refund::compensation_required(&current.status, &target) {
-        compensate_order_artifacts_tx(&mut tx, &current).await?;
+    // The decision is taken only after the `FOR UPDATE` read above. An
+    // illegal transition's 400 drop-rolls the tx back.
+    match refund::decide_transition(&current.status, &target)? {
+        // Same-status no-op: return the order unchanged — no UPDATE, no
+        // outbox, no notification, no compensation — so a retried
+        // webhook/admin PATCH is an *observable* idempotent no-op. Release
+        // the tx before `assemble_response` (shared self-deadlock rationale
+        // in `TxReleased`).
+        TransitionDecision::NoOp => {
+            let released = tx_witness::TxReleased::release(tx);
+            return assemble_response(db, current, released).await;
+        }
+        TransitionDecision::Flip => {}
+        // Refund/cancel compensation: undo the checkout side effects BEFORE
+        // the status UPDATE and in this same tx. A
+        // `users_points_balance_check` violation on the clawback surfaces as
+        // `Conflict("點數不足")` and rolls the WHOLE transaction back —
+        // status flip included — so there is no half-applied refund
+        // (Cancelled ≡ Refunded compensation semantics).
+        TransitionDecision::FlipAndCompensate => {
+            compensate_order_artifacts_tx(&mut tx, &current).await?;
+        }
     }
 
     let updated = repository::update_status_and_paid_at_tx(&mut tx, order_id, &target)

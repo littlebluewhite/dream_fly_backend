@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::modules::cart::model::CartItemType;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "order_status", rename_all = "snake_case")]
 pub enum OrderStatus {
     Pending,
@@ -203,42 +203,6 @@ mod tests {
         OrderStatus::Cancelled,
         OrderStatus::Refunded,
     ];
-
-    #[test]
-    fn can_transition_pending_to_paid_is_legal() {
-        assert!(OrderStatus::Pending.can_transition_to(&OrderStatus::Paid));
-    }
-
-    #[test]
-    fn can_transition_pending_to_processing_is_illegal() {
-        // Pending only opens onto Paid/Cancelled — Processing must be
-        // reached via Paid first.
-        assert!(!OrderStatus::Pending.can_transition_to(&OrderStatus::Processing));
-    }
-
-    #[test]
-    fn can_transition_completed_to_paid_is_illegal() {
-        // Completed only opens onto Refunded (plus the same-state case
-        // below) — it can never revert to an earlier status.
-        assert!(!OrderStatus::Completed.can_transition_to(&OrderStatus::Paid));
-    }
-
-    #[test]
-    fn can_transition_same_state_is_illegal_for_every_status() {
-        // `can_transition_to` has no same-status arm — a retried webhook/
-        // admin action re-applying the current status never reaches this
-        // check in production: `service::update_order_status` early-returns
-        // on same-status *before* calling `can_transition_to` at all, so the
-        // observable idempotent no-op is guaranteed there, not here. Covers
-        // every variant, not just one.
-        for status in ALL_STATUSES {
-            let same = status.clone();
-            assert!(
-                !status.can_transition_to(&same),
-                "{status:?} -> itself should be illegal (unreachable ghost arm removed)"
-            );
-        }
-    }
 
     #[test]
     fn revenue_predicate_matches_revenue_statuses_array() {

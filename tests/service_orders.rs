@@ -1390,8 +1390,9 @@ async fn refunded_same_status_noop_does_not_compensate_twice(db: PgPool) {
     assert_eq!(notif_after, notif_before, "no new notification");
 }
 
-/// Row 5: terminal states have no outgoing edges — refunded→processing and
-/// cancelled→refunded both 400 (before any compensation is considered).
+/// Row 5: terminal states have no outgoing edges — refunded→processing 400s
+/// end to end (the full 6×6 transition table, cancelled→refunded included,
+/// is pinned by `refund::decide_transition`'s unit test).
 #[sqlx::test]
 async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
     // Refund, then try to move on → 400.
@@ -1420,61 +1421,6 @@ async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
         .await
         .expect_err("refunded is terminal");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
-
-    // Cancel a different order, then cancelled→refunded → 400.
-    let product_b = common::seed_product(&db, "terminal-b", 1_000, Some(5)).await;
-    let user_b = seed_carted_member(
-        &db,
-        "terminal-b@example.com",
-        &[SeedCartLine::Product { product_id: product_b, quantity: 1 }],
-        0,
-    )
-    .await;
-    let order_b = service::checkout(
-        &db,
-        user_b,
-        None,
-        CheckoutRequest::default(),
-        None,
-        common::studio_now_utc(chrono::Utc::now()),
-    )
-    .await
-    .expect("checkout b");
-    service::update_order_status(&db, order_b.id, "cancelled", None)
-        .await
-        .expect("cancel b");
-    let err_b = service::update_order_status(&db, order_b.id, "refunded", None)
-        .await
-        .expect_err("cancelled is terminal");
-    assert!(matches!(err_b, AppError::BadRequest(_)), "got: {err_b:?}");
-}
-
-/// Row 6: pending→cancelled never compensates — Pending isn't a revenue
-/// status, so cancelling a directly-built pending order is a pure status
-/// flip (stock untouched, no ledger row).
-#[sqlx::test]
-async fn pending_to_cancelled_does_not_compensate(db: PgPool) {
-    let user = common::seed_member(&db, "pending-buyer@example.com", "Password!234").await;
-    let product = common::seed_product(&db, "pending-prod", 1_000, Some(5)).await;
-    let order_id =
-        seed_order_with_item(&db, user, product, "Pending Prod", 1, 1_000, "pending").await;
-
-    let resp = service::update_order_status(&db, order_id, "cancelled", None)
-        .await
-        .expect("cancel pending");
-    assert_eq!(resp.status, "cancelled");
-
-    assert_eq!(
-        common::product_stock(&db, product).await,
-        Some(5),
-        "stock untouched (pending never decremented it)"
-    );
-    let ledger: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE order_id = $1")
-        .bind(order_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(ledger, 0, "no ledger row for a pending cancel");
 }
 
 /// Row 7: an unlimited-stock (NULL) product line records
