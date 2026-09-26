@@ -733,6 +733,75 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
     .expect("new session's refresh token must still work");
 }
 
+/// A refresh racing an admin deactivation must not mint a session that
+/// outlives it. `rotate` takes the user row `FOR SHARE` before touching the
+/// token (user-first, the same order as deactivation and `reset_password`),
+/// so it queues behind the deactivation's `UPDATE users` and then sees
+/// `is_active = false`. It used to read the user unlocked: it could issue a
+/// new pair from the pre-deactivation snapshot, and the new row could slip
+/// past the deactivation's `DELETE` snapshot and stay live.
+#[sqlx::test]
+async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
+    let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
+
+    let r1 = service::register(
+        &db,
+        &mut redis,
+        &cfg,
+        RegisterRequest {
+            email: "deactivate-race@example.com".into(),
+            name: "Deactivate Race".into(),
+            password: "sup3rsecret".into(),
+        },
+        None,
+    )
+    .await
+    .expect("register");
+
+    // The admin's deactivation, held open: user row updated, not committed.
+    let mut admin_tx = db.begin().await.expect("begin admin tx");
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(r1.user.id)
+        .execute(&mut *admin_tx)
+        .await
+        .expect("deactivate");
+
+    let refresh = tokio::spawn({
+        let db = db.clone();
+        let cfg = cfg.clone();
+        let refresh_token = r1.refresh_token.clone();
+        async move { service::refresh_token(&db, &cfg, RefreshRequest { refresh_token }).await }
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !refresh.is_finished(),
+        "refresh must wait for the in-flight deactivation"
+    );
+
+    // What `session::end_all` does, then commit.
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
+        .bind(r1.user.id)
+        .execute(&mut *admin_tx)
+        .await
+        .expect("end sessions");
+    admin_tx.commit().await.expect("commit deactivation");
+
+    let err = refresh
+        .await
+        .expect("join refresh")
+        .expect_err("refresh must fail once the deactivation lands");
+    assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1")
+        .bind(r1.user.id)
+        .fetch_one(&db)
+        .await
+        .expect("count refresh_tokens");
+    assert_eq!(rows, 0, "no refresh token may outlive the deactivation");
+}
+
 #[sqlx::test]
 async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool) {
     let mut redis = common::test_redis().await;

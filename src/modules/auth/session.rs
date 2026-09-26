@@ -14,11 +14,14 @@
 //!   效期是時鐘 seam 記錄在案的 carve-out,直呼 `Utc::now()`)。
 //! - 輪替原子化:舊 token revoke、新 token 簽發在同一 tx 內同進同出。
 //! - reuse detection:已 revoke 的 token 再次出現視為竊取重放,整族撤銷。
-//!   只有輪替會留下 revoked 列;整族撤銷(`end_all`)直接刪列,之後舊 token
-//!   只得到一般 401,不會把使用者重新登入後的新 session 誤判為重放而連帶殺掉。
+//!   只有輪替與單一登出(`end`)會留下 revoked 列;整族撤銷(`end_all`)直接
+//!   刪列,之後舊 token 只得到一般 401,不會把使用者重新登入後的新 session
+//!   誤判為重放而連帶殺掉。
 //! - 停用帳號(`!is_active`)在任何簽發路徑都拿不到 session(`start` 首行)。
-//! - retention:清理只刪過期列;輪替留下的已 revoke 未過期列保留到過期,
-//!   reuse detection 才認得出重放(過期後由 JWT `exp` 先擋)。
+//! - 輪替先以 `FOR SHARE` 鎖 user 列再鎖 token 列(user-first,與停用、
+//!   `reset_password` 同序),進行中的停用會讓輪替等它 commit 再判斷。
+//! - retention:清理只刪過期列;輪替/登出留下的已 revoke 未過期列保留到過期,
+//!   reuse detection 才認得出重放(過期後由 JWT `exp` 先擋,只差 5 秒 leeway)。
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{PgConnection, PgPool};
@@ -82,18 +85,33 @@ pub(super) async fn rotate(
 
     // 2. Look up by SHA-256 hash, never by raw token
     let token_hash = jwt::hash_token(refresh_token);
+    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
 
     // 3. Atomically: find + revoke old, create new — everything in one tx
     let mut tx = db.begin().await?;
+
+    // User row first, `FOR SHARE` — the same user-first order as deactivation
+    // and `reset_password`. An in-flight deactivation makes this wait, so the
+    // `is_active` check below sees it; read unlocked, a racing refresh could
+    // issue a new token that the deactivation's `end_all` never saw.
+    let user = repository::find_user_by_id_for_share_tx(&mut tx, user_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
 
     let stored = find_refresh_token_tx(&mut tx, &token_hash)
         .await?
         .ok_or(AppError::Unauthorized)?;
 
+    if stored.user_id != user_id {
+        // JWT sub does not match stored record — refuse.
+        return Err(AppError::Unauthorized);
+    }
+
     if stored.revoked {
         // Reuse detection: if a revoked token is seen again, treat it as a
         // stolen-token replay and invalidate the user's entire token family.
-        // Only rotation leaves revoked rows behind — `end_all` deletes rows —
+        // Only rotation and logout (`end`) leave revoked rows behind —
+        // `end_all` deletes rows —
         // so a token killed by a password reset / deactivation / earlier
         // reuse wipe finds no row above (plain 401) and cannot trip this
         // branch against the user's newer sessions.
@@ -117,18 +135,7 @@ pub(super) async fn rotate(
 
     revoke_refresh_token(&mut *tx, &token_hash).await?;
 
-    // 4. Load user from JWT sub
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
-    if user_id != stored.user_id {
-        // JWT sub does not match stored record — refuse.
-        return Err(AppError::Unauthorized);
-    }
-
-    let user = repository::find_user_by_id_tx(&mut tx, user_id)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
-
-    // Deactivated users cannot mint new access tokens, even with a valid
+    // 4. Deactivated users cannot mint new access tokens, even with a valid
     // refresh token. This closes the window where a disabled user could
     // keep refreshing until the cached is_active flag expires.
     if !user.is_active {
@@ -184,13 +191,14 @@ pub(crate) async fn end_all(conn: &mut PgConnection, user_id: Uuid) -> Result<()
 }
 
 /// Deletes expired refresh-token rows only. Revoked-but-unexpired rows (only
-/// rotation produces them; `end_all` deletes outright) are kept on purpose:
-/// reuse detection in `rotate` needs the revoked row to
+/// rotation and logout produce them; `end_all` deletes outright) are kept on
+/// purpose: reuse detection in `rotate` needs the revoked row to
 /// recognise a replayed rotated-out token (a missing row is a plain 401 with
 /// no family revoke). Once a row has expired, the JWT's own `exp` (same
-/// `jwt_refresh_expiration_days` horizon) already rejects the token in
+/// `jwt_refresh_expiration_days` horizon) rejects the token in
 /// `jwt::decode_refresh_token` before any lookup, so the row is no longer
-/// needed. Backed by the full `idx_refresh_tokens_expires_at` index
+/// needed — except for the validator's 5-second leeway, in which a replay of
+/// a just-purged token gets a plain 401 instead of a family revoke. Backed by the full `idx_refresh_tokens_expires_at` index
 /// (migration `20260926000002`).
 pub async fn purge_expired(db: &PgPool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query("DELETE FROM refresh_tokens WHERE expires_at < NOW()")

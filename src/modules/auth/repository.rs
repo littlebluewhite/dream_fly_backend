@@ -68,11 +68,14 @@ pub async fn update_last_login(
     Ok(())
 }
 
-pub async fn find_user_by_id_tx(
+/// `FOR SHARE`: concurrent readers pass, but an in-flight `UPDATE users`
+/// (e.g. an admin deactivation) makes this wait and then read the committed
+/// row.
+pub async fn find_user_by_id_for_share_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
 ) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+    sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1 FOR SHARE")
         .bind(id)
         .fetch_optional(&mut **tx)
         .await
