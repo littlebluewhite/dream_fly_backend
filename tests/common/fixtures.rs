@@ -11,24 +11,45 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use dream_fly_backend::modules::coaches::repository as coaches_repository;
+use dream_fly_backend::modules::permissions::repository as permissions_repository;
+
 use super::{add_course_to_cart, add_to_cart, seed_member, seed_time_slot_on};
 
-/// Insert a coach profile linked to the given user. Returns the coach id.
+/// Insert a coach profile linked to the given user and attach the `coach`
+/// role, in the same transaction. Returns the coach id.
+///
+/// Owner: delegates to `coaches::repository::insert_tx` /
+/// `permissions::repository::assign_role_by_name` rather than hand-rolling
+/// the `INSERT` — mirrors `seed_member` above.
 pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO coaches (id, user_id, title, bio, experience, specialties, certifications, is_active, display_order, created_at, updated_at)
-        VALUES ($1, $2, $3, 'Test bio', '5 years', ARRAY['gymnastics'], ARRAY['cert-a'], true, 0, NOW(), NOW())
-        "#,
+    let mut tx = db.begin().await.expect("begin tx");
+
+    let coach = coaches_repository::insert_tx(
+        &mut tx,
+        user_id,
+        title,
+        Some("Test bio"),
+        Some("5 years"),
+        &[String::from("gymnastics")],
+        &[String::from("cert-a")],
+        true,
+        0,
+        None,
+        None,
     )
-    .bind(id)
-    .bind(user_id)
-    .bind(title)
-    .execute(db)
     .await
     .expect("insert coach");
-    id
+
+    // Witness discarded: this helper has never invalidated the role/active
+    // cache either, same rationale as `seed_member`.
+    let _ = permissions_repository::assign_role_by_name(&mut tx, user_id, "coach")
+        .await
+        .expect("assign coach role");
+
+    tx.commit().await.expect("commit seed_coach");
+
+    coach.id
 }
 
 /// Insert a published course with a unique slug derived from `name`.
