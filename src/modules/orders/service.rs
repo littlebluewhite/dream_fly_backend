@@ -86,6 +86,10 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 /// - Insufficient stock: 409 (`products::service::reserve_stock_tx`).
 /// - Full course / already enrolled: 409
 ///   (`enrolments::service::enrol_batch_from_purchase_tx`).
+/// - Time-based entitlement (`valid_days` set, no `session_count`) bought at
+///   quantity > 1: 422 (`subscriptions::entitlement::plan`, reached via
+///   `subscriptions::service::grant_from_purchase_tx` — a time-based grant
+///   can't be multiplied into one subscription row).
 /// - Idempotency unique violation: a concurrent same-key twin won — its
 ///   order is replayed.
 ///

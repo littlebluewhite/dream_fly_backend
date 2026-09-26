@@ -614,6 +614,97 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_409(db: PgPool) {
+    // (a) A time-based entitlement (`valid_days` set, no `session_count`)
+    // bought at quantity > 1 can't be multiplied into one subscription row
+    // — `entitlement::plan` (reached via `grant_from_purchase_tx`) rejects
+    // it with 422, and checkout rolls back with zero writes: no order, no
+    // subscription, cart untouched.
+    let membership =
+        seed_entitlement_product(&db, "quantity-guard", "membership", 5000, Some(30), None).await;
+    let user = seed_carted_member(
+        &db,
+        "entitlement-qty@example.com",
+        &[SeedCartLine::Product {
+            product_id: membership,
+            quantity: 2,
+        }],
+        0,
+    )
+    .await;
+
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("time-based entitlement quantity > 1 must reject checkout");
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+
+    assert_eq!(common::order_count(&db, user).await, 0);
+    assert_eq!(
+        common::cart_count(&db, user).await,
+        1,
+        "rejected checkout must not touch the cart"
+    );
+
+    let subscription_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM subscriptions WHERE user_id = $1 AND product_id = $2",
+    )
+    .bind(user)
+    .bind(membership)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        subscription_count, 0,
+        "no subscription row should survive the rollback"
+    );
+
+    // (b) Same offending line, but the cart also has a full course — the
+    // course-capacity 409 (`enrolments::service::enrol_batch_from_purchase_tx`)
+    // fires before `grant_from_purchase_tx`/`entitlement::plan` is ever
+    // reached, so this must come back 409, not 422 — pinning the doc's
+    // priority order (course 409 before the entitlement 422).
+    let full_course = seed_full_course(&db, "Entitlement Priority Course", 1).await;
+    let membership_2 =
+        seed_entitlement_product(&db, "quantity-guard-2", "membership", 5000, Some(30), None).await;
+    let user_2 = seed_carted_member(
+        &db,
+        "entitlement-qty-course@example.com",
+        &[
+            SeedCartLine::Course {
+                course_id: full_course.course,
+            },
+            SeedCartLine::Product {
+                product_id: membership_2,
+                quantity: 2,
+            },
+        ],
+        0,
+    )
+    .await;
+
+    let err = service::checkout(
+        &db,
+        user_2,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("full course must reject before the entitlement quantity check is reached");
+    assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
+
+    assert_eq!(common::order_count(&db, user_2).await, 0);
+}
+
+#[sqlx::test]
 async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool) {
     let user = common::seed_member(&db, "replay-buyer@example.com", "passw0rd!").await;
     let course = seed_course_with_capacity(&db, "Replay Course", None, 12).await;
