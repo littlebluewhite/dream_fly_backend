@@ -4,8 +4,7 @@ use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
 use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::slug::slugify;
-use crate::utils::studio_clock;
-use crate::utils::studio_clock::StudioNow;
+use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{
     CourseDetailResponse, CourseListResponse, CourseResponse, CourseScheduleSlotEntry,

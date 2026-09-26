@@ -738,16 +738,16 @@ async fn compensate_order_artifacts_tx(
     let items = repository::find_items_by_order_tx(tx, order.id).await?;
     let flow = points_service::find_order_flow_sums_tx(tx, order.id).await?;
 
-    // 3. Pure plan.
+    // Pure plan from the traces (feeds steps 3–5).
     let plan = refund::plan_refund(order, &items, flow)?;
 
-    // 4. Points reversal — `RefundPlan::ledger_deltas` owns the order
+    // 3. Points reversal — `RefundPlan::ledger_deltas` owns the order
     //    (restore first, clawback second) and the zero-skip.
     for delta in plan.ledger_deltas(order.id) {
         points_service::apply_delta_tx(tx, order.user_id, delta).await?;
     }
 
-    // 5. Restock the decremented product lines (already filtered by the plan).
+    // 4. Restock the decremented product lines (already filtered by the plan).
     let restocks: Vec<(Uuid, i32)> = plan
         .restocks
         .iter()
@@ -755,7 +755,7 @@ async fn compensate_order_artifacts_tx(
         .collect();
     product_service::restore_stock_tx(tx, &restocks).await?;
 
-    // 6. Cancel the order's enrolments + subscriptions (order-scoped,
+    // 5. Cancel the order's enrolments + subscriptions (order-scoped,
     //    idempotent).
     enrolments_service::cancel_by_order_tx(tx, order.id).await?;
     subscriptions_service::cancel_by_order_tx(tx, order.id).await?;
