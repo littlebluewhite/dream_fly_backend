@@ -29,6 +29,7 @@ use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::service;
+use dream_fly_backend::modules::products::service as product_service;
 
 #[sqlx::test]
 async fn checkout_creates_order_and_clears_cart(db: PgPool) {
@@ -821,7 +822,7 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
 #[sqlx::test]
 async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db: PgPool) {
     // Cross-buyer lock-order regression (codex branch-review P1): the cart
-    // checkout read takes product `FOR SHARE` locks, while checkout's
+    // checkout read locks its product rows, while checkout's
     // `reserve_stock_tx` and refund's `restore_stock_tx` take per-row
     // `FOR UPDATE` locks in `product_id` ASCENDING order. The users-first
     // lock (ADR-0007 決策 5) only serializes SAME-buyer paths — for different
@@ -901,6 +902,75 @@ async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db:
         .expect("reader task panicked")
         .expect("cart read must succeed once the refund-shaped locker commits");
     assert_eq!(lines, 2, "both cart lines survive the ordered locking");
+}
+
+#[sqlx::test]
+async fn checkout_same_product_two_buyers_queue_instead_of_deadlocking(db: PgPool) {
+    // Same-row lock upgrade: every checkout UPDATEs each product row it
+    // bought (`try_decrement_stock_tx`, even for untracked stock). When the
+    // cart read's pre-lock was only `FOR SHARE`, two buyers of one product
+    // both held SHARE, then both waited on each other's SHARE to UPDATE —
+    // PostgreSQL aborted one (SQLSTATE 40P01 → 500). This is what made
+    // `concurrent_checkout_last_unit_only_succeeds_once` flaky. The pre-lock
+    // now takes the write-strength lock up front, so the second buyer
+    // queues behind the first instead.
+    let product = common::seed_product(&db, "same-row", 1000, Some(5)).await;
+    let first = seed_carted_member(
+        &db,
+        "same-row-first@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        0,
+    )
+    .await;
+    let second = seed_carted_member(
+        &db,
+        "same-row-second@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        0,
+    )
+    .await;
+
+    // The first buyer, mid-checkout: cart read done, decrement not yet.
+    let mut first_tx = db.begin().await.unwrap();
+    cart_repository::find_cart_items_for_checkout_tx(&mut first_tx, first)
+        .await
+        .unwrap();
+
+    // The second buyer's whole checkout, on a real OS thread (same
+    // single-threaded runtime rationale as the tests above).
+    let db_second = Arc::new(db.clone());
+    let handle = tokio::runtime::Handle::current();
+    let second_checkout = tokio::task::spawn_blocking(move || {
+        handle.block_on(async move {
+            service::checkout(
+                db_second.as_ref(),
+                second,
+                None,
+                CheckoutRequest::default(),
+                None,
+                common::studio_now_utc(chrono::Utc::now()),
+            )
+            .await
+        })
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // The first buyer decrements and commits. Pre-fix the second buyer also
+    // held SHARE on this row, so this UPDATE closed the cycle.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        product_service::reserve_stock_tx(&mut first_tx, &[(product, 1, "same-row")]),
+    )
+    .await
+    .expect("first buyer's decrement must not wait on the second buyer")
+    .expect("first buyer's decrement must not deadlock");
+    first_tx.commit().await.unwrap();
+
+    second_checkout
+        .await
+        .expect("second checkout panicked")
+        .expect("second buyer must succeed once the first commits");
+    assert_eq!(common::product_stock(&db, product).await, Some(3));
 }
 
 #[sqlx::test]

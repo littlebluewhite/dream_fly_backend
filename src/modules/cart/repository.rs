@@ -139,8 +139,9 @@ pub async fn clear_cart_tx(
 /// UNION/INTERSECT/EXCEPT"). Each query preserves the original locking
 /// shape (`FOR UPDATE OF ci`, `FOR SHARE OF` the priced table).
 ///
-/// The product `FOR SHARE` locks are acquired by a dedicated pre-lock query
-/// in `product_id` ASCENDING order — see the comment on it below.
+/// The product locks are first acquired, UPDATE-strength (`FOR NO KEY
+/// UPDATE`), by a dedicated pre-lock query in `product_id` ASCENDING order —
+/// see the comment on it below.
 ///
 /// Returned lines are NOT filtered by `is_active` — every line the cart
 /// references comes back, active or not, with `is_active` riding along on
@@ -153,10 +154,15 @@ pub async fn find_cart_items_for_checkout_tx(
     user_id: Uuid,
 ) -> Result<Vec<CheckoutLine>, sqlx::Error> {
     // Cross-path lock-order discipline: pre-lock the cart's product rows
-    // `FOR SHARE` in `product_id` ascending order before the join below
+    // in `product_id` ascending order before the join below
     // reads (and re-locks) them in cart-creation order. Cross-buyer
     // deadlock-cycle rationale: see the "Cross-buyer dimension" anchor in
     // `orders::service::checkout` (ADR-0007 決策 5).
+    // `FOR NO KEY UPDATE`, not `FOR SHARE`: checkout later UPDATEs every one
+    // of these rows (`try_decrement_stock_tx`, even for untracked stock), and
+    // two buyers of one product each holding SHARE would deadlock upgrading
+    // to that UPDATE. Taking the UPDATE-strength lock here makes the second
+    // buyer queue behind the first instead.
     // Deliberately not filtered by `is_active` (甲案): the join below isn't
     // filtered either — see the WHERE clauses — so this pre-lock query's
     // product set and the join's `FOR SHARE OF p` set are now exactly equal
@@ -176,7 +182,7 @@ pub async fn find_cart_items_for_checkout_tx(
          WHERE id IN (SELECT product_id FROM cart_items \
                       WHERE user_id = $1 AND item_type = 'product'::cart_item_type) \
          ORDER BY id \
-         FOR SHARE",
+         FOR NO KEY UPDATE",
     )
     .bind(user_id)
     .execute(&mut **tx)

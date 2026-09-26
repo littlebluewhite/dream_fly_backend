@@ -484,3 +484,19 @@ checkout/refund 場景間接覆蓋，拉到接縫本地直接斷言。
 anchor 區塊原位保留，只把其中已失效的步驟編號改指函式名。本檔其餘敘述維持決策當下狀態。
 
 **Seed 訂單不再是 no-op 單**：`cargo run --bin seed` 現在為報表訂單寫入 `checkout_earn`（退款單另有 `refund_clawback`）ledger 列，seed 訂單因此帶有 checkout 痕跡——對它們退款會走真正的補償流程，會員已結算餘額低於該單賺得點數時會 409（點數不足）；決策 8「seed fixture 三種痕跡全部缺席、補償 no-op」的推論只剩 fixture／直接建構的訂單與此變更前 seed 建的單適用。
+
+## Addendum（2026-09-26）：決策 5 的同列 SHARE→UPDATE 死鎖關閉——預鎖改取 `FOR NO KEY UPDATE`
+
+決策 5 與 Consequences (2) 記錄「兩個併發 checkout 對同一商品從 SHARE 升級到 UPDATE」的死鎖
+拓撲、本輪不修。它不只出現在最後一件庫存：`try_decrement_stock_tx` 對購物車的每一列商品都
+UPDATE（不追庫存的 `stock IS NULL` 也一樣），所以任何兩個同時結帳同一商品的買家都可能被
+PostgreSQL 擇一中止（`40P01` → 500），也是 `concurrent_checkout_last_unit_only_succeeds_once`
+時好時壞的原因。
+
+`find_cart_items_for_checkout_tx` 的升序預鎖由 `FOR SHARE` 改為 `FOR NO KEY UPDATE`——就是
+那個 UPDATE 本身要拿的鎖強度，之後不再需要升級。第二個買家在預鎖處排隊，等第一個 commit 後
+再讀（最後一件時得到庫存 409）。升序不變，決策 5 的跨買家論證照舊成立；`FOR NO KEY UPDATE`
+不擋 FK 檢查取的 `FOR KEY SHARE`，`order_items`/`cart_items` 寫入不受影響。代價：同一商品的
+結帳從「讀取階段可並行」變成整段排隊——它們本來就必須在 UPDATE 處排隊，差別只在排隊點提前。
+回歸測試：`checkout_same_product_two_buyers_queue_instead_of_deadlocking`（穩定重現原本的
+`40P01`）。

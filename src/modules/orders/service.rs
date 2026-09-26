@@ -142,7 +142,9 @@ pub async fn checkout(
     // independently at every site that ever locks a `products` row, so no
     // two transactions can hold locks on the same pair of products in
     // opposite orders, regardless of which buyers or paths are involved:
-    //   1. cart's SHARE pre-lock — dedicated pre-lock query inside
+    //   1. cart's pre-lock (UPDATE-strength, `FOR NO KEY UPDATE`, so two
+    //      buyers of one product queue instead of deadlocking on a
+    //      SHARE→UPDATE upgrade) — dedicated pre-lock query inside
     //      `find_cart_items_for_checkout_tx` (`cart::repository`)
     //   2. checkout's UPDATE reservation — `reserve_stock_tx` (below)
     //   3. refund's UPDATE restore — `restore_stock_tx`
