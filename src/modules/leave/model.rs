@@ -124,6 +124,9 @@ pub struct LeaveDecisionContext {
     pub coach_id: Option<Uuid>,
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
+    /// Whether `enrolment_id` is still in `active_enrolments` — a cancelled
+    /// enrolment may still be rejected but no longer approved (task 3).
+    pub enrolment_active: bool,
 }
 
 /// Ownership context for `DELETE /leave-requests/{id}` — just enough to
@@ -152,4 +155,7 @@ pub struct LeaveRequestForMakeup {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
     pub reason: Option<String>,
+    /// Whether the leave's enrolment is still in `active_enrolments` — a
+    /// cancelled enrolment can no longer book a makeup (task 3).
+    pub enrolment_active: bool,
 }

@@ -192,15 +192,21 @@ pub async fn count_admin_list(
 
 /// Everything `PATCH /leave-requests/{id}` needs in one read: current
 /// status, the (enrolment_id, session_id) pair for the attendance upsert,
-/// the owning student's `user_id` (notification target), and the course's
-/// `coach_id`/`name` (authorization + notification copy).
+/// the owning student's `user_id` (notification target), the course's
+/// `coach_id`/`name` (authorization + notification copy), and whether the
+/// enrolment is still active (`rules::check_decidable`'s 409 for approving
+/// a cancelled enrolment's leave — task 3). Deliberately keeps the raw
+/// `enrolments` JOIN rather than `active_enrolments`: a cancelled enrolment
+/// must still resolve to a 409 decision error, not a 404.
 pub async fn find_decision_context(
     db: &PgPool,
     id: Uuid,
 ) -> Result<Option<LeaveDecisionContext>, sqlx::Error> {
     sqlx::query_as::<_, LeaveDecisionContext>(
         "SELECT lr.status, lr.enrolment_id, lr.session_id, e.user_id, e.course_id, \
-                c.name AS course_name, c.coach_id, cs.session_date, cs.start_time \
+                c.name AS course_name, c.coach_id, cs.session_date, cs.start_time, \
+                EXISTS (SELECT 1 FROM active_enrolments ae WHERE ae.id = lr.enrolment_id) \
+                  AS enrolment_active \
          FROM leave_requests lr \
          JOIN enrolments e ON e.id = lr.enrolment_id \
          JOIN courses c ON c.id = e.course_id \
@@ -240,14 +246,20 @@ pub async fn decide_tx(
 /// the *same* leave request serialize, so only one can ever see
 /// `makeup_session_id IS NULL` and win. JOINed with `enrolments`/`courses`
 /// for the owner check and the original session's own display fields, but
-/// only the `leave_requests` row itself is locked.
+/// only the `leave_requests` row itself is locked. Also reports whether the
+/// enrolment is still active (`rules::check_makeup_source`'s 409 for booking
+/// a makeup on a cancelled enrolment — task 3); kept as a raw `enrolments`
+/// JOIN, not `active_enrolments`, so a cancelled enrolment still resolves to
+/// 409 rather than 404.
 pub async fn find_for_makeup_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<Option<LeaveRequestForMakeup>, sqlx::Error> {
     sqlx::query_as::<_, LeaveRequestForMakeup>(
         "SELECT lr.id, lr.session_id, e.user_id, e.course_id, c.name AS course_name, \
-                lr.status, lr.makeup_session_id, cs.session_date, cs.start_time, lr.reason \
+                lr.status, lr.makeup_session_id, cs.session_date, cs.start_time, lr.reason, \
+                EXISTS (SELECT 1 FROM active_enrolments ae WHERE ae.id = lr.enrolment_id) \
+                  AS enrolment_active \
          FROM leave_requests lr \
          JOIN enrolments e ON e.id = lr.enrolment_id \
          JOIN courses c ON c.id = e.course_id \

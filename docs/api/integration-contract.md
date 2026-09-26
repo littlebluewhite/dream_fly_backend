@@ -965,7 +965,7 @@ Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，�
 #### `PATCH /leave-requests/{id}` — admin 或該課教練
 Body：`{ status: "approved" | "rejected" }`（其他任何值，包含 `pending`/`cancelled`，一律 422）。僅 `status = "pending"` 的假單可審核。**核准在同一交易內**完成兩件事：更新假單為 `approved`（寫入 `decided_by`/`decided_at`），並 upsert 該場次的 `attendance_records` 為 `status = 'leave'`（`marked_by` = 決定者）；駁回僅更新假單狀態，**不寫入**任何出勤紀錄。此 `leave` 投影**即使覆寫該生既有的 `present`/`absent` 也照寫**——核准恆勝，晚核准合法、`decide` 無時間閘；反向的批次點名（§3.19 `PUT`）則不可把此 `leave` 覆寫回 `present`/`absent`，見 §3.19 裁決 5 與 ADR-0008。決定完成（交易提交後）才同步寫入通知，見上方「其他細節」。回應：更新後的 `LeaveRequestResponse`（此時 `makeup_session_id` 等欄位必為 `null`——補課須另呼叫下方端點）。
 
-錯誤：404（不存在）；403（非本課教練且非 admin）；409（非 pending）；422（`status` 非 `approved`/`rejected`）。
+錯誤：404（不存在）；403（非本課教練且非 admin）；409（非 pending；或核准時該假單所屬報名已取消，訊息「報名已取消，無法核准請假」——駁回不受此限，即使報名已取消仍可駁回）；422（`status` 非 `approved`/`rejected`）。
 
 #### `POST /leave-requests/{id}/makeup` — 需登入（僅本人 owner）
 Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順序：假單須為 `approved` 且尚未預約過補課（`makeup_session_id IS NULL`，否則 409）→ 目標場次須與原假單同一課程（否則 422）→ 目標場次不可為請假場次本身（否則 422）→ 目標場次須尚未開始（否則 422）→ 名額檢查（見下，否則 409）。成功寫入 `makeup_session_id`，回應更新後的 `LeaveRequestResponse`（`makeup_session_date`/`makeup_start_time` 補上目標場次的日期/時間）。
@@ -974,7 +974,7 @@ Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順�
 
 **併發防護**：同一交易內以 `FOR UPDATE` 先鎖假單列（防**同一張假單**重複預約補課），再於名額計數前鎖**目標場次列**（序列化**不同假單**搶同一場次名額——最後一席只會有恰好一人成功，其餘 409「該場次名額已滿」）。
 
-錯誤：404（假單或目標場次不存在）；403（非本人）；409（假單非 `approved`、或已預約過補課、或名額已滿）；422（目標場次跨課程、或目標場次已開始）。
+錯誤：404（假單或目標場次不存在）；403（非本人）；409（假單非 `approved`、或已預約過補課、或該假單所屬報名已取消（訊息「報名已取消，無法預約補課」）、或名額已滿）；422（目標場次跨課程、或目標場次已開始）。
 
 ---
 

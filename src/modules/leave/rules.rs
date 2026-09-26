@@ -4,11 +4,16 @@
 //! `PATCH /leave-requests/{id}`'s raw `status` string into a [`LeaveStatus`]
 //! (422 on anything but `approved`/`rejected` — deliberately narrower than
 //! `LeaveStatus`'s own `FromStr`, which also accepts `pending`/`cancelled`),
-//! [`check_makeup_source`] checks a locked leave request is eligible to
-//! receive a makeup booking (409 if not `approved`, 409 if it already has
-//! one), and [`check_makeup_target`] checks the caller-resolved target
-//! session against that leave request (422 if it's a different course, 422/
-//! 400 if it has already started or its start time is DST-ambiguous). Same
+//! [`check_decidable`] checks a `PATCH /leave-requests/{id}` decision is
+//! still legal (409 if not `pending`, 409 if approving a leave whose
+//! enrolment has since been cancelled — rejecting a cancelled enrolment's
+//! leave is still allowed, task 3), [`check_makeup_source`] checks a locked
+//! leave request is eligible to receive a makeup booking (409 if not
+//! `approved`, 409 if it already has one, 409 if its enrolment has since
+//! been cancelled), and [`check_makeup_target`] checks the caller-resolved
+//! target session against that leave request (422 if it's a different
+//! course, 422/400 if it has already started or its start time is
+//! DST-ambiguous). Same
 //! shape as `orders::pricing`/`orders::fulfilment`: pure function, zero DB,
 //! zero async — `service::book_makeup` still owns everything genuinely
 //! transactional: the two row locks (`repository::find_for_makeup_tx`,
@@ -30,7 +35,12 @@
 use crate::error::AppError;
 use crate::utils::studio_clock::{self, StudioNow};
 
-use super::model::{LeaveRequestForMakeup, LeaveStatus, SessionContext};
+use super::model::{LeaveDecisionContext, LeaveRequestForMakeup, LeaveStatus, SessionContext};
+
+/// `僅待審核假單可審核` — shared between [`check_decidable`]'s not-pending
+/// check and `repository::decide_tx`'s race fallback (moved here from
+/// `service` — task 3 — so the pure decision core owns its own error text).
+pub const DECIDE_NOT_PENDING: &str = "僅待審核假單可審核";
 
 /// `此假單已預約過補課` — shared between [`check_makeup_source`]'s
 /// already-booked check and `service::book_makeup`'s post-write guard
@@ -53,18 +63,40 @@ pub fn parse_decision(s: &str) -> Result<LeaveStatus, AppError> {
     }
 }
 
+/// Check a `PATCH /leave-requests/{id}` decision is still legal for a
+/// just-read [`LeaveDecisionContext`]: the request must still be `pending`
+/// (409 [`DECIDE_NOT_PENDING`] otherwise), and approving it requires the
+/// leave's enrolment to still be active (409 `報名已取消，無法核准請假`
+/// otherwise) — rejecting a cancelled enrolment's leave is still allowed,
+/// since rejection doesn't grant anything back. Order: not-pending first,
+/// then the enrolment check — a raced/already-decided request must surface
+/// that error regardless of enrolment state.
+pub fn check_decidable(ctx: &LeaveDecisionContext, decision: LeaveStatus) -> Result<(), AppError> {
+    if ctx.status != LeaveStatus::Pending {
+        return Err(AppError::Conflict(DECIDE_NOT_PENDING.into()));
+    }
+    if decision == LeaveStatus::Approved && !ctx.enrolment_active {
+        return Err(AppError::Conflict("報名已取消，無法核准請假".into()));
+    }
+    Ok(())
+}
+
 /// Check a locked leave request is eligible to receive a makeup booking:
 /// must be `approved` (409 otherwise — a `pending`/`rejected`/`cancelled`
-/// request can't be made up), and must not already carry a
-/// `makeup_session_id` (409 — one makeup per leave request). Order matches
+/// request can't be made up), must not already carry a `makeup_session_id`
+/// (409 — one makeup per leave request), and its enrolment must still be
+/// active (409 `報名已取消，無法預約補課` otherwise — task 3). Order matches
 /// `service::book_makeup`'s original inline checks: status first, then
-/// already-booked.
+/// already-booked, then the enrolment check.
 pub fn check_makeup_source(leave: &LeaveRequestForMakeup) -> Result<(), AppError> {
     if leave.status != LeaveStatus::Approved {
         return Err(AppError::Conflict("僅已核准的假單可預約補課".into()));
     }
     if leave.makeup_session_id.is_some() {
         return Err(AppError::Conflict(MAKEUP_ALREADY_BOOKED.into()));
+    }
+    if !leave.enrolment_active {
+        return Err(AppError::Conflict("報名已取消，無法預約補課".into()));
     }
     Ok(())
 }
@@ -135,6 +167,22 @@ mod tests {
             session_date: d(2026, 7, 5),
             start_time: t(9, 0),
             reason: None,
+            enrolment_active: true,
+        }
+    }
+
+    fn decision_ctx(status: LeaveStatus, enrolment_active: bool) -> LeaveDecisionContext {
+        LeaveDecisionContext {
+            status,
+            enrolment_id: Uuid::now_v7(),
+            session_id: Uuid::now_v7(),
+            user_id: Uuid::now_v7(),
+            course_id: Uuid::now_v7(),
+            course_name: "Course".into(),
+            coach_id: Some(Uuid::now_v7()),
+            session_date: d(2026, 7, 5),
+            start_time: t(9, 0),
+            enrolment_active,
         }
     }
 
@@ -179,7 +227,85 @@ mod tests {
         assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
     }
 
+    // --- check_decidable ---
+
+    #[test]
+    fn check_decidable_passes_for_pending_approve_with_active_enrolment() {
+        // decide_approve_writes_attendance_leave_and_notification (tests/http_leave.rs)
+        let ctx = decision_ctx(LeaveStatus::Pending, true);
+        assert!(check_decidable(&ctx, LeaveStatus::Approved).is_ok());
+    }
+
+    #[test]
+    fn check_decidable_allows_reject_with_cancelled_enrolment() {
+        // decide_reject_cancelled_enrolment_succeeds (tests/http_leave.rs): a
+        // cancelled enrolment blocks approval but not rejection.
+        let ctx = decision_ctx(LeaveStatus::Pending, false);
+        assert!(check_decidable(&ctx, LeaveStatus::Rejected).is_ok());
+    }
+
+    #[test]
+    fn check_decidable_rejects_non_pending_as_409() {
+        // decide_non_pending_returns_409 (tests/http_leave.rs)
+        let ctx = decision_ctx(LeaveStatus::Approved, true);
+        let err = check_decidable(&ctx, LeaveStatus::Rejected).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m == DECIDE_NOT_PENDING),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_decidable_rejects_approve_with_cancelled_enrolment_as_409() {
+        // decide_approve_cancelled_enrolment_returns_409 (tests/http_leave.rs)
+        let ctx = decision_ctx(LeaveStatus::Pending, false);
+        let err = check_decidable(&ctx, LeaveStatus::Approved).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m == "報名已取消，無法核准請假"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_decidable_checks_not_pending_before_enrolment_cancelled() {
+        // Error ordering: an already-decided request whose enrolment is also
+        // cancelled must still surface the not-pending error, not the
+        // enrolment one.
+        let ctx = decision_ctx(LeaveStatus::Rejected, false);
+        let err = check_decidable(&ctx, LeaveStatus::Approved).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m == DECIDE_NOT_PENDING),
+            "got: {err:?}"
+        );
+    }
+
     // --- check_makeup_source ---
+
+    #[test]
+    fn check_makeup_source_rejects_cancelled_enrolment_as_409() {
+        // makeup_cancelled_enrolment_returns_409 (tests/http_leave.rs)
+        let mut leave = leave(LeaveStatus::Approved, None);
+        leave.enrolment_active = false;
+        let err = check_makeup_source(&leave).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m == "報名已取消，無法預約補課"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_makeup_source_checks_already_booked_before_enrolment_cancelled() {
+        // Error ordering: an already-booked request whose enrolment is also
+        // cancelled must still surface the already-booked error, not the
+        // enrolment one.
+        let mut leave = leave(LeaveStatus::Approved, Some(Uuid::now_v7()));
+        leave.enrolment_active = false;
+        let err = check_makeup_source(&leave).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m == MAKEUP_ALREADY_BOOKED),
+            "got: {err:?}"
+        );
+    }
 
     #[test]
     fn check_makeup_source_passes_for_approved_unbooked_request() {

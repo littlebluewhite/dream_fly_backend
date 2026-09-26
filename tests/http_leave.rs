@@ -570,6 +570,75 @@ async fn decide_invalid_status_value_returns_422(db: PgPool) {
     assert_eq!(resp.status_code(), 422, "body={}", resp.text());
 }
 
+/// Task 3: once the member's enrolment backing this leave request has been
+/// cancelled (through the real cancel route, not a fixture writing straight
+/// to the DB — same as the two makeup regressions below), a coach may no
+/// longer *approve* the still-pending request.
+#[sqlx::test]
+async fn decide_approve_cancelled_enrolment_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (coach_user_id, coach_token) = app
+        .seed_user_with_roles("leave-decide-cancelled-coach@example.com", &["coach"])
+        .await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "Cancelled Enrolment Coach").await;
+    let course_id = seed_course(&app.db, "Leave Decide Cancelled Course", Some(coach_id)).await;
+    let member = app
+        .register_member("leave-decide-cancelled-member@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
+
+    let cancel_resp = app
+        .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
+        .authorization_bearer(&member.access_token)
+        .await;
+    assert_eq!(
+        cancel_resp.status_code(),
+        200,
+        "body={}",
+        cancel_resp.text()
+    );
+
+    let resp = app
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
+        .authorization_bearer(&coach_token)
+        .json(&json!({"status": "approved"}))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+}
+
+/// Task 3 counterpart: rejecting a pending request whose enrolment has since
+/// been cancelled must still succeed — rejection grants nothing back, so
+/// there's nothing for the cancellation to invalidate.
+#[sqlx::test]
+async fn decide_reject_cancelled_enrolment_succeeds(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Leave Decide Cancelled Reject Course", None).await;
+    let member = app
+        .register_member("leave-decide-cancelled-reject@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
+
+    let cancel_resp = app
+        .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
+        .authorization_bearer(&member.access_token)
+        .await;
+    assert_eq!(
+        cancel_resp.status_code(),
+        200,
+        "body={}",
+        cancel_resp.text()
+    );
+
+    let resp = app
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"status": "rejected"}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    assert_eq!(resp.json::<serde_json::Value>()["status"], "rejected");
+}
+
 // ---------------------------------------------------------------------------
 // POST /leave-requests/{id}/makeup
 // ---------------------------------------------------------------------------
@@ -930,4 +999,40 @@ async fn makeup_booked_by_cancelled_enrolment_occupies_no_seat(db: PgPool) {
         .json(&json!({"session_id": target_session}))
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+}
+
+/// Task 3: once the member's own enrolment (the one this approved leave
+/// belongs to) has been cancelled through the real cancel route, they may no
+/// longer book a makeup from it — distinct from `makeup_leave_by_cancelled_
+/// enrolment_frees_no_ghost_seat` above, which cancels a *different* member's
+/// enrolment to test the seat formula, not this owner's own request.
+#[sqlx::test]
+async fn makeup_cancelled_enrolment_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app
+        .register_member("leave-makeup-cancelled@example.com", "Password!234")
+        .await;
+    let course_id = seed_course(&app.db, "Makeup Cancelled Enrolment Course", None).await;
+    let scene = seed_leave_scene(&app.db, user.user_id, course_id, "approved", None).await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session =
+        seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
+
+    let cancel_resp = app
+        .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(
+        cancel_resp.status_code(),
+        200,
+        "body={}",
+        cancel_resp.text()
+    );
+
+    let resp = app
+        .post(&format!("/api/v1/leave-requests/{}/makeup", scene.leave))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": target_session}))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
 }

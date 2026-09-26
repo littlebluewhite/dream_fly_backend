@@ -27,10 +27,6 @@ const LEAVE_NOT_FOUND: &str = "請假申請不存在";
 /// session-context/seat-lock lookups.
 const SESSION_NOT_FOUND: &str = "場次不存在";
 
-/// `僅待審核假單可審核` — shared by `decide_leave_request`'s pre-tx status
-/// check and its `decide_tx` race fallback.
-const DECIDE_NOT_PENDING: &str = "僅待審核假單可審核";
-
 /// `POST /leave-requests`. Resolves the caller's active enrolment from
 /// `session_id`'s course (404 `未報名此課程` if none), rejects sessions that
 /// have already started (422), and relies on the partial unique index
@@ -186,15 +182,13 @@ pub async fn decide_leave_request(
 
     coaches_service::require_course_coach(db, auth, ctx.coach_id, "非本課教練").await?;
 
-    if ctx.status != LeaveStatus::Pending {
-        return Err(AppError::Conflict(DECIDE_NOT_PENDING.into()));
-    }
+    rules::check_decidable(&ctx, new_status)?;
 
     let mut tx = db.begin().await?;
 
     let updated = repository::decide_tx(&mut tx, id, new_status, auth.user_id)
         .await?
-        .ok_or_else(|| AppError::Conflict(DECIDE_NOT_PENDING.into()))?;
+        .ok_or_else(|| AppError::Conflict(rules::DECIDE_NOT_PENDING.into()))?;
 
     if new_status == LeaveStatus::Approved {
         // Writing `leave` always passes the upsert guard's first branch
