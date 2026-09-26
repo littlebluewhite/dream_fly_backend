@@ -23,12 +23,13 @@
 //! reachable behavior.
 //!
 //! **Ordering is deliberately NOT this function's job.** The write-reservation
-//! order discipline (product lines sorted by `product_id` before the stock
-//! UPDATE; course lines sorted by `course_id` before the enrolment lock) is
-//! owned by `products::service::reserve_stock_tx` and
-//! `enrolments::service::enrol_batch_from_purchase_tx` respectively — each
-//! sorts its own copy right before it takes the write locks that the order
-//! exists to serialize. `plan()` preserves the input slice's order verbatim
+//! order discipline (product lines by ascending `product_id` for the stock
+//! UPDATE; course lines by ascending `course_id` for the enrolment) is
+//! owned by the lock witnesses' `in_lock_order` (`products::service::
+//! ProductLocks`, `courses::seats::CourseLocks`, taken by the order lock
+//! protocol in `super::locks`), which `reserve_stock_tx` and
+//! `enrol_batch_from_purchase_tx` walk their lines through. `plan()`
+//! preserves the input slice's order verbatim
 //! (cart-creation order, product lines then course lines, per
 //! `cart::repository::find_cart_items_for_checkout_tx`). One invariant with
 //! two owners would be worse than none: the sort lives with the lock it
@@ -263,8 +264,9 @@ mod tests {
     #[test]
     fn preserves_input_order_within_each_bucket() {
         // `plan()` does NOT sort — the write-reservation order is imposed by
-        // `reserve_stock_tx`/`enrol_batch_from_purchase_tx` right before they
-        // take their locks (see the module doc). Here the products come back
+        // the lock witnesses' `in_lock_order` inside
+        // `reserve_stock_tx`/`enrol_batch_from_purchase_tx` (see the module
+        // doc). Here the products come back
         // in the exact slice order they went in, not sorted by product_id.
         let a = product_line("first");
         let b = product_line("second");

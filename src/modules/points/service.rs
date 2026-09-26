@@ -94,19 +94,18 @@ pub async fn apply_delta_tx(
 /// here for: each locks this row as literally its first statement, even
 /// when the caller doesn't need the balance value itself (`use_points=false`,
 /// a zero-flow refund):
-///   checkout: users -> cart_items/products/courses (SHARE) -> products
-///             (UPDATE, product_id asc) -> courses (asc) -> enrolments ->
-///             subscriptions
+///   checkout: users -> products (NO KEY UPDATE, asc) -> courses (UPDATE,
+///             asc) -> cart_items -> enrolments -> subscriptions
+///             (`orders::locks::acquire_checkout_locks` runs the first three)
 ///   refund:   orders -> users -> products (UPDATE, asc) -> enrolments ->
 ///             subscriptions
 /// Taking `users` first on both paths is what makes it *the* unconditional
 /// first lock. If either path deferred it, that path could end up holding a
-/// downstream lock (e.g. checkout's cart-read `FOR SHARE` on products)
-/// while waiting on `users`, while the other path simultaneously holds
-/// `users` while waiting on that same downstream lock — a deadlock cycle.
-/// Cross-buyer dimension, the pre-existing SHARE→UPDATE risk, and the full
-/// regression list live in ADR-0007 決策 5 and its Addendum recording this
-/// witness migration.
+/// downstream lock (e.g. checkout's product lock) while waiting on `users`,
+/// while the other path simultaneously holds `users` while waiting on that
+/// same downstream lock — a deadlock cycle. Cross-buyer dimension: the
+/// anchor in `orders::locks`'s module doc; full regression list: ADR-0007
+/// 決策 5 and its Addenda.
 ///
 /// Deliberately not `#[must_use]`: the witness is permission to reach the
 /// governed seam, not an obligation to consume the balance —

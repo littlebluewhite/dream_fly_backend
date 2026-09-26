@@ -173,6 +173,69 @@ pub async fn update(
     to_response(db, product).await
 }
 
+/// Witness that `lock_products_tx` has taken `FOR NO KEY UPDATE` on these
+/// `products` rows inside the caller's still-open transaction — the
+/// products stage of the order lock protocol (`orders::locks`). Fields are
+/// private; only `lock_products_tx` can construct one (same private-field
+/// witness technique as `courses::seats`'s `SessionLock`).
+///
+/// `ids` are the locked rows' ids, ascending and deduplicated — the order
+/// the locks were taken in (PostgreSQL orders `uuid` bytewise, the same as
+/// `Uuid`'s `Ord`). [`ProductLocks::in_lock_order`] is the single
+/// owner of "walk these lines in lock order": a write-lock owner
+/// (`reserve_stock_tx`) no longer sorts on its own.
+#[derive(Debug)]
+pub struct ProductLocks {
+    ids: Vec<Uuid>,
+}
+
+impl ProductLocks {
+    pub fn ids(&self) -> &[Uuid] {
+        &self.ids
+    }
+
+    /// Reorder `items` into this witness's lock order (ascending product
+    /// id). An item whose id this witness does not cover maps to
+    /// `AppError::Internal` — writing a row the caller never locked is a
+    /// protocol bug, not a business rejection.
+    pub fn in_lock_order<T>(
+        &self,
+        items: Vec<T>,
+        id: impl Fn(&T) -> Uuid,
+    ) -> Result<Vec<T>, AppError> {
+        if let Some(item) = items.iter().find(|item| !self.covers(id(item))) {
+            let product_id = id(item);
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "product {product_id} is not covered by ProductLocks"
+            )));
+        }
+        let mut items = items;
+        items.sort_by_key(|item| id(item));
+        Ok(items)
+    }
+
+    fn covers(&self, product_id: Uuid) -> bool {
+        self.ids.binary_search(&product_id).is_ok()
+    }
+}
+
+/// Lock the given `products` rows `FOR NO KEY UPDATE`, ascending by id
+/// (`ORDER BY id`), inside the caller's transaction and return the
+/// [`ProductLocks`] witness. `FOR NO KEY UPDATE` is exactly the strength
+/// the later stock UPDATE needs, so no upgrade happens afterwards (two
+/// buyers of one product queue here instead of deadlocking on a
+/// SHARE→UPDATE upgrade), and it does not block the `FOR KEY SHARE` that FK
+/// checks take (`order_items`/`cart_items` inserts). Ids that don't resolve
+/// are simply not in the witness. Global ascending order rationale: the
+/// "Cross-buyer dimension" anchor in `orders::locks` (ADR-0007 決策 5).
+pub async fn lock_products_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ids: &[Uuid],
+) -> Result<ProductLocks, AppError> {
+    let ids = repository::lock_products_tx(tx, ids).await?;
+    Ok(ProductLocks { ids })
+}
+
 /// Reserve stock for a batch of product lines inside the caller's
 /// transaction — `orders::service::checkout`'s stock decrement. `lines` is
 /// `(product_id, quantity, name)` tuples rather than
@@ -180,13 +243,15 @@ pub async fn update(
 /// doesn't have to import back into `cart`; the `HashMap` return follows
 /// the same idiom as `repository::find_sold_counts` in this module.
 ///
-/// Sorts `lines` by `product_id` ascending before touching any row — that sort is
-/// this function's job now, not the caller's (deadlock rationale: see the
-/// "Cross-buyer dimension" anchor in `orders::service::checkout`, ADR-0007
-/// 決策 5).
+/// Takes `&ProductLocks`: every line's row must already be locked by
+/// `lock_products_tx` (a line outside the witness is `AppError::Internal`),
+/// and the lines are walked in the witness's lock order
+/// ([`ProductLocks::in_lock_order`], ascending `product_id`) — ordering
+/// rationale: the "Cross-buyer dimension" anchor in `orders::locks`
+/// (ADR-0007 決策 5).
 ///
-/// Each line is then decremented in that sorted order via
-/// `try_decrement_stock_tx`. The first line (post-sort) whose stock is
+/// Each line is then decremented in that order via
+/// `try_decrement_stock_tx`. The first line (in lock order) whose stock is
 /// insufficient fails the whole reservation with
 /// `AppError::Conflict("insufficient stock for product {name}")` — when
 /// more than one line is short, this is whichever has the smallest
@@ -197,19 +262,19 @@ pub async fn update(
 ///
 /// On success, returns every reserved row keyed by `product_id`. Each row
 /// comes straight from `try_decrement_stock_tx`'s `RETURNING *` — already
-/// locked by this UPDATE, in this transaction — so a caller that needs the
+/// locked by this transaction — so a caller that needs the
 /// row afterward (checkout's subscription-grant step) reads it out of this
 /// map instead of re-reading it from the database. An empty `lines` is a
 /// no-op that returns an empty map without touching the database.
 pub async fn reserve_stock_tx(
     tx: &mut Transaction<'_, Postgres>,
+    locks: &ProductLocks,
     lines: &[(Uuid, i32, &str)],
 ) -> Result<HashMap<Uuid, Product>, AppError> {
-    let mut sorted = lines.to_vec();
-    sorted.sort_by_key(|(product_id, _, _)| *product_id);
+    let ordered = locks.in_lock_order(lines.to_vec(), |(product_id, _, _)| *product_id)?;
 
-    let mut reserved = HashMap::with_capacity(sorted.len());
-    for (product_id, quantity, name) in sorted {
+    let mut reserved = HashMap::with_capacity(ordered.len());
+    for (product_id, quantity, name) in ordered {
         let product = repository::try_decrement_stock_tx(tx, product_id, quantity)
             .await?
             .ok_or_else(|| AppError::Conflict(format!("insufficient stock for product {name}")))?;
@@ -223,10 +288,10 @@ pub async fn reserve_stock_tx(
 /// refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
 /// mirror of `reserve_stock_tx`.
 /// Sorts by `product_id` ascending before touching any row — the same
-/// lock-ordering discipline `reserve_stock_tx` applies (see its doc comment
-/// above), same owner-per-site rule. Deadlock rationale: see the
-/// "Cross-buyer dimension" anchor in `orders::service::checkout` (ADR-0007
-/// 決策 5).
+/// ascending order `lock_products_tx` locks in (refund currently calls
+/// `lock_products_tx` right before this as a transitional step). Deadlock
+/// rationale: see the "Cross-buyer dimension" anchor in `orders::locks`
+/// (ADR-0007 決策 5).
 ///
 /// Contract: callers must pass only `(product_id, quantity)` pairs whose
 /// `order_items.stock_decremented` was `true` at checkout time —
@@ -257,4 +322,51 @@ pub async fn restore_stock_tx(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids() -> (Uuid, Uuid, Uuid) {
+        let mut v = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        v.sort();
+        (v[0], v[1], v[2])
+    }
+
+    #[test]
+    fn in_lock_order_sorts_items_ascending_by_id() {
+        let (low, mid, high) = ids();
+        let locks = ProductLocks {
+            ids: vec![low, mid, high],
+        };
+        let ordered = locks
+            .in_lock_order(vec![(high, "h"), (low, "l"), (mid, "m")], |(id, _)| *id)
+            .expect("all covered");
+        assert_eq!(ordered, vec![(low, "l"), (mid, "m"), (high, "h")]);
+    }
+
+    #[test]
+    fn in_lock_order_accepts_a_subset_of_the_witness() {
+        let (low, mid, high) = ids();
+        let locks = ProductLocks {
+            ids: vec![low, mid, high],
+        };
+        let ordered = locks
+            .in_lock_order(vec![high, low], |id| *id)
+            .expect("subset is covered");
+        assert_eq!(ordered, vec![low, high]);
+    }
+
+    #[test]
+    fn in_lock_order_rejects_an_id_outside_the_witness_as_internal() {
+        let (low, mid, high) = ids();
+        let locks = ProductLocks {
+            ids: vec![low, high],
+        };
+        let err = locks
+            .in_lock_order(vec![low, mid], |id| *id)
+            .expect_err("mid was never locked");
+        assert!(matches!(err, AppError::Internal(_)), "got {err:?}");
+    }
 }

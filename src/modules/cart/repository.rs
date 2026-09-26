@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::{CartItem, CartItemJoined, CheckoutLine};
+use super::model::{CartItem, CartItemJoined, CheckoutLine, CheckoutTargets};
 
 pub async fn find_by_user(db: &PgPool, user_id: Uuid) -> Result<Vec<CartItemJoined>, sqlx::Error> {
     sqlx::query_as::<_, CartItemJoined>(
@@ -129,22 +129,46 @@ pub async fn clear_cart_tx(
     Ok(())
 }
 
-/// Transactional cart-for-checkout read. Locks the cart rows (`FOR UPDATE`)
-/// and also the joined product/course rows so another request cannot
-/// concurrently mutate cart contents or change prices mid-checkout — those
-/// rows are already held at UPDATE strength by the pre-locks below, so the
-/// joins' own `FOR SHARE OF` doesn't request or change anything.
+/// The product/course ids this user's cart targets — the order lock
+/// protocol's (`orders::locks::acquire_checkout_locks`) input for which rows
+/// to lock. Takes no lock of its own: it runs after the caller's
+/// `lock_balance_tx` `FOR UPDATE` on the `users` row, and every new
+/// `cart_items` row needs a `FOR KEY SHARE` on that same row for its
+/// `user_id` FK check, so no line can be added to this cart until the
+/// caller's transaction ends (pinned by
+/// `checkout_locks_block_same_user_cart_insert_until_commit`). A concurrent
+/// removal can only shrink the cart, so the later snapshot read is always a
+/// subset of these targets. Deliberately not filtered by `is_active`
+/// (甲案), exactly like the snapshot read below: a deactivated line is still
+/// read (so `fulfilment::ensure_all_purchasable` can name it), so its row is
+/// still locked.
+pub async fn find_checkout_targets_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<CheckoutTargets, sqlx::Error> {
+    sqlx::query_as::<_, CheckoutTargets>(
+        "SELECT \
+         COALESCE(array_agg(product_id) FILTER (WHERE product_id IS NOT NULL), '{}') AS product_ids, \
+         COALESCE(array_agg(course_id) FILTER (WHERE course_id IS NOT NULL), '{}') AS course_ids \
+         FROM cart_items WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await
+}
+
+/// Transactional cart-for-checkout read. Locks the cart rows (`FOR UPDATE
+/// OF ci`) so another request cannot concurrently mutate cart contents
+/// mid-checkout. The joined product/course rows are NOT locked here: the
+/// caller must already hold them at UPDATE strength via the order lock
+/// protocol (`orders::locks::acquire_checkout_locks` — products `FOR NO KEY
+/// UPDATE`, courses `FOR UPDATE`, both ascending), which is what keeps
+/// prices from changing mid-checkout.
 ///
 /// Product and course lines are fetched via two independent queries rather
 /// than one `UNION`, because PostgreSQL rejects `FOR UPDATE`/`FOR SHARE` on
 /// any branch of a set operation ("FOR UPDATE is not allowed with
-/// UNION/INTERSECT/EXCEPT"). Each query preserves the original locking
-/// shape (`FOR UPDATE OF ci`, `FOR SHARE OF` the priced table).
-///
-/// The product and course locks are first acquired, UPDATE-strength (`FOR NO
-/// KEY UPDATE` for products, `FOR UPDATE` for courses), by dedicated
-/// pre-lock queries in `id` ASCENDING order — see the comments on them
-/// below.
+/// UNION/INTERSECT/EXCEPT").
 ///
 /// Returned lines are NOT filtered by `is_active` — every line the cart
 /// references comes back, active or not, with `is_active` riding along on
@@ -156,59 +180,6 @@ pub async fn find_cart_items_for_checkout_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
 ) -> Result<Vec<CheckoutLine>, sqlx::Error> {
-    // Cross-path lock-order discipline: pre-lock the cart's product and
-    // course rows, each in ascending id order, before the joins below read
-    // (and re-lock) them in cart-creation order. Cross-buyer deadlock-cycle
-    // rationale: see the "Cross-buyer dimension" anchor in
-    // `orders::service::checkout` (ADR-0007 決策 5).
-    // `FOR NO KEY UPDATE`, not `FOR SHARE`: checkout later UPDATEs every one
-    // of these rows (`try_decrement_stock_tx`, even for untracked stock), and
-    // two buyers of one product each holding SHARE would deadlock upgrading
-    // to that UPDATE. Taking the UPDATE-strength lock here makes the second
-    // buyer queue behind the first instead.
-    // Deliberately not filtered by `is_active` (甲案): the join below isn't
-    // filtered either — see the WHERE clauses — so this pre-lock query's
-    // product set and the join's `FOR SHARE OF p` set are now exactly equal
-    // (both are "every product_id this cart references"), not a superset/
-    // subset pair to reason about. The filter has to go from BOTH queries
-    // together: `fulfilment::ensure_all_purchasable` (called by
-    // `orders::service::checkout` right after this snapshot is read) is the
-    // gate that now decides purchasability, and it needs every deactivated
-    // line's name to build its 422 — a query that silently dropped inactive
-    // rows would hide exactly the rows that gate has to report.
-    sqlx::query(
-        "SELECT id FROM products \
-         WHERE id IN (SELECT product_id FROM cart_items \
-                      WHERE user_id = $1 AND item_type = 'product'::cart_item_type) \
-         ORDER BY id \
-         FOR NO KEY UPDATE",
-    )
-    .bind(user_id)
-    .execute(&mut **tx)
-    .await?;
-
-    // Same reasoning, same cross-path lock-order discipline, for course
-    // rows: `enrolments::service::enrol_from_purchase_tx` (called later in
-    // the same checkout) takes `FOR UPDATE` on the course row via
-    // `courses::seats::lock_course_seats_tx`. The join below previously only
-    // held `FOR SHARE OF c`, so two buyers of one course each held SHARE,
-    // then both waited on each other's SHARE to upgrade to that UPDATE —
-    // same 40P01 topology as the product case. Pre-locking
-    // `FOR UPDATE` here, ascending, makes the second buyer queue behind the
-    // first instead. Keeping the join's `FOR SHARE OF c` alongside is
-    // harmless — the row is already FOR UPDATE-locked by this same
-    // transaction, so it doesn't re-request or change lock strength.
-    sqlx::query(
-        "SELECT id FROM courses \
-         WHERE id IN (SELECT course_id FROM cart_items \
-                      WHERE user_id = $1 AND item_type = 'course'::cart_item_type) \
-         ORDER BY id \
-         FOR UPDATE",
-    )
-    .bind(user_id)
-    .execute(&mut **tx)
-    .await?;
-
     let mut lines = sqlx::query_as::<_, CheckoutLine>(
         "SELECT 'product'::cart_item_type AS item_type, ci.product_id, NULL::uuid AS course_id, \
          ci.quantity, p.price_cents, p.name, p.is_active \
@@ -216,8 +187,7 @@ pub async fn find_cart_items_for_checkout_tx(
          JOIN products p ON ci.product_id = p.id \
          WHERE ci.user_id = $1 AND ci.item_type = 'product' \
          ORDER BY ci.created_at \
-         FOR UPDATE OF ci \
-         FOR SHARE OF p",
+         FOR UPDATE OF ci",
     )
     .bind(user_id)
     .fetch_all(&mut **tx)
@@ -230,8 +200,7 @@ pub async fn find_cart_items_for_checkout_tx(
          JOIN courses c ON ci.course_id = c.id \
          WHERE ci.user_id = $1 AND ci.item_type = 'course' \
          ORDER BY ci.created_at \
-         FOR UPDATE OF ci \
-         FOR SHARE OF c",
+         FOR UPDATE OF ci",
     )
     .bind(user_id)
     .fetch_all(&mut **tx)

@@ -1,8 +1,10 @@
 //! Integration tests for `enrolments::service`.
 //!
 //! Covers:
-//! - `enrol_from_purchase_tx`: happy path, capacity-full conflict, and the
-//!   duplicate-active pre-check conflict.
+//! - `enrol_batch_from_purchase_tx` (behind `lock_courses_tx`, via the
+//!   one-course `enrol` helper below): happy path, capacity-full conflict,
+//!   and the duplicate-active pre-check conflict.
+//! - a course outside the `CourseLocks` witness is Internal.
 //! - cancelling an enrolment frees the seat for a second enrol.
 //! - concurrent enrol attempts for the same user+course: exactly one wins
 //!   (the `FOR UPDATE` course lock serializes the two transactions).
@@ -19,6 +21,8 @@ use uuid::Uuid;
 
 use common::fixtures::{seed_course, seed_course_with_capacity, seed_enrolment};
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::courses::seats;
+use dream_fly_backend::modules::enrolments::model::Enrolment;
 use dream_fly_backend::modules::enrolments::repository as enrolments_repo;
 use dream_fly_backend::modules::enrolments::service;
 use dream_fly_backend::modules::orders::repository as orders_repo;
@@ -49,6 +53,21 @@ async fn seed_order(
     .id
 }
 
+/// One course through the purchase path: `lock_courses_tx` then
+/// `enrol_batch_from_purchase_tx`, the same pair `orders::locks` +
+/// `checkout` run.
+async fn enrol(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    course_id: Uuid,
+    order_id: Uuid,
+) -> Result<Enrolment, AppError> {
+    let locks = seats::lock_courses_tx(tx, &[course_id]).await?;
+    let mut enrolments =
+        service::enrol_batch_from_purchase_tx(tx, &locks, user_id, &[course_id], order_id).await?;
+    Ok(enrolments.remove(0))
+}
+
 #[sqlx::test]
 async fn enrol_from_purchase_creates_active_enrolment(db: PgPool) {
     let user_id = common::seed_member(&db, "enrol-a@example.com", "Password!234").await;
@@ -56,7 +75,7 @@ async fn enrol_from_purchase_creates_active_enrolment(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
-    let enrolment = service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order_id)
+    let enrolment = enrol(&mut tx, user_id, course_id, order_id)
         .await
         .expect("enrol");
     tx.commit().await.expect("commit");
@@ -75,14 +94,14 @@ async fn enrol_full_course_returns_course_is_full_conflict(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let order_a = seed_order(&mut tx, user_a, 50_000).await;
-    service::enrol_from_purchase_tx(&mut tx, user_a, course_id, order_a)
+    enrol(&mut tx, user_a, course_id, order_a)
         .await
         .expect("first enrol fills the only seat");
     tx.commit().await.expect("commit");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let order_b = seed_order(&mut tx2, user_b, 50_000).await;
-    let err = service::enrol_from_purchase_tx(&mut tx2, user_b, course_id, order_b)
+    let err = enrol(&mut tx2, user_b, course_id, order_b)
         .await
         .expect_err("second enrol must be rejected: course is full");
     tx2.rollback().await.expect("rollback");
@@ -100,14 +119,14 @@ async fn enrol_duplicate_active_returns_already_enrolled_conflict(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
-    service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order_id)
+    enrol(&mut tx, user_id, course_id, order_id)
         .await
         .expect("first enrol");
     tx.commit().await.expect("commit");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let order_id_2 = seed_order(&mut tx2, user_id, 50_000).await;
-    let err = service::enrol_from_purchase_tx(&mut tx2, user_id, course_id, order_id_2)
+    let err = enrol(&mut tx2, user_id, course_id, order_id_2)
         .await
         .expect_err("second enrol for the same user+course must be rejected");
     tx2.rollback().await.expect("rollback");
@@ -119,13 +138,38 @@ async fn enrol_duplicate_active_returns_already_enrolled_conflict(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn enrol_course_outside_the_witness_is_internal(db: PgPool) {
+    let locked = seed_course(&db, "Locked Course", None).await;
+    let unlocked = seed_course(&db, "Unlocked Course", None).await;
+    let user_id = common::seed_member(&db, "enrol-witness@example.com", "Password!234").await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+    let locks = seats::lock_courses_tx(&mut tx, &[locked])
+        .await
+        .expect("lock course");
+    let err = service::enrol_batch_from_purchase_tx(
+        &mut tx,
+        &locks,
+        user_id,
+        &[locked, unlocked],
+        order_id,
+    )
+    .await
+    .expect_err("a course the witness doesn't cover must be rejected");
+    tx.rollback().await.expect("rollback");
+
+    assert!(matches!(err, AppError::Internal(_)), "got {err:?}");
+}
+
+#[sqlx::test]
 async fn cancel_then_reenrol_succeeds(db: PgPool) {
     let course_id = seed_course(&db, "Reenrol Course", None).await;
     let user_id = common::seed_member(&db, "enrol-re@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
-    let first = service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order_id)
+    let first = enrol(&mut tx, user_id, course_id, order_id)
         .await
         .expect("first enrol");
     tx.commit().await.expect("commit");
@@ -141,7 +185,7 @@ async fn cancel_then_reenrol_succeeds(db: PgPool) {
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let order_id_2 = seed_order(&mut tx2, user_id, 50_000).await;
-    let second = service::enrol_from_purchase_tx(&mut tx2, user_id, course_id, order_id_2)
+    let second = enrol(&mut tx2, user_id, course_id, order_id_2)
         .await
         .expect("re-enrol after cancel should succeed");
     tx2.commit().await.expect("commit tx2");
@@ -156,7 +200,7 @@ async fn duplicate_active_insert_trips_partial_unique_index(db: PgPool) {
     // repository inserts for the same user+course. The second must be
     // rejected by the partial unique index `uniq_enrolments_active` itself,
     // and the error must be recognizable via `is_unique_violation()` — the
-    // exact condition `enrol_from_purchase_tx`'s fallback arm matches on.
+    // exact condition the service's (`enrol_one_tx`) fallback arm matches on.
     // If the index were missing, misnamed, or no longer partial-on-active,
     // this test is the one that catches it.
     let course_id = seed_course(&db, "Constraint Course", None).await;
@@ -207,7 +251,7 @@ async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
     // Commit the conflicting active enrolment from outside the transaction.
     seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
 
-    let err = service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order_id)
+    let err = enrol(&mut tx, user_id, course_id, order_id)
         .await
         .expect_err("the insert must trip the partial unique index");
     tx.rollback().await.expect("rollback");
@@ -220,7 +264,7 @@ async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
-    // Two concurrent enrol_from_purchase_tx calls for the same user+course.
+    // Two concurrent enrol attempts (lock + batch) for the same user+course.
     // Exactly one must succeed and exactly one active row must exist after.
     // Note: this validates the `FOR UPDATE` course-lock serialization — the
     // loser blocks on the lock until the winner commits, so it is the
@@ -249,7 +293,7 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
         .await
         .expect("seed order")
         .id;
-        match service::enrol_from_purchase_tx(&mut tx, user_id, course_id, order_id).await {
+        match enrol(&mut tx, user_id, course_id, order_id).await {
             Ok(_) => {
                 tx.commit().await.expect("commit");
                 true

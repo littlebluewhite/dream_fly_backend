@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::modules::points::service::BalanceLock;
 
 use super::dto::CartResponse;
-use super::model::{CartItemType, CheckoutLine};
+use super::model::{CartItemType, CheckoutLine, CheckoutTargets};
 use super::repository;
 
 pub async fn get_cart(db: &PgPool, user_id: Uuid) -> Result<CartResponse, AppError> {
@@ -149,9 +149,23 @@ pub async fn clear(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
     Ok(())
 }
 
+/// The ids this user's cart targets — step two of the order lock protocol
+/// (`orders::locks::acquire_checkout_locks`), read right after the
+/// `BalanceLock` is taken and before those ids are locked. Strict
+/// pass-through (ADR-0005 轉手層); why no lock of its own is needed lives on
+/// `repository::find_checkout_targets_tx`. Takes `&BalanceLock` for the same
+/// pairing reason as [`find_cart_items_for_checkout_tx`] below.
+pub async fn find_checkout_targets_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    lock: &BalanceLock,
+) -> Result<CheckoutTargets, AppError> {
+    Ok(repository::find_checkout_targets_tx(tx, lock.user_id()).await?)
+}
+
 /// Transactional cart-for-checkout read seam (ADR-0005 轉手層). Locks the
-/// cart rows + priced product/course rows and returns the snapshot
-/// `orders::service::checkout` prices and plans against — see
+/// cart rows and returns the snapshot `orders::service::checkout` prices
+/// and plans against; the priced product/course rows must already be locked
+/// by the order lock protocol (`orders::locks`) — see
 /// `repository::find_cart_items_for_checkout_tx` for the exact locking
 /// shape. Strict pass-through with no error mapping, so checkout's error
 /// contract stays exactly the repository's.

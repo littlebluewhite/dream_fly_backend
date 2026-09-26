@@ -24,11 +24,13 @@ use common::fixtures::{
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::cart::repository as cart_repository;
+use dream_fly_backend::modules::cart::service as cart_service;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
 use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::courses::seats as courses_seats;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
+use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::service;
 use dream_fly_backend::modules::products::service as product_service;
 
@@ -835,8 +837,9 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     // the SAME idempotency key check out the SAME user's cart concurrently
     // (double-click / client retry). Idempotency is scoped per user_id, so
     // both lock attempts land on the same `users` row first — the
-    // unconditional `lock_balance_tx` call, taken before the cart read since
-    // ADR-0007 決策 5 — so one blocks until the other commits (order created + cart
+    // unconditional `lock_balance_tx` step that opens
+    // `orders::locks::acquire_checkout_locks`, before any cart read (ADR-0007
+    // 決策 5) — so one blocks until the other commits (order created + cart
     // cleared + idempotency row inserted, all in that one transaction). Once
     // unblocked, the loser's re-read always finds an empty cart — before the
     // fix, `orders/service.rs:96-98` returned `400 cart is empty` right there,
@@ -912,16 +915,16 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
 }
 
 #[sqlx::test]
-async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db: PgPool) {
-    // Cross-buyer lock-order regression (codex branch-review P1): the cart
-    // checkout read locks its product rows, while checkout's
-    // `reserve_stock_tx` and refund's `restore_stock_tx` take per-row
-    // `FOR UPDATE` locks in `product_id` ASCENDING order. The users-first
+async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPool) {
+    // Cross-buyer lock-order regression (codex branch-review P1): checkout
+    // locks its product rows, while refund's `restore_stock_tx` takes
+    // per-row locks in `product_id` ASCENDING order. The users-first
     // lock (ADR-0007 決策 5) only serializes SAME-buyer paths — for different
-    // buyers, a cart read acquiring SHARE locks in cart-creation order can
+    // buyers, a checkout locking products in cart-creation order can
     // interleave with another order's refund in the opposite order and
-    // deadlock. `find_cart_items_for_checkout_tx` therefore pre-locks the
-    // cart's products ascending, joining the same global product order.
+    // deadlock. The order lock protocol (`orders::locks::acquire_checkout_locks`)
+    // therefore locks the cart's products ascending, joining the same global
+    // product order.
     //
     // Adversarial construction (UUIDv7 is time-ordered, so seeding order ≈
     // ascending ids — same trap as the plan_refund input-order test): sort
@@ -959,14 +962,17 @@ async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db:
     let reader = tokio::task::spawn_blocking(move || {
         handle.block_on(async move {
             let mut tx = db_reader.begin().await?;
-            let lines = cart_repository::find_cart_items_for_checkout_tx(&mut tx, user).await?;
+            let checkout_locks = locks::acquire_checkout_locks(&mut tx, user).await?;
+            let lines =
+                cart_service::find_cart_items_for_checkout_tx(&mut tx, checkout_locks.balance())
+                    .await?;
             tx.commit().await?;
-            Ok::<usize, sqlx::Error>(lines.len())
+            Ok::<usize, AppError>(lines.len())
         })
     });
 
     // Let the reader reach its first product lock. With the ascending
-    // pre-lock it blocks on p_low while holding NO product lock; before the
+    // lock step it blocks on p_low while holding NO product lock; before the
     // fix it grabbed SHARE(p_high) first (cart-creation order) and then
     // blocked on p_low — holding exactly what the refund side needs next.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -984,7 +990,7 @@ async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db:
             .execute(&mut *refund_tx),
     )
     .await
-    .expect("refund-side second ascending lock must not block: the waiting cart read may hold no product lock")
+    .expect("refund-side second ascending lock must not block: the waiting checkout may hold no product lock")
     .expect("refund-side second ascending lock must not deadlock");
 
     refund_tx.commit().await.unwrap();
@@ -992,7 +998,7 @@ async fn checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock(db:
     let lines = reader
         .await
         .expect("reader task panicked")
-        .expect("cart read must succeed once the refund-shaped locker commits");
+        .expect("checkout locks + cart read must succeed once the refund-shaped locker commits");
     assert_eq!(lines, 2, "both cart lines survive the ordered locking");
 }
 
@@ -1003,9 +1009,10 @@ async fn checkout_same_product_two_buyers_queue_instead_of_deadlocking(db: PgPoo
     // cart read's pre-lock was only `FOR SHARE`, two buyers of one product
     // both held SHARE, then both waited on each other's SHARE to UPDATE —
     // PostgreSQL aborted one (SQLSTATE 40P01 → 500). This is what made
-    // `concurrent_checkout_last_unit_only_succeeds_once` flaky. The pre-lock
-    // now takes the write-strength lock up front, so the second buyer
-    // queues behind the first instead.
+    // `concurrent_checkout_last_unit_only_succeeds_once` flaky. The order
+    // lock protocol (`orders::locks::acquire_checkout_locks`) now takes the
+    // write-strength lock up front, so the second buyer queues behind the
+    // first instead.
     let product = common::seed_product(&db, "same-row", 1000, Some(5)).await;
     let first = seed_carted_member(
         &db,
@@ -1022,77 +1029,9 @@ async fn checkout_same_product_two_buyers_queue_instead_of_deadlocking(db: PgPoo
     )
     .await;
 
-    // The first buyer, mid-checkout: cart read done, decrement not yet.
+    // The first buyer, mid-checkout: locks taken, decrement not yet.
     let mut first_tx = db.begin().await.unwrap();
-    cart_repository::find_cart_items_for_checkout_tx(&mut first_tx, first)
-        .await
-        .unwrap();
-
-    // The second buyer's whole checkout, on a real OS thread (same
-    // single-threaded runtime rationale as the tests above).
-    let db_second = Arc::new(db.clone());
-    let handle = tokio::runtime::Handle::current();
-    let second_checkout = tokio::task::spawn_blocking(move || {
-        handle.block_on(async move {
-            service::checkout(
-                db_second.as_ref(),
-                second,
-                None,
-                CheckoutRequest::default(),
-                None,
-                common::studio_now_utc(chrono::Utc::now()),
-            )
-            .await
-        })
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-    // The first buyer decrements and commits. Pre-fix the second buyer also
-    // held SHARE on this row, so this UPDATE closed the cycle.
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        product_service::reserve_stock_tx(&mut first_tx, &[(product, 1, "same-row")]),
-    )
-    .await
-    .expect("first buyer's decrement must not wait on the second buyer")
-    .expect("first buyer's decrement must not deadlock");
-    first_tx.commit().await.unwrap();
-
-    second_checkout
-        .await
-        .expect("second checkout panicked")
-        .expect("second buyer must succeed once the first commits");
-    assert_eq!(common::product_stock(&db, product).await, Some(3));
-}
-
-#[sqlx::test]
-async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool) {
-    // Same as `checkout_same_product_two_buyers_queue_instead_of_deadlocking`
-    // above, but for a course line: the cart read's pre-lock only takes
-    // `FOR SHARE OF c` on the joined course row, while
-    // `seats::lock_course_seats_tx` (called later in the same checkout, to
-    // enrol) takes `FOR UPDATE` on that same row. Two buyers of one course
-    // both hold SHARE, then both wait on each other's SHARE to upgrade to
-    // UPDATE — PostgreSQL aborts one (SQLSTATE 40P01 → 500).
-    let course = seed_course_with_capacity(&db, "same-row-course", None, 5).await;
-    let first = seed_carted_member(
-        &db,
-        "same-row-course-first@example.com",
-        &[SeedCartLine::Course { course_id: course }],
-        0,
-    )
-    .await;
-    let second = seed_carted_member(
-        &db,
-        "same-row-course-second@example.com",
-        &[SeedCartLine::Course { course_id: course }],
-        0,
-    )
-    .await;
-
-    // The first buyer, mid-checkout: cart read done, seat lock not yet.
-    let mut first_tx = db.begin().await.unwrap();
-    cart_repository::find_cart_items_for_checkout_tx(&mut first_tx, first)
+    let first_locks = locks::acquire_checkout_locks(&mut first_tx, first)
         .await
         .unwrap();
 
@@ -1116,19 +1055,96 @@ async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(
         !second_checkout.is_finished(),
-        "second buyer must queue behind the first buyer's course pre-lock"
+        "second buyer must queue behind the first buyer's product lock"
     );
 
-    // The first buyer locks the course's seats and commits. Pre-fix the
-    // second buyer also held SHARE on this row, so this FOR UPDATE closed
-    // the cycle.
+    // The first buyer decrements and commits. Pre-fix the second buyer also
+    // held SHARE on this row, so this UPDATE closed the cycle.
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        courses_seats::lock_course_seats_tx(&mut first_tx, course),
+        product_service::reserve_stock_tx(
+            &mut first_tx,
+            first_locks.products(),
+            &[(product, 1, "same-row")],
+        ),
     )
     .await
-    .expect("first buyer's seat lock must not wait on the second buyer")
-    .expect("first buyer's seat lock must not deadlock");
+    .expect("first buyer's decrement must not wait on the second buyer")
+    .expect("first buyer's decrement must not deadlock");
+    first_tx.commit().await.unwrap();
+
+    second_checkout
+        .await
+        .expect("second checkout panicked")
+        .expect("second buyer must succeed once the first commits");
+    assert_eq!(common::product_stock(&db, product).await, Some(3));
+}
+
+#[sqlx::test]
+async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool) {
+    // Same as `checkout_same_product_two_buyers_queue_instead_of_deadlocking`
+    // above, but for a course line: the cart read used to take only
+    // `FOR SHARE OF c` on the joined course row, while the enrol step
+    // (later in the same checkout) takes `FOR UPDATE` on that same row. Two
+    // buyers of one course both held SHARE, then both waited on each other's
+    // SHARE to upgrade to UPDATE — PostgreSQL aborted one (SQLSTATE 40P01 →
+    // 500). The order lock protocol now takes `FOR UPDATE` up front
+    // (`seats::lock_courses_tx`), so the second buyer queues instead.
+    let course = seed_course_with_capacity(&db, "same-row-course", None, 5).await;
+    let first = seed_carted_member(
+        &db,
+        "same-row-course-first@example.com",
+        &[SeedCartLine::Course { course_id: course }],
+        0,
+    )
+    .await;
+    let second = seed_carted_member(
+        &db,
+        "same-row-course-second@example.com",
+        &[SeedCartLine::Course { course_id: course }],
+        0,
+    )
+    .await;
+
+    // The first buyer, mid-checkout: locks taken, seat count not yet.
+    let mut first_tx = db.begin().await.unwrap();
+    let first_locks = locks::acquire_checkout_locks(&mut first_tx, first)
+        .await
+        .unwrap();
+
+    // The second buyer's whole checkout, on a real OS thread (same
+    // single-threaded runtime rationale as the tests above).
+    let db_second = Arc::new(db.clone());
+    let handle = tokio::runtime::Handle::current();
+    let second_checkout = tokio::task::spawn_blocking(move || {
+        handle.block_on(async move {
+            service::checkout(
+                db_second.as_ref(),
+                second,
+                None,
+                CheckoutRequest::default(),
+                None,
+                common::studio_now_utc(chrono::Utc::now()),
+            )
+            .await
+        })
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !second_checkout.is_finished(),
+        "second buyer must queue behind the first buyer's course lock"
+    );
+
+    // The first buyer counts the course's seats and commits. Pre-fix the
+    // second buyer also held SHARE on this row, so the first buyer's
+    // FOR UPDATE closed the cycle.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        courses_seats::course_seats_tx(&mut first_tx, first_locks.courses(), course),
+    )
+    .await
+    .expect("first buyer's seat count must not wait on the second buyer")
+    .expect("first buyer's seat count must not deadlock");
     first_tx.commit().await.unwrap();
 
     second_checkout
@@ -1136,8 +1152,8 @@ async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool
         .expect("second checkout panicked")
         .expect("second buyer must succeed once the first commits");
 
-    // The first buyer only took the seat lock directly (never ran a full
-    // checkout), so only the second buyer's checkout actually enrols.
+    // The first buyer only locked and counted seats directly (never ran a
+    // full checkout), so only the second buyer's checkout actually enrols.
     let active_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1")
             .bind(course)
@@ -1145,6 +1161,56 @@ async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool
             .await
             .unwrap();
     assert_eq!(active_count, 1, "second buyer's checkout enrols");
+}
+
+#[sqlx::test]
+async fn checkout_locks_block_same_user_cart_insert_until_commit(db: PgPool) {
+    // The order lock protocol reads the cart's target ids WITHOUT locking
+    // them, then locks exactly those products/courses. That is only sound if
+    // no new cart line can appear before the snapshot read: `cart_items.user_id`
+    // is an FK into `users`, so inserting a line takes `FOR KEY SHARE` on the
+    // buyer's `users` row — which `lock_balance_tx`'s `FOR UPDATE` (step one
+    // of `acquire_checkout_locks`) blocks until the checkout's tx ends.
+    let in_cart = common::seed_product(&db, "targets-in-cart", 1000, Some(5)).await;
+    let late = common::seed_product(&db, "targets-late", 1000, Some(5)).await;
+    let user = seed_carted_member(
+        &db,
+        "targets-premise@example.com",
+        &[SeedCartLine::Product {
+            product_id: in_cart,
+            quantity: 1,
+        }],
+        0,
+    )
+    .await;
+
+    let mut tx = db.begin().await.unwrap();
+    let checkout_locks = locks::acquire_checkout_locks(&mut tx, user).await.unwrap();
+    assert_eq!(checkout_locks.products().ids(), &[in_cart]);
+
+    // The same user adds a new line from another connection, on a real OS
+    // thread (same single-threaded runtime rationale as the tests above).
+    let db_insert = Arc::new(db.clone());
+    let handle = tokio::runtime::Handle::current();
+    let insert = tokio::task::spawn_blocking(move || {
+        handle.block_on(cart_repository::add_product_item(
+            db_insert.as_ref(),
+            user,
+            late,
+            1,
+        ))
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !insert.is_finished(),
+        "a new cart line must wait for the checkout's users-row lock"
+    );
+
+    tx.commit().await.unwrap();
+    insert
+        .await
+        .expect("insert task panicked")
+        .expect("the insert goes through once the checkout commits");
 }
 
 #[sqlx::test]

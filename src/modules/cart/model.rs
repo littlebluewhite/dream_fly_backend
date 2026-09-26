@@ -23,11 +23,9 @@ impl CartItemType {
     /// SQL-literal sites, by function (each hard-codes `'product'`/`'course'`):
     /// - `cart::repository::add_product_item` — `'product'::cart_item_type` on insert
     /// - `cart::repository::add_course_item` — `'course'::cart_item_type` on insert
-    /// - `cart::repository::find_cart_items_for_checkout_tx` — ×6: the
-    ///   `item_type = '…'::cart_item_type` filter in each of the two
-    ///   (product, course) pre-lock queries, plus the `'product'`/`'course'`
-    ///   SELECT literal and the `item_type = '…'` filter, once in each of the
-    ///   two (product, course) branch queries
+    /// - `cart::repository::find_cart_items_for_checkout_tx` — ×4: the
+    ///   `'product'`/`'course'` SELECT literal and the `item_type = '…'`
+    ///   filter, once in each of the two (product, course) branch queries
     /// - `orders::repository::create_order_items` — the `CASE WHEN
     ///   u.product_id IS NOT NULL THEN 'product' ELSE 'course' END` derivation
     /// - `reports::repository` income-source `CASE` — maps `oi.item_type =
@@ -134,6 +132,16 @@ pub struct CheckoutLine {
     pub price_cents: i64,
     pub name: String,
     pub is_active: bool,
+}
+
+/// The ids a checkout's cart targets — what the order lock protocol
+/// (`orders::locks::acquire_checkout_locks`) locks before the cart snapshot
+/// is read. Produced by `repository::find_checkout_targets_tx`; unsorted
+/// (the lock owners sort).
+#[derive(Debug, sqlx::FromRow)]
+pub struct CheckoutTargets {
+    pub product_ids: Vec<Uuid>,
+    pub course_ids: Vec<Uuid>,
 }
 
 /// 行小計的溢位安全乘法——pricing 與 CartResponse 共用,溢位文案各自保留。

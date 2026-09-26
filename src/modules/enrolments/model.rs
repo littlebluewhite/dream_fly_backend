@@ -21,8 +21,8 @@ impl EnrolmentStatus {
     }
 }
 
-/// Bare `enrolments` table row. This is what `enrol_from_purchase_tx`
-/// returns — it has no course fields since the checkout flow that calls it
+/// Bare `enrolments` table row. This is what `enrol_batch_from_purchase_tx`
+/// returns (one per course) — it has no course fields since the checkout flow that calls it
 /// already holds the `Course` it validated capacity against.
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct Enrolment {

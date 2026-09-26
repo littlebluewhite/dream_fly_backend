@@ -15,6 +15,7 @@
 //! - `reserve_stock_tx`: insufficient stock -> Conflict, rollback leaves stock untouched
 //! - `reserve_stock_tx`: descending input still reports the smallest product_id first (lock order)
 //! - `reserve_stock_tx`: empty lines is a no-op returning an empty map
+//! - `reserve_stock_tx`: a line outside the `ProductLocks` witness -> Internal
 
 mod common;
 
@@ -378,8 +379,12 @@ async fn reserve_stock_tx_decrements_mixed_finite_and_unlimited_stock(db: PgPool
     let unlimited = common::seed_product(&db, "reserve-unlimited", 500, None).await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let locks = service::lock_products_tx(&mut tx, &[finite, unlimited])
+        .await
+        .expect("lock products");
     let reserved = service::reserve_stock_tx(
         &mut tx,
+        &locks,
         &[(finite, 3, "Finite Stock"), (unlimited, 5, "Unlimited Stock")],
     )
     .await
@@ -409,7 +414,10 @@ async fn reserve_stock_tx_insufficient_returns_conflict_and_rolls_back(db: PgPoo
     let product = common::seed_product(&db, "reserve-short", 1000, Some(1)).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::reserve_stock_tx(&mut tx, &[(product, 2, "Widget")])
+    let locks = service::lock_products_tx(&mut tx, &[product])
+        .await
+        .expect("lock product");
+    let err = service::reserve_stock_tx(&mut tx, &locks, &[(product, 2, "Widget")])
         .await
         .expect_err("insufficient stock should fail");
     // Roll back explicitly so the connection is cleanly back in the pool
@@ -434,9 +442,9 @@ async fn reserve_stock_tx_insufficient_returns_conflict_and_rolls_back(db: PgPoo
 async fn reserve_stock_tx_insufficient_multiple_reports_smallest_product_id_despite_descending_input(
     db: PgPool,
 ) {
-    // Two products, both insufficient for the requested quantity. The lock
-    // order inside `reserve_stock_tx` sorts by product_id ascending before
-    // touching any row, so whichever product has the smaller id must be
+    // Two products, both insufficient for the requested quantity.
+    // `reserve_stock_tx` walks the lines in the `ProductLocks` witness's lock
+    // order (product_id ascending), so whichever product has the smaller id must be
     // the one reported as the Conflict — regardless of the order the
     // caller listed the lines in. UUIDv7 creation order is not guaranteed
     // to match value order within the same millisecond, so the smaller/
@@ -452,11 +460,15 @@ async fn reserve_stock_tx_insufficient_multiple_reports_smallest_product_id_desp
     };
 
     let mut tx = db.begin().await.expect("begin tx");
-    // Deliberately descending (larger id first) — the sort inside
-    // `reserve_stock_tx`, not this input order, must decide which line is
-    // reached (and fails) first.
+    let locks = service::lock_products_tx(&mut tx, &[larger_id, smaller_id])
+        .await
+        .expect("lock products");
+    // Deliberately descending (larger id first) — the witness's lock order,
+    // not this input order, must decide which line is reached (and fails)
+    // first.
     let err = service::reserve_stock_tx(
         &mut tx,
+        &locks,
         &[(larger_id, 5, larger_name), (smaller_id, 5, smaller_name)],
     )
     .await
@@ -476,10 +488,36 @@ async fn reserve_stock_tx_insufficient_multiple_reports_smallest_product_id_desp
 #[sqlx::test]
 async fn reserve_stock_tx_empty_lines_returns_empty_map(db: PgPool) {
     let mut tx = db.begin().await.expect("begin tx");
-    let reserved = service::reserve_stock_tx(&mut tx, &[])
+    let locks = service::lock_products_tx(&mut tx, &[])
+        .await
+        .expect("lock nothing");
+    let reserved = service::reserve_stock_tx(&mut tx, &locks, &[])
         .await
         .expect("empty lines must be a no-op success");
     tx.commit().await.expect("commit");
 
     assert!(reserved.is_empty(), "empty input must return an empty map");
+}
+
+#[sqlx::test]
+async fn reserve_stock_tx_line_outside_the_witness_is_internal(db: PgPool) {
+    let locked = common::seed_product(&db, "reserve-locked", 1000, Some(5)).await;
+    let unlocked = common::seed_product(&db, "reserve-unlocked", 1000, Some(5)).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let locks = service::lock_products_tx(&mut tx, &[locked])
+        .await
+        .expect("lock product");
+    let err = service::reserve_stock_tx(
+        &mut tx,
+        &locks,
+        &[(locked, 1, "Locked"), (unlocked, 1, "Unlocked")],
+    )
+    .await
+    .expect_err("a line the witness doesn't cover must be rejected");
+    tx.rollback().await.expect("rollback");
+
+    assert!(matches!(err, AppError::Internal(_)), "got {err:?}");
+    assert_eq!(common::product_stock(&db, locked).await, Some(5));
+    assert_eq!(common::product_stock(&db, unlocked).await, Some(5));
 }

@@ -3,24 +3,25 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::modules::courses::seats;
+use crate::modules::courses::seats::{self, CourseLocks};
 
 use super::dto::{AttendanceEntryResponse, EnrolmentResponse, MyEnrolmentResponse};
 use super::model::Enrolment;
 use super::repository;
 
-/// 容量與重複檢查後建立報名（在結帳交易內呼叫）。
+/// 容量與重複檢查後建立報名（`enrol_batch_from_purchase_tx` 的私有單步）。
 /// 滿班 → AppError::Conflict("course is full")；已報 → Conflict("already enrolled")。
-pub async fn enrol_from_purchase_tx(
+async fn enrol_one_tx(
     tx: &mut Transaction<'_, Postgres>,
+    locks: &CourseLocks,
     user_id: Uuid,
     course_id: Uuid,
     order_id: Uuid,
 ) -> Result<Enrolment, AppError> {
-    // Lock the course row so a concurrent enrolment for the same course
-    // can't read a stale capacity count (lock-then-count ordering lives in
-    // `seats::lock_course_seats_tx`).
-    let seats = seats::lock_course_seats_tx(tx, course_id)
+    // The course row is already locked (`locks`), so a concurrent enrolment
+    // for the same course can't read a stale capacity count (lock-then-count
+    // ordering lives in `seats::course_seats_tx`).
+    let seats = seats::course_seats_tx(tx, locks, course_id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
@@ -40,31 +41,31 @@ pub async fn enrol_from_purchase_tx(
 }
 
 /// 批次課程報名(結帳交易內呼叫)——`checkout` 課程行的深函式對應物,鏡射
-/// `products::service::reserve_stock_tx` 對商品行的角色:把「課程行怎麼上鎖」
-/// 的紀律收進一個 owner,呼叫端不再自己排序。
+/// `products::service::reserve_stock_tx` 對商品行的角色。
 ///
-/// 複製 `course_ids` 後 `sort()`(鏡射 `reserve_stock_tx` 的 product_id 排序):
-/// `enrol_from_purchase_tx` 會對每門課的 `courses` 列取 `FOR UPDATE`,兩個並發
-/// 結帳若共用兩門課、以相反順序上鎖就會死鎖——排序就放在此處、拿寫鎖之前,是這個
-/// 寫入保留序(type-major、id-minor)紀律的 course-lines owner。**不 dedup**:
-/// `uniq_cart_items_course` partial unique index(migration `20260704000001`)
-/// 保證同一使用者的購物車不會出現同一門課兩行,`course_ids` 天生無重複。
+/// 收 `&CourseLocks`(`courses::seats`):每門課的 `courses` 列必須已由
+/// `lock_courses_tx` 鎖住(witness 外的課程 → `AppError::Internal`),並依
+/// witness 的鎖序(`CourseLocks::in_lock_order`,course_id 升序)逐一走訪——
+/// 排序歸 witness(訂單鎖協定,`orders::locks`),本函式不再自行排序。**不
+/// dedup**:`uniq_cart_items_course` partial unique index(migration
+/// `20260704000001`)保證同一使用者的購物車不會出現同一門課兩行,`course_ids`
+/// 天生無重複。
 ///
-/// 逐一委派既有 `enrol_from_purchase_tx`(仍 public——它是座位鎖協定的文件化
-/// owner)。任一門課額滿或重複報名回 `AppError::Conflict`,`?` 直接上拋,讓整筆
+/// 逐一委派私有 `enrol_one_tx`。任一門課額滿或重複報名回 `AppError::Conflict`
+/// (多門同時失敗時點名鎖序最前、即 course_id 最小者),`?` 直接上拋,讓整筆
 /// 結帳交易回滾——部分報名不是可接受的結果(見 ADR-0002)。
 pub async fn enrol_batch_from_purchase_tx(
     tx: &mut Transaction<'_, Postgres>,
+    locks: &CourseLocks,
     user_id: Uuid,
     course_ids: &[Uuid],
     order_id: Uuid,
 ) -> Result<Vec<Enrolment>, AppError> {
-    let mut sorted = course_ids.to_vec();
-    sorted.sort();
+    let ordered = locks.in_lock_order(course_ids.to_vec(), |course_id| *course_id)?;
 
-    let mut enrolments = Vec::with_capacity(sorted.len());
-    for course_id in sorted {
-        enrolments.push(enrol_from_purchase_tx(tx, user_id, course_id, order_id).await?);
+    let mut enrolments = Vec::with_capacity(ordered.len());
+    for course_id in ordered {
+        enrolments.push(enrol_one_tx(tx, locks, user_id, course_id, order_id).await?);
     }
 
     Ok(enrolments)

@@ -516,3 +516,44 @@ UPDATE，PostgreSQL 擇一中止（`40P01` → 500）——與 product 列修前
 
 回歸測試：`checkout_same_course_two_buyers_queue_instead_of_deadlocking`（修前穩定重現
 `40P01`）。
+
+## Addendum（2026-09-26）：鎖協定取代逐站排序與「不做共用 helper」裁決
+
+前三則 Addendum 之後，checkout 的取鎖散在四處：`checkout` 開頭的 `lock_balance_tx`、
+`cart::repository::find_cart_items_for_checkout_tx` 裡兩條升序預鎖查詢（products `FOR NO KEY UPDATE`、
+courses `FOR UPDATE`）、`reserve_stock_tx` 與 `enrol_batch_from_purchase_tx` 各自對輸入排序。原本的
+裁決是「每個拿寫鎖的站點各自排序、不做共用 helper」（`checkout` 內「Cross-buyer dimension」
+anchor 與 CONTEXT「行計畫」詞條）。本則推翻該裁決：取鎖收進一個協定，排序收進鎖 witness。
+
+**遷移登記**（行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序、ledger 列序逐位元等價）：
+
+- 新增 `orders::locks::acquire_checkout_locks(tx, user_id) → CheckoutLocks`，順序固定為
+  `lock_balance_tx`（users `FOR UPDATE`）→ `cart::service::find_checkout_targets_tx`（讀購物車目標
+  id，不上鎖）→ `products::service::lock_products_tx`（升序 `FOR NO KEY UPDATE`）→
+  `courses::seats::lock_courses_tx`（升序 `FOR UPDATE`）。`checkout` 以它取代 `lock_balance_tx`；
+  404「user not found」仍是第一步、仍是結帳交易的第一條 statement。
+- witness 住在各表 owner、依賴方向維持 orders → products/courses：`ProductLocks`
+  （`products::service`）與 `CourseLocks`（`courses::seats`），欄位私有、唯一建構點為各自的
+  `lock_*_tx`，`ids()` 升序去重，`in_lock_order(items, id)` 是「依鎖序走訪」的單一 owner、未涵蓋的
+  id → `AppError::Internal`。`reserve_stock_tx` 改收 `&ProductLocks`；`enrol_batch_from_purchase_tx`
+  改收 `&CourseLocks`，原 `enrol_from_purchase_tx` 降為私有 `enrol_one_tx`；
+  `courses::seats::course_seats_tx(tx, &CourseLocks, course_id)` 取代 `lock_course_seats_tx`（鎖已先
+  取，COUNT 仍是取鎖之後的另一條 statement）。witness 順序即今日的升序，多品項同時缺貨／額滿時
+  409 點名的仍是最小 id。
+- 購物車快照拿掉兩條預鎖與 `FOR SHARE OF p`／`FOR SHARE OF c`，只保留 `FOR UPDATE OF ci`。讀購物車
+  id 不需另外上鎖的前提：`cart_items.user_id` FK 讓任何新增購物車行都要對 users 列取
+  `FOR KEY SHARE`，被第一步的 `FOR UPDATE` 擋到 commit——新測試
+  `checkout_locks_block_same_user_cart_insert_until_commit` 釘住它。刪除購物車行不受擋，但只會讓
+  快照變少，快照必落在 witness 內。
+- 「Cross-buyer dimension」anchor 從 `checkout` 函式體搬進 `orders::locks` 模組 doc（改寫為協定三
+  站：取鎖、witness 序寫入、退款回補）；`products/service.rs`、`cart/repository.rs`、
+  `points/service.rs`（`BalanceLock` doc 的鎖序圖）與 `tests/service_orders.rs` 的指涉同步改指。
+- 退款為過渡狀態：`compensate_order_artifacts_tx` 在 `restore_stock_tx` 前呼叫
+  `lock_products_tx`（同樣升序），witness 暫不使用；退款側自己的協定留待後續收斂。
+
+**測試**：`checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock` 更名
+`checkout_locks_take_products_ascending_no_cross_buyer_deadlock`，與兩個 same-row 排隊測試一起改走
+`acquire_checkout_locks`（same-product 測試補上「第二個買家仍在排隊」的 `!is_finished()` 斷言）；
+`service_products` 四個 reserve 測試先 `lock_products_tx`，新增 witness 外品項 → Internal；
+`service_enrolments` 九個呼叫改 `lock_courses_tx` + batch，新增同類 Internal 測試；兩個 owner 各有
+`in_lock_order` 單元測試。本檔其餘敘述維持決策當下狀態。

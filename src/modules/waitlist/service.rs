@@ -11,7 +11,7 @@ use super::repository;
 /// 加入候補：課程必須存在、上架、且已滿班才允許加入；重複候補會被擋下。
 ///
 /// No `FOR UPDATE` lock on the fullness check here (unlike enrolments'
-/// `enrol_from_purchase_tx`, which takes `seats::lock_course_seats_tx`): a
+/// `enrol_batch_from_purchase_tx`, which counts under `seats::lock_courses_tx`): a
 /// waitlist join racing a concurrent enrolment cancellation and reading a
 /// stale "full" count is acceptable staleness for this feature — the
 /// `&PgPool`-typed `seats::course_seats` declares exactly that (see

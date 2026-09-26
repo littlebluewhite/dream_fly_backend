@@ -18,15 +18,17 @@
 //!
 //! 【鎖策略】鎖策略以參數型別宣告,不靠呼叫端自律:
 //! - `&PgPool`、無前綴(`course_seats`)= 無鎖快照,stale 可接受;
-//! - `&mut Transaction` + `lock_` 前綴(`lock_course_seats_tx`、
+//! - `&mut Transaction` + `lock_` 前綴(`lock_courses_tx`、
 //!   `lock_session_tx`)= 在呼叫端交易內取 `FOR UPDATE` 列鎖;
-//! - `_tx` 後綴、無 `lock_` 前綴(`session_seats_tx`)= 交易內讀取,呼叫前
-//!   必須已持對應列鎖——`session_seats_tx` 這條由 [`SessionLock`] witness
-//!   型別擔保(欄位私有,唯一建構點 `lock_session_tx`),不再只靠 doc 前綴
-//!   宣示。
+//! - `_tx` 後綴、無 `lock_` 前綴(`course_seats_tx`、`session_seats_tx`)=
+//!   交易內讀取,呼叫前必須已持對應列鎖——由 witness 型別擔保
+//!   ([`CourseLocks`] 唯一建構點 `lock_courses_tx`、[`SessionLock`] 唯一建構點
+//!   `lock_session_tx`,欄位皆私有),不再只靠 doc 前綴宣示。
 
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
+
+use crate::error::AppError;
 
 /// 課程層座位快照:容量與 active 報名數。
 #[derive(Debug)]
@@ -42,20 +44,87 @@ impl CourseSeats {
     }
 }
 
-/// 【courses 列 FOR UPDATE】enrol 用
-/// (`enrolments::service::enrol_from_purchase_tx`)。內部兩條 statement、
-/// 順序固定:先 `FOR UPDATE` 取課程列鎖,再 COUNT。READ COMMITTED 下
-/// snapshot 以 statement 為單位——COUNT 作為取鎖**之後**的第二條 statement,
-/// 才會在(可能阻塞等待前一筆報名 commit 的)取鎖完成後建立新 snapshot、
-/// 數到對方剛寫入的列;若合併為單一 statement,COUNT 子查詢用的是取鎖前
-/// 的 snapshot,擋不住併發報名。**不可合併為單一 statement、順序不可對調。**
-/// `None` = 課程不存在。
-pub async fn lock_course_seats_tx(
+/// 見證 `lock_courses_tx` 已在呼叫端仍開啟的交易內,對這些 `courses` 列取得
+/// `FOR UPDATE` 鎖——訂單鎖協定(`orders::locks`)的 courses 站。欄位私有,
+/// 僅 `lock_courses_tx` 能建構(比照 [`SessionLock`])。
+///
+/// `ids` 是實際鎖到的列 id,升序去重——即取鎖順序(PostgreSQL 的 `uuid`
+/// 依位元組排序,與 `Uuid` 的 `Ord` 一致)。
+/// [`CourseLocks::in_lock_order`] 是「依鎖序走訪」的單一 owner,寫鎖端
+/// (`enrolments::service::enrol_batch_from_purchase_tx`)不再自行排序。
+#[derive(Debug)]
+pub struct CourseLocks {
+    ids: Vec<Uuid>,
+}
+
+impl CourseLocks {
+    pub fn ids(&self) -> &[Uuid] {
+        &self.ids
+    }
+
+    /// 把 `items` 排成本 witness 的鎖序(course id 升序)。witness 未涵蓋的
+    /// id → `AppError::Internal`——寫一列沒鎖過的課程是協定 bug,不是業務拒絕。
+    pub fn in_lock_order<T>(
+        &self,
+        items: Vec<T>,
+        id: impl Fn(&T) -> Uuid,
+    ) -> Result<Vec<T>, AppError> {
+        if let Some(item) = items.iter().find(|item| !self.covers(id(item))) {
+            return Err(not_covered(id(item)));
+        }
+        let mut items = items;
+        items.sort_by_key(|item| id(item));
+        Ok(items)
+    }
+
+    fn covers(&self, course_id: Uuid) -> bool {
+        self.ids.binary_search(&course_id).is_ok()
+    }
+}
+
+fn not_covered(course_id: Uuid) -> AppError {
+    AppError::Internal(anyhow::anyhow!(
+        "course {course_id} is not covered by CourseLocks"
+    ))
+}
+
+/// 【courses 列 FOR UPDATE,升序】訂單鎖協定的 courses 站
+/// (`orders::locks::acquire_checkout_locks`)。`ORDER BY id` 升序取鎖、
+/// 回傳 [`CourseLocks`] witness;查無的 id 不在 witness 內。直接取
+/// `FOR UPDATE`——之後 enrol 需要的就是這個強度,不再升級(兩個買同課程的
+/// 人在此排隊,而非各持 SHARE 互等升級而死鎖)。
+pub async fn lock_courses_tx(
     tx: &mut Transaction<'_, Postgres>,
+    ids: &[Uuid],
+) -> Result<CourseLocks, sqlx::Error> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM courses WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+    )
+    .bind(ids)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(CourseLocks { ids })
+}
+
+/// 【`&CourseLocks` 見證課程列鎖已持有】enrol 用
+/// (`enrolments::service::enrol_batch_from_purchase_tx`),取代原
+/// `lock_course_seats_tx`。`course_id` 不在 witness 內 → `AppError::Internal`。
+/// 鎖已由 `lock_courses_tx` 先取,COUNT 仍是取鎖**之後**的另一條 statement:
+/// READ COMMITTED 下 snapshot 以 statement 為單位——取鎖(可能阻塞等待前一筆
+/// 報名 commit)完成後才建立的 snapshot,才數得到對方剛寫入的列。**COUNT 不可
+/// 併入取鎖那條 statement。** `None` = 課程不存在。
+pub async fn course_seats_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    locks: &CourseLocks,
     course_id: Uuid,
-) -> Result<Option<CourseSeats>, sqlx::Error> {
+) -> Result<Option<CourseSeats>, AppError> {
+    if !locks.covers(course_id) {
+        return Err(not_covered(course_id));
+    }
+
     let Some(max_students) =
-        sqlx::query_scalar::<_, i32>("SELECT max_students FROM courses WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar::<_, i32>("SELECT max_students FROM courses WHERE id = $1")
             .bind(course_id)
             .fetch_optional(&mut **tx)
             .await?
@@ -232,6 +301,38 @@ mod tests {
             active_count: 1,
         };
         assert!(!seats.is_full());
+    }
+
+    // --- CourseLocks::in_lock_order ---
+
+    fn ids() -> (Uuid, Uuid, Uuid) {
+        let mut v = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        v.sort();
+        (v[0], v[1], v[2])
+    }
+
+    #[test]
+    fn in_lock_order_sorts_items_ascending_by_id() {
+        let (low, mid, high) = ids();
+        let locks = CourseLocks {
+            ids: vec![low, mid, high],
+        };
+        let ordered = locks
+            .in_lock_order(vec![high, low, mid], |id| *id)
+            .expect("all covered");
+        assert_eq!(ordered, vec![low, mid, high]);
+    }
+
+    #[test]
+    fn in_lock_order_rejects_an_id_outside_the_witness_as_internal() {
+        let (low, mid, high) = ids();
+        let locks = CourseLocks {
+            ids: vec![low, high],
+        };
+        let err = locks
+            .in_lock_order(vec![low, mid], |id| *id)
+            .expect_err("mid was never locked");
+        assert!(matches!(err, AppError::Internal(_)), "got {err:?}");
     }
 
     // --- SessionSeats::remaining 表格(取自既有測試註解與契約 §3.20 範例)---

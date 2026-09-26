@@ -23,6 +23,7 @@ use super::dto::{
     OrderSummary,
 };
 use super::fulfilment;
+use super::locks;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
 use super::refund::{self, TransitionDecision};
@@ -74,9 +75,10 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 /// - Invalid payment method: 422 (`parse_request`), before the transaction
 ///   opens.
 /// - Unknown user: 404 from the points-balance lock (`lock_balance_tx`,
-///   unconditional and tx-first — the user-first lock order that keeps
-///   refund/cancel compensation mutually exclusive with checkout for the
-///   same buyer; ADR-0007).
+///   the first step of `locks::acquire_checkout_locks` — unconditional and
+///   tx-first, the user-first lock order that keeps refund/cancel
+///   compensation mutually exclusive with checkout for the same buyer;
+///   ADR-0007).
 /// - Empty cart: 400 — unless a same-key twin already committed, which is
 ///   replayed instead.
 /// - Deactivated line: 422 (`fulfilment::ensure_all_purchasable`).
@@ -133,43 +135,26 @@ pub async fn checkout(
     // consistent and serialized.
     let mut tx = db.begin().await?;
 
-    // Lock the buyer's points-balance row FIRST — unconditionally, even when
-    // `use_points=false` — and BEFORE the cart read below. Checkout half of
-    // the user-first lock order; full rationale now lives on `BalanceLock`'s
-    // doc (`points::service`).
-    //
-    // Cross-buyer dimension (single code anchor for this argument; prose
-    // authority remains ADR-0007 決策 5): the users-first lock above only
-    // serializes the SAME buyer's checkout vs refund — two different buyers
-    // hold two different `users` rows, so it does nothing for them. That gap
-    // is closed by a *global* `product_id`-ascending order enforced
-    // independently at every site that ever locks a `products` row, so no
-    // two transactions can hold locks on the same pair of products in
-    // opposite orders, regardless of which buyers or paths are involved:
-    //   1. cart's pre-lock (UPDATE-strength, `FOR NO KEY UPDATE`, so two
-    //      buyers of one product queue instead of deadlocking on a
-    //      SHARE→UPDATE upgrade) — dedicated pre-lock query inside
-    //      `find_cart_items_for_checkout_tx` (`cart::repository`)
-    //   2. checkout's UPDATE reservation — `reserve_stock_tx` (below)
-    //   3. refund's UPDATE restore — `restore_stock_tx`
-    //      (`compensate_order_artifacts_tx`)
-    // Regression test:
-    // `checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`.
-    // The sort itself is not shared code: each site's write-lock owner sorts
-    // independently — no shared helper (CONTEXT.md「行計畫」詞條裁決).
-    let balance_lock = points_service::lock_balance_tx(&mut tx, user_id).await?;
+    // Take every lock this checkout will need, in the order lock protocol's
+    // fixed order: the buyer's points-balance row FIRST (unconditionally,
+    // even when `use_points=false`, and before any cart read), then the
+    // cart's products and courses ascending. Same-buyer and cross-buyer
+    // rationale: `orders::locks` module doc (ADR-0007 決策 5).
+    let locks = locks::acquire_checkout_locks(&mut tx, user_id).await?;
 
-    // Lock and read cart items + current product/course prices. Course
+    // Lock and read cart items + current product/course prices (the
+    // product/course rows are already held by `locks`). Course
     // lines are now first-class (the Task-3 "not yet supported" guard is
     // gone).
-    let cart_items = cart_service::find_cart_items_for_checkout_tx(&mut tx, &balance_lock).await?;
+    let cart_items =
+        cart_service::find_cart_items_for_checkout_tx(&mut tx, locks.balance()).await?;
 
     if cart_items.is_empty() {
         // A concurrent request carrying the *same* idempotency key may have
         // already won this cart. Idempotency is scoped per user_id, so both
         // requests first contend on the SAME buyer's `users` row: the
-        // unconditional `lock_balance_tx` call above (ADR-0007 決策 5 moved
-        // it ahead of the cart read) is what actually serializes
+        // unconditional `lock_balance_tx` step of `acquire_checkout_locks`
+        // above (ahead of any cart read) is what actually serializes
         // the two checkouts. The loser blocks there until the winner locks
         // these same cart rows, runs the whole checkout, clears the cart,
         // and commits (`clear_cart_tx`/`insert_idempotency_tx`/
@@ -250,14 +235,14 @@ pub async fn checkout(
     let outcome = pricing::price(
         &cart_items,
         coupon.as_ref(),
-        balance_lock.balance(),
+        locks.balance().balance(),
         intent.use_points,
     )?;
 
     // Stock decrement — product lines only; fail fast on shortage.
-    // `products::service::reserve_stock_tx` owns the lock-ordering
-    // discipline now (sorts by product_id before touching any row — see
-    // its doc comment for why) and hands back every decremented row,
+    // `products::service::reserve_stock_tx` walks the lines in the
+    // `ProductLocks` witness's lock order (`in_lock_order`, ascending
+    // product_id — see `orders::locks`) and hands back every decremented row,
     // each already locked by this transaction; the subscription grant
     // below reuses those rows instead of re-reading them.
     //
@@ -275,7 +260,8 @@ pub async fn checkout(
         .iter()
         .map(|p| (p.product_id, p.quantity, p.name.as_str()))
         .collect();
-    let reserved = product_service::reserve_stock_tx(&mut tx, &reserve_lines).await?;
+    let reserved =
+        product_service::reserve_stock_tx(&mut tx, locks.products(), &reserve_lines).await?;
 
     // Generate an order number. The `DF-YYYYMMDD` date prefix is the
     // studio-LOCAL calendar day (`studio_clock::today` on the handler's
@@ -322,20 +308,22 @@ pub async fn checkout(
     repository::create_order_items(&mut tx, order.id, &lines).await?;
 
     // Artifacts.
-    // Enrolments — course lines. `enrol_batch_from_purchase_tx` owns the
-    // course-line lock-ordering discipline now (sorts by course_id
-    // before taking any `FOR UPDATE` on a course row, so two concurrent
-    // checkouts sharing two courses can't lock them in opposite orders
-    // and deadlock — the same discipline
-    // `products::service::reserve_stock_tx` applies to product lines
-    // above — course lines get a batch deep function of their own at
-    // last, so this body no longer sorts them itself). A full course or
+    // Enrolments — course lines. `enrol_batch_from_purchase_tx` walks
+    // them in the `CourseLocks` witness's lock order (`in_lock_order`,
+    // ascending course_id — the same protocol `reserve_stock_tx` follows
+    // for product lines above; see `orders::locks`). A full course or
     // a duplicate active
     // enrolment rolls back the *entire* checkout (order, order_items,
     // stock decrement — all of it), which is correct: partially
     // fulfilling a cart is not an acceptable outcome.
-    enrolments_service::enrol_batch_from_purchase_tx(&mut tx, user_id, &plan.course_ids, order.id)
-        .await?;
+    enrolments_service::enrol_batch_from_purchase_tx(
+        &mut tx,
+        locks.courses(),
+        user_id,
+        &plan.course_ids,
+        order.id,
+    )
+    .await?;
 
     // Subscriptions — product lines whose product_type is
     // entitlement-eligible. `grant_from_purchase_tx` itself returns
@@ -726,8 +714,9 @@ pub async fn update_order_status(
 ///    index `uniq_point_ledger_refund_once` caps each direction at one row per
 ///    order.
 /// 4. Restock — only the `stock_decremented=true` lines (`plan_refund` already
-///    filtered); `restore_stock_tx` owns the ascending-`product_id` write-lock
-///    ordering.
+///    filtered); a transitional `lock_products_tx` locks them ascending
+///    first, and `restore_stock_tx` writes them in the same
+///    ascending-`product_id` order.
 /// 5. Cancel the order's enrolments + subscriptions (order-scoped batch
 ///    UPDATEs, naturally idempotent via `status <> 'cancelled'`, so a buyer
 ///    who already self-cancelled an enrolment is a harmless 0-row no-op).
@@ -757,6 +746,11 @@ async fn compensate_order_artifacts_tx(
         .iter()
         .map(|r| (r.product_id, r.quantity))
         .collect();
+    // Transitional: lock the rows ascending (`lock_products_tx`, the same
+    // products stage checkout's `orders::locks` protocol uses) before the
+    // restore; witness unused until refund gets a protocol of its own.
+    let restock_ids: Vec<Uuid> = restocks.iter().map(|(product_id, _)| *product_id).collect();
+    product_service::lock_products_tx(tx, &restock_ids).await?;
     product_service::restore_stock_tx(tx, &restocks).await?;
 
     // 5. Cancel the order's enrolments + subscriptions (order-scoped,

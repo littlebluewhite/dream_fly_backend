@@ -617,7 +617,7 @@ pub async fn seed_subscription(
     id
 }
 
-/// Insert an enrolment row directly (bypassing `enrol_from_purchase_tx`) so
+/// Insert an enrolment row directly (bypassing `enrol_batch_from_purchase_tx`) so
 /// HTTP tests can set up exact states — status and `enrolled_at` ordering —
 /// without a real checkout. `order_id` is left NULL (a nullable FK; these
 /// tests don't need a real order row). Returns the enrolment id.
