@@ -198,6 +198,56 @@ impl OrderPointsFlow {
     }
 }
 
+/// 點數級距 (Points Tier)——會員依 `points_balance` 分入的固定 4 級:
+/// `regular`(<500)/`bronze`(500–1999)/`silver`(2000–4999)/`gold`(≥5000)。
+/// 本型別是級距規則的 Rust owner;`reports::repository::tier_distribution`
+/// 的 SQL `CASE` 是它的 SQL 攣生面(報表在 DB 端分桶),兩者由交叉測試
+/// `points_tier_matches_sql_tier_distribution_case`(`tests/service_reports.rs`)
+/// 錨定,不是靠手抄保持一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointsTier {
+    Regular,
+    Bronze,
+    Silver,
+    Gold,
+}
+
+impl PointsTier {
+    /// 由低到高——與 `tier_distribution` 的 `tiers(bucket, ord)` 同序。
+    pub const ALL: [PointsTier; 4] = [Self::Regular, Self::Bronze, Self::Silver, Self::Gold];
+
+    /// 該級距的下限(含)。`Regular` 的 0 是 `points_balance` 的 DB `CHECK
+    /// (points_balance >= 0)` 下限。
+    pub fn floor(self) -> i64 {
+        match self {
+            Self::Regular => 0,
+            Self::Bronze => 500,
+            Self::Silver => 2_000,
+            Self::Gold => 5_000,
+        }
+    }
+
+    /// 餘額所屬級距:`floor() <= balance` 的最高一級。負數(DB CHECK 擋掉的
+    /// 理論值)落 `Regular`,同 SQL `CASE` 的 `ELSE`。
+    pub fn from_balance(balance: i64) -> Self {
+        Self::ALL
+            .into_iter()
+            .rev()
+            .find(|tier| balance >= tier.floor())
+            .unwrap_or(Self::Regular)
+    }
+
+    /// 報表桶名(`tier_distribution` 的 `bucket` 值)。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Regular => "regular",
+            Self::Bronze => "bronze",
+            Self::Silver => "silver",
+            Self::Gold => "gold",
+        }
+    }
+}
+
 /// Bare `point_ledger` table row.
 #[derive(Debug, sqlx::FromRow)]
 pub struct PointLedgerEntry {
@@ -314,5 +364,42 @@ mod tests {
             redeemed: 0,
         };
         assert!(none.reversal_deltas(order_id).is_empty());
+    }
+
+    #[test]
+    fn points_tier_from_balance_splits_at_each_floor() {
+        // <500 regular / 500–1999 bronze / 2000–4999 silver / ≥5000 gold —
+        // each floor itself belongs to its tier, one point below it to the
+        // tier underneath.
+        let cases = [
+            (0, PointsTier::Regular),
+            (499, PointsTier::Regular),
+            (500, PointsTier::Bronze),
+            (1_999, PointsTier::Bronze),
+            (2_000, PointsTier::Silver),
+            (4_999, PointsTier::Silver),
+            (5_000, PointsTier::Gold),
+            (i64::MAX, PointsTier::Gold),
+            // DB CHECK 擋掉的理論值——同 SQL CASE 的 ELSE,落 regular。
+            (-1, PointsTier::Regular),
+        ];
+        for (balance, tier) in cases {
+            assert_eq!(PointsTier::from_balance(balance), tier, "balance {balance}");
+        }
+    }
+
+    #[test]
+    fn points_tier_all_is_ascending_and_each_floor_maps_back_to_its_tier() {
+        let floors: Vec<i64> = PointsTier::ALL.iter().map(|t| t.floor()).collect();
+        assert_eq!(floors, [0, 500, 2_000, 5_000]);
+        for tier in PointsTier::ALL {
+            assert_eq!(PointsTier::from_balance(tier.floor()), tier);
+        }
+    }
+
+    #[test]
+    fn points_tier_as_str_matches_report_bucket_names() {
+        let names: Vec<&str> = PointsTier::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(names, ["regular", "bronze", "silver", "gold"]);
     }
 }

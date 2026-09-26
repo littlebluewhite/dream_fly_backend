@@ -26,6 +26,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::points::model::PointsTier;
+use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
 use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
@@ -1527,5 +1529,55 @@ async fn today_matches_sql_studio_today(db: PgPool) {
             .expect("studio_today");
 
         assert_eq!(rust_today, sql_today, "case: {}", case.name);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 點數級距 (Points Tier) — Rust↔SQL 攣生 cross-test. `points::model::PointsTier`
+// (the tier rule's owner) and `reports::repository::tier_distribution`'s SQL
+// `CASE` are two independently hand-written encodings of the same four
+// floors; this anchors them against each other the same way `orders::model`'s
+// `revenue_predicate_matches_revenue_statuses_array` anchors `is_revenue()`
+// against `REVENUE_STATUSES`. Samples: every floor and one point below it,
+// plus 0 and `i64::MAX`. After each sample user is added, the whole SQL
+// distribution (bucket names, order, counts) must equal the Rust tally — so
+// every sample is checked to land in exactly the bucket `from_balance` names.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn points_tier_matches_sql_tier_distribution_case(db: PgPool) {
+    let mut samples: Vec<i64> = vec![0, i64::MAX];
+    for tier in PointsTier::ALL {
+        // Tripwire:窮盡 match、無 `_` arm。新增 PointsTier 變體時本行編譯
+        // 錯誤,把人押回這裡確認 SQL CASE 也跟著加了一桶。
+        match tier {
+            PointsTier::Regular | PointsTier::Bronze | PointsTier::Silver | PointsTier::Gold => {}
+        }
+        samples.push(tier.floor());
+        if tier.floor() > 0 {
+            samples.push(tier.floor() - 1);
+        }
+    }
+
+    let mut expected = [0_i64; 4];
+    for (i, balance) in samples.into_iter().enumerate() {
+        let u = seed_member(&db, &format!("points-tier-{i}@example.com"), "Password!234").await;
+        set_points_balance(&db, u, balance).await;
+        let tier = PointsTier::from_balance(balance);
+        expected[PointsTier::ALL.iter().position(|t| *t == tier).unwrap()] += 1;
+
+        let rows = reports_repository::tier_distribution(&db)
+            .await
+            .expect("tier_distribution");
+        let sql: Vec<(&str, i64)> = rows.iter().map(|r| (r.bucket.as_str(), r.count)).collect();
+        let rust: Vec<(&str, i64)> = PointsTier::ALL
+            .iter()
+            .map(|t| t.as_str())
+            .zip(expected)
+            .collect();
+        assert_eq!(
+            sql, rust,
+            "balance {balance}: PointsTier and the SQL CASE disagree"
+        );
     }
 }
