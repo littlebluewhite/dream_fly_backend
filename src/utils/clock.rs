@@ -22,6 +22,9 @@
 //! - JWT `exp` — validated by the `jsonwebtoken` crate against the system
 //!   clock.
 //! - Rate-limit TTLs — Redis `EXPIRE`/`TTL`, timed by Redis's own clock.
+//! - Account access cache TTLs (`auth::access`, 60s is_active / 900s
+//!   roles) — timed by the `AccessCache` adapter (Redis's own clock in
+//!   production, `std::time::Instant` in the in-memory test adapter).
 
 use chrono::{DateTime, Utc};
 

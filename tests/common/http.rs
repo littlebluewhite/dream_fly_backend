@@ -8,8 +8,12 @@
 //!   `trust_proxy = true` so the rate-limit middleware honors our synthetic
 //!   `X-Forwarded-For` (each test gets a unique IP, so rate limits are
 //!   effectively isolated per test)
-//! - connects to a shared Redis (db 15 by default) for JWT role cache +
-//!   rate-limit counters, with a per-test prefix flush
+//! - connects to a shared Redis (db 15 by default) for rate-limit counters
+//!   (plus OTP / reset tokens), with a per-test prefix flush. The account
+//!   access cache the `AuthUser` extractor reads is NOT Redis here: each
+//!   `TestApp` gets its own `InMemoryAccessCache` (`app.access_cache`), so
+//!   HTTP tests never touch the Redis adapter — `tests/service_access.rs`
+//!   covers both adapters directly
 //! - wraps the real production router (`startup::build_router`) so every
 //!   test exercises the entire middleware stack + extractors + handlers
 //! - exposes [`MockEmailClient`] via `app.email` so tests can assert on
