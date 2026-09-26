@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::error::{AppError, constraint_name};
 use crate::extractors::auth::AuthUser;
+use crate::modules::auth::access::AccessCache;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::modules::users::repository as users_repository;
 use crate::utils::studio_clock;
@@ -103,14 +104,14 @@ pub async fn get_active_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailRespo
 /// can never leave an orphaned coach row (mirrors `users::service::create_user`
 /// assigning `member` in the same transaction as the user insert).
 ///
-/// After commit, invalidates the target user's Redis role cache
-/// (`user_roles:{id}`, 15 min TTL) the same way
+/// After commit, invalidates the target user's access cache
+/// (`auth::access`, 15 min role TTL) the same way
 /// `permissions::service::assign_role_to_user` does, so the user's very next
 /// request sees the `coach` role instead of a request within the TTL window
 /// still evaluating against a pre-existing cached role set.
 pub async fn create_coach(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    cache: &dyn AccessCache,
     req: &CreateCoachRequest,
 ) -> Result<CoachResponse, AppError> {
     users_repository::find_by_id(db, req.user_id)
@@ -149,7 +150,7 @@ pub async fn create_coach(
 
     tx.commit().await?;
 
-    dirty.flush(redis).await;
+    dirty.flush(cache).await;
 
     Ok(CoachResponse::from(coach))
 }

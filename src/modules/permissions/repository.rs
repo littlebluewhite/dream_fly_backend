@@ -51,9 +51,9 @@ pub async fn find_permissions_for_role(
     .await
 }
 
-/// Returns an [`AccessDirty`] witness — the caller MUST `.flush(redis)` it
+/// Returns an [`AccessDirty`] witness — the caller MUST `.flush(cache)` it
 /// so the next request doesn't keep serving the user's pre-assignment role
-/// set out of the Redis cache.
+/// set out of the access cache.
 pub async fn assign_role_to_user(
     db: &PgPool,
     user_id: Uuid,
@@ -97,10 +97,10 @@ pub async fn remove_role_from_user(
 /// caller passes a pool-`acquire`d connection. Naming follows the
 /// executor-typed convention of `auth::session::start`.
 ///
-/// Returns an [`AccessDirty`] witness — the caller MUST `.flush(redis)` it
+/// Returns an [`AccessDirty`] witness — the caller MUST `.flush(cache)` it
 /// after `tx.commit()` (or immediately, for a non-transactional caller with
 /// no commit boundary) so the next request doesn't keep serving the user's
-/// pre-assignment role set out of the Redis cache.
+/// pre-assignment role set out of the access cache.
 pub async fn assign_role_by_name(
     conn: &mut sqlx::PgConnection,
     user_id: Uuid,

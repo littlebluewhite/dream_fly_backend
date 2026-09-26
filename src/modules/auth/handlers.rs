@@ -38,10 +38,9 @@ pub async fn google_auth(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<GoogleAuthRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let mut redis = state.redis.clone();
     let response = service::google_auth(
         &state.db,
-        &mut redis,
+        state.access_cache.as_ref(),
         &state.config,
         &state.http_client,
         &state.jwks_cache,

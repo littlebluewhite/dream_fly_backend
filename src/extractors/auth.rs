@@ -101,8 +101,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         // 4. Account access (is_active + roles), cache-first — see
         //    `auth::access::resolve`. `None` = deactivated or unknown user.
-        let mut redis_conn = state.redis.clone();
-        let roles = access::resolve(&state.db, &mut redis_conn, user_id)
+        let roles = access::resolve(&state.db, state.access_cache.as_ref(), user_id)
             .await
             .map_err(AppError::Database)?
             .ok_or(AppError::Unauthorized)?;

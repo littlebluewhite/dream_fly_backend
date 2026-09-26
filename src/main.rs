@@ -13,6 +13,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use dream_fly_backend::config::{AppConfig, AppEnv, validate_production_config};
 use dream_fly_backend::kafka;
 use dream_fly_backend::kafka::producer::KafkaPublisher;
+use dream_fly_backend::modules::auth::access::{AccessCache, RedisAccessCache};
 use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::{Clock, SystemClock};
@@ -173,6 +174,10 @@ async fn main() -> anyhow::Result<()> {
     // `SmsConfig::twilio_base_url` instead (see `AppState::sms_client`).
     let sms_client: Arc<SmsClient> = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
 
+    // Account access cache (is_active/roles) over the same Redis connection;
+    // trait-erased so integration tests can inject an in-memory adapter.
+    let access_cache: Arc<dyn AccessCache> = Arc::new(RedisAccessCache::new(redis.clone()));
+
     // Wall-clock source for handler-sampled `now` — production always reads
     // the real system clock; tests substitute `MockClock`.
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
@@ -189,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db: db.clone(),
         redis,
+        access_cache,
         kafka_producer,
         config: config_arc.clone(),
         http_client,

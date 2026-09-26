@@ -67,7 +67,7 @@ pub async fn admin_update(
     Path(id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let response = service::admin_update_user(&state.db, &mut redis, id, req).await?;
+    let response =
+        service::admin_update_user(&state.db, state.access_cache.as_ref(), id, req).await?;
     Ok(Json(response))
 }

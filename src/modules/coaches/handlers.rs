@@ -38,8 +38,7 @@ pub async fn create(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<CreateCoachRequest>,
 ) -> Result<Json<CoachResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let coach = service::create_coach(&state.db, &mut redis, &req).await?;
+    let coach = service::create_coach(&state.db, state.access_cache.as_ref(), &req).await?;
     Ok(Json(coach))
 }
 

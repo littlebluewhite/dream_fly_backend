@@ -2,8 +2,14 @@
 //! 的單一 owner。`AuthUser` extractor 讀它([`resolve`]),每個改變答案的寫入
 //! 經它回報([`AccessDirty`])。快取的 key 格式、TTL、空角色 sentinel、
 //! 快取錯誤一律當 miss(fail-open)全部私有於此,呼叫端看不到 Redis。
+//!
+//! 快取本身是 [`AccessCache`] seam:只存字串、回 `Result`,策略全在本模組。
+//! 正式環境是 [`RedisAccessCache`];整合測試換 in-memory adapter
+//! (`tests/common/mocks.rs`)。
 
+use async_trait::async_trait;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -24,6 +30,48 @@ const ROLE_CACHE_TTL_SECONDS: u64 = 900;
 /// [`AccessDirty::flush`] still takes effect within one minute.
 const ACTIVE_CACHE_TTL_SECONDS: u64 = 60;
 
+/// Storage port for the account access cache — plain string get / set-with-
+/// TTL / multi-key delete. Adapters report failures as `Err`; what a failure
+/// *means* (fail-open miss, swallowed eviction) is decided in this module,
+/// not by the adapter.
+#[async_trait]
+pub trait AccessCache: Send + Sync {
+    async fn get(&self, key: &str) -> anyhow::Result<Option<String>>;
+    async fn set_ex(&self, key: &str, val: &str, ttl_secs: u64) -> anyhow::Result<()>;
+    async fn del(&self, keys: &[String]) -> anyhow::Result<()>;
+}
+
+/// Production adapter over the shared Redis connection manager.
+pub struct RedisAccessCache(ConnectionManager);
+
+impl RedisAccessCache {
+    pub fn new(conn: ConnectionManager) -> Self {
+        Self(conn)
+    }
+}
+
+#[async_trait]
+impl AccessCache for RedisAccessCache {
+    async fn get(&self, key: &str) -> anyhow::Result<Option<String>> {
+        // `ConnectionManager` is a cheap multiplexed handle; commands need
+        // `&mut`, so each call works on its own clone.
+        let mut conn = self.0.clone();
+        Ok(conn.get(key).await?)
+    }
+
+    async fn set_ex(&self, key: &str, val: &str, ttl_secs: u64) -> anyhow::Result<()> {
+        let mut conn = self.0.clone();
+        conn.set_ex::<_, _, ()>(key, val, ttl_secs).await?;
+        Ok(())
+    }
+
+    async fn del(&self, keys: &[String]) -> anyhow::Result<()> {
+        let mut conn = self.0.clone();
+        conn.del::<_, ()>(keys).await?;
+        Ok(())
+    }
+}
+
 fn role_cache_key(user_id: Uuid) -> String {
     format!("user_roles:{user_id}")
 }
@@ -41,11 +89,11 @@ fn active_cache_key(user_id: Uuid) -> String {
 /// error — a Redis outage must not lock every user out.
 pub async fn resolve(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    cache: &dyn AccessCache,
     user_id: Uuid,
 ) -> Result<Option<Vec<String>>, sqlx::Error> {
     let active_key = active_cache_key(user_id);
-    let active_cached: Option<String> = redis.get(&active_key).await.ok();
+    let active_cached = cache.get(&active_key).await.ok().flatten();
 
     let is_active = match active_cached.as_deref() {
         Some("1") => true,
@@ -57,8 +105,8 @@ pub async fn resolve(
                 .await?;
             let active = row.map(|r| r.0).unwrap_or(false);
             let flag = if active { "1" } else { "0" };
-            let _: Result<(), _> = redis
-                .set_ex::<_, _, ()>(&active_key, flag, ACTIVE_CACHE_TTL_SECONDS)
+            let _ = cache
+                .set_ex(&active_key, flag, ACTIVE_CACHE_TTL_SECONDS)
                 .await;
             active
         }
@@ -72,7 +120,7 @@ pub async fn resolve(
     // value is a newline-separated list of role names, or
     // [`EMPTY_ROLES_SENTINEL`] when the user has no roles.
     let role_key = role_cache_key(user_id);
-    let cached: Option<String> = redis.get(&role_key).await.ok();
+    let cached = cache.get(&role_key).await.ok().flatten();
 
     let roles = match cached.as_deref() {
         Some(EMPTY_ROLES_SENTINEL) => Vec::new(),
@@ -88,8 +136,8 @@ pub async fn resolve(
             } else {
                 db_roles.join("\n")
             };
-            let _: Result<(), _> = redis
-                .set_ex::<_, _, ()>(&role_key, encoded, ROLE_CACHE_TTL_SECONDS)
+            let _ = cache
+                .set_ex(&role_key, &encoded, ROLE_CACHE_TTL_SECONDS)
                 .await;
             db_roles
         }
@@ -164,10 +212,10 @@ impl AccessDirty {
     /// Consume the witness and drop both of the user's cache entries in one
     /// DEL. Best-effort: a cache error is logged and swallowed — eviction
     /// failure must never fail the access change itself.
-    pub async fn flush(self, redis: &mut redis::aio::ConnectionManager) {
+    pub async fn flush(self, cache: &dyn AccessCache) {
         let user_id = self.0;
         let keys = [role_cache_key(user_id), active_cache_key(user_id)];
-        if let Err(e) = redis.del::<_, ()>(&keys).await {
+        if let Err(e) = cache.del(&keys).await {
             tracing::warn!(%user_id, error = %e, "failed to invalidate access cache");
         }
     }

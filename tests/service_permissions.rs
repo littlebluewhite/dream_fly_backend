@@ -20,15 +20,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::modules::auth::access;
+use dream_fly_backend::modules::auth::access::{self, AccessCache, RedisAccessCache};
 use dream_fly_backend::modules::permissions::service;
 
-async fn resolved_roles(
-    db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
-    user_id: Uuid,
-) -> Vec<String> {
-    access::resolve(db, redis, user_id)
+async fn resolved_roles(db: &PgPool, cache: &dyn AccessCache, user_id: Uuid) -> Vec<String> {
+    access::resolve(db, cache, user_id)
         .await
         .expect("resolve")
         .expect("active user")
@@ -81,10 +77,10 @@ async fn create_role_with_fresh_name_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
     let user_id = common::seed_member(&db, "perm@example.com", "hunter22-secret").await;
-    let mut redis = common::test_redis().await;
+    let cache = RedisAccessCache::new(common::test_redis().await);
 
     // Warm the access cache with the pre-assignment role set.
-    assert_eq!(resolved_roles(&db, &mut redis, user_id).await, ["member"]);
+    assert_eq!(resolved_roles(&db, &cache, user_id).await, ["member"]);
 
     // Look up the coach role id.
     let coach_id: Uuid = sqlx::query_scalar("SELECT id FROM roles WHERE name = 'coach'")
@@ -92,7 +88,7 @@ async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
         .await
         .expect("fetch coach role id");
 
-    service::assign_role_to_user(&db, &mut redis, user_id, coach_id)
+    service::assign_role_to_user(&db, &cache, user_id, coach_id)
         .await
         .expect("assign_role");
 
@@ -109,7 +105,7 @@ async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
 
     // Cache was invalidated: the next resolve sees the new role.
     assert_eq!(
-        resolved_roles(&db, &mut redis, user_id).await,
+        resolved_roles(&db, &cache, user_id).await,
         ["coach", "member"],
         "role cache should be cleared on assign"
     );
@@ -118,9 +114,9 @@ async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
 #[sqlx::test]
 async fn assign_role_nonexistent_role_returns_not_found(db: PgPool) {
     let user_id = common::seed_member(&db, "nr@example.com", "hunter22-secret").await;
-    let mut redis = common::test_redis().await;
+    let cache = RedisAccessCache::new(common::test_redis().await);
 
-    let err = service::assign_role_to_user(&db, &mut redis, user_id, Uuid::now_v7())
+    let err = service::assign_role_to_user(&db, &cache, user_id, Uuid::now_v7())
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
@@ -129,7 +125,7 @@ async fn assign_role_nonexistent_role_returns_not_found(db: PgPool) {
 #[sqlx::test]
 async fn remove_role_is_idempotent_and_clears_cache(db: PgPool) {
     let user_id = common::seed_member(&db, "rm@example.com", "hunter22-secret").await;
-    let mut redis = common::test_redis().await;
+    let cache = RedisAccessCache::new(common::test_redis().await);
 
     let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM roles WHERE name = 'admin'")
         .fetch_one(&db)
@@ -138,14 +134,14 @@ async fn remove_role_is_idempotent_and_clears_cache(db: PgPool) {
 
     // Warm the cache, then make it stale behind the service's back (a
     // direct `admin` grant nothing flushes).
-    assert_eq!(resolved_roles(&db, &mut redis, user_id).await, ["member"]);
+    assert_eq!(resolved_roles(&db, &cache, user_id).await, ["member"]);
     sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)")
         .bind(user_id)
         .bind(admin_id)
         .execute(&db)
         .await
         .unwrap();
-    assert_eq!(resolved_roles(&db, &mut redis, user_id).await, ["member"]);
+    assert_eq!(resolved_roles(&db, &cache, user_id).await, ["member"]);
 
     // Remove a role the user never had — must not error and must still
     // clear the cache (defense-in-depth: an admin action always produces a
@@ -154,12 +150,12 @@ async fn remove_role_is_idempotent_and_clears_cache(db: PgPool) {
         .fetch_one(&db)
         .await
         .unwrap();
-    service::remove_role_from_user(&db, &mut redis, user_id, coach_id)
+    service::remove_role_from_user(&db, &cache, user_id, coach_id)
         .await
         .expect("remove is idempotent");
 
     assert_eq!(
-        resolved_roles(&db, &mut redis, user_id).await,
+        resolved_roles(&db, &cache, user_id).await,
         ["admin", "member"]
     );
 }

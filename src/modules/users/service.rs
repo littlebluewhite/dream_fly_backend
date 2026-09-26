@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::auth::access;
+use crate::modules::auth::access::{self, AccessCache};
 use crate::modules::auth::provisioning as auth_provisioning;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
@@ -149,7 +149,7 @@ pub async fn create_user(
 /// back.
 pub async fn admin_update_user(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    cache: &dyn AccessCache,
     user_id: Uuid,
     req: UpdateUserRequest,
 ) -> Result<UserResponse, AppError> {
@@ -176,7 +176,7 @@ pub async fn admin_update_user(
     tx.commit().await?;
 
     if let Some(dirty) = dirty {
-        dirty.flush(redis).await;
+        dirty.flush(cache).await;
     }
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;

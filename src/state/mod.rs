@@ -5,6 +5,7 @@ use sqlx::PgPool;
 use tokio_util::task::TaskTracker;
 
 use crate::config::AppConfig;
+use crate::modules::auth::access::AccessCache;
 use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
 use crate::utils::google_oauth::JwksCache;
@@ -15,6 +16,11 @@ use crate::utils::studio_clock::StudioNow;
 pub struct AppState {
     pub db: PgPool,
     pub redis: redis::aio::ConnectionManager,
+    /// Account access cache (`auth::access`) — the is_active/role cache the
+    /// `AuthUser` extractor reads. Held as a trait object so integration
+    /// tests can substitute an in-memory adapter; rate limiting, OTP and
+    /// reset tokens keep using `redis` directly.
+    pub access_cache: Arc<dyn AccessCache>,
     pub kafka_producer: Option<Arc<FutureProducer>>,
     pub config: Arc<AppConfig>,
     /// Shared HTTP client with connection pooling (Google OAuth, Twilio, etc.).

@@ -5,6 +5,7 @@ use crate::config::{AppConfig, AuthConfig};
 use crate::error::AppError;
 use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
+use crate::modules::auth::access::AccessCache;
 use crate::modules::notifications::service as notify;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::email::EmailSender;
@@ -146,7 +147,7 @@ struct GoogleTokenResponse {
 
 pub async fn google_auth(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    cache: &dyn AccessCache,
     config: &AppConfig,
     http_client: &reqwest::Client,
     jwks_cache: &google_oauth::JwksCache,
@@ -272,7 +273,7 @@ pub async fn google_auth(
     tx.commit().await?;
 
     if let Some(dirty) = dirty {
-        dirty.flush(redis).await;
+        dirty.flush(cache).await;
     }
 
     if plan.send_welcome {

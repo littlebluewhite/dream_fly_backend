@@ -38,6 +38,7 @@ use dream_fly_backend::config::{
     AppConfig, AuthConfig, DatabaseConfig, EmailConfig, KafkaConfig, RedisConfig, ServerConfig,
     SmsConfig,
 };
+use dream_fly_backend::modules::auth::access::RedisAccessCache;
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
@@ -327,6 +328,7 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
 
     let state = AppState {
         db: db.clone(),
+        access_cache: Arc::new(RedisAccessCache::new(redis.clone())),
         redis,
         kafka_producer: None,
         config: config_arc.clone(),

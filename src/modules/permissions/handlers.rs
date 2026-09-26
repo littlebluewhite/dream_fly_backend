@@ -35,8 +35,8 @@ pub async fn assign_role(
     Path(role_id): Path<Uuid>,
     ValidatedJson(req): ValidatedJson<AssignRoleRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    service::assign_role_to_user(&state.db, &mut redis, req.user_id, role_id).await?;
+    service::assign_role_to_user(&state.db, state.access_cache.as_ref(), req.user_id, role_id)
+        .await?;
     Ok(Json(MessageResponse {
         message: "role assigned successfully".into(),
     }))
@@ -47,7 +47,7 @@ pub async fn remove_role(
     State(state): State<AppState>,
     Path((role_id, user_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
-    let mut redis = state.redis.clone();
-    service::remove_role_from_user(&state.db, &mut redis, user_id, role_id).await?;
+    service::remove_role_from_user(&state.db, state.access_cache.as_ref(), user_id, role_id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

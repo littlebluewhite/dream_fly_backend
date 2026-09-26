@@ -729,7 +729,7 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
 #[sqlx::test]
 async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
+    let cache = access::RedisAccessCache::new(common::test_redis().await);
 
     let r1 = service::register(
         &db,
@@ -765,7 +765,7 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
     );
 
     admin_tx.commit().await.expect("commit deactivation");
-    dirty.flush(&mut redis).await;
+    dirty.flush(&cache).await;
 
     let err = refresh
         .await

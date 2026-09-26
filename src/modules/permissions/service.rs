@@ -2,6 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::auth::access::AccessCache;
 
 use super::dto::{PermissionResponse, RoleResponse, RoleWithPermissionsResponse};
 use super::repository;
@@ -69,7 +70,7 @@ pub async fn create_role(
 
 pub async fn assign_role_to_user(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    cache: &dyn AccessCache,
     user_id: Uuid,
     role_id: Uuid,
 ) -> Result<(), AppError> {
@@ -80,20 +81,20 @@ pub async fn assign_role_to_user(
 
     let dirty = repository::assign_role_to_user(db, user_id, role_id).await?;
 
-    // Invalidate the Redis role cache so the next request reloads from DB.
-    dirty.flush(redis).await;
+    // Invalidate the access cache so the next request reloads from DB.
+    dirty.flush(cache).await;
     Ok(())
 }
 
 pub async fn remove_role_from_user(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    cache: &dyn AccessCache,
     user_id: Uuid,
     role_id: Uuid,
 ) -> Result<(), AppError> {
     let dirty = repository::remove_role_from_user(db, user_id, role_id).await?;
 
-    // Invalidate the Redis role cache so the next request reloads from DB.
-    dirty.flush(redis).await;
+    // Invalidate the access cache so the next request reloads from DB.
+    dirty.flush(cache).await;
     Ok(())
 }
