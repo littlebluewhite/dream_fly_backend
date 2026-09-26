@@ -8,7 +8,7 @@ use crate::config::AppConfig;
 use crate::modules::auth::access::AccessCache;
 use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
-use crate::utils::google_oauth::JwksCache;
+use crate::utils::google_oauth::GoogleIdentityProvider;
 use crate::utils::sms::SmsClient;
 use crate::utils::studio_clock::StudioNow;
 
@@ -23,8 +23,6 @@ pub struct AppState {
     pub access_cache: Arc<dyn AccessCache>,
     pub kafka_producer: Option<Arc<FutureProducer>>,
     pub config: Arc<AppConfig>,
-    /// Shared HTTP client with connection pooling (Google OAuth, Twilio, etc.).
-    pub http_client: reqwest::Client,
     /// Shared outbound email sender. Built once at startup to avoid rebuilding
     /// the TLS stack on every password-reset request. Held as a trait object
     /// so integration tests can substitute an in-memory recorder.
@@ -39,12 +37,12 @@ pub struct AppState {
     /// trait object so integration tests can pin or advance it via
     /// `MockClock` instead of racing the real system clock.
     pub clock: Arc<dyn Clock>,
-    /// Per-app cache of Google's JWKS for id_token signature verification.
-    /// Concrete type (single implementation): each app instance — including
-    /// every test — owns its own cache, so the previous process-global slot's
-    /// cross-instance sharing is gone. Test substitution is per-app: a fresh
-    /// cache plus the `google_jwks_url` config seam pointed at wiremock.
-    pub jwks_cache: Arc<JwksCache>,
+    /// Google identity verification (`utils::google_oauth`): authorization
+    /// code in, verified `GoogleIdentity` out. Held as a trait object so
+    /// service-level tests can substitute a fake; production and HTTP tests
+    /// use `GoogleOAuthClient`, whose token/JWKS URLs are config seams
+    /// pointed at `wiremock` in tests.
+    pub google_identity: Arc<dyn GoogleIdentityProvider>,
     /// Tracks fire-and-forget background tasks spawned during request
     /// handling (currently: the password-reset email send in
     /// `auth::service::forgot_password`).

@@ -41,9 +41,8 @@ pub async fn google_auth(
     let response = service::google_auth(
         &state.db,
         state.access_cache.as_ref(),
-        &state.config,
-        &state.http_client,
-        &state.jwks_cache,
+        &state.config.auth,
+        state.google_identity.as_ref(),
         req,
         request_id.0,
     )

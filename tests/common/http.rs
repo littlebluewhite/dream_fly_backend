@@ -49,7 +49,7 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
-use dream_fly_backend::utils::google_oauth::JwksCache;
+use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use dream_fly_backend::utils::sms::SmsClient;
 
 use super::mocks::{InMemoryAccessCache, MockClock, MockEmailClient};
@@ -324,6 +324,10 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     // Real client, not a mock: SMS tests redirect it to a `wiremock` server
     // via `config.sms.twilio_base_url` (see `common::twilio`).
     let sms_client = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
+    // Real adapter, not a fake: `/auth/google` HTTP tests redirect it to a
+    // `wiremock` server via `config.auth.google_token_url`/`google_jwks_url`.
+    let google_identity: Arc<dyn GoogleIdentityProvider> =
+        Arc::new(GoogleOAuthClient::new(&config.auth, http_client));
 
     let config_arc = Arc::new(config);
 
@@ -342,11 +346,10 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
         redis,
         kafka_producer: None,
         config: config_arc.clone(),
-        http_client,
         email_client: email_state,
         sms_client,
         clock: clock_state,
-        jwks_cache: Arc::new(JwksCache::new()),
+        google_identity,
         background_tasks: background.clone(),
     };
 

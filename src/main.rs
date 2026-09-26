@@ -18,7 +18,7 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::{Clock, SystemClock};
 use dream_fly_backend::utils::email::{EmailClient, EmailSender};
-use dream_fly_backend::utils::google_oauth::JwksCache;
+use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use dream_fly_backend::utils::sms::SmsClient;
 
 /// Bound on the total time we'll wait for background tasks and the DB
@@ -174,6 +174,11 @@ async fn main() -> anyhow::Result<()> {
     // `SmsConfig::twilio_base_url` instead (see `AppState::sms_client`).
     let sms_client: Arc<SmsClient> = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
 
+    // Google identity (code exchange + JWKS verification) — also reuses the
+    // HTTP connection pool; trait-erased so service tests can inject a fake.
+    let google_identity: Arc<dyn GoogleIdentityProvider> =
+        Arc::new(GoogleOAuthClient::new(&config.auth, http_client));
+
     // Account access cache (is_active/roles) over the same Redis connection;
     // trait-erased so integration tests can inject an in-memory adapter.
     let access_cache: Arc<dyn AccessCache> = Arc::new(RedisAccessCache::new(redis.clone()));
@@ -197,11 +202,10 @@ async fn main() -> anyhow::Result<()> {
         access_cache,
         kafka_producer,
         config: config_arc.clone(),
-        http_client,
         email_client,
         sms_client,
         clock,
-        jwks_cache: Arc::new(JwksCache::new()),
+        google_identity,
         background_tasks: background_tasks.clone(),
     };
 

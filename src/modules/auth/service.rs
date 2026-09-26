@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::{AppConfig, AuthConfig};
+use crate::config::AuthConfig;
 use crate::error::AppError;
 use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
@@ -9,7 +9,7 @@ use crate::modules::auth::access::AccessCache;
 use crate::modules::notifications::service as notify;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::email::EmailSender;
-use crate::utils::google_oauth;
+use crate::utils::google_oauth::GoogleIdentityProvider;
 use crate::utils::password;
 use crate::utils::sms::SmsClient;
 
@@ -140,65 +140,24 @@ pub async fn login(
     session::start(&mut conn, config, &user).await
 }
 
-#[derive(serde::Deserialize)]
-struct GoogleTokenResponse {
-    id_token: String,
-}
-
 pub async fn google_auth(
     db: &PgPool,
     cache: &dyn AccessCache,
-    config: &AppConfig,
-    http_client: &reqwest::Client,
-    jwks_cache: &google_oauth::JwksCache,
+    config: &AuthConfig,
+    google: &dyn GoogleIdentityProvider,
     req: GoogleAuthRequest,
     correlation_id: Option<String>,
 ) -> Result<AuthResponse, AppError> {
-    // 1. Exchange authorization code for tokens (including id_token).
-    //    The endpoint is configurable so integration tests can redirect to
-    //    a `wiremock` server instead of reaching real Google.
-    let token_response = http_client
-        .post(config.auth.google_token_url.as_str())
-        .form(&[
-            ("code", req.code.as_str()),
-            ("client_id", config.auth.google_client_id.as_str()),
-            ("client_secret", config.auth.google_client_secret.as_str()),
-            ("redirect_uri", config.auth.google_redirect_url.as_str()),
-            ("grant_type", "authorization_code"),
-        ])
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("Google token exchange failed: {e}")))?;
+    // 1-2. Exchange the authorization code and verify the returned id_token
+    //      (signature, iss/aud/exp, email_verified) — see
+    //      `utils::google_oauth`. Nothing is written before this succeeds.
+    let identity = google.verify_code(&req.code).await?;
 
-    if !token_response.status().is_success() {
-        // Log the upstream detail server-side, but only return a generic message.
-        let body = token_response.text().await.unwrap_or_default();
-        tracing::warn!(body = %body, "Google token exchange returned non-success");
-        return Err(AppError::BadRequest("Google authentication failed".into()));
-    }
-
-    let token_data: GoogleTokenResponse = token_response.json().await.map_err(|e| {
-        AppError::Internal(anyhow::anyhow!(
-            "failed to parse Google token response: {e}"
-        ))
-    })?;
-
-    // 2. Verify id_token signature against Google's published JWKS and
-    //    enforce iss/aud/exp/email_verified. This is defense-in-depth over
-    //    the TLS channel check: if this helper is ever reused in a flow
-    //    where the token is not fetched directly from Google, signature
-    //    verification is the only thing standing between us and forgery.
-    let claims = google_oauth::verify_google_id_token(
-        jwks_cache,
-        http_client,
-        &token_data.id_token,
-        &config.auth.google_client_id,
-        &config.auth.google_jwks_url,
-    )
-    .await?;
-
-    let name = claims.name.clone().unwrap_or_else(|| claims.email.clone());
-    let email = normalize_email(&claims.email);
+    let name = identity
+        .name
+        .clone()
+        .unwrap_or_else(|| identity.email.clone());
+    let email = normalize_email(&identity.email);
 
     // 3. Wrap all mutations in a single transaction so partial failures
     //    never leave orphaned/inconsistent rows.
@@ -208,7 +167,7 @@ pub async fn google_auth(
     // google_id miss — by email, so `linking::plan` can decide between
     // create, link, and refresh. See `linking`'s module doc for the full
     // decision and its truth table.
-    let existing_by_google = repository::find_user_by_google_id(db, &claims.sub).await?;
+    let existing_by_google = repository::find_user_by_google_id(db, &identity.sub).await?;
     let existing_by_email = if existing_by_google.is_none() {
         repository::find_user_by_email(&mut *tx, &email).await?
     } else {
@@ -222,8 +181,8 @@ pub async fn google_auth(
                 &mut tx,
                 &email,
                 &name,
-                &claims.sub,
-                claims.picture.as_deref(),
+                &identity.sub,
+                identity.picture.as_deref(),
             )
             .await?
         }
@@ -231,8 +190,8 @@ pub async fn google_auth(
             repository::link_google_account_tx(
                 &mut tx,
                 user_id,
-                &claims.sub,
-                claims.picture.as_deref(),
+                &identity.sub,
+                identity.picture.as_deref(),
             )
             .await?
         }
@@ -253,7 +212,7 @@ pub async fn google_auth(
     repository::update_last_login(&mut *tx, user.id).await?;
 
     // 6. Generate tokens (inside the same tx)
-    let response = session::start(&mut tx, &config.auth, &user).await?;
+    let response = session::start(&mut tx, config, &user).await?;
 
     // 7. Queue user_registered event atomically with the user row — see
     //    `linking`'s module doc for why Create and Link both emit it.

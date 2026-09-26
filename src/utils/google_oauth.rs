@@ -8,12 +8,20 @@
 //!
 //! This module fetches Google's JWKS, caches it for an hour, and verifies the
 //! JWT's RS256 signature plus issuer/audience/expiry claims. Fail-closed.
+//!
+//! Port + production adapter in one file (same shape as `utils::email`):
+//! `GoogleIdentityProvider` turns an authorization code into a verified
+//! `GoogleIdentity`; `GoogleOAuthClient` does it for real (code exchange +
+//! JWKS signature verification). Callers never see the id_token or its
+//! claims — only the identity, built after every check has passed.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use crate::config::AuthConfig;
 use crate::error::AppError;
 
 const GOOGLE_ISSUERS: &[&str] = &["https://accounts.google.com", "accounts.google.com"];
@@ -21,18 +29,131 @@ const GOOGLE_ISSUERS: &[&str] = &["https://accounts.google.com", "accounts.googl
 /// well inside the key lifetime but without hammering their endpoint.
 const JWKS_TTL_SECONDS: i64 = 3600;
 
-/// Fields we actually care about on a Google id_token. Anything extra is
-/// ignored.
-#[derive(Debug, Deserialize, Clone)]
-pub struct GoogleIdTokenClaims {
+/// A Google account whose authorization code has been exchanged and whose
+/// id_token has passed signature, iss/aud/exp and `email_verified` checks.
+/// Only constructed after all verification succeeds.
+#[derive(Debug, Clone)]
+pub struct GoogleIdentity {
     pub sub: String,
-    pub aud: String,
-    pub iss: String,
-    pub exp: i64,
     pub email: String,
-    pub email_verified: bool,
     pub name: Option<String>,
     pub picture: Option<String>,
+}
+
+/// Turns a Google OAuth authorization code into a verified `GoogleIdentity`.
+/// Held as `Arc<dyn GoogleIdentityProvider>` in `AppState`; production uses
+/// `GoogleOAuthClient`, service-level tests substitute a fake.
+#[async_trait]
+pub trait GoogleIdentityProvider: Send + Sync {
+    async fn verify_code(&self, code: &str) -> Result<GoogleIdentity, AppError>;
+}
+
+/// Production adapter: exchanges the code at `google_token_url`, then
+/// verifies the returned id_token against the JWKS at `google_jwks_url`.
+/// Both URLs are config seams integration tests point at `wiremock`. Owns its
+/// JWKS cache, so each app instance — including every test — has its own.
+pub struct GoogleOAuthClient {
+    http: reqwest::Client,
+    client_id: String,
+    client_secret: String,
+    redirect_url: String,
+    token_url: String,
+    jwks_url: String,
+    jwks: JwksCache,
+}
+
+impl GoogleOAuthClient {
+    pub fn new(config: &AuthConfig, http: reqwest::Client) -> Self {
+        Self {
+            http,
+            client_id: config.google_client_id.clone(),
+            client_secret: config.google_client_secret.clone(),
+            redirect_url: config.google_redirect_url.clone(),
+            token_url: config.google_token_url.clone(),
+            jwks_url: config.google_jwks_url.clone(),
+            jwks: JwksCache::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct GoogleTokenResponse {
+    id_token: String,
+}
+
+#[async_trait]
+impl GoogleIdentityProvider for GoogleOAuthClient {
+    async fn verify_code(&self, code: &str) -> Result<GoogleIdentity, AppError> {
+        // 1. Exchange authorization code for tokens (including id_token).
+        let token_response = self
+            .http
+            .post(self.token_url.as_str())
+            .form(&[
+                ("code", code),
+                ("client_id", self.client_id.as_str()),
+                ("client_secret", self.client_secret.as_str()),
+                ("redirect_uri", self.redirect_url.as_str()),
+                ("grant_type", "authorization_code"),
+            ])
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("Google token exchange failed: {e}"))
+            })?;
+
+        if !token_response.status().is_success() {
+            // Log the upstream detail server-side, but only return a generic message.
+            let body = token_response.text().await.unwrap_or_default();
+            tracing::warn!(body = %body, "Google token exchange returned non-success");
+            return Err(AppError::BadRequest("Google authentication failed".into()));
+        }
+
+        let token_data: GoogleTokenResponse = token_response.json().await.map_err(|e| {
+            AppError::Internal(anyhow::anyhow!(
+                "failed to parse Google token response: {e}"
+            ))
+        })?;
+
+        // 2. Verify id_token signature against Google's published JWKS and
+        //    enforce iss/aud/exp/email_verified. This is defense-in-depth over
+        //    the TLS channel check: if this helper is ever reused in a flow
+        //    where the token is not fetched directly from Google, signature
+        //    verification is the only thing standing between us and forgery.
+        let claims = verify_google_id_token(
+            &self.jwks,
+            &self.http,
+            &token_data.id_token,
+            &self.client_id,
+            &self.jwks_url,
+        )
+        .await?;
+
+        Ok(GoogleIdentity {
+            sub: claims.sub,
+            email: claims.email,
+            name: claims.name,
+            picture: claims.picture,
+        })
+    }
+}
+
+/// Fields we actually care about on a Google id_token. Anything extra is
+/// ignored. `aud`/`iss`/`exp` are checked by `Validation`, not read here, but
+/// stay in the struct so a token whose claims don't fit this shape is still
+/// rejected at decode.
+#[derive(Debug, Deserialize, Clone)]
+struct GoogleIdTokenClaims {
+    sub: String,
+    #[allow(dead_code)]
+    aud: String,
+    #[allow(dead_code)]
+    iss: String,
+    #[allow(dead_code)]
+    exp: i64,
+    email: String,
+    email_verified: bool,
+    name: Option<String>,
+    picture: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -54,24 +175,18 @@ struct Jwks {
 }
 
 /// Per-app JWKS cache: the fetched key set plus its fetch time. Owned by
-/// `AppState` rather than a process-wide static, so each app instance —
-/// including every test — carries its own cache with a naturally isolated
-/// lifecycle. Storage only; the refresh semantics (TTL read-path, single
-/// kid-miss force-refresh, no single-flight, last-writer-wins) live in
+/// `GoogleOAuthClient` rather than a process-wide static, so each app
+/// instance — including every test — carries its own cache with a naturally
+/// isolated lifecycle. Storage only; the refresh semantics (TTL read-path,
+/// single kid-miss force-refresh, no single-flight, last-writer-wins) live in
 /// `get_jwks` and are unchanged.
-pub struct JwksCache {
+struct JwksCache {
     entry: RwLock<Option<(Jwks, DateTime<Utc>)>>,
 }
 
 impl JwksCache {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self { entry: RwLock::new(None) }
-    }
-}
-
-impl Default for JwksCache {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -122,7 +237,7 @@ async fn get_jwks(
 ///
 /// `jwks_url` is configurable (`auth.google_jwks_url`) so integration tests
 /// can redirect it to a `wiremock` server, mirroring `google_token_url`.
-pub async fn verify_google_id_token(
+async fn verify_google_id_token(
     cache: &JwksCache,
     http: &reqwest::Client,
     id_token: &str,
