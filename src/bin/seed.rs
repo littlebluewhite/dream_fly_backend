@@ -28,16 +28,28 @@
 //! freshly migrated database: rows left over from an older run of this seed
 //! (which wrote the column directly, with no backing ledger) are not
 //! backfilled, an accepted legacy shape in the same spirit as the direct
-//! order-insert block's `points_earned` (`insert_order_if_absent`). Named
-//! accounts (`upsert_user`) get their whole balance via one
+//! order-insert block's `points_earned` (`insert_order_if_absent`). Orders
+//! created by an older version of this seed binary (before it wrote
+//! `checkout_earn`/`refund_clawback` rows) similarly keep no ledger rows on
+//! a re-run — reset the dev database to pick up the new shape from scratch.
+//! Named accounts (`upsert_user`) get their whole balance via one
 //! `LedgerDelta::admin_adjust` in the same transaction as the INSERT. The 24
 //! reporting members (`upsert_seed_member`) instead earn theirs the way a
 //! real member would: `insert_order_if_absent` writes a `checkout_earn` row
 //! (and, for refunded orders, a `refund_clawback` row on top) for every
 //! seeded order touching that member, in the same transaction as the order;
-//! once every order is inserted, a member that was newly created this run
-//! gets a single `admin_adjust(target − balance)` settling it to its
-//! points-tier target — applied once, at insert time, never on a re-run.
+//! once every order is inserted, **every** member (not just ones newly
+//! created this run) gets a `admin_adjust(target − balance)` settling it to
+//! its points-tier target, every run — new-month orders keep adding
+//! `checkout_earn` for existing members too (the 12-month window slides),
+//! so without an every-run settlement their balance would drift past its
+//! tier boundary over time. A same-month re-run computes `delta = 0` and
+//! writes nothing, so this stays idempotent; a run that crashes between the
+//! order loop and the settlement loop simply gets settled by the next run
+//! instead (settlement isn't gated on "this member is new"). One side
+//! effect: this also means a developer's manual `UPDATE users SET
+//! points_balance = ...` against a seed-member row is reset back to its
+//! tier target the next time the seed runs.
 
 use std::collections::HashMap;
 
@@ -508,25 +520,23 @@ fn at_utc(date: NaiveDate, hour: u32) -> DateTime<Utc> {
 }
 
 /// Insert a reporting-dataset member (idempotent on `email`) and return its
-/// id, plus whether the row was newly inserted. Unlike `upsert_user` this
-/// takes a precomputed hash (all 24 members share one dev password — hashing
-/// argon2 once instead of 24× per run) and writes `birth_date`, which backs
-/// the age-bracket report bucket. Unlike `upsert_user`, this function grants
-/// no points itself: the points-tier target balance is instead reached
-/// through the member's seeded orders' `checkout_earn`/`refund_clawback` rows
-/// (written by `insert_order_if_absent`) plus a settling
-/// `LedgerDelta::admin_adjust` the caller applies once every order is
-/// inserted (see the module doc) — the caller needs the "newly inserted"
-/// flag to know which members still need that settling adjustment (a member
-/// surviving from a previous run already has the right balance and must not
-/// be re-adjusted).
+/// id. Unlike `upsert_user` this takes a precomputed hash (all 24 members
+/// share one dev password — hashing argon2 once instead of 24× per run) and
+/// writes `birth_date`, which backs the age-bracket report bucket. Unlike
+/// `upsert_user`, this function grants no points itself: the points-tier
+/// target balance is instead reached through the member's seeded orders'
+/// `checkout_earn`/`refund_clawback` rows (written by
+/// `insert_order_if_absent`) plus a settling `LedgerDelta::admin_adjust` the
+/// caller applies, every run, once every order is inserted (see the module
+/// doc) — so this function doesn't need to report whether the row was newly
+/// inserted; the settlement step runs for every member regardless.
 async fn upsert_seed_member(
     db: &PgPool,
     email: &str,
     name: &str,
     password_hash: &str,
     birth_date: NaiveDate,
-) -> anyhow::Result<(Uuid, bool)> {
+) -> anyhow::Result<Uuid> {
     let mut tx = db
         .begin()
         .await
@@ -549,23 +559,20 @@ async fn upsert_seed_member(
     .await
     .with_context(|| format!("insert seed member {email}"))?;
 
-    let (user_id, is_new) = match inserted {
-        Some(id) => (id, true),
-        None => (
-            sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-                .bind(email)
-                .fetch_one(&mut *tx)
-                .await
-                .with_context(|| format!("fetch id for seed member {email}"))?,
-            false,
-        ),
+    let user_id = match inserted {
+        Some(id) => id,
+        None => sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_one(&mut *tx)
+            .await
+            .with_context(|| format!("fetch id for seed member {email}"))?,
     };
 
     tx.commit()
         .await
         .with_context(|| format!("commit tx for seed member {email}"))?;
 
-    Ok((user_id, is_new))
+    Ok(user_id)
 }
 
 /// Fetch a product's id by slug — mirrors `course_id_by_slug`, used to build
@@ -651,7 +658,9 @@ struct SeedOrderLine {
 /// refunded orders (and, for refunded, a `refund_clawback` of the same
 /// magnitude on top — net zero, mirroring `RefundPlan::ledger_deltas`'s
 /// `clawback_points = flow.earned`) in the same transaction; pending orders
-/// get neither, matching their `points_earned = 0`.
+/// get neither, matching their `points_earned = 0` — nor does a paid/
+/// completed/refunded order whose `points_earned` happens to be `0` (a
+/// fully-discounted order), since `apply_delta_tx` rejects a zero delta.
 struct SeedOrder {
     order_number: String,
     user_id: Uuid,
@@ -734,8 +743,11 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
     // Ledger: paid/completed/refunded orders earn `points_earned` via a
     // `checkout_earn` row; refunded orders additionally claw the same
     // magnitude back (`RefundPlan::ledger_deltas`'s `clawback_points =
-    // flow.earned` shape) — net zero for a refunded order.
-    if matches!(seed.status, "paid" | "completed" | "refunded") {
+    // flow.earned` shape) — net zero for a refunded order. `apply_delta_tx`
+    // rejects a zero delta, so a would-be zero-point order (fully discounted
+    // to `total_cents = 0`) skips the ledger write entirely rather than
+    // aborting the seed.
+    if matches!(seed.status, "paid" | "completed" | "refunded") && seed.points_earned > 0 {
         points_service::apply_delta_tx(
             &mut tx,
             seed.user_id,
@@ -1469,11 +1481,16 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("hashing seed member password: {e}"))?;
     let mut member_ids: Vec<Uuid> = Vec::with_capacity(24);
-    // `(user_id, points-tier target balance)` for every newly-inserted
-    // member this run — settled to its tier target after the order loop
-    // below has written every seeded order's `checkout_earn`/
-    // `refund_clawback` rows (see the settlement loop after `[orders]`).
-    let mut new_member_targets: Vec<(Uuid, i64)> = Vec::new();
+    // `(user_id, points-tier target balance)` for every one of the 24
+    // members — settled to its tier target after the order loop below has
+    // written every seeded order's `checkout_earn`/`refund_clawback` rows
+    // (see the settlement loop after `[orders]`). Collected for every
+    // member, not just newly-inserted ones: a settling member's balance
+    // must be re-pinned to `target` on every run, not just its first, so
+    // that new-month orders (this run's `[orders]` loop keeps writing
+    // `checkout_earn` for existing members too) can't push an existing
+    // member's balance past its tier boundary over time.
+    let mut member_targets: Vec<(Uuid, i64)> = Vec::with_capacity(24);
     for i in 1..=24usize {
         let age: u32 = match (i - 1) % 4 {
             0 => 7 + (i as u32 % 5),   //  7-11 → 6-12 bucket
@@ -1495,12 +1512,9 @@ async fn main() -> anyhow::Result<()> {
         };
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
-        let (user_id, is_new) =
-            upsert_seed_member(&db, &email, &name, &member_hash, birth_date).await?;
+        let user_id = upsert_seed_member(&db, &email, &name, &member_hash, birth_date).await?;
         assign_role(&db, user_id, "member").await?;
-        if is_new {
-            new_member_targets.push((user_id, points_balance));
-        }
+        member_targets.push((user_id, points_balance));
         member_ids.push(user_id);
     }
     println!("[members]  24 seed members ready (seed-member-01..24@dreamfly.tw / Member#2026)");
@@ -1668,16 +1682,24 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("[orders]   {order_total} seed orders across 12 months ready (DF-SEED-*)");
 
-    // -- settle new members' points-tier target balance ---------------------
-    // Each newly-inserted member's balance so far is whatever its seeded
-    // orders' `checkout_earn`/`refund_clawback` rows above added up to (a
-    // refunded order nets zero); `admin_adjust(target − balance)` tops (or
-    // trims) that up to the exact points-tier target computed in the members
-    // loop, so `points_balance == SUM(point_ledger.delta)` still holds while
-    // keeping the 4-tier/6-members-each report shape. Skipped entirely for
-    // members surviving from a previous run (not in `new_member_targets`),
-    // so a re-run doesn't re-adjust an already-settled balance.
-    for (user_id, target) in &new_member_targets {
+    // -- settle every member's points-tier target balance --------------------
+    // Every run, for every one of the 24 members (not just newly-inserted
+    // ones): the member's balance so far is whatever its seeded orders'
+    // `checkout_earn`/`refund_clawback` rows above added up to (a refunded
+    // order nets zero); `admin_adjust(target − balance)` tops (or trims)
+    // that up to the exact points-tier target computed in the members loop,
+    // so `points_balance == SUM(point_ledger.delta)` still holds while
+    // keeping the 4-tier/6-members-each report shape. A same-month re-run
+    // adds no new orders for a member already at target, so `delta` is 0
+    // and no row is written — this is what keeps the seed idempotent
+    // despite settling unconditionally. A crash between the order loop and
+    // this loop simply means the next run's settlement (unconditional, not
+    // gated on "newly inserted") finishes the job. This also means any
+    // manual `UPDATE users SET points_balance = ...` a developer runs by
+    // hand against a seed-member row is reset back to its tier target on
+    // the next `cargo run --bin seed`.
+    let mut settled = 0usize;
+    for (user_id, target) in &member_targets {
         let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_one(&db)
@@ -1695,9 +1717,10 @@ async fn main() -> anyhow::Result<()> {
             tx.commit()
                 .await
                 .with_context(|| format!("commit points settlement for seed member {user_id}"))?;
+            settled += 1;
         }
     }
-    println!("[points]   {} new members settled to their points-tier target", new_member_targets.len());
+    println!("[points]   {settled} members settled to their points-tier target");
 
     // -- course sessions: materialize the past 6 months ---------------------
     let six_months_ago = today.checked_sub_months(Months::new(6)).expect("valid seed range");
