@@ -500,3 +500,19 @@ PostgreSQL 擇一中止（`40P01` → 500），也是 `concurrent_checkout_last_
 結帳從「讀取階段可並行」變成整段排隊——它們本來就必須在 UPDATE 處排隊，差別只在排隊點提前。
 回歸測試：`checkout_same_product_two_buyers_queue_instead_of_deadlocking`（穩定重現原本的
 `40P01`）。
+
+## Addendum（2026-09-26）：課程列同款死鎖關閉——課程預鎖改取 `FOR UPDATE`
+
+上一則 addendum 只處理了 product 列；courses 列有同款拓撲、當時未修。`find_cart_items_for_
+checkout_tx` 對課程列的預鎖仍停在 join 裡的 `FOR SHARE OF c`，而 `enrolments::service::
+enrol_from_purchase_tx`（結帳稍後、同一交易內呼叫）經 `courses::seats::lock_course_seats_tx`
+對同一課程列取 `FOR UPDATE`。兩個買家同時結帳同一課程時各持 SHARE，再互等對方釋放才能升級成
+UPDATE，PostgreSQL 擇一中止（`40P01` → 500）——與 product 列修前的死鎖是同一種拓撲。
+
+修法同款：新增一條升序課程預鎖查詢，直接取 `FOR UPDATE`——`lock_course_seats_tx` 本來就要拿
+的鎖強度，之後不再需要升級。第二個買家在預鎖處排隊，等第一個 commit 後再讀。原本 join 裡的
+`FOR SHARE OF c` 保留不動：該列已被同一交易的 `FOR UPDATE` 預鎖鎖住，`FOR SHARE OF c` 不會重新
+請求或改變鎖強度，純屬冗餘、無害，故不在本輪一併移除。
+
+回歸測試：`checkout_same_course_two_buyers_queue_instead_of_deadlocking`（修前穩定重現
+`40P01`）。

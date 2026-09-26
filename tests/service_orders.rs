@@ -25,6 +25,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::cart::repository as cart_repository;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
+use dream_fly_backend::modules::courses::seats as courses_seats;
 use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
@@ -971,6 +972,84 @@ async fn checkout_same_product_two_buyers_queue_instead_of_deadlocking(db: PgPoo
         .expect("second checkout panicked")
         .expect("second buyer must succeed once the first commits");
     assert_eq!(common::product_stock(&db, product).await, Some(3));
+}
+
+#[sqlx::test]
+async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool) {
+    // Same as `checkout_same_product_two_buyers_queue_instead_of_deadlocking`
+    // above, but for a course line: the cart read's pre-lock only takes
+    // `FOR SHARE OF c` on the joined course row, while
+    // `seats::lock_course_seats_tx` (called later in the same checkout, to
+    // enrol) takes `FOR UPDATE` on that same row. Two buyers of one course
+    // both hold SHARE, then both wait on each other's SHARE to upgrade to
+    // UPDATE — PostgreSQL aborts one (SQLSTATE 40P01 → 500).
+    let course = seed_course_with_capacity(&db, "same-row-course", None, 5).await;
+    let first = seed_carted_member(
+        &db,
+        "same-row-course-first@example.com",
+        &[SeedCartLine::Course { course_id: course }],
+        0,
+    )
+    .await;
+    let second = seed_carted_member(
+        &db,
+        "same-row-course-second@example.com",
+        &[SeedCartLine::Course { course_id: course }],
+        0,
+    )
+    .await;
+
+    // The first buyer, mid-checkout: cart read done, seat lock not yet.
+    let mut first_tx = db.begin().await.unwrap();
+    cart_repository::find_cart_items_for_checkout_tx(&mut first_tx, first)
+        .await
+        .unwrap();
+
+    // The second buyer's whole checkout, on a real OS thread (same
+    // single-threaded runtime rationale as the tests above).
+    let db_second = Arc::new(db.clone());
+    let handle = tokio::runtime::Handle::current();
+    let second_checkout = tokio::task::spawn_blocking(move || {
+        handle.block_on(async move {
+            service::checkout(
+                db_second.as_ref(),
+                second,
+                None,
+                CheckoutRequest::default(),
+                None,
+                common::studio_now_utc(chrono::Utc::now()),
+            )
+            .await
+        })
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // The first buyer locks the course's seats and commits. Pre-fix the
+    // second buyer also held SHARE on this row, so this FOR UPDATE closed
+    // the cycle.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        courses_seats::lock_course_seats_tx(&mut first_tx, course),
+    )
+    .await
+    .expect("first buyer's seat lock must not wait on the second buyer")
+    .expect("first buyer's seat lock must not deadlock");
+    first_tx.commit().await.unwrap();
+
+    second_checkout
+        .await
+        .expect("second checkout panicked")
+        .expect("second buyer must succeed once the first commits");
+
+    // The first buyer only took the seat lock directly (never ran a full
+    // checkout), so only the second buyer's checkout actually enrols.
+    let active_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1")
+            .bind(course)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(active_count, 1, "second buyer's checkout enrols");
 }
 
 #[sqlx::test]

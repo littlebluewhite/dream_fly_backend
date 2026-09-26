@@ -139,9 +139,10 @@ pub async fn clear_cart_tx(
 /// UNION/INTERSECT/EXCEPT"). Each query preserves the original locking
 /// shape (`FOR UPDATE OF ci`, `FOR SHARE OF` the priced table).
 ///
-/// The product locks are first acquired, UPDATE-strength (`FOR NO KEY
-/// UPDATE`), by a dedicated pre-lock query in `product_id` ASCENDING order —
-/// see the comment on it below.
+/// The product and course locks are first acquired, UPDATE-strength (`FOR NO
+/// KEY UPDATE` for products, `FOR UPDATE` for courses), by dedicated
+/// pre-lock queries in `id` ASCENDING order — see the comments on them
+/// below.
 ///
 /// Returned lines are NOT filtered by `is_active` — every line the cart
 /// references comes back, active or not, with `is_active` riding along on
@@ -153,10 +154,10 @@ pub async fn find_cart_items_for_checkout_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
 ) -> Result<Vec<CheckoutLine>, sqlx::Error> {
-    // Cross-path lock-order discipline: pre-lock the cart's product rows
-    // in `product_id` ascending order before the join below
-    // reads (and re-locks) them in cart-creation order. Cross-buyer
-    // deadlock-cycle rationale: see the "Cross-buyer dimension" anchor in
+    // Cross-path lock-order discipline: pre-lock the cart's product and
+    // course rows, each in ascending id order, before the joins below read
+    // (and re-lock) them in cart-creation order. Cross-buyer deadlock-cycle
+    // rationale: see the "Cross-buyer dimension" anchor in
     // `orders::service::checkout` (ADR-0007 決策 5).
     // `FOR NO KEY UPDATE`, not `FOR SHARE`: checkout later UPDATEs every one
     // of these rows (`try_decrement_stock_tx`, even for untracked stock), and
@@ -172,17 +173,35 @@ pub async fn find_cart_items_for_checkout_tx(
     // `orders::service::checkout` right after this snapshot is read) is the
     // gate that now decides purchasability, and it needs every deactivated
     // line's name to build its 422 — a query that silently dropped inactive
-    // rows would hide exactly the rows that gate has to report. Courses are
-    // still not pre-locked — no compensation path takes multi-row course
-    // UPDATE locks, so locking whichever course rows the (also unfiltered)
-    // join below happens to touch introduces no cross-path course cycle
-    // either.
+    // rows would hide exactly the rows that gate has to report.
     sqlx::query(
         "SELECT id FROM products \
          WHERE id IN (SELECT product_id FROM cart_items \
                       WHERE user_id = $1 AND item_type = 'product'::cart_item_type) \
          ORDER BY id \
          FOR NO KEY UPDATE",
+    )
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+
+    // Same reasoning, same cross-path lock-order discipline, for course
+    // rows: `enrolments::service::enrol_from_purchase_tx` (called later in
+    // the same checkout) takes `FOR UPDATE` on the course row via
+    // `courses::seats::lock_course_seats_tx`. This pre-lock query below only
+    // held `FOR SHARE OF c` in the join, so two buyers of one course each
+    // held SHARE, then both waited on each other's SHARE to upgrade to that
+    // UPDATE — same 40P01 topology as the product case. Pre-locking
+    // `FOR UPDATE` here, ascending, makes the second buyer queue behind the
+    // first instead. Keeping the join's `FOR SHARE OF c` alongside is
+    // harmless — the row is already FOR UPDATE-locked by this same
+    // transaction, so it doesn't re-request or change lock strength.
+    sqlx::query(
+        "SELECT id FROM courses \
+         WHERE id IN (SELECT course_id FROM cart_items \
+                      WHERE user_id = $1 AND item_type = 'course'::cart_item_type) \
+         ORDER BY id \
+         FOR UPDATE",
     )
     .bind(user_id)
     .execute(&mut **tx)
