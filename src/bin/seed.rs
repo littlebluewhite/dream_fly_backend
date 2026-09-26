@@ -246,9 +246,9 @@ struct CourseSeed {
     /// Venue name written onto every schedule slot. Matching a seed venue's
     /// `name` exactly is a deliberate display-layer alignment (so the string
     /// shown in reports reads like a real venue) — the reports module's
-    /// venue-usage breakdown only `GROUP BY`s this string column
-    /// (`course_schedule_slots.venue`) directly; it never joins the
-    /// `venues` table.
+    /// venue-usage breakdown only `GROUP BY`s this string (snapshotted from
+    /// `course_schedule_slots.venue` onto `course_sessions.venue` at
+    /// materialization) directly; it never joins the `venues` table.
     venue: &'static str,
 }
 

@@ -883,7 +883,7 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
     seed_course_schedule_slot(&db, course_c, 3, t(10, 0), t(11, 0)).await;
 
     // A directly-seeded session for course_d at a time no slot matches -> the
-    // slot join finds no venue -> excluded. Pinned to the 1st of this month so
+    // session's venue snapshot is NULL -> excluded. Pinned to the 1st of this month so
     // it is inside the venue-usage window.
     let month_start = Utc::now().date_naive().with_day(1).unwrap();
     seed_course_session(&db, course_d, month_start, t(23, 0), t(23, 30)).await;
@@ -912,6 +912,45 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
         "NULL-venue slot and no-slot session must be excluded, got {:?}",
         report.venue_usage.iter().map(|r| r.venue.as_str()).collect::<Vec<_>>()
     );
+}
+
+#[sqlx::test]
+async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
+    // Sessions keep the venue snapshotted when they were materialized: a
+    // later slot venue edit (without a reconcile) must not re-label them.
+    let course_id = seed_course(&db, "Venue Edit Course", None).await;
+    let slot_id =
+        seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "Old Hall")
+            .await;
+    // First report materializes this month's sessions with "Old Hall".
+    service::admin_report(&db, common::studio_now_utc(Utc::now()))
+        .await
+        .expect("first admin_report");
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_sessions WHERE course_id = $1")
+        .bind(course_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert!(n >= 1, "every month has at least one Monday");
+
+    sqlx::query("UPDATE course_schedule_slots SET venue = 'New Hall' WHERE id = $1")
+        .bind(slot_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
+        .await
+        .expect("second admin_report");
+    let minutes = |venue: &str| {
+        report
+            .venue_usage
+            .iter()
+            .find(|r| r.venue == venue)
+            .map(|r| r.minutes)
+    };
+    assert_eq!(minutes("Old Hall"), Some(n * 60));
+    assert_eq!(minutes("New Hall"), None);
 }
 
 #[sqlx::test]

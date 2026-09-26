@@ -238,8 +238,8 @@ async fn today_as_admin_returns_all_courses(db: PgPool) {
 async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
     // Round 4 Task B8: admin's `GET /sessions/today` gains `coach_name`
     // (nullable — present when the course has a coach, null otherwise) and
-    // `venue` (nullable — resolved back through `course_schedule_slots`,
-    // null when the slot has no venue set).
+    // `venue` (nullable — snapshotted from `course_schedule_slots` when the
+    // session materializes, null when the slot has no venue set).
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 

@@ -53,8 +53,8 @@ impl CourseSessionResponse {
 /// Round 4 Task B8 added `coach_name`/`venue` (additive — shared by both the
 /// coach and admin branches of `GET /sessions/today`, see `sessions::
 /// service::today_sessions`). Both are nullable: `coach_name` when the
-/// course has no assigned coach, `venue` when no `course_schedule_slots` row
-/// matches the session's derived `(course_id, day_of_week, start_time)`.
+/// course has no assigned coach, `venue` when the session's venue snapshot
+/// (`course_sessions.venue`, taken from its slot at materialization) is NULL.
 #[derive(Debug, Serialize)]
 pub struct TodaySessionResponse {
     pub id: Uuid,

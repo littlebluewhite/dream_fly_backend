@@ -85,8 +85,7 @@ pub struct WeekdayLoadRow {
 
 /// One venue's summed session minutes this studio month (see
 /// `repository::venue_usage`). `venue` is the non-NULL
-/// `course_schedule_slots.venue` a session resolves to via the reversible
-/// `(course_id, day_of_week, start_time)` key; `minutes` is the summed
+/// `course_sessions.venue` snapshot (written at materialization); `minutes` is the summed
 /// session duration. Not a fixed-bucket dimension — venues with no sessions
 /// simply don't appear.
 #[derive(Debug, sqlx::FromRow)]

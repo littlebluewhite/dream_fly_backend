@@ -204,10 +204,9 @@ pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec
 
 /// `coach_name` JOINs the same way as `find_my_weekly_schedule` (courses ->
 /// coaches -> users, LEFT so a coachless course still yields a row).
-/// `venue` rejoins `course_schedule_slots` on the session's derived
-/// `(course_id, day_of_week, start_time)` — the reversible key
-/// `course_schedule_slots_unique` guarantees at most one match, so this
-/// LEFT JOIN can never fan out a session into more than one row.
+/// `venue` is the session's own snapshot (`course_sessions.venue`, written
+/// by `materialize_range`) — no rejoin to `course_schedule_slots`, so a
+/// later slot start_time/venue edit doesn't blank or re-label it.
 ///
 /// 收 [`MaterializedDay`]——單日前提已在型別層成立,不再需要在此自行
 /// 斷言。
@@ -224,15 +223,11 @@ pub async fn find_today_sessions_in(
         "SELECT cs.id, cs.course_id, c.name AS course_name, u.name AS coach_name, \
          cs.start_time, cs.end_time, \
          (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = cs.course_id) AS enrolled_count, \
-         s.venue AS venue \
+         cs.venue \
          FROM course_sessions cs \
          JOIN courses c ON c.id = cs.course_id \
          LEFT JOIN coaches co ON co.id = c.coach_id \
          LEFT JOIN users u ON u.id = co.user_id \
-         LEFT JOIN course_schedule_slots s \
-           ON s.course_id = cs.course_id \
-          AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
-          AND s.start_time = cs.start_time \
          WHERE cs.session_date = $1 AND cs.course_id = ANY($2::uuid[]) \
          ORDER BY cs.start_time",
     )
@@ -274,7 +269,7 @@ pub async fn find_my_weekly_schedule(
 /// still does that lazily via `materialize_range`).
 ///
 /// Two steps, same `(course_id, day_of_week, start_time)` correspondence
-/// `materialize_range`/`find_today_sessions_in` use (`day_of_week` =
+/// `materialize_range` uses (`day_of_week` =
 /// `EXTRACT(DOW FROM session_date)`, 0=Sunday..6=Saturday):
 /// 1. UPDATE — a future session whose `(day_of_week, start_time)` still
 ///    matches a slot has its `end_time` and `venue` synced to that slot's

@@ -9,7 +9,8 @@
 //!   enrolment in
 //! - `today_sessions`: a coach sees only their own courses (empty if they
 //!   have no `coaches` row), with a correct active-enrolment count; an
-//!   admin sees every course
+//!   admin sees every course; a session's `venue` is its own snapshot, kept
+//!   even after its slot's start_time is edited away
 //! - `today_sessions` materializes today's slot itself when no session row
 //!   was pre-seeded (the slot-only guard on the materialize-before-read wire)
 
@@ -351,12 +352,49 @@ async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn today_session_keeps_venue_after_slot_start_time_edit(db: PgPool) {
+    // The session was materialized (venue snapshotted) before its slot's
+    // start_time moved — it no longer matches any slot, but it still took
+    // place in the venue it was snapshotted with.
+    let at = common::studio_now_utc(Utc::now());
+    let scene = seed_session_scene(
+        &db,
+        "Venue Kept Course Today",
+        None,
+        at.today(),
+        t(9, 0),
+        Some("Main Hall"),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE course_schedule_slots SET start_time = '10:00', end_time = '11:00' WHERE id = $1",
+    )
+    .bind(scene.slot)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let admin_id =
+        common::seed_member(&db, "venue-kept-admin@example.com", "hunter22-secret").await;
+    let auth = common::admin_auth(admin_id);
+    let sessions = service::today_sessions(&db, at, &auth)
+        .await
+        .expect("today sessions");
+
+    let row = sessions
+        .iter()
+        .find(|s| s.id == scene.session)
+        .expect("session present");
+    assert_eq!(row.venue.as_deref(), Some("Main Hall"));
+}
+
+#[sqlx::test]
 async fn today_sessions_venue_is_null_when_no_matching_slot(db: PgPool) {
-    // A materialized session with no corresponding `course_schedule_slots`
-    // row at all — covers both stated causes in the brief ("slot 改過/無
-    // slot"): whether the slot was edited away or never existed, the LEFT
-    // JOIN finds nothing either way, so this single setup exercises the
-    // exact same code path as a since-changed slot.
+    // A session with no corresponding `course_schedule_slots` row and a NULL
+    // venue snapshot (e.g. a pre-snapshot row the backfill couldn't match to
+    // any slot) reads as null. A slot edited away *after* materialization is
+    // a different case — the snapshot survives, see
+    // `today_session_keeps_venue_after_slot_start_time_edit`.
     let course_id = seed_course(&db, "Venue No Match Course Today", None).await;
     let today = Utc::now().date_naive();
     seed_course_session(&db, course_id, today, t(9, 0), t(10, 0)).await;

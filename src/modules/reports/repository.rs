@@ -593,29 +593,23 @@ pub async fn weekday_load(
 
 /// Per-venue summed session minutes for the current studio month. 口徑
 /// (Round 4 Phase 4): 本月已物化場次(caller materializes the month first —
-/// see `service::admin_report`)JOIN `course_schedule_slots` on the reversible
-/// `(course_id, day_of_week, start_time)` key (same join as
-/// `sessions::repository::find_today_sessions_in`, Task B8) to resolve
-/// `venue`, then SUM each session's duration in minutes. **`venue` 為 NULL 的
-/// 場次不入** (the inner JOIN drops sessions with no matching slot; `venue IS
-/// NOT NULL` drops matched-but-venueless slots). Not zero-filled — venues
-/// with no sessions this month simply don't appear.
+/// see `service::admin_report`)依場次自身的 `course_sessions.venue` 快照
+/// (物化時寫入,不回頭 join `course_schedule_slots`——同
+/// `sessions::repository::find_today_sessions_in`)分組,SUM each session's
+/// duration in minutes. **`venue` 為 NULL 的場次不入**. Not zero-filled —
+/// venues with no sessions this month simply don't appear.
 pub async fn venue_usage(
     db: &PgPool,
     mat: &MaterializedRange,
 ) -> Result<Vec<VenueUsageRow>, sqlx::Error> {
     sqlx::query_as::<_, VenueUsageRow>(
-        "SELECT s.venue, \
+        "SELECT cs.venue, \
                 SUM(EXTRACT(EPOCH FROM (cs.end_time - cs.start_time)) / 60)::bigint AS minutes \
            FROM course_sessions cs \
-           JOIN course_schedule_slots s \
-             ON s.course_id = cs.course_id \
-            AND s.day_of_week = EXTRACT(DOW FROM cs.session_date)::smallint \
-            AND s.start_time = cs.start_time \
           WHERE cs.session_date BETWEEN $1 AND $2 \
-            AND s.venue IS NOT NULL \
-          GROUP BY s.venue \
-          ORDER BY minutes DESC, s.venue",
+            AND cs.venue IS NOT NULL \
+          GROUP BY cs.venue \
+          ORDER BY minutes DESC, cs.venue",
     )
     .bind(mat.from_date())
     .bind(mat.to_date())

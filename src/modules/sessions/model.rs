@@ -88,10 +88,10 @@ pub struct CourseSession {
 /// correlated-subquery pattern as `courses::model::Course::enrolled_count`).
 /// Round 4 Task B8 additive fields: `coach_name` (JOIN courses -> coaches ->
 /// users, `None` when the course has no assigned coach) and `venue`
-/// (resolved by rejoining `course_schedule_slots` on the session's derived
-/// `(course_id, day_of_week, start_time)` — the same reversible key
-/// `course_schedule_slots_unique` enforces — `None` when no slot matches,
-/// e.g. the slot was edited or deleted after this session materialized).
+/// (the session's own `course_sessions.venue` snapshot, copied from its slot
+/// by `materialize_range` — `None` when the slot had no venue then, or for
+/// rows that predate the column and matched no slot at backfill; a later
+/// slot edit doesn't change it).
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct TodaySessionRow {
     pub id: Uuid,
