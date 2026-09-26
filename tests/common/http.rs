@@ -38,7 +38,6 @@ use dream_fly_backend::config::{
     AppConfig, AuthConfig, DatabaseConfig, EmailConfig, KafkaConfig, RedisConfig, ServerConfig,
     SmsConfig,
 };
-use dream_fly_backend::extractors::auth::revoke_user;
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
@@ -181,28 +180,12 @@ impl TestApp {
         let user_id = Uuid::parse_str(body["user"]["id"].as_str().expect("user.id"))
             .expect("parse user id");
 
-        // Close any cached role/active entry seeded by the auth extractor
-        // during register itself. Test-to-test UUID collision under v7 is
-        // astronomically improbable, but it costs us two Redis DELs and
-        // guarantees the next test can't see this user's cache.
-        self.clear_user_cache(user_id).await;
-
         RegisteredUser {
             user_id,
             email: email.to_string(),
             access_token: body["access_token"].as_str().expect("access_token").to_string(),
             refresh_token: body["refresh_token"].as_str().expect("refresh_token").to_string(),
         }
-    }
-
-    /// Delete the role and active-flag cache entries for a single user.
-    /// Called from both `register_member` and `seed_user_with_roles` so
-    /// every test exit path leaves the cache empty for the users it touched.
-    /// Delegates to the same `revoke_user` the production admin-disable path
-    /// uses, rather than re-deriving the two cache-key literals here.
-    async fn clear_user_cache(&self, user_id: Uuid) {
-        let mut r = self.redis_conn().await;
-        revoke_user(&mut r, user_id).await;
     }
 
     /// Seed a user directly in the DB with the named roles attached, and
@@ -226,20 +209,15 @@ impl TestApp {
             .expect("insert user");
 
         for role in roles {
-            // Witness discarded here: `clear_user_cache` (which delegates to
-            // `revoke_user`) runs right after `commit` below and clears the
-            // role + active cache unconditionally, so a per-call flush would
-            // be redundant.
-            let _ = permissions_repository::assign_role_by_name(&mut tx, user.id, role)
+            // The user row was created in this very tx, so no access-cache
+            // entry can exist for it yet.
+            permissions_repository::assign_role_by_name(&mut tx, user.id, role)
                 .await
-                .expect("assign role");
+                .expect("assign role")
+                .assume_uncached();
         }
 
         tx.commit().await.expect("commit seed_user_with_roles");
-
-        // Invalidate any cached role set under this id (should be empty since
-        // the id is freshly generated, but belt + braces).
-        self.clear_user_cache(user.id).await;
 
         let token = dream_fly_backend::utils::jwt::encode_access_token(
             &self.config.auth,

@@ -153,18 +153,19 @@ async fn upsert_user(
 /// DO NOTHING`) via a pool-`acquire`d connection rather than hand-rolling the
 /// `INSERT` (seed has no ambient transaction to reuse).
 ///
-/// The returned `RoleCacheDirty` witness is discarded: seed has no Redis
-/// connection to flush it through, a freshly seeded user has no pre-existing
-/// cache entry to invalidate in the first place, and the 15-minute
-/// role-cache TTL self-heals regardless.
+/// The returned `AccessDirty` witness is consumed with `assume_uncached`:
+/// seed has no Redis connection to flush it through, a freshly seeded user
+/// has no pre-existing cache entry to invalidate in the first place, and the
+/// 15-minute role-cache TTL self-heals regardless.
 async fn assign_role(db: &PgPool, user_id: Uuid, role_name: &str) -> anyhow::Result<()> {
     let mut conn = db
         .acquire()
         .await
         .with_context(|| format!("acquire connection to assign role '{role_name}' to {user_id}"))?;
-    let _dirty = permissions_repository::assign_role_by_name(&mut conn, user_id, role_name)
+    permissions_repository::assign_role_by_name(&mut conn, user_id, role_name)
         .await
-        .with_context(|| format!("assign role '{role_name}' to {user_id}"))?;
+        .with_context(|| format!("assign role '{role_name}' to {user_id}"))?
+        .assume_uncached();
     Ok(())
 }
 

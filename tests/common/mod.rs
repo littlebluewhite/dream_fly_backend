@@ -145,12 +145,12 @@ pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> 
         .await
         .expect("insert user");
 
-    // Attach the `member` role (seeded by migration 00002). Witness
-    // discarded: this helper has never invalidated the role/active cache
-    // either, so dropping it here is behavior-equivalent to before.
-    let _ = permissions_repository::assign_role_by_name(&mut tx, user.id, "member")
+    // Attach the `member` role (seeded by migration 00002). The user row was
+    // created in this very tx, so no access-cache entry can exist for it.
+    permissions_repository::assign_role_by_name(&mut tx, user.id, "member")
         .await
-        .expect("assign member role");
+        .expect("assign member role")
+        .assume_uncached();
 
     tx.commit().await.expect("commit seed_member");
 

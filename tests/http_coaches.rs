@@ -4,8 +4,7 @@ mod common;
 
 use common::fixtures::seed_coach;
 use common::http::spawn_test_app;
-use dream_fly_backend::extractors::auth::role_cache_key;
-use redis::AsyncCommands;
+use dream_fly_backend::modules::auth::access;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -453,11 +452,10 @@ async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
     let target = app.register_member("bind-cache@example.com", "Password!234").await;
 
     let mut redis = app.redis_conn().await;
-    let cache_key = role_cache_key(target.user_id);
-    let _: () = redis
-        .set_ex(&cache_key, "member", 900)
+    let warm = access::resolve(&app.db, &mut redis, target.user_id)
         .await
-        .expect("seed stale cache");
+        .expect("resolve");
+    assert_eq!(warm, Some(vec!["member".to_string()]));
 
     let resp = app
         .post("/api/v1/coaches")
@@ -466,9 +464,12 @@ async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
 
-    let exists: bool = redis.exists(&cache_key).await.expect("exists check");
-    assert!(
-        !exists,
+    let after = access::resolve(&app.db, &mut redis, target.user_id)
+        .await
+        .expect("resolve");
+    assert_eq!(
+        after,
+        Some(vec!["coach".to_string(), "member".to_string()]),
         "role cache must be invalidated after coach role assignment"
     );
 }

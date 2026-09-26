@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::extractors::auth::RoleCacheDirty;
+use crate::modules::auth::access::AccessDirty;
 
 use super::model::{Permission, Role};
 
@@ -51,14 +51,14 @@ pub async fn find_permissions_for_role(
     .await
 }
 
-/// Returns a [`RoleCacheDirty`] witness — the caller MUST `.flush(redis)` it
+/// Returns an [`AccessDirty`] witness — the caller MUST `.flush(redis)` it
 /// so the next request doesn't keep serving the user's pre-assignment role
 /// set out of the Redis cache.
 pub async fn assign_role_to_user(
     db: &PgPool,
     user_id: Uuid,
     role_id: Uuid,
-) -> Result<RoleCacheDirty, sqlx::Error> {
+) -> Result<AccessDirty, sqlx::Error> {
     sqlx::query(
         "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
     )
@@ -66,21 +66,21 @@ pub async fn assign_role_to_user(
     .bind(role_id)
     .execute(db)
     .await?;
-    Ok(RoleCacheDirty::new(user_id))
+    Ok(AccessDirty::new(user_id))
 }
 
-/// Returns a [`RoleCacheDirty`] witness — see [`assign_role_to_user`].
+/// Returns an [`AccessDirty`] witness — see [`assign_role_to_user`].
 pub async fn remove_role_from_user(
     db: &PgPool,
     user_id: Uuid,
     role_id: Uuid,
-) -> Result<RoleCacheDirty, sqlx::Error> {
+) -> Result<AccessDirty, sqlx::Error> {
     sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
         .bind(user_id)
         .bind(role_id)
         .execute(db)
         .await?;
-    Ok(RoleCacheDirty::new(user_id))
+    Ok(AccessDirty::new(user_id))
 }
 
 /// Name-based, idempotent (`ON CONFLICT DO NOTHING`) role assignment — the
@@ -97,7 +97,7 @@ pub async fn remove_role_from_user(
 /// caller passes a pool-`acquire`d connection. Naming follows the
 /// executor-typed convention of `auth::session::start`.
 ///
-/// Returns a [`RoleCacheDirty`] witness — the caller MUST `.flush(redis)` it
+/// Returns an [`AccessDirty`] witness — the caller MUST `.flush(redis)` it
 /// after `tx.commit()` (or immediately, for a non-transactional caller with
 /// no commit boundary) so the next request doesn't keep serving the user's
 /// pre-assignment role set out of the Redis cache.
@@ -105,7 +105,7 @@ pub async fn assign_role_by_name(
     conn: &mut sqlx::PgConnection,
     user_id: Uuid,
     role_name: &str,
-) -> Result<RoleCacheDirty, sqlx::Error> {
+) -> Result<AccessDirty, sqlx::Error> {
     sqlx::query(
         r#"
         INSERT INTO user_roles (user_id, role_id)
@@ -117,13 +117,14 @@ pub async fn assign_role_by_name(
     .bind(role_name)
     .execute(conn)
     .await?;
-    Ok(RoleCacheDirty::new(user_id))
+    Ok(AccessDirty::new(user_id))
 }
 
 /// Role names only (no id/description/created_at) — used to populate
-/// `roles` on `UserResponse` (auth and users DTOs). Mirrors the query the
-/// `AuthUser` extractor uses for RBAC so JWT-derived access and response
-/// payloads never disagree on a user's roles.
+/// `roles` on `UserResponse` (auth and users DTOs). Also the DB fallback of
+/// `auth::access::resolve` (what the `AuthUser` extractor reads for RBAC),
+/// so JWT-derived access and response payloads never disagree on a user's
+/// roles.
 pub async fn find_role_names_by_user(
     executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,

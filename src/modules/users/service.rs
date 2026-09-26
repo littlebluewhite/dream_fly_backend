@@ -2,8 +2,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::extractors::auth::revoke_user;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::auth::access::AccessDirty;
 use crate::modules::auth::provisioning as auth_provisioning;
 use crate::modules::auth::session as auth_session;
 use crate::modules::permissions::repository as permissions_repository;
@@ -147,7 +147,7 @@ pub async fn create_user(
 /// silently ignored rather than rejected.
 ///
 /// When `is_active` is part of the request, invalidates the target user's
-/// `user_active`/`user_roles` Redis cache (`extractors::auth::revoke_user`)
+/// account access cache (`auth::access::AccessDirty::flush`)
 /// so a disable takes effect immediately instead of waiting out the
 /// extractor's 60s cache TTL. A deactivation (`is_active: false`) also ends
 /// the user's whole refresh-token family (`auth::session::end_all`) in the
@@ -184,7 +184,7 @@ pub async fn admin_update_user(
     tx.commit().await?;
 
     if req.is_active.is_some() {
-        revoke_user(redis, user_id).await;
+        AccessDirty::new(user_id).flush(redis).await;
     }
 
     let roles = permissions_repository::find_role_names_by_user(db, user_id).await?;

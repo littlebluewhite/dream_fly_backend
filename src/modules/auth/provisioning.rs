@@ -37,7 +37,7 @@
 use chrono::NaiveDate;
 use sqlx::{Postgres, Transaction};
 
-use crate::extractors::auth::RoleCacheDirty;
+use super::access::AccessDirty;
 use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
 use crate::modules::permissions::repository as permissions_repository;
@@ -58,7 +58,7 @@ pub struct NewAccount<'a> {
     pub password_hash: &'a str,
 }
 
-/// The freshly-created row plus the [`RoleCacheDirty`] witness from its
+/// The freshly-created row plus the [`AccessDirty`] witness from its
 /// `member`-role grant.
 ///
 /// `#[must_use]` here only guards against the whole value being discarded
@@ -68,13 +68,13 @@ pub struct NewAccount<'a> {
 /// `.dirty`: Rust has no field-level must-use, so that specific mistake
 /// compiles silently. The caller MUST still, by convention rather than
 /// compiler enforcement, call `dirty.flush(redis)` after `tx.commit()` (see
-/// [`RoleCacheDirty`]'s own doc for why). Both current call sites
+/// [`AccessDirty`]'s own doc for why). Both current call sites
 /// (`auth::service::register`, `users::service::create_user`) do this
 /// correctly.
 #[must_use]
 pub struct ProvisionedAccount {
     pub user: User,
-    pub dirty: RoleCacheDirty,
+    pub dirty: AccessDirty,
 }
 
 /// The account-birth owner: one atomic INSERT + role grant + outbox event,

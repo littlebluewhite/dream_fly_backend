@@ -135,18 +135,13 @@ async fn valid_token_for_deactivated_user_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("deact@example.com", "Password!234").await;
 
-    // Flip is_active to false and clear the Redis active cache.
+    // Flip is_active to false. No authenticated request has run yet, so
+    // the access cache is cold and the extractor reads the DB.
     sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
         .bind(user.user_id)
         .execute(&app.db)
         .await
         .unwrap();
-    let mut r = app.redis_conn().await;
-    let _: Result<(), _> = redis::AsyncCommands::del::<_, ()>(
-        &mut r,
-        format!("user_active:{}", user.user_id),
-    )
-    .await;
 
     let resp = app
         .get("/api/v1/users/me")

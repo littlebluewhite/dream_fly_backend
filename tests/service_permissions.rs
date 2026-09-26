@@ -5,42 +5,33 @@
 //! - `get_role_with_permissions` returns NotFound for a random role id
 //! - `create_role` returns Conflict on duplicate name (not an opaque 500)
 //! - `assign_role_to_user` writes the user_roles row AND invalidates the
-//!   Redis role cache so the next request reloads from DB
+//!   account access cache so the next `access::resolve` reloads from DB
 //! - `assign_role_to_user` with a nonexistent role returns NotFound
 //! - `remove_role_from_user` is idempotent (removing a role the user
 //!   never had does NOT error) and also clears the cache
 //!
-//! The Redis-facing assertions use the shared test Redis (db 15 by
-//! default) and the exact cache key format owned by
-//! `extractors::auth::role_cache_key` so the test breaks if that format
-//! is accidentally changed in one place but not the other.
+//! Cache assertions go through `auth::access::resolve` (what the `AuthUser`
+//! extractor reads) rather than poking cache keys, so they don't depend on
+//! the key format private to `auth::access`.
 
 mod common;
 
-use redis::AsyncCommands;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::extractors::auth::role_cache_key;
+use dream_fly_backend::modules::auth::access;
 use dream_fly_backend::modules::permissions::service;
 
-async fn seed_cache_entry(
+async fn resolved_roles(
+    db: &PgPool,
     redis: &mut redis::aio::ConnectionManager,
     user_id: Uuid,
-    payload: &str,
-) {
-    let key = role_cache_key(user_id);
-    let _: () = redis
-        .set_ex(&key, payload, 900)
+) -> Vec<String> {
+    access::resolve(db, redis, user_id)
         .await
-        .expect("seed role cache");
-}
-
-async fn cache_exists(redis: &mut redis::aio::ConnectionManager, user_id: Uuid) -> bool {
-    let key = role_cache_key(user_id);
-    let exists: bool = redis.exists(&key).await.expect("exists check");
-    exists
+        .expect("resolve")
+        .expect("active user")
 }
 
 #[sqlx::test]
@@ -92,9 +83,8 @@ async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
     let user_id = common::seed_member(&db, "perm@example.com", "hunter22-secret").await;
     let mut redis = common::test_redis().await;
 
-    // Seed a stale cache entry for this user so we can observe its removal.
-    seed_cache_entry(&mut redis, user_id, "stale-roles-json").await;
-    assert!(cache_exists(&mut redis, user_id).await);
+    // Warm the access cache with the pre-assignment role set.
+    assert_eq!(resolved_roles(&db, &mut redis, user_id).await, ["member"]);
 
     // Look up the coach role id.
     let coach_id: Uuid = sqlx::query_scalar("SELECT id FROM roles WHERE name = 'coach'")
@@ -117,9 +107,10 @@ async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
     .expect("count");
     assert_eq!(count, 1);
 
-    // Cache was invalidated.
-    assert!(
-        !cache_exists(&mut redis, user_id).await,
+    // Cache was invalidated: the next resolve sees the new role.
+    assert_eq!(
+        resolved_roles(&db, &mut redis, user_id).await,
+        ["coach", "member"],
         "role cache should be cleared on assign"
     );
 }
@@ -145,14 +136,30 @@ async fn remove_role_is_idempotent_and_clears_cache(db: PgPool) {
         .await
         .unwrap();
 
-    // Seed cache, then remove a role the user never had — must not error
-    // and must still clear the cache (defense-in-depth: an admin action
-    // always produces a cache flush).
-    seed_cache_entry(&mut redis, user_id, "stale").await;
+    // Warm the cache, then make it stale behind the service's back (a
+    // direct `admin` grant nothing flushes).
+    assert_eq!(resolved_roles(&db, &mut redis, user_id).await, ["member"]);
+    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)")
+        .bind(user_id)
+        .bind(admin_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(resolved_roles(&db, &mut redis, user_id).await, ["member"]);
 
-    service::remove_role_from_user(&db, &mut redis, user_id, admin_id)
+    // Remove a role the user never had — must not error and must still
+    // clear the cache (defense-in-depth: an admin action always produces a
+    // cache flush), so the stale entry is gone.
+    let coach_id: Uuid = sqlx::query_scalar("SELECT id FROM roles WHERE name = 'coach'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    service::remove_role_from_user(&db, &mut redis, user_id, coach_id)
         .await
         .expect("remove is idempotent");
 
-    assert!(!cache_exists(&mut redis, user_id).await);
+    assert_eq!(
+        resolved_roles(&db, &mut redis, user_id).await,
+        ["admin", "member"]
+    );
 }
