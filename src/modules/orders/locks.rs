@@ -18,6 +18,14 @@
 //! a multi-line 409 names the line with the smallest id. A line the witness
 //! doesn't cover is `AppError::Internal`, not a silent unlocked write.
 //!
+//! Refund/cancel compensation runs the refund half, [`acquire_refund_locks`]
+//! → [`RefundLocks`]: users (`FOR UPDATE`, `lock_balance_tx`) → the products
+//! the order will restock (`FOR NO KEY UPDATE`, asc,
+//! `products::service::lock_restock_for_order_tx`). No courses — refund
+//! never writes a seat count. Its writes take the witnesses the same way:
+//! `points::service::reverse_order_tx` takes `&BalanceLock`,
+//! `products::service::restore_for_order_tx` takes `&ProductLocks`.
+//!
 //! Each lock is taken at the strength its later write needs (`FOR NO KEY
 //! UPDATE` for the stock UPDATE, `FOR UPDATE` for the seat count), so no
 //! lock is ever upgraded: two buyers of one product/course queue at the lock
@@ -45,9 +53,10 @@
 //!      (ascending, UPDATE-strength), inside [`acquire_checkout_locks`]
 //!   2. checkout's writes — `reserve_stock_tx` / `enrol_batch_from_purchase_tx`,
 //!      in witness order (`in_lock_order`) on rows already held
-//!   3. refund's restore — `compensate_order_artifacts_tx` (`orders::service`)
-//!      calls `lock_products_tx` and then `restore_stock_tx`, both ascending
-//!      (transitional: the refund side has no lock protocol of its own yet)
+//!   3. refund's lock step and restore — [`acquire_refund_locks`] locks the
+//!      order's restock products via `lock_restock_for_order_tx` (ascending,
+//!      through `lock_products_tx`), and `restore_for_order_tx` writes them in
+//!      witness order (`in_lock_order`)
 //!
 //! Regression tests: `checkout_locks_take_products_ascending_no_cross_buyer_deadlock`,
 //! `checkout_same_product_two_buyers_queue_instead_of_deadlocking`,
@@ -61,6 +70,8 @@ use crate::modules::cart::service as cart_service;
 use crate::modules::courses::seats::{self, CourseLocks};
 use crate::modules::points::service::{self as points_service, BalanceLock};
 use crate::modules::products::service::{self as product_service, ProductLocks};
+
+use super::model::Order;
 
 /// Every lock `checkout` holds before its first write — see the module doc.
 /// Fields are private; only [`acquire_checkout_locks`] builds one.
@@ -103,4 +114,41 @@ pub async fn acquire_checkout_locks(
         products,
         courses,
     })
+}
+
+/// Every lock refund/cancel compensation holds before its first write —
+/// see the module doc. Refund locks no courses (it never touches seat
+/// counts; enrolments/subscriptions are cancelled by `order_id`). Fields are
+/// private; only [`acquire_refund_locks`] builds one.
+#[derive(Debug)]
+pub struct RefundLocks {
+    balance: BalanceLock,
+    products: ProductLocks,
+}
+
+impl RefundLocks {
+    pub fn balance(&self) -> &BalanceLock {
+        &self.balance
+    }
+
+    pub fn products(&self) -> &ProductLocks {
+        &self.products
+    }
+}
+
+/// Run the refund half of the order lock protocol inside the caller's
+/// transaction (which already holds the `orders` row `FOR UPDATE`): users
+/// (unconditionally, even for a zero-points order) → the products the order
+/// will restock, ascending. Errors besides a database error, in order:
+/// `lock_balance_tx`'s 404 "user not found", then
+/// `lock_restock_for_order_tx`'s `Internal` for a product line missing its
+/// `product_id`.
+pub async fn acquire_refund_locks(
+    tx: &mut Transaction<'_, Postgres>,
+    order: &Order,
+) -> Result<RefundLocks, AppError> {
+    let balance = points_service::lock_balance_tx(tx, order.user_id).await?;
+    let products = product_service::lock_restock_for_order_tx(tx, order.id).await?;
+
+    Ok(RefundLocks { balance, products })
 }

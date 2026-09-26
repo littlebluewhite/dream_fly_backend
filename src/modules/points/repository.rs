@@ -97,7 +97,7 @@ pub async fn adjust_balance_tx(
 /// `PricingOutcome::ledger_deltas`, whose redeem delta is
 /// `-points_used`) — this negates the summed `checkout_redeem`
 /// delta before returning it, so both fields of the [`OrderPointsFlow`]
-/// come back `>= 0`; the caller (`refund::plan_refund`) assigns the sign
+/// come back `>= 0`; `OrderPointsFlow::reversal_deltas` assigns the sign
 /// itself. `COALESCE(..., 0)` covers the "no matching rows" case: an
 /// unconditional `SUM(...) FILTER (...)` over zero rows is `NULL`, not `0`.
 pub async fn find_order_flow_sums_tx(

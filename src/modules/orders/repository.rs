@@ -186,32 +186,6 @@ pub async fn find_items_by_order(
     .await
 }
 
-/// Transactional twin of [`find_items_by_order`] — reads an order's line
-/// items inside the caller's transaction. Refund/cancel compensation
-/// (`orders::service::compensate_order_artifacts_tx`) calls this instead of
-/// the pool-backed version so the item read
-/// (including each line's `stock_decremented` snapshot) is part of the same
-/// transaction that already holds the order/user locks, not a separate pool
-/// connection. No row lock of its own: nothing in the compensation flow
-/// writes back to `order_items`, so a plain (unlocked) read is enough — the
-/// consistency guarantee comes from the `orders`/`users` locks the
-/// surrounding transaction already holds.
-pub async fn find_items_by_order_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    order_id: Uuid,
-) -> Result<Vec<OrderItem>, sqlx::Error> {
-    sqlx::query_as::<_, OrderItem>(
-        "SELECT id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, \
-         stock_decremented, created_at \
-         FROM order_items \
-         WHERE order_id = $1 \
-         ORDER BY created_at",
-    )
-    .bind(order_id)
-    .fetch_all(&mut **tx)
-    .await
-}
-
 /// Single atomic UPDATE: changes the status AND, if transitioning into
 /// `paid`, stamps `paid_at` in the same statement. Replaces the older
 /// split `update_status` + `set_paid_at` sequence that could leave the row

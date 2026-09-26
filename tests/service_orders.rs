@@ -917,7 +917,7 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
 #[sqlx::test]
 async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPool) {
     // Cross-buyer lock-order regression (codex branch-review P1): checkout
-    // locks its product rows, while refund's `restore_stock_tx` takes
+    // locks its product rows, while refund's `acquire_refund_locks` takes
     // per-row locks in `product_id` ASCENDING order. The users-first
     // lock (ADR-0007 決策 5) only serializes SAME-buyer paths — for different
     // buyers, a checkout locking products in cart-creation order can
@@ -927,7 +927,7 @@ async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPo
     // product order.
     //
     // Adversarial construction (UUIDv7 is time-ordered, so seeding order ≈
-    // ascending ids — same trap as the plan_refund input-order test): sort
+    // ascending ids — the two would coincide without it): sort
     // the two ids explicitly and build the cart in DESCENDING id order, the
     // exact shape that deadlocked before the pre-lock.
     let a = common::seed_product(&db, "lock-order-a", 1000, Some(5)).await;
@@ -947,7 +947,7 @@ async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPo
 
     // Refund-shaped locker: another buyer's refund holding its FIRST
     // ascending product lock (UPDATE on p_low), exactly like
-    // `products::service::restore_stock_tx` mid-flight.
+    // `products::service::lock_restock_for_order_tx` mid-flight.
     let mut refund_tx = db.begin().await.unwrap();
     sqlx::query("SELECT id FROM products WHERE id = $1 FOR UPDATE")
         .bind(p_low)

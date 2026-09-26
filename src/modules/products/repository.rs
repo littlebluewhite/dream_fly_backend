@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::modules::orders::model::REVENUE_STATUSES;
 
-use super::model::Product;
+use super::model::{OrderStockTrace, Product};
 
 /// Input payload for `create`. Packages the 10 fields that previously formed
 /// a too-large positional argument list.
@@ -183,8 +183,28 @@ pub async fn try_decrement_stock_tx(
     .await
 }
 
+/// An order's product-line stock traces (`order_items` rows with
+/// `item_type = 'product'`), in line-creation order, inside the caller's
+/// transaction. Course lines never touch stock and are filtered out here.
+/// No row lock: nothing in compensation writes back to `order_items`; the
+/// surrounding transaction already holds the `orders`/`users` locks.
+pub async fn find_stock_traces_by_order_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    order_id: Uuid,
+) -> Result<Vec<OrderStockTrace>, sqlx::Error> {
+    sqlx::query_as::<_, OrderStockTrace>(
+        "SELECT id AS item_id, product_id, quantity, stock_decremented \
+         FROM order_items \
+         WHERE order_id = $1 AND item_type = 'product'::cart_item_type \
+         ORDER BY created_at",
+    )
+    .bind(order_id)
+    .fetch_all(&mut **tx)
+    .await
+}
+
 /// Reverses `try_decrement_stock_tx` — restores `quantity` back onto
-/// `stock`. Refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
+/// `stock`. Refund/cancel compensation's (`service::restore_for_order_tx`)
 /// mirror of the checkout-time decrement; same belt-and-suspenders NULL-preserving CASE
 /// (a NULL-stock — unlimited — product's `stock` stays NULL, never gets a
 /// concrete value handed to it by a restore).
@@ -192,7 +212,7 @@ pub async fn try_decrement_stock_tx(
 /// Returns `Ok(None)` only if `product_id` doesn't exist in `products` —
 /// unreachable in practice, since every caller's `product_id` comes from an
 /// `order_items` row whose `product_id` FK guarantees the product still
-/// exists; `service::restore_stock_tx` maps `None` to `AppError::Internal`.
+/// exists; `service::restore_for_order_tx` maps `None` to `AppError::Internal`.
 /// No lower/upper bound check is needed the way `try_decrement_stock_tx`
 /// needs `stock >= quantity` — addition can't drive a finite `stock`
 /// negative.

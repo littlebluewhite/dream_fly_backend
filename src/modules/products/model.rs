@@ -40,6 +40,23 @@ impl std::str::FromStr for ProductType {
     }
 }
 
+/// One product line's checkout-time stock trace, read back from
+/// `order_items` (`repository::find_stock_traces_by_order_tx`) — the only
+/// input refund/cancel compensation needs to undo a checkout's stock
+/// decrement. `stock_decremented` is the checkout-time snapshot
+/// (`orders::fulfilment::order_lines` derives it; products only reads it):
+/// `false` (unlimited-stock product at checkout, or a legacy row) means
+/// nothing was decremented, so nothing is restored. `product_id` is
+/// `Option` because the column is nullable; a product line without one is
+/// unreachable under the `order_items_one_target` CHECK.
+#[derive(Debug, sqlx::FromRow)]
+pub struct OrderStockTrace {
+    pub item_id: Uuid,
+    pub product_id: Option<Uuid>,
+    pub quantity: i32,
+    pub stock_decremented: bool,
+}
+
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct Product {
     pub id: Uuid,

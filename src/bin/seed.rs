@@ -658,8 +658,8 @@ struct SeedOrderLine {
 /// `update_status_and_paid_at_tx`). `insert_order_if_absent` also writes
 /// `points_earned` as a `checkout_earn` ledger row for paid/completed/
 /// refunded orders (and, for refunded, a `refund_clawback` of the same
-/// magnitude on top — net zero, mirroring `RefundPlan::ledger_deltas`'s
-/// `clawback_points = flow.earned`) in the same transaction; pending orders
+/// magnitude on top — net zero, mirroring `OrderPointsFlow::reversal_deltas`'s
+/// clawback of `flow.earned`) in the same transaction; pending orders
 /// get neither, matching their `points_earned = 0` — nor does a paid/
 /// completed/refunded order whose `points_earned` happens to be `0` (a
 /// fully-discounted order), since `apply_delta_tx` rejects a zero delta.
@@ -744,8 +744,8 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
 
     // Ledger: paid/completed/refunded orders earn `points_earned` via a
     // `checkout_earn` row; refunded orders additionally claw the same
-    // magnitude back (`RefundPlan::ledger_deltas`'s `clawback_points =
-    // flow.earned` shape) — net zero for a refunded order. `apply_delta_tx`
+    // magnitude back (`OrderPointsFlow::reversal_deltas`'s clawback of
+    // `flow.earned` shape) — net zero for a refunded order. `apply_delta_tx`
     // rejects a zero delta, so a would-be zero-point order (fully discounted
     // to `total_cents = 0`) skips the ledger write entirely rather than
     // aborting the seed.

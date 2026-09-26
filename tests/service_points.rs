@@ -263,7 +263,7 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
 /// checkout/refund tests would notice if they ever drifted apart. This
 /// test pulls that twin from e2e distance to the seam itself: write both
 /// directions for the same order via `apply_delta_tx`, then read them back
-/// through the exact repository function `orders::refund::plan_refund`
+/// through the exact repository function `points::service::reverse_order_tx`
 /// consumes, and assert both magnitudes come back positive.
 #[sqlx::test]
 async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem_writes(

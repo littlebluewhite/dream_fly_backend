@@ -54,8 +54,8 @@ impl PointReason {
 /// **幅度非負是 defense-in-depth,不是型別保證**:五個固定符號建構子收
 /// `magnitude: i64`(不是 `u64`),也不回傳 `Result`——四個呼叫端的幅度來源
 /// 各自已有 owner 級保證(`orders::pricing::PricingOutcome` 的核測試、
-/// `orders::refund::RefundPlan` 的 `restore_points`/`clawback_points` doc
-/// 與測試皆載明恆 `>= 0`、`rewards.points_cost` 的 DB `CHECK > 0`、seed 的
+/// [`OrderPointsFlow`] 的 `earned`/`redeemed` doc 與 SQL 讀回測試皆載明恆
+/// `>= 0`、`rewards.points_cost` 的 DB `CHECK > 0`、seed 的
 /// 字面正值),在型別層再收一次是不必要的重複防線。`debug_assert!(magnitude
 /// >= 0, ...)` 只在 debug/測試 build 存在、release build 會被編掉——這是有
 /// owner 兜底之後「順手多檢查一次」的 defense-in-depth,不是唯一防線,
@@ -170,11 +170,32 @@ impl LedgerDelta {
 /// One order's checkout point flow as recorded in `point_ledger` — the
 /// summed `checkout_earn` and `checkout_redeem` magnitudes, both `>= 0`
 /// (`repository::find_order_flow_sums_tx`). Read by refund/cancel
-/// compensation (`orders::refund::plan_refund`).
+/// compensation through `service::reverse_order_tx`, which applies
+/// [`OrderPointsFlow::reversal_deltas`] — the ledger trace is points' own,
+/// so reversing it is points' job, not the refund orchestrator's.
 #[derive(Debug, sqlx::FromRow)]
 pub struct OrderPointsFlow {
     pub earned: i64,
     pub redeemed: i64,
+}
+
+impl OrderPointsFlow {
+    /// 這筆訂單退款/取消補償要寫的點數帳,依套用順序排列:RESTORE(正,沖回
+    /// `checkout_redeem`)先、CLAWBACK(負,沖回 `checkout_earn`)後,幅度 0 的
+    /// 方向跳過(`apply_delta_tx` 拒收零 delta)。`users_points_balance_check`
+    /// 逐語句評估,先加後扣把扣款門檻從 `balance ≥ earned` 放寬成
+    /// `balance + restored ≥ earned`(ADR-0007 決策 4)——`reverse_order_tx`
+    /// 照 vec 順序套用,vec 順序就是 ledger 列序。
+    pub fn reversal_deltas(&self, order_id: Uuid) -> Vec<LedgerDelta> {
+        let mut deltas = Vec::new();
+        if self.redeemed > 0 {
+            deltas.push(LedgerDelta::refund_restore(self.redeemed, order_id));
+        }
+        if self.earned > 0 {
+            deltas.push(LedgerDelta::refund_clawback(self.earned, order_id));
+        }
+        deltas
+    }
 }
 
 /// Bare `point_ledger` table row.
@@ -248,5 +269,50 @@ mod tests {
         assert_eq!(positive.delta(), 40);
         assert_eq!(positive.reason(), PointReason::AdminAdjust);
         assert_eq!(positive.order_id(), None);
+    }
+
+    #[test]
+    fn reversal_deltas_restore_before_clawback_skips_zero() {
+        // ADR-0007 決策 4: RESTORE (+redeemed) before CLAWBACK (-earned) —
+        // `users_points_balance_check` is evaluated per statement, so this
+        // order relaxes the clawback's condition from `balance >= earned` to
+        // `balance + restored >= earned`. `reverse_order_tx` applies the
+        // deltas in vec order, so the vec order *is* the ledger order.
+        // earned=7, redeemed=3 deliberately distinct so a swapped mapping
+        // (restore<->clawback) would be caught.
+        let order_id = Uuid::now_v7();
+        let flow = OrderPointsFlow {
+            earned: 7,
+            redeemed: 3,
+        };
+        let deltas = flow.reversal_deltas(order_id);
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0].reason(), PointReason::RefundRestore);
+        assert_eq!(deltas[0].delta(), 3);
+        assert_eq!(deltas[0].order_id(), Some(order_id));
+        assert_eq!(deltas[1].reason(), PointReason::RefundClawback);
+        assert_eq!(deltas[1].delta(), -7);
+        assert_eq!(deltas[1].order_id(), Some(order_id));
+
+        // Each direction is skipped when its magnitude is 0.
+        let earn_only = OrderPointsFlow {
+            earned: 7,
+            redeemed: 0,
+        };
+        let deltas = earn_only.reversal_deltas(order_id);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].reason(), PointReason::RefundClawback);
+        let redeem_only = OrderPointsFlow {
+            earned: 0,
+            redeemed: 3,
+        };
+        let deltas = redeem_only.reversal_deltas(order_id);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].reason(), PointReason::RefundRestore);
+        let none = OrderPointsFlow {
+            earned: 0,
+            redeemed: 0,
+        };
+        assert!(none.reversal_deltas(order_id).is_empty());
     }
 }

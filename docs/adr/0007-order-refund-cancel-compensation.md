@@ -557,3 +557,49 @@ anchor 與 CONTEXT「行計畫」詞條）。本則推翻該裁決：取鎖收�
 `service_products` 四個 reserve 測試先 `lock_products_tx`，新增 witness 外品項 → Internal；
 `service_enrolments` 九個呼叫改 `lock_courses_tx` + batch，新增同類 Internal 測試；兩個 owner 各有
 `in_lock_order` 單元測試。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-09-26）：決策 4、8 的程式 owner 搬家，語意不變
+
+決策 8 要求補償讀「結帳當下的痕跡」；原本由 `orders::refund::plan_refund` 把別的模組的痕跡
+（`order_items` 行、`point_ledger` 加總）讀進 orders、算出 `RefundPlan`，再把切片推回
+`products::service::restore_stock_tx` 與 `points::service::apply_delta_tx`。本則把每一項撤銷搬回
+痕跡的 owner：誰寫下痕跡，誰讀回、誰撤銷。
+
+**遷移登記**（行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序、ledger 列序逐位元等價）：
+
+- 決策 4：`RefundPlan::ledger_deltas` → `points::model::OrderPointsFlow::reversal_deltas(order_id)`
+  （restore 先、clawback 後、幅度 0 跳過；vec 順序即 ledger 列序）。新增
+  `points::service::reverse_order_tx(tx, &BalanceLock, order_id)`：讀
+  `repository::find_order_flow_sums_tx`、依序 `apply_delta_tx`，是退款進 `apply_delta_tx` 的唯一
+  路徑；409「點數不足」、不 clamp 不變。刪 `points::service::find_order_flow_sums_tx` 轉手層
+  （repository 版保留）。
+- 決策 8（庫存）：新增 `products::model::OrderStockTrace { item_id, product_id, quantity,
+  stock_decremented }`（`repository::find_stock_traces_by_order_tx` 只讀 `item_type = 'product'` 的
+  `order_items` 行，依 `created_at`）；私有純函式 `restock_lines` 保留原錯誤文案
+  「order {id}: product line {id} missing product_id」。`lock_restock_for_order_tx` 讀痕跡後經
+  `lock_products_tx` 升序上鎖；`restore_for_order_tx(tx, &ProductLocks, order_id)` 再讀一次痕跡、
+  依 `in_lock_order` 回補。`stock_decremented` 的推導仍歸 `orders::fulfilment`，products 只讀。
+  刪 slice 版 `products::service::restore_stock_tx`、`orders::repository::find_items_by_order_tx`。
+- 決策 5（退款鎖序）：上一則 Addendum 的過渡狀態結束——新增
+  `orders::locks::acquire_refund_locks(tx, &Order) → RefundLocks { balance, products }`：
+  users（無條件）→ 要回補的商品升序；退款不鎖課程（同今日）。`compensate_order_artifacts_tx`
+  成為平鋪清單：`acquire_refund_locks` → `reverse_order_tx` → `restore_for_order_tx` →
+  `enrolments::cancel_by_order_tx` → `subscriptions::cancel_by_order_tx`。`refund.rs` 只剩
+  `decide_transition`。
+- 錯誤優先序維持：404「user not found」→ Internal（商品行缺 `product_id`，取鎖時讀痕跡即判）→
+  409「點數不足」→ Internal（商品不存在）。唯一差異在最後一格的內部訊息：商品不存在時
+  `lock_products_tx` 鎖不到該列，改由 `in_lock_order` 報「not covered by ProductLocks」，而非原本的
+  「restore_stock_tx: product … not found」——同為 `AppError::Internal`（對外同一個 500），且在
+  `order_items.product_id` FK（無 ON DELETE）下不可達。
+- 同樣的 409 路徑上，商品列鎖現在在點數反轉之前就取（原本在其後）；users 仍最先、商品仍升序，
+  取鎖順序不變，只是 409 回滾前多持有一下商品列鎖。
+
+**測試**（replace, don't layer）：`refund.rs` 的點數測試（`plan_refund_copies_points_magnitudes_from_flow`、
+`plan_refund_zero_flow_yields_zero_magnitudes`、`ledger_deltas_restore_before_clawback`）→
+`points::model` 的 `reversal_deltas_restore_before_clawback_skips_zero`；庫存相關 → `products::service`
+的五個 `restock_lines_*`；退役三個：`plan_refund_preserves_input_order`（排序歸
+`ProductLocks::in_lock_order`，已有單元測試）、`plan_refund_course_line_produces_no_restock` 與
+`plan_refund_mixed_cart_only_restocks_the_product_line`（course 行改在 SQL 以 `item_type` 濾掉，
+混合購物車退款由 `refund_reverses_stock_enrolment_subscription_and_points` 端到端覆蓋）。
+`tests/service_orders.rs` 的端到端補償測試與 36 格 `decide_transition` 表格原樣保留。本檔其餘敘述
+維持決策當下狀態。

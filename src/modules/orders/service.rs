@@ -687,74 +687,34 @@ pub async fn update_order_status(
 /// `update_order_status` avoids re-implementing its parse / lock / transition
 /// check / outbox / notify.
 ///
-/// Order of operations (ADR-0007), sibling reads/writes all through the
-/// service seams (ADR-0005 — `orders` never touches a sibling repository):
-/// 1. Lock the buyer's points-balance row UNCONDITIONALLY — even a
-///    zero-points order takes it. This is the refund half of the unified lock
-///    order (orders → users → products → enrolments → subscriptions) that
-///    keeps a same-buyer checkout and refund mutually exclusive; it also lets
-///    the ledger flow-sum read below observe a consistent snapshot under the
-///    same lock (a `use_points=false`/zero-flow refund would otherwise lock
-///    `users` only implicitly, via a points UPDATE that never happens).
-/// 2. Read the checkout *traces* — line items (each carrying its checkout-time
-///    `stock_decremented` snapshot) and the order's `checkout_earn`/
-///    `checkout_redeem` ledger flow sums, both keyed by `order_id`. Fixture /
-///    directly-built orders, and orders from seed runs before this change
-///    (the seed now writes checkout ledger rows), never went through checkout
-///    and carry none of these, so `plan_refund` computes an all-zero plan and the whole
-///    body no-ops (the legacy-data policy — no special-casing).
-/// 3. Points reversal — RESTORE (positive, reverses `checkout_redeem`) FIRST,
-///    then CLAWBACK (negative, reverses `checkout_earn`). Under this one tx
-///    the `users_points_balance_check` CHECK is evaluated per statement, so
-///    applying the positive restore before the negative clawback relaxes the
-///    success condition from `balance ≥ earned` to `balance + restored ≥
-///    earned` (a deliberate deviation from strict reverse order — ADR-0007).
-///    Each direction is skipped when its magnitude is 0 (`apply_delta_tx`
-///    rejects a zero delta); both carry `order_id`, so the partial unique
-///    index `uniq_point_ledger_refund_once` caps each direction at one row per
-///    order.
-/// 4. Restock — only the `stock_decremented=true` lines (`plan_refund` already
-///    filtered); a transitional `lock_products_tx` locks them ascending
-///    first, and `restore_stock_tx` writes them in the same
-///    ascending-`product_id` order.
-/// 5. Cancel the order's enrolments + subscriptions (order-scoped batch
+/// A flat list of owner calls — each owner undoes its own checkout side
+/// effect from its own checkout *trace* (ADR-0007 決策 8), keyed by
+/// `order_id`; `orders` computes nothing here:
+/// 1. `locks::acquire_refund_locks` — the buyer's `users` row
+///    UNCONDITIONALLY (even a zero-points order; same-buyer checkout/refund
+///    exclusion, 決策 5), then the products the order will restock,
+///    ascending. 404 "user not found"; `Internal` for a product line missing
+///    its `product_id`.
+/// 2. `points::service::reverse_order_tx` — reverses the order's
+///    `checkout_earn`/`checkout_redeem` ledger flow, restore before
+///    clawback (決策 4); 409「點數不足」 on a clawback the balance can't cover.
+/// 3. `products::service::restore_for_order_tx` — restocks the
+///    `stock_decremented=true` lines in witness order; `Internal` for a
+///    product that doesn't resolve.
+/// 4. `enrolments`/`subscriptions` `cancel_by_order_tx` — order-scoped batch
 ///    UPDATEs, naturally idempotent via `status <> 'cancelled'`, so a buyer
-///    who already self-cancelled an enrolment is a harmless 0-row no-op).
+///    who already self-cancelled an enrolment is a harmless 0-row no-op.
+///
+/// Fixture / directly-built orders, and orders from seed runs before the
+/// seed wrote checkout ledger rows, carry no traces, so every step no-ops
+/// (the legacy-data policy — no special-casing).
 async fn compensate_order_artifacts_tx(
     tx: &mut Transaction<'_, Postgres>,
     order: &Order,
 ) -> Result<(), AppError> {
-    // 1. Lock the buyer's balance unconditionally; witness discarded (lock-only).
-    points_service::lock_balance_tx(tx, order.user_id).await?;
-
-    // 2. Read the checkout traces.
-    let items = repository::find_items_by_order_tx(tx, order.id).await?;
-    let flow = points_service::find_order_flow_sums_tx(tx, order.id).await?;
-
-    // Pure plan from the traces (feeds steps 3–5).
-    let plan = refund::plan_refund(order, &items, flow)?;
-
-    // 3. Points reversal — `RefundPlan::ledger_deltas` owns the order
-    //    (restore first, clawback second) and the zero-skip.
-    for delta in plan.ledger_deltas(order.id) {
-        points_service::apply_delta_tx(tx, order.user_id, delta).await?;
-    }
-
-    // 4. Restock the decremented product lines (already filtered by the plan).
-    let restocks: Vec<(Uuid, i32)> = plan
-        .restocks
-        .iter()
-        .map(|r| (r.product_id, r.quantity))
-        .collect();
-    // Transitional: lock the rows ascending (`lock_products_tx`, the same
-    // products stage checkout's `orders::locks` protocol uses) before the
-    // restore; witness unused until refund gets a protocol of its own.
-    let restock_ids: Vec<Uuid> = restocks.iter().map(|(product_id, _)| *product_id).collect();
-    product_service::lock_products_tx(tx, &restock_ids).await?;
-    product_service::restore_stock_tx(tx, &restocks).await?;
-
-    // 5. Cancel the order's enrolments + subscriptions (order-scoped,
-    //    idempotent).
+    let locks = locks::acquire_refund_locks(tx, order).await?;
+    points_service::reverse_order_tx(tx, locks.balance(), order.id).await?;
+    product_service::restore_for_order_tx(tx, locks.products(), order.id).await?;
     enrolments_service::cancel_by_order_tx(tx, order.id).await?;
     subscriptions_service::cancel_by_order_tx(tx, order.id).await?;
 

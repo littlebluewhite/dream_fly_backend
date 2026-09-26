@@ -7,7 +7,7 @@ use crate::extractors::pagination::PaginationParams;
 use super::dto::{
     AdjustPointsRequest, LedgerEntryResponse, PointsAdjustmentResponse, PointsMeResponse,
 };
-use super::model::{LedgerDelta, OrderPointsFlow};
+use super::model::LedgerDelta;
 use super::repository;
 
 /// 原子調整點數並寫 ledger；餘額不足（結果 < 0）→ AppError::Conflict("點數不足")。
@@ -97,8 +97,9 @@ pub async fn apply_delta_tx(
 ///   checkout: users -> products (NO KEY UPDATE, asc) -> courses (UPDATE,
 ///             asc) -> cart_items -> enrolments -> subscriptions
 ///             (`orders::locks::acquire_checkout_locks` runs the first three)
-///   refund:   orders -> users -> products (UPDATE, asc) -> enrolments ->
-///             subscriptions
+///   refund:   orders -> users -> products (NO KEY UPDATE, asc) ->
+///             enrolments -> subscriptions
+///             (`orders::locks::acquire_refund_locks` runs users + products)
 /// Taking `users` first on both paths is what makes it *the* unconditional
 /// first lock. If either path deferred it, that path could end up holding a
 /// downstream lock (e.g. checkout's product lock) while waiting on `users`,
@@ -109,10 +110,10 @@ pub async fn apply_delta_tx(
 ///
 /// Deliberately not `#[must_use]`: the witness is permission to reach the
 /// governed seam, not an obligation to consume the balance —
-/// `compensate_order_artifacts_tx` locks purely to hold the row lock for
-/// the refund's duration and legitimately drops the returned witness
-/// unused. Dropping it does NOT release the row lock: the lock lives on the
-/// still-open `tx` until the caller commits or rolls back.
+/// the refund side (`reverse_order_tx`) reads only its `user_id` and never
+/// the balance, even on a zero-flow refund that writes nothing. Dropping it
+/// does NOT release the row lock: the lock lives on the still-open `tx`
+/// until the caller commits or rolls back.
 #[derive(Debug)]
 pub struct BalanceLock {
     user_id: Uuid,
@@ -195,17 +196,35 @@ pub async fn try_spend_tx(
     apply_delta_tx(tx, user_id, LedgerDelta::redeem(cost)).await
 }
 
-/// Passthrough to `repository::find_order_flow_sums_tx` — the ADR-0005 seam
-/// `orders::service`'s refund/cancel compensation
-/// (`compensate_order_artifacts_tx`) reads through,
-/// so `orders` never imports this module's repository directly.
-pub async fn find_order_flow_sums_tx(
+/// Reverse one order's checkout point flow inside the caller's transaction —
+/// refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
+/// points step, and the only refund path into [`apply_delta_tx`]. Reads the
+/// order's own ledger trace (`repository::find_order_flow_sums_tx`, ADR-0007
+/// 決策 8 — never `orders.points_earned`/`points_used`) and applies
+/// `OrderPointsFlow::reversal_deltas` in vec order: RESTORE first, CLAWBACK
+/// second, zero magnitudes skipped (決策 4). A clawback that would drive the
+/// balance negative surfaces as `apply_delta_tx`'s `Conflict("點數不足")` —
+/// no clamp; the caller's transaction rolls back whole.
+///
+/// Takes `&BalanceLock`: the buyer's `users` row must already be locked
+/// (`orders::locks::acquire_refund_locks` takes it first), and the deltas land
+/// on the witness's `user_id`. An order with no checkout ledger rows
+/// (fixture / directly-built / pre-change seed orders) sums to `(0, 0)` and
+/// writes nothing.
+pub async fn reverse_order_tx(
     tx: &mut Transaction<'_, Postgres>,
+    lock: &BalanceLock,
     order_id: Uuid,
-) -> Result<OrderPointsFlow, AppError> {
-    repository::find_order_flow_sums_tx(tx, order_id)
+) -> Result<(), AppError> {
+    let flow = repository::find_order_flow_sums_tx(tx, order_id)
         .await
-        .map_err(AppError::Database)
+        .map_err(AppError::Database)?;
+
+    for delta in flow.reversal_deltas(order_id) {
+        apply_delta_tx(tx, lock.user_id(), delta).await?;
+    }
+
+    Ok(())
 }
 
 /// Current balance + paginated ledger (newest first) for `/points/me`.
