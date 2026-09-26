@@ -158,7 +158,7 @@ pub struct OrderLine {
 /// derivation rule that used to live in an unnamed closure inside
 /// `service::checkout` (not unit-testable there). `lines` is the same slice
 /// `plan()` above just consumed; `reserved` is
-/// `products::service::reserve_stock_tx`'s result (step 6 of
+/// `products::service::reserve_stock_tx`'s result (called by
 /// `service::checkout`) — the post-decrement row for every product line
 /// that got reserved.
 ///
@@ -170,7 +170,7 @@ pub struct OrderLine {
 /// repository.rs`). A course line never carries a `product_id`, so it can
 /// never reach `reserved` and is always `false`; a product line whose id is
 /// missing from `reserved` (unreachable today — every product line is
-/// reserved in step 6 before this runs) is also `false` — the
+/// reserved by `reserve_stock_tx` before this runs) is also `false` — the
 /// `.unwrap_or(false)` this replaces. Output preserves `lines`' order, same
 /// "no sorting here" posture as `plan()`.
 pub fn order_lines(lines: &[CheckoutLine], reserved: &HashMap<Uuid, Product>) -> Vec<OrderLine> {

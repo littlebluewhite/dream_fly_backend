@@ -29,20 +29,72 @@ use super::pricing;
 use super::refund;
 use super::repository::{self, OrderAmounts};
 
+/// The checkout request after every check that needs no database: the
+/// payment method resolved against `PAYMENT_METHODS` (defaulting to
+/// `credit_card` for back-compat — existing callers that never send the
+/// field must keep working), the coupon code trimmed with a blank code
+/// meaning "no coupon", and `use_points` defaulted to `false`.
+#[derive(Debug)]
+struct CheckoutIntent {
+    payment_method: &'static str,
+    coupon_code: Option<String>,
+    use_points: bool,
+}
+
+/// Parse+validate a `CheckoutRequest` into a [`CheckoutIntent`].
+/// `AppError::Validation` (422) on a payment method outside
+/// `PAYMENT_METHODS`. Template: `courses::service::parse_schedule_slots`.
+fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
+    let payment_method = match req.payment_method.as_deref() {
+        None => "credit_card",
+        Some(m) => PAYMENT_METHODS
+            .into_iter()
+            .find(|&p| p == m)
+            .ok_or_else(|| AppError::Validation(format!("invalid payment method: {m}")))?,
+    };
+    let coupon_code = req
+        .coupon_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    Ok(CheckoutIntent {
+        payment_method,
+        coupon_code,
+        use_points: req.use_points.unwrap_or(false),
+    })
+}
+
 /// Checkout the user's cart. When an `idempotency_key` is supplied, a second
 /// attempt with the same (user_id, key) returns the original order instead
 /// of creating a duplicate (double-click, network retry, mobile 502 retry).
 ///
-/// Rule order: points-balance lock (unconditional, tx-first — the unified
-/// lock ordering that keeps refund/cancel compensation mutually exclusive
-/// with checkout for the same buyer; see the body) -> coupon load ->
-/// `pricing::price`
-/// (subtotal -> coupon clamp -> points cap -> total -> points earned; see
-/// that module for the arithmetic itself) -> `fulfilment::plan` (item_type
-/// split: product lines to reserve, course ids to enrol) -> stock decrement
-/// -> create order (paid) -> order_items -> artifacts (enrolments via
-/// `enrol_batch`, subscriptions, points ledger) -> clear cart -> idempotency
-/// -> outbox + notify.
+/// Outcome priority — the first rule that fires decides the response:
+/// - Idempotency replay: a key already recorded for this user returns that
+///   order, before any other check (`replay_by_key`).
+/// - Invalid payment method: 422 (`parse_request`), before the transaction
+///   opens.
+/// - Unknown user: 404 from the points-balance lock (`lock_balance_tx`,
+///   unconditional and tx-first — the user-first lock order that keeps
+///   refund/cancel compensation mutually exclusive with checkout for the
+///   same buyer; ADR-0007).
+/// - Empty cart: 400 — unless a same-key twin already committed, which is
+///   replayed instead.
+/// - Deactivated line: 422 (`fulfilment::ensure_all_purchasable`).
+/// - Unknown/inactive/expired coupon: 422.
+/// - Subtotal overflow: 422 (`pricing::price`, which also does the coupon
+///   clamp, points cap, total and points earned).
+/// - Insufficient stock: 409 (`products::service::reserve_stock_tx`).
+/// - Full course / already enrolled: 409
+///   (`enrolments::service::enrol_batch_from_purchase_tx`).
+/// - Idempotency unique violation: a concurrent same-key twin won — its
+///   order is replayed.
+///
+/// Every rejection after the transaction opens rolls the whole checkout
+/// back. On success the order is created already `paid`, followed by its
+/// order_items, enrolments, subscriptions, points ledger rows, the cart
+/// clear, the idempotency row and the outbox event — one transaction — then
+/// the inline notification.
 ///
 /// The transactional cart/coupon reads and the enrolment/subscription DTO
 /// assembly go through their owning modules' service seams (ADR-0005), so
@@ -59,8 +111,8 @@ pub async fn checkout(
     at: StudioNow,
 ) -> Result<OrderResponse, AppError> {
     let StudioNow { tz, now } = at;
-    // 1. Idempotency pre-check (outside tx). If we've already processed this
-    //    key for this user, return the prior order (artifacts included).
+    // Idempotency pre-check (outside tx). If we've already processed this
+    // key for this user, return the prior order (artifacts included).
     if let Some(key) = &idempotency_key {
         if let Some(response) =
             replay_by_key(db, user_id, key, tx_witness::TxReleased::no_open_tx()).await?
@@ -69,16 +121,9 @@ pub async fn checkout(
         }
     }
 
-    // Resolve + validate `payment_method` before opening the transaction —
-    // optional, defaults to `credit_card` for back-compat (existing callers
-    // that never send this field must keep working); anything outside
-    // `PAYMENT_METHODS` is a 422, raised before any DB work begins.
-    let payment_method = req.payment_method.as_deref().unwrap_or("credit_card");
-    if !PAYMENT_METHODS.contains(&payment_method) {
-        return Err(AppError::Validation(format!(
-            "invalid payment method: {payment_method}"
-        )));
-    }
+    // Parse the request before opening the transaction — after the replay
+    // above, so a same-key retry still returns its order.
+    let intent = parse_request(req)?;
 
     // All reads and writes happen inside the transaction so the cart snapshot,
     // product/course prices, stock decrement, and every artifact created are
@@ -100,17 +145,18 @@ pub async fn checkout(
     // opposite orders, regardless of which buyers or paths are involved:
     //   1. cart's SHARE pre-lock — dedicated pre-lock query inside
     //      `find_cart_items_for_checkout_tx` (`cart::repository`)
-    //   2. checkout's UPDATE reservation — `reserve_stock_tx` (step 6, below)
-    //   3. refund's UPDATE restore — `restore_stock_tx` (compensation, Step 10e)
+    //   2. checkout's UPDATE reservation — `reserve_stock_tx` (below)
+    //   3. refund's UPDATE restore — `restore_stock_tx`
+    //      (`compensate_order_artifacts_tx`)
     // Regression test:
     // `checkout_cart_read_locks_products_ascending_no_cross_buyer_deadlock`.
     // The sort itself is not shared code: each site's write-lock owner sorts
     // independently — no shared helper (CONTEXT.md「行計畫」詞條裁決).
     let balance_lock = points_service::lock_balance_tx(&mut tx, user_id).await?;
 
-    // 2. Lock and read cart items + current product/course prices. Course
-    //    lines are now first-class (the Task-3 "not yet supported" guard is
-    //    gone).
+    // Lock and read cart items + current product/course prices. Course
+    // lines are now first-class (the Task-3 "not yet supported" guard is
+    // gone).
     let cart_items = cart_service::find_cart_items_for_checkout_tx(&mut tx, &balance_lock).await?;
 
     if cart_items.is_empty() {
@@ -121,7 +167,8 @@ pub async fn checkout(
         // it ahead of the cart read) is what actually serializes
         // the two checkouts. The loser blocks there until the winner locks
         // these same cart rows, runs the whole checkout, clears the cart,
-        // and commits (steps 11/12/`TxReleased::commit` below) — so by the time the
+        // and commits (`clear_cart_tx`/`insert_idempotency_tx`/
+        // `TxReleased::commit` below) — so by the time the
         // loser is unblocked and reaches this empty-cart check, the winner
         // is guaranteed to have already committed too (cart-clear and
         // idempotency-insert share that one transaction). Failing outright
@@ -153,7 +200,7 @@ pub async fn checkout(
     //     gone inactive is non-empty at the snapshot level, so it lands
     //     here instead — this 422 replaces what used to be a misleading
     //     "cart is empty" 400 for that case.
-    //   - BEFORE the coupon load below (step 3): whether the cart's own
+    //   - BEFORE the coupon load below: whether the cart's own
     //     contents are still legal to buy is decided before any discount is
     //     even considered.
     //   - Deliberately NOT paired with a `TxReleased` release + idempotency
@@ -167,19 +214,14 @@ pub async fn checkout(
     //     covers a genuine same-key replay.
     fulfilment::ensure_all_purchasable(&cart_items)?;
 
-    // 3. Coupon (optional), loaded and validated here — an unknown/
-    //    inactive/expired code is rejected outright — the caller should not
-    //    be silently charged full price while believing a discount applied.
-    //    Only the load happens in checkout; `pricing::price` turns this
-    //    (already-valid) coupon into the actual discount once the cart's
-    //    subtotal is known.
+    // Coupon (optional), loaded and validated here — an unknown/
+    // inactive/expired code is rejected outright — the caller should not
+    // be silently charged full price while believing a discount applied.
+    // Only the load happens in checkout; `pricing::price` turns this
+    // (already-valid) coupon into the actual discount once the cart's
+    // subtotal is known.
     let mut coupon: Option<Coupon> = None;
-    if let Some(code) = req
-        .coupon_code
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(code) = intent.coupon_code.as_deref() {
         coupon = Some(
             coupons_service::find_valid_by_code_tx(&mut tx, code)
                 .await?
@@ -187,42 +229,40 @@ pub async fn checkout(
         );
     }
 
-    // 4. Resolve the balance `pricing::price` will see. The `FOR UPDATE` lock
-    //    on this user's balance was already taken unconditionally at the top
-    //    of the tx (see the lock-ordering note there), so a second concurrent
-    //    checkout by the same user blocks until we commit or roll back — no
-    //    double-spend against a now-stale balance. Here we only choose the
-    //    value to price against: the locked balance when redeeming, or `0`
-    //    when not. `use_points=false` still prices bit-for-bit as before —
-    //    `pricing::price` reads the balance only inside its `use_points`
-    //    branch.
-    let use_points = req.use_points.unwrap_or(false);
-    let points_balance = if use_points { balance_lock.balance() } else { 0 };
+    // Price the cart — subtotal, coupon clamp, points cap, total, and
+    // points earned, all in one pure call now that the coupon is loaded
+    // and the points balance is locked. The `FOR UPDATE` lock on this
+    // user's balance was taken unconditionally at the top of the tx, so a
+    // second concurrent checkout by the same user blocks until we commit or
+    // roll back — no double-spend against a now-stale balance. The locked
+    // balance is passed as-is: `pricing::price` reads it only when
+    // `use_points`. Accepted behavior note: subtotal
+    // overflow is now detected inside this call, after the coupon load
+    // above (it used to run first) — a cart whose subtotal overflows i64
+    // *and* carries an invalid coupon code now surfaces the coupon's 422
+    // instead of the overflow error. This needs an astronomical cart to
+    // reach; see `pricing::price` for the arithmetic itself.
+    let outcome = pricing::price(
+        &cart_items,
+        coupon.as_ref(),
+        balance_lock.balance(),
+        intent.use_points,
+    )?;
 
-    // 5. Price the cart — subtotal, coupon clamp, points cap, total, and
-    //    points earned, all in one pure call now that the coupon is loaded
-    //    and the points balance is locked. Accepted behavior note: subtotal
-    //    overflow is now detected inside this call, after the coupon load
-    //    above (it used to run first) — a cart whose subtotal overflows i64
-    //    *and* carries an invalid coupon code now surfaces the coupon's 422
-    //    instead of the overflow error. This needs an astronomical cart to
-    //    reach; see `pricing::price` for the arithmetic itself.
-    let outcome = pricing::price(&cart_items, coupon.as_ref(), points_balance, use_points)?;
-
-    // 6. Stock decrement — product lines only; fail fast on shortage.
-    //    `products::service::reserve_stock_tx` owns the lock-ordering
-    //    discipline now (sorts by product_id before touching any row — see
-    //    its doc comment for why) and hands back every decremented row,
-    //    each already locked by this transaction; step 10b below reuses
-    //    those rows instead of re-reading them.
+    // Stock decrement — product lines only; fail fast on shortage.
+    // `products::service::reserve_stock_tx` owns the lock-ordering
+    // discipline now (sorts by product_id before touching any row — see
+    // its doc comment for why) and hands back every decremented row,
+    // each already locked by this transaction; the subscription grant
+    // below reuses those rows instead of re-reading them.
     //
-    //    `fulfilment::plan` does the item_type split (product lines to
-    //    reserve, course ids to enrol) in one exhaustive match, replacing the
-    //    two `.filter(matches!)` walks this body used to run. It sits in the
-    //    original filter's position — right after pricing — so a coupon/
-    //    overflow 422 still precedes the (today-unreachable) `Internal` a
-    //    target-less line would raise. Course ids ride along in `plan` until
-    //    step 10a.
+    // `fulfilment::plan` does the item_type split (product lines to
+    // reserve, course ids to enrol) in one exhaustive match, replacing the
+    // two `.filter(matches!)` walks this body used to run. It sits in the
+    // original filter's position — right after pricing — so a coupon/
+    // overflow 422 still precedes the (today-unreachable) `Internal` a
+    // target-less line would raise. Course ids ride along in `plan` until
+    // the enrolment batch below.
     let plan = fulfilment::plan(&cart_items)?;
 
     let reserve_lines: Vec<(Uuid, i32, &str)> = plan
@@ -232,13 +272,13 @@ pub async fn checkout(
         .collect();
     let reserved = product_service::reserve_stock_tx(&mut tx, &reserve_lines).await?;
 
-    // 7. Generate an order number. The `DF-YYYYMMDD` date prefix is the
-    //    studio-LOCAL calendar day (`studio_clock::today` on the handler's
-    //    sampled `now`), not the UTC day — a Taipei-evening checkout (UTC
-    //    16:00–24:00) stamps tomorrow's local date, per contract §3.18 裁決 2
-    //    wall-clock semantics. UUID-v7 suffix (hex-encoded last 32 bits)
-    //    gives us an unambiguous, monotonic, unguessable unique component —
-    //    no birthday collisions and no modulo bias.
+    // Generate an order number. The `DF-YYYYMMDD` date prefix is the
+    // studio-LOCAL calendar day (`studio_clock::today` on the handler's
+    // sampled `now`), not the UTC day — a Taipei-evening checkout (UTC
+    // 16:00–24:00) stamps tomorrow's local date, per contract §3.18 裁決 2
+    // wall-clock semantics. UUID-v7 suffix (hex-encoded last 32 bits)
+    // gives us an unambiguous, monotonic, unguessable unique component —
+    // no birthday collisions and no modulo bias.
     let order_number = {
         let suffix = Uuid::now_v7().as_u128() as u32;
         format!(
@@ -248,8 +288,8 @@ pub async fn checkout(
         )
     };
 
-    // 8. Create the order row FIRST, already `paid` — order_id is needed
-    //     before enrolments/subscriptions/ledger rows can link to it.
+    // Create the order row FIRST, already `paid` — order_id is needed
+    // before enrolments/subscriptions/ledger rows can link to it.
     let order = repository::create_order(
         &mut tx,
         user_id,
@@ -261,51 +301,51 @@ pub async fn checkout(
             points_earned: outcome.points_earned,
         },
         outcome.applied_coupon_code.as_deref(),
-        payment_method,
+        intent.payment_method,
     )
     .await?;
 
-    // 9. order_items from the (locked) cart snapshot — both product and
-    //     course lines. `fulfilment::order_lines` (plan()'s sister pure
-    //     function) turns the snapshot into named `OrderLine`s: `name`
-    //     becomes the order_items snapshot column, so later reads
-    //     (OrderSummary/AdminOrderSummary `items`) never need to join the
-    //     live product/course catalog; `stock_decremented` is derived from
-    //     `reserved`'s post-decrement rows — see that function's doc for
-    //     the exact rule.
+    // order_items from the (locked) cart snapshot — both product and
+    // course lines. `fulfilment::order_lines` (plan()'s sister pure
+    // function) turns the snapshot into named `OrderLine`s: `name`
+    // becomes the order_items snapshot column, so later reads
+    // (OrderSummary/AdminOrderSummary `items`) never need to join the
+    // live product/course catalog; `stock_decremented` is derived from
+    // `reserved`'s post-decrement rows — see that function's doc for
+    // the exact rule.
     let lines = fulfilment::order_lines(&cart_items, &reserved);
     repository::create_order_items(&mut tx, order.id, &lines).await?;
 
-    // 10. Artifacts.
-    // 10a. Enrolments — course lines. `enrol_batch_from_purchase_tx` owns the
-    //      course-line lock-ordering discipline now (sorts by course_id
-    //      before taking any `FOR UPDATE` on a course row, so two concurrent
-    //      checkouts sharing two courses can't lock them in opposite orders
-    //      and deadlock — the same discipline
-    //      `products::service::reserve_stock_tx` applies to product lines in
-    //      step 6 — course lines get a batch deep function of their own at
-    //      last, so this body no longer sorts them itself). A full course or
-    //      a duplicate active
-    //      enrolment rolls back the *entire* checkout (order, order_items,
-    //      stock decrement — all of it), which is correct: partially
-    //      fulfilling a cart is not an acceptable outcome.
+    // Artifacts.
+    // Enrolments — course lines. `enrol_batch_from_purchase_tx` owns the
+    // course-line lock-ordering discipline now (sorts by course_id
+    // before taking any `FOR UPDATE` on a course row, so two concurrent
+    // checkouts sharing two courses can't lock them in opposite orders
+    // and deadlock — the same discipline
+    // `products::service::reserve_stock_tx` applies to product lines
+    // above — course lines get a batch deep function of their own at
+    // last, so this body no longer sorts them itself). A full course or
+    // a duplicate active
+    // enrolment rolls back the *entire* checkout (order, order_items,
+    // stock decrement — all of it), which is correct: partially
+    // fulfilling a cart is not an acceptable outcome.
     enrolments_service::enrol_batch_from_purchase_tx(&mut tx, user_id, &plan.course_ids, order.id)
         .await?;
 
-    // 10b. Subscriptions — product lines whose product_type is
-    //      entitlement-eligible. `grant_from_purchase_tx` itself returns
-    //      `Ok(None)` for non-eligible types, so every product line is
-    //      simply offered to it. It does not itself validate quantity >= 1;
-    //      cart quantity is enforced to 1..=999 at add-time, so that always
-    //      holds by the time we get here. The row comes straight out of
-    //      `reserved` (step 6's `reserve_stock_tx` result) instead of a
-    //      fresh read — that transaction already holds this row's lock,
-    //      and the fields `grant_from_purchase_tx` reads
-    //      (product_type/session_count/valid_days) are untouched by the
-    //      stock decrement.
+    // Subscriptions — product lines whose product_type is
+    // entitlement-eligible. `grant_from_purchase_tx` itself returns
+    // `Ok(None)` for non-eligible types, so every product line is
+    // simply offered to it. It does not itself validate quantity >= 1;
+    // cart quantity is enforced to 1..=999 at add-time, so that always
+    // holds by the time we get here. The row comes straight out of
+    // `reserved` (the `reserve_stock_tx` result above) instead of a
+    // fresh read — that transaction already holds this row's lock,
+    // and the fields `grant_from_purchase_tx` reads
+    // (product_type/session_count/valid_days) are untouched by the
+    // stock decrement.
     for p in &plan.products {
         let product = reserved.get(&p.product_id).ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("product line was reserved in step 6"))
+            AppError::Internal(anyhow::anyhow!("product line was reserved by reserve_stock_tx"))
         })?;
         subscriptions_service::grant_from_purchase_tx(
             &mut tx,
@@ -319,8 +359,8 @@ pub async fn checkout(
         .await?;
     }
 
-    // 10c. Points ledger — redeem (negative) then earn (positive), each
-    //      skipped when zero (`apply_delta_tx` rejects a zero delta).
+    // Points ledger — redeem (negative) then earn (positive), each
+    // skipped when zero (`apply_delta_tx` rejects a zero delta).
     if outcome.points_used > 0 {
         points_service::apply_delta_tx(
             &mut tx,
@@ -338,12 +378,12 @@ pub async fn checkout(
         .await?;
     }
 
-    // 11. Clear the cart within the same transaction.
+    // Clear the cart within the same transaction.
     cart_service::clear_cart_tx(&mut tx, user_id).await?;
 
-    // 12. Record the idempotency key inside the same tx so a concurrent
-    //     retry sees either nothing (and races for the lock) or the
-    //     committed row.
+    // Record the idempotency key inside the same tx so a concurrent
+    // retry sees either nothing (and races for the lock) or the
+    // committed row.
     if let Some(key) = &idempotency_key {
         match repository::insert_idempotency_tx(&mut tx, user_id, key, order.id).await {
             Ok(()) => {}
@@ -368,10 +408,10 @@ pub async fn checkout(
         }
     }
 
-    // 13. Queue the order_created event into the outbox — persisted
-    //     atomically with the order itself. The background dispatcher (see
-    //     `kafka::outbox::start_dispatcher`) publishes it to Kafka with
-    //     at-least-once semantics.
+    // Queue the order_created event into the outbox — persisted
+    // atomically with the order itself. The background dispatcher (see
+    // `kafka::outbox::start_dispatcher`) publishes it to Kafka with
+    // at-least-once semantics.
     outbox::insert_domain_event_tx(
         &mut tx,
         OrderCreatedPayload {
@@ -390,14 +430,14 @@ pub async fn checkout(
 
     let released = tx_witness::TxReleased::commit(tx).await?;
 
-    // 14. Inline notification — the user expects order confirmation
-    //     regardless of whether Kafka is enabled, and even if the
-    //     dispatcher hasn't drained the event yet.
+    // Inline notification — the user expects order confirmation
+    // regardless of whether Kafka is enabled, and even if the
+    // dispatcher hasn't drained the event yet.
     notify::order_placed(order.user_id, order.id, &order.order_number)
         .deliver(db)
         .await;
 
-    // 15. Assemble the response (items + artifacts, looked up by order_id).
+    // Assemble the response (items + artifacts, looked up by order_id).
     assemble_response(db, order, released).await
 }
 
@@ -748,4 +788,53 @@ async fn compensate_order_artifacts_tx(
     subscriptions_service::cancel_by_order_tx(tx, order.id).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(
+        coupon_code: Option<&str>,
+        use_points: Option<bool>,
+        payment_method: Option<&str>,
+    ) -> CheckoutRequest {
+        CheckoutRequest {
+            coupon_code: coupon_code.map(str::to_owned),
+            use_points,
+            payment_method: payment_method.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn parse_request_defaults_omitted_fields() {
+        // Back-compat: a caller that never sends these fields pays by
+        // credit card, applies no coupon and redeems no points.
+        let intent = parse_request(request(None, None, None)).expect("parses");
+        assert_eq!(intent.payment_method, "credit_card");
+        assert_eq!(intent.coupon_code, None);
+        assert!(!intent.use_points);
+    }
+
+    #[test]
+    fn parse_request_rejects_payment_method_outside_the_value_domain() {
+        let err = parse_request(request(None, None, Some("bitcoin"))).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m == "invalid payment method: bitcoin"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_request_trims_coupon_and_passes_valid_fields_through() {
+        let intent =
+            parse_request(request(Some("  SAVE10  "), Some(true), Some("line_pay"))).expect("parses");
+        assert_eq!(intent.payment_method, "line_pay");
+        assert_eq!(intent.coupon_code.as_deref(), Some("SAVE10"));
+        assert!(intent.use_points);
+
+        // A blank code is "no coupon", not an invalid-coupon 422.
+        let blank = parse_request(request(Some("   "), None, None)).expect("parses");
+        assert_eq!(blank.coupon_code, None);
+    }
 }

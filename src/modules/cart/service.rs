@@ -173,7 +173,7 @@ pub async fn find_cart_items_for_checkout_tx(
     Ok(repository::find_cart_items_for_checkout_tx(tx, lock.user_id()).await?)
 }
 
-/// Clear the cart inside the caller's transaction — checkout's step 11.
+/// Clear the cart inside the caller's transaction — `orders::service::checkout`.
 /// Distinct from the pool-based [`clear`] above (the `_tx` suffix marks the
 /// transactional variant); the two coexist. Strict pass-through, no error
 /// mapping.

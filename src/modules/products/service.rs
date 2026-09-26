@@ -174,8 +174,9 @@ pub async fn update(
 }
 
 /// Reserve stock for a batch of product lines inside the caller's
-/// transaction — checkout's step 6. `lines` is `(product_id, quantity,
-/// name)` tuples rather than `cart::model::CheckoutLine` so this module
+/// transaction — `orders::service::checkout`'s stock decrement. `lines` is
+/// `(product_id, quantity, name)` tuples rather than
+/// `cart::model::CheckoutLine` so this module
 /// doesn't have to import back into `cart`; the `HashMap` return follows
 /// the same idiom as `repository::find_sold_counts` in this module.
 ///

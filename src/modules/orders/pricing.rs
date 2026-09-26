@@ -44,10 +44,9 @@ pub fn clamp_coupon_discount(coupon_cents: i64, subtotal_cents: i64) -> i64 {
 /// caller-supplied code — an unknown/inactive/expired code is a
 /// checkout-time 422 at load, before this function is ever called (see
 /// `orders::service::checkout`). `points_balance` is the caller's `FOR
-/// UPDATE`-locked balance when `use_points`, or `0` when not: passing `0`
-/// alongside `use_points = false` is exactly equivalent to skipping
-/// redemption, since `points_used` only reads `points_balance` inside the
-/// `use_points` branch below.
+/// UPDATE`-locked balance, passed whether or not `use_points`:
+/// `points_used` only reads `points_balance` inside the `use_points` branch
+/// below, so `use_points = false` skips redemption whatever the balance.
 pub fn price(
     lines: &[CheckoutLine],
     coupon: Option<&Coupon>,
@@ -164,9 +163,8 @@ mod tests {
     #[test]
     fn no_coupon_no_points_basic_case() {
         // checkout_creates_order_and_clears_cart (tests/service_orders.rs:28-49):
-        // price 1500 x2 = 3000, no coupon, use_points=false (checkout passes
-        // points_balance=0 in this case) -> total 3000, earns
-        // (30*5+50)/100 = 2.
+        // price 1500 x2 = 3000, no coupon, use_points=false -> total 3000,
+        // earns (30*5+50)/100 = 2.
         let lines = [line(1500, 2)];
         let outcome = price(&lines, None, 0, false).expect("prices");
         assert_eq!(outcome.subtotal_cents, 3000);
@@ -241,10 +239,9 @@ mod tests {
 
     #[test]
     fn use_points_false_ignores_a_nonzero_balance_passed_in() {
-        // `checkout` always passes points_balance=0 when use_points=false
-        // (it never locks the row), but the function itself must not rely
-        // on callers' discipline: a nonzero balance is still ignored when
-        // use_points is false.
+        // `checkout` passes its locked balance even when use_points=false,
+        // so this is the rule that keeps such a checkout from redeeming: a
+        // nonzero balance is ignored when use_points is false.
         let lines = [line(1000, 1)];
         let outcome = price(&lines, None, 999, false).expect("prices");
         assert_eq!(outcome.points_used, 0);

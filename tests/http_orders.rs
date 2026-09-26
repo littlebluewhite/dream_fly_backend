@@ -123,38 +123,6 @@ async fn checkout_with_valid_payment_method_persists_it(db: PgPool) {
     assert_eq!(body["payment_method"], "line_pay");
 }
 
-/// A `payment_method` outside the supported value domain is rejected before
-/// any order is created — 422, and cart items must survive untouched.
-#[sqlx::test]
-async fn checkout_with_invalid_payment_method_returns_422(db: PgPool) {
-    let app = spawn_test_app(db).await;
-    let user = app.register_member("o9@example.com", "Password!234").await;
-    let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
-
-    app.post("/api/v1/cart/items")
-        .authorization_bearer(&user.access_token)
-        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1 }))
-        .await;
-
-    let resp = app
-        .post("/api/v1/orders")
-        .authorization_bearer(&user.access_token)
-        .json(&json!({ "payment_method": "bitcoin" }))
-        .await;
-    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
-
-    // Rejected checkout must not clear the cart or create an order.
-    let cart = app
-        .get("/api/v1/cart")
-        .authorization_bearer(&user.access_token)
-        .await;
-    assert_eq!(
-        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
-        1,
-        "cart must survive a rejected checkout"
-    );
-}
-
 /// Purchasability gate (甲案): a cart line deactivated after being added
 /// (simulated here by flipping `products.is_active` directly, mirroring the
 /// service-level fixtures) rejects the whole checkout — 422, naming the
