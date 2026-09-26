@@ -17,6 +17,9 @@ pub mod http;
 pub mod mocks;
 pub mod twilio;
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 use chrono::{Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -27,6 +30,40 @@ use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
+
+/// Per-plaintext argon2 hash cache, shared across every test in this binary.
+/// Argon2 hashing costs ~50-100ms; a lot of tests seed a user with the same
+/// fixed password (`"Password!234"`, `seed_member`'s callers, ...), so
+/// caching by plaintext avoids re-paying that cost on every call.
+static PASSWORD_HASH_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Hash `pw` with argon2, consulting/populating [`PASSWORD_HASH_CACHE`] by
+/// plaintext. The lock is never held across `.await`: `hash_password` is
+/// async, so each lock/unlock brackets only the synchronous `HashMap`
+/// lookup/insert. A race where two callers both miss the cache for the same
+/// `pw` and each hash it is harmless — both hashes are equally valid, and
+/// only the second `insert` wins.
+pub async fn hashed(pw: &str) -> String {
+    if let Some(hash) = PASSWORD_HASH_CACHE
+        .lock()
+        .expect("password hash cache lock")
+        .get(pw)
+    {
+        return hash.clone();
+    }
+
+    let hash = password::hash_password(pw.to_string())
+        .await
+        .expect("hash password");
+
+    PASSWORD_HASH_CACHE
+        .lock()
+        .expect("password hash cache lock")
+        .insert(pw.to_string(), hash.clone());
+
+    hash
+}
 
 /// Build a `StudioNow` pinned to UTC for the given instant — the test-side
 /// mechanical replacement for `&common::test_server_config(), <now>`.
@@ -100,9 +137,7 @@ pub fn admin_auth(user_id: Uuid) -> AuthUser {
 /// `permissions::repository::assign_role_by_name` rather than hand-rolling
 /// the `INSERT` — see those for the real row shape.
 pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> Uuid {
-    let hash = password::hash_password(plaintext_password.to_string())
-        .await
-        .expect("hash password");
+    let hash = hashed(plaintext_password).await;
 
     let mut tx = db.begin().await.expect("begin tx");
 

@@ -46,7 +46,6 @@ use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::google_oauth::JwksCache;
-use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::sms::SmsClient;
 
 use super::mocks::{MockClock, MockEmailClient};
@@ -218,13 +217,11 @@ impl TestApp {
         email: &str,
         roles: &[&str],
     ) -> (Uuid, String) {
-        let hashed = password::hash_password("Password!234".to_string())
-            .await
-            .expect("hash");
+        let hash = super::hashed("Password!234").await;
 
         let mut tx = self.db.begin().await.expect("begin tx");
 
-        let user = repository::create_user_tx(&mut tx, email, "Seeded User", None, &hashed, None)
+        let user = repository::create_user_tx(&mut tx, email, "Seeded User", None, &hash, None)
             .await
             .expect("insert user");
 
