@@ -25,8 +25,8 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::cart::repository as cart_repository;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
-use dream_fly_backend::modules::courses::seats as courses_seats;
 use dream_fly_backend::modules::coupons::service as coupons_service;
+use dream_fly_backend::modules::courses::seats as courses_seats;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::service;
@@ -1023,6 +1023,10 @@ async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool
         })
     });
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !second_checkout.is_finished(),
+        "second buyer must queue behind the first buyer's course pre-lock"
+    );
 
     // The first buyer locks the course's seats and commits. Pre-fix the
     // second buyer also held SHARE on this row, so this FOR UPDATE closed

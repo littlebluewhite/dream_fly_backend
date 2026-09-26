@@ -130,8 +130,10 @@ pub async fn clear_cart_tx(
 }
 
 /// Transactional cart-for-checkout read. Locks the cart rows (`FOR UPDATE`)
-/// and also the joined product/course rows (`FOR SHARE`) so another request
-/// cannot concurrently mutate cart contents or change prices mid-checkout.
+/// and also the joined product/course rows so another request cannot
+/// concurrently mutate cart contents or change prices mid-checkout — those
+/// rows are already held at UPDATE strength by the pre-locks below, so the
+/// joins' own `FOR SHARE OF` doesn't request or change anything.
 ///
 /// Product and course lines are fetched via two independent queries rather
 /// than one `UNION`, because PostgreSQL rejects `FOR UPDATE`/`FOR SHARE` on
@@ -188,10 +190,10 @@ pub async fn find_cart_items_for_checkout_tx(
     // Same reasoning, same cross-path lock-order discipline, for course
     // rows: `enrolments::service::enrol_from_purchase_tx` (called later in
     // the same checkout) takes `FOR UPDATE` on the course row via
-    // `courses::seats::lock_course_seats_tx`. This pre-lock query below only
-    // held `FOR SHARE OF c` in the join, so two buyers of one course each
-    // held SHARE, then both waited on each other's SHARE to upgrade to that
-    // UPDATE — same 40P01 topology as the product case. Pre-locking
+    // `courses::seats::lock_course_seats_tx`. The join below previously only
+    // held `FOR SHARE OF c`, so two buyers of one course each held SHARE,
+    // then both waited on each other's SHARE to upgrade to that UPDATE —
+    // same 40P01 topology as the product case. Pre-locking
     // `FOR UPDATE` here, ascending, makes the second buyer queue behind the
     // first instead. Keeping the join's `FOR SHARE OF c` alongside is
     // harmless — the row is already FOR UPDATE-locked by this same
