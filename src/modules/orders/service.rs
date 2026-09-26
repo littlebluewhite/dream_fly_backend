@@ -12,7 +12,6 @@ use crate::modules::coupons::service as coupons_service;
 use crate::modules::enrolments::dto::EnrolmentResponse;
 use crate::modules::enrolments::service as enrolments_service;
 use crate::modules::notifications::service as notify;
-use crate::modules::points::model::LedgerDelta;
 use crate::modules::points::service as points_service;
 use crate::modules::products::service as product_service;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
@@ -743,22 +742,10 @@ async fn compensate_order_artifacts_tx(
     // 3. Pure plan.
     let plan = refund::plan_refund(order, &items, flow)?;
 
-    // 4. Points reversal — restore first, clawback second.
-    if plan.restore_points > 0 {
-        points_service::apply_delta_tx(
-            tx,
-            order.user_id,
-            LedgerDelta::refund_restore(plan.restore_points, order.id),
-        )
-        .await?;
-    }
-    if plan.clawback_points > 0 {
-        points_service::apply_delta_tx(
-            tx,
-            order.user_id,
-            LedgerDelta::refund_clawback(plan.clawback_points, order.id),
-        )
-        .await?;
+    // 4. Points reversal — `RefundPlan::ledger_deltas` owns the order
+    //    (restore first, clawback second) and the zero-skip.
+    for delta in plan.ledger_deltas(order.id) {
+        points_service::apply_delta_tx(tx, order.user_id, delta).await?;
     }
 
     // 5. Restock the decremented product lines (already filtered by the plan).

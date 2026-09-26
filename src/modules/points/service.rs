@@ -7,7 +7,7 @@ use crate::extractors::pagination::PaginationParams;
 use super::dto::{
     AdjustPointsRequest, LedgerEntryResponse, PointsAdjustmentResponse, PointsMeResponse,
 };
-use super::model::LedgerDelta;
+use super::model::{LedgerDelta, OrderPointsFlow};
 use super::repository;
 
 /// 原子調整點數並寫 ledger；餘額不足（結果 < 0）→ AppError::Conflict("點數不足")。
@@ -203,7 +203,7 @@ pub async fn try_spend_tx(
 pub async fn find_order_flow_sums_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
-) -> Result<(i64, i64), AppError> {
+) -> Result<OrderPointsFlow, AppError> {
     repository::find_order_flow_sums_tx(tx, order_id)
         .await
         .map_err(AppError::Database)

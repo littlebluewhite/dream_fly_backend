@@ -167,6 +167,16 @@ impl LedgerDelta {
     }
 }
 
+/// One order's checkout point flow as recorded in `point_ledger` — the
+/// summed `checkout_earn` and `checkout_redeem` magnitudes, both `>= 0`
+/// (`repository::find_order_flow_sums_tx`). Read by refund/cancel
+/// compensation (`orders::refund::plan_refund`).
+#[derive(Debug, sqlx::FromRow)]
+pub struct OrderPointsFlow {
+    pub earned: i64,
+    pub redeemed: i64,
+}
+
 /// Bare `point_ledger` table row.
 #[derive(Debug, sqlx::FromRow)]
 pub struct PointLedgerEntry {

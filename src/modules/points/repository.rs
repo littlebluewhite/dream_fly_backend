@@ -1,7 +1,7 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::model::{PointLedgerEntry, PointReason};
+use super::model::{OrderPointsFlow, PointLedgerEntry, PointReason};
 
 /// Current points balance for a user (NOT NULL column on `users`). `None`
 /// means no such user.
@@ -94,15 +94,15 @@ pub async fn adjust_balance_tx(
 /// `checkout_redeem` rows are written with a *negative* `delta`
 /// (`orders::service::checkout` calls `apply_delta_tx` with
 /// `-outcome.points_used`) — this negates the summed `checkout_redeem`
-/// delta before returning it, so both halves of the tuple come back
-/// `>= 0`; the caller (`refund::plan_refund`) assigns the sign
+/// delta before returning it, so both fields of the [`OrderPointsFlow`]
+/// come back `>= 0`; the caller (`refund::plan_refund`) assigns the sign
 /// itself. `COALESCE(..., 0)` covers the "no matching rows" case: an
 /// unconditional `SUM(...) FILTER (...)` over zero rows is `NULL`, not `0`.
 pub async fn find_order_flow_sums_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
-) -> Result<(i64, i64), sqlx::Error> {
-    let (earned, redeemed): (i64, i64) = sqlx::query_as(
+) -> Result<OrderPointsFlow, sqlx::Error> {
+    sqlx::query_as::<_, OrderPointsFlow>(
         "SELECT \
             COALESCE(SUM(delta) FILTER (WHERE reason = 'checkout_earn'::point_reason), 0)::bigint AS earned, \
             COALESCE(-(SUM(delta) FILTER (WHERE reason = 'checkout_redeem'::point_reason)), 0)::bigint AS redeemed \
@@ -111,8 +111,7 @@ pub async fn find_order_flow_sums_tx(
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
-    .await?;
-    Ok((earned, redeemed))
+    .await
 }
 
 /// Insert the ledger row recording an applied delta, in the same

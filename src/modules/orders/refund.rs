@@ -11,13 +11,15 @@
 //! [`plan_refund`],最後把 [`RefundPlan`] 套進
 //! `products::service::restore_stock_tx` / `points::service::apply_delta_tx`
 //! / `enrolments::service::cancel_by_order_tx` /
-//! `subscriptions::service::cancel_by_order_tx`——正負號、鎖序、409 全是編排
-//! 端的事,這裡只算「該撤銷多少」。
+//! `subscriptions::service::cancel_by_order_tx`——鎖序、409 是編排端的事;
+//! 這裡算「該撤銷多少」,並由 [`RefundPlan::ledger_deltas`] 定下點數反轉的
+//! 正負號與先後。
 
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::modules::cart::model::CartItemType;
+use crate::modules::points::model::{LedgerDelta, OrderPointsFlow};
 
 use super::model::{Order, OrderItem, OrderStatus};
 
@@ -34,9 +36,9 @@ pub struct StockRestore {
 /// 商品行要回補庫存、點數要沖回/沖銷多少。
 ///
 /// `restore_points`/`clawback_points` 是**幅度**(恆 ≥ 0),不是簽過名的
-/// delta——符號由編排端套(`RefundRestore` 恆正、`RefundClawback` 恆負,契約
-/// §1.6),`0` 代表這個方向這筆訂單沒有東西可沖,編排端據此跳過該筆 ledger
-/// insert。
+/// delta——符號由 [`RefundPlan::ledger_deltas`] 經 `LedgerDelta` 建構子套
+/// (`RefundRestore` 恆正、`RefundClawback` 恆負,契約 §1.6),`0` 代表這個方向
+/// 這筆訂單沒有東西可沖,`ledger_deltas` 據此跳過該筆 ledger insert。
 #[derive(Debug)]
 pub struct RefundPlan {
     pub restocks: Vec<StockRestore>,
@@ -44,8 +46,27 @@ pub struct RefundPlan {
     pub clawback_points: i64,
 }
 
+impl RefundPlan {
+    /// 這筆訂單補償要寫的點數帳,依套用順序排列:RESTORE(正,沖回
+    /// `checkout_redeem`)先、CLAWBACK(負,沖回 `checkout_earn`)後,幅度 0 的
+    /// 方向跳過(`apply_delta_tx` 拒收零 delta)。`users_points_balance_check`
+    /// 逐語句評估,先加後扣把扣款門檻從 `balance ≥ earned` 放寬成
+    /// `balance + restored ≥ earned`(ADR-0007 決策 4)——編排端照 vec 順序
+    /// 套用,vec 順序就是 ledger 列序。
+    pub fn ledger_deltas(&self, order_id: Uuid) -> Vec<LedgerDelta> {
+        let mut deltas = Vec::new();
+        if self.restore_points > 0 {
+            deltas.push(LedgerDelta::refund_restore(self.restore_points, order_id));
+        }
+        if self.clawback_points > 0 {
+            deltas.push(LedgerDelta::refund_clawback(self.clawback_points, order_id));
+        }
+        deltas
+    }
+}
+
 /// 算一筆訂單的補償方案。`items` 是 `order` 的 `order_items` 行,`flow` 是
-/// `points::service::find_order_flow_sums_tx` 讀回的 `(earned, redeemed)`
+/// `points::service::find_order_flow_sums_tx` 讀回的 [`OrderPointsFlow`]
 /// ledger 實錄——**不是** `order.points_earned`/`points_used` 欄位:
 /// seed/歷史直建單沒有 ledger 列,讀欄位會沖銷從未發生過的點數流,讀 ledger
 /// 則對這種單自然算出全 0(遺留資料政策,ADR-0007)。
@@ -69,9 +90,8 @@ pub struct RefundPlan {
 pub fn plan_refund(
     order: &Order,
     items: &[OrderItem],
-    flow: (i64, i64),
+    flow: OrderPointsFlow,
 ) -> Result<RefundPlan, AppError> {
-    let (earned, redeemed) = flow;
     let mut restocks = Vec::new();
 
     for item in items {
@@ -102,8 +122,8 @@ pub fn plan_refund(
 
     Ok(RefundPlan {
         restocks,
-        restore_points: redeemed,
-        clawback_points: earned,
+        restore_points: flow.redeemed,
+        clawback_points: flow.earned,
     })
 }
 
@@ -126,6 +146,8 @@ pub fn compensation_required(current: &OrderStatus, target: &OrderStatus) -> boo
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    use crate::modules::points::model::PointReason;
 
     fn order_fixture() -> Order {
         Order {
@@ -163,6 +185,10 @@ mod tests {
         }
     }
 
+    fn flow(earned: i64, redeemed: i64) -> OrderPointsFlow {
+        OrderPointsFlow { earned, redeemed }
+    }
+
     fn course_item() -> OrderItem {
         OrderItem {
             id: Uuid::now_v7(),
@@ -183,7 +209,7 @@ mod tests {
     fn plan_refund_course_line_produces_no_restock() {
         let order = order_fixture();
         let items = [course_item()];
-        let plan = plan_refund(&order, &items, (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &items, flow(0, 0)).expect("plans");
         assert!(plan.restocks.is_empty());
     }
 
@@ -194,7 +220,7 @@ mod tests {
         // restored.
         let order = order_fixture();
         let items = [product_item(Some(Uuid::now_v7()), 2, false)];
-        let plan = plan_refund(&order, &items, (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &items, flow(0, 0)).expect("plans");
         assert!(
             plan.restocks.is_empty(),
             "stock_decremented=false must not restock"
@@ -206,7 +232,7 @@ mod tests {
         let order = order_fixture();
         let product_id = Uuid::now_v7();
         let items = [product_item(Some(product_id), 3, true)];
-        let plan = plan_refund(&order, &items, (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &items, flow(0, 0)).expect("plans");
         assert_eq!(plan.restocks.len(), 1);
         assert_eq!(plan.restocks[0].product_id, product_id);
         assert_eq!(plan.restocks[0].quantity, 3);
@@ -217,7 +243,7 @@ mod tests {
         let order = order_fixture();
         let product_id = Uuid::now_v7();
         let items = [product_item(Some(product_id), 1, true), course_item()];
-        let plan = plan_refund(&order, &items, (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &items, flow(0, 0)).expect("plans");
         assert_eq!(plan.restocks.len(), 1);
         assert_eq!(plan.restocks[0].product_id, product_id);
     }
@@ -243,7 +269,7 @@ mod tests {
             product_item(Some(id_a), 1, true),
             product_item(Some(id_b), 1, true),
         ];
-        let plan = plan_refund(&order, &items, (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &items, flow(0, 0)).expect("plans");
         assert_eq!(plan.restocks[0].product_id, id_a, "first (larger id) stays first");
         assert_eq!(plan.restocks[1].product_id, id_b, "second (smaller id) stays second");
     }
@@ -251,7 +277,7 @@ mod tests {
     #[test]
     fn plan_refund_empty_items_yields_empty_restocks() {
         let order = order_fixture();
-        let plan = plan_refund(&order, &[], (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &[], flow(0, 0)).expect("plans");
         assert!(plan.restocks.is_empty());
     }
 
@@ -264,7 +290,7 @@ mod tests {
         // checkout_redeem (the redeemed amount), clawback_points reverses
         // checkout_earn (the earned amount).
         let order = order_fixture();
-        let plan = plan_refund(&order, &[], (7, 3)).expect("plans");
+        let plan = plan_refund(&order, &[], flow(7, 3)).expect("plans");
         assert_eq!(plan.restore_points, 3);
         assert_eq!(plan.clawback_points, 7);
     }
@@ -272,9 +298,38 @@ mod tests {
     #[test]
     fn plan_refund_zero_flow_yields_zero_magnitudes() {
         let order = order_fixture();
-        let plan = plan_refund(&order, &[], (0, 0)).expect("plans");
+        let plan = plan_refund(&order, &[], flow(0, 0)).expect("plans");
         assert_eq!(plan.restore_points, 0);
         assert_eq!(plan.clawback_points, 0);
+    }
+
+    // --- RefundPlan::ledger_deltas ---
+
+    #[test]
+    fn ledger_deltas_restore_before_clawback() {
+        // ADR-0007 決策 4: RESTORE (+redeemed) before CLAWBACK (-earned) —
+        // `users_points_balance_check` is evaluated per statement, so this
+        // order relaxes the clawback's condition from `balance >= earned` to
+        // `balance + restored >= earned`. The caller applies the deltas in
+        // vec order, so the vec order *is* the ledger order.
+        let order = order_fixture();
+        let plan = plan_refund(&order, &[], flow(7, 3)).expect("plans");
+        let deltas = plan.ledger_deltas(order.id);
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0].reason(), PointReason::RefundRestore);
+        assert_eq!(deltas[0].delta(), 3);
+        assert_eq!(deltas[0].order_id(), Some(order.id));
+        assert_eq!(deltas[1].reason(), PointReason::RefundClawback);
+        assert_eq!(deltas[1].delta(), -7);
+        assert_eq!(deltas[1].order_id(), Some(order.id));
+
+        // Each direction is skipped when its magnitude is 0.
+        let earn_only = plan_refund(&order, &[], flow(7, 0)).expect("plans");
+        let deltas = earn_only.ledger_deltas(order.id);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].reason(), PointReason::RefundClawback);
+        let none = plan_refund(&order, &[], flow(0, 0)).expect("plans");
+        assert!(none.ledger_deltas(order.id).is_empty());
     }
 
     // --- plan_refund: belt guard ---
@@ -283,7 +338,7 @@ mod tests {
     fn plan_refund_missing_product_id_is_internal_error() {
         let order = order_fixture();
         let items = [product_item(None, 1, true)];
-        let err = plan_refund(&order, &items, (0, 0)).expect_err("must be Internal");
+        let err = plan_refund(&order, &items, flow(0, 0)).expect_err("must be Internal");
         assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
     }
 
@@ -295,7 +350,7 @@ mod tests {
         // would have produced a restock.
         let order = order_fixture();
         let items = [product_item(None, 1, false)];
-        let err = plan_refund(&order, &items, (0, 0)).expect_err("must be Internal");
+        let err = plan_refund(&order, &items, flow(0, 0)).expect_err("must be Internal");
         assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
     }
 

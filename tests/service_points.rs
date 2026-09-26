@@ -281,14 +281,14 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
         .await
         .expect("redeem should succeed");
 
-    let (earned, redeemed) = points_repo::find_order_flow_sums_tx(&mut tx, order_id)
+    let flow = points_repo::find_order_flow_sums_tx(&mut tx, order_id)
         .await
         .expect("read back flow sums");
     tx.commit().await.expect("commit");
 
-    assert_eq!(earned, 10, "checkout_earn magnitude reads back positive");
+    assert_eq!(flow.earned, 10, "checkout_earn magnitude reads back positive");
     assert_eq!(
-        redeemed, 30,
+        flow.redeemed, 30,
         "checkout_redeem magnitude reads back positive despite the negative delta written"
     );
 }
