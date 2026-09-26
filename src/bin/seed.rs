@@ -62,10 +62,13 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::{AppConfig, AppEnv};
 use dream_fly_backend::modules::bookings::model::BookingStatus;
+use dream_fly_backend::modules::cart::model::{CartItemType, CheckoutLine};
 use dream_fly_backend::modules::contact::model::InquiryType;
-use dream_fly_backend::modules::orders::model::PAYMENT_METHODS;
+use dream_fly_backend::modules::coupons::repository as coupons_repository;
+use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
+use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
-use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
+use dream_fly_backend::modules::points::model::{LedgerDelta, OrderPointsFlow, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::repository::materialize_range;
 use dream_fly_backend::utils::password;
@@ -657,17 +660,6 @@ async fn insert_enrolment_if_absent(
     Ok(id)
 }
 
-/// One order line — the same `(product_id | course_id, quantity,
-/// unit_price_cents, name)` snapshot shape `orders::repository::
-/// create_order_items` writes at checkout.
-struct SeedOrderLine {
-    product_id: Option<Uuid>,
-    course_id: Option<Uuid>,
-    quantity: i32,
-    unit_price_cents: i64,
-    name: String,
-}
-
 /// A checkout-shaped order. Field consistency mirrors `orders::pricing`:
 /// `total_cents = Σ(line qty × unit price) − discount_cents` (points_used is
 /// always 0 in seed data) and `points_earned = (total_nt × 5 + 50) / 100`
@@ -684,15 +676,11 @@ struct SeedOrderLine {
 struct SeedOrder {
     order_number: String,
     user_id: Uuid,
-    status: &'static str,
+    status: OrderStatus,
     created_at: DateTime<Utc>,
-    paid_at: Option<DateTime<Utc>>,
-    total_cents: i64,
-    discount_cents: i64,
-    coupon_code: Option<&'static str>,
-    points_earned: i64,
     payment_method: &'static str,
-    lines: Vec<SeedOrderLine>,
+    lines: Vec<CheckoutLine>,
+    pricing: PricingOutcome,
 }
 
 /// Insert an order + its order_items (idempotent by existence check on
@@ -715,6 +703,33 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
 
     let mut tx = db.begin().await.context("begin order tx")?;
     let order_id = Uuid::now_v7();
+
+    // Exhaustive over `OrderStatus` — a new variant must decide here what
+    // it means for `paid_at`, the recorded `points_earned`, and the ledger.
+    // The seed itself only produces pending / paid / completed / refunded.
+    let (paid_at, points_earned, ledger) = match seed.status {
+        // Never paid (`Cancelled` read as the `Pending → Cancelled` edge):
+        // no `paid_at`, nothing earned, no ledger rows.
+        OrderStatus::Pending | OrderStatus::Cancelled => (None, 0, Vec::new()),
+        OrderStatus::Paid | OrderStatus::Processing | OrderStatus::Completed => (
+            Some(seed.created_at),
+            seed.pricing.points_earned,
+            seed.pricing.ledger_deltas(order_id),
+        ),
+        // Refunded keeps its original `paid_at` (matching
+        // `update_status_and_paid_at_tx`) and its checkout ledger rows,
+        // then the refund reverses that flow on top.
+        OrderStatus::Refunded => {
+            let mut ledger = seed.pricing.ledger_deltas(order_id);
+            let flow = OrderPointsFlow {
+                earned: seed.pricing.points_earned,
+                redeemed: seed.pricing.points_used,
+            };
+            ledger.extend(flow.reversal_deltas(order_id));
+            (Some(seed.created_at), seed.pricing.points_earned, ledger)
+        }
+    };
+
     sqlx::query(
         r#"
         INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
@@ -726,13 +741,13 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
     .bind(order_id)
     .bind(seed.user_id)
     .bind(&seed.order_number)
-    .bind(seed.status)
-    .bind(seed.total_cents)
-    .bind(seed.discount_cents)
-    .bind(seed.coupon_code)
-    .bind(seed.points_earned)
+    .bind(seed.status.as_str())
+    .bind(seed.pricing.total_cents)
+    .bind(seed.pricing.discount_cents)
+    .bind(&seed.pricing.applied_coupon_code)
+    .bind(points_earned)
     .bind(seed.payment_method)
-    .bind(seed.paid_at)
+    .bind(paid_at)
     .bind(seed.created_at)
     .execute(&mut *tx)
     .await
@@ -752,7 +767,7 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
         .bind(line.product_id)
         .bind(line.course_id)
         .bind(line.quantity)
-        .bind(line.unit_price_cents)
+        .bind(line.price_cents)
         .bind(&line.name)
         .bind(seed.created_at)
         .execute(&mut *tx)
@@ -760,31 +775,14 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
         .with_context(|| format!("insert order_item for '{}'", seed.order_number))?;
     }
 
-    // Ledger: paid/completed/refunded orders earn `points_earned` via a
-    // `checkout_earn` row; refunded orders additionally claw the same
-    // magnitude back (`OrderPointsFlow::reversal_deltas`'s clawback of
-    // `flow.earned` shape) — net zero for a refunded order. `apply_delta_tx`
-    // rejects a zero delta, so a would-be zero-point order (fully discounted
-    // to `total_cents = 0`) skips the ledger write entirely rather than
-    // aborting the seed.
-    if matches!(seed.status, "paid" | "completed" | "refunded") && seed.points_earned > 0 {
-        points_service::apply_delta_tx(
-            &mut tx,
-            seed.user_id,
-            LedgerDelta::checkout_earn(seed.points_earned, order_id),
-        )
-        .await
-        .with_context(|| format!("checkout_earn ledger for order '{}'", seed.order_number))?;
-
-        if seed.status == "refunded" {
-            points_service::apply_delta_tx(
-                &mut tx,
-                seed.user_id,
-                LedgerDelta::refund_clawback(seed.points_earned, order_id),
-            )
+    // Ledger rows in vec order — both owners already skip zero magnitudes
+    // (`apply_delta_tx` rejects a zero delta), so a fully-discounted order
+    // (`total_cents = 0`, earns 0) writes none rather than aborting the seed.
+    for delta in ledger {
+        let reason = delta.reason().as_str();
+        points_service::apply_delta_tx(&mut tx, seed.user_id, delta)
             .await
-            .with_context(|| format!("refund_clawback ledger for order '{}'", seed.order_number))?;
-        }
+            .with_context(|| format!("{reason} ledger for order '{}'", seed.order_number))?;
     }
 
     tx.commit().await.context("commit order tx")?;
@@ -1602,6 +1600,12 @@ async fn main() -> anyhow::Result<()> {
         PAYMENT_METHODS[0], // credit_card
         PAYMENT_METHODS[4], // cash
     ];
+    // Every seq-2 order applies DREAMFLY100 — loaded once, the way checkout
+    // loads a code, so its discount comes from the `[coupons]` row above.
+    let seed_coupon = coupons_repository::find_valid_by_code(&db, "DREAMFLY100")
+        .await
+        .context("load seed coupon DREAMFLY100")?
+        .context("seed coupon DREAMFLY100 is missing, inactive or expired")?;
     let mut order_total = 0usize;
     for m in 0..12u32 {
         let month_first = today
@@ -1621,59 +1625,60 @@ async fn main() -> anyhow::Result<()> {
             };
             let ts = at_utc(month_first.with_day(day as u32).expect("day ≤ 28/today"), 4);
             let status = if seq == 4 {
-                "refunded"
+                OrderStatus::Refunded
             } else if seq == 7 {
-                "pending"
+                OrderStatus::Pending
             } else if g % 2 == 0 {
-                "completed"
+                OrderStatus::Completed
             } else {
-                "paid"
+                OrderStatus::Paid
             };
 
             // Lines: every 5th order is a course enrolment purchase, the
             // rest cycle the 7-product pool; every 3rd order appends a
             // merchandise line (unless the main line already is the tee —
             // checkout's cart can't produce two lines of one product).
-            let mut lines: Vec<SeedOrderLine> = Vec::new();
+            let mut lines: Vec<CheckoutLine> = Vec::new();
             if g % 5 == 0 {
                 let k = (g / 5) % 6;
-                lines.push(SeedOrderLine {
+                lines.push(CheckoutLine {
+                    item_type: CartItemType::Course,
                     product_id: None,
                     course_id: Some(course_ids[k]),
                     quantity: 1,
-                    unit_price_cents: course_seeds[k].price_cents,
+                    price_cents: course_seeds[k].price_cents,
                     name: course_seeds[k].name.to_string(),
+                    is_active: true,
                 });
             } else {
                 let p = g % 7;
-                lines.push(SeedOrderLine {
+                lines.push(CheckoutLine {
+                    item_type: CartItemType::Product,
                     product_id: Some(product_ids[p]),
                     course_id: None,
                     quantity: 1,
-                    unit_price_cents: product_seeds[p].price_cents,
+                    price_cents: product_seeds[p].price_cents,
                     name: product_seeds[p].name.to_string(),
+                    is_active: true,
                 });
             }
             if g % 3 == 0 && (g % 5 == 0 || g % 7 != 6) {
-                lines.push(SeedOrderLine {
+                lines.push(CheckoutLine {
+                    item_type: CartItemType::Product,
                     product_id: Some(product_ids[6]),
                     course_id: None,
                     quantity: 1 + (g % 2) as i32,
-                    unit_price_cents: product_seeds[6].price_cents,
+                    price_cents: product_seeds[6].price_cents,
                     name: product_seeds[6].name.to_string(),
+                    is_active: true,
                 });
             }
 
-            let subtotal: i64 = lines.iter().map(|l| l.unit_price_cents * l.quantity as i64).sum();
-            let (coupon_code, discount_cents) = if seq == 2 {
-                (Some("DREAMFLY100"), 10_000_i64.min(subtotal))
-            } else {
-                (None, 0)
-            };
-            let total_cents = subtotal - discount_cents;
-            // 5% of the final total in points, rounded — `orders::pricing`.
-            let points_earned =
-                if status == "pending" { 0 } else { ((total_cents / 100) * 5 + 50) / 100 };
+            // Amounts and points through checkout's own pricing owner —
+            // seed orders never redeem points.
+            let coupon = if seq == 2 { Some(&seed_coupon) } else { None };
+            let pricing = pricing::price(&lines, coupon, 0, false)
+                .with_context(|| format!("price seed order DF-SEED-{ym}-{seq:02}"))?;
 
             insert_order_if_absent(
                 &db,
@@ -1682,13 +1687,9 @@ async fn main() -> anyhow::Result<()> {
                     user_id: member_ids[(g * 11) % 24],
                     status,
                     created_at: ts,
-                    paid_at: if status == "pending" { None } else { Some(ts) },
-                    total_cents,
-                    discount_cents,
-                    coupon_code,
-                    points_earned,
                     payment_method: PM_CYCLE[g % 10],
                     lines,
+                    pricing,
                 },
             )
             .await?;
