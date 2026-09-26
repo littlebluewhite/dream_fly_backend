@@ -14,9 +14,11 @@
 //!   效期是時鐘 seam 記錄在案的 carve-out,直呼 `Utc::now()`)。
 //! - 輪替原子化:舊 token revoke、新 token 簽發在同一 tx 內同進同出。
 //! - reuse detection:已 revoke 的 token 再次出現視為竊取重放,整族撤銷。
+//!   只有輪替會留下 revoked 列;整族撤銷(`end_all`)直接刪列,之後舊 token
+//!   只得到一般 401,不會把使用者重新登入後的新 session 誤判為重放而連帶殺掉。
 //! - 停用帳號(`!is_active`)在任何簽發路徑都拿不到 session(`start` 首行)。
-//! - retention:清理只刪過期列;已 revoke 未過期的列保留到過期,reuse
-//!   detection 才認得出重放(過期後由 JWT `exp` 先擋)。
+//! - retention:清理只刪過期列;輪替留下的已 revoke 未過期列保留到過期,
+//!   reuse detection 才認得出重放(過期後由 JWT `exp` 先擋)。
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{PgConnection, PgPool};
@@ -91,6 +93,10 @@ pub(super) async fn rotate(
     if stored.revoked {
         // Reuse detection: if a revoked token is seen again, treat it as a
         // stolen-token replay and invalidate the user's entire token family.
+        // Only rotation leaves revoked rows behind — `end_all` deletes rows —
+        // so a token killed by a password reset / deactivation / earlier
+        // reuse wipe finds no row above (plain 401) and cannot trip this
+        // branch against the user's newer sessions.
         //
         // Log at ERROR with a distinct `security_event` field so SIEM rules
         // can alert on this specifically — token reuse is a strong
@@ -161,19 +167,25 @@ pub(super) async fn end(
     Ok(())
 }
 
-/// Revokes every still-live refresh token of `user_id` (the whole token
-/// family). DB only — the caller owns the tx boundary and, after commit,
+/// Ends every session of `user_id` by deleting all of its refresh-token rows
+/// (the whole token family, revoked rows included). Deleting rather than
+/// marking revoked is deliberate: revoked rows are retained for reuse
+/// detection, so a revoked-by-`end_all` row would make a stale device's old
+/// token look like a replay once the user logs in again, and `rotate` would
+/// then wipe the new sessions too. With the rows gone, an old token is a
+/// plain 401. DB only — the caller owns the tx boundary and, after commit,
 /// any Redis-side invalidation (`extractors::auth::revoke_user`).
 pub(crate) async fn end_all(conn: &mut PgConnection, user_id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE refresh_tokens SET revoked = true WHERE user_id = $1 AND revoked = false")
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = $1")
         .bind(user_id)
         .execute(conn)
         .await?;
     Ok(())
 }
 
-/// Deletes expired refresh-token rows only. Revoked-but-unexpired rows are
-/// kept on purpose: reuse detection in `rotate` needs the revoked row to
+/// Deletes expired refresh-token rows only. Revoked-but-unexpired rows (only
+/// rotation produces them; `end_all` deletes outright) are kept on purpose:
+/// reuse detection in `rotate` needs the revoked row to
 /// recognise a replayed rotated-out token (a missing row is a plain 401 with
 /// no family revoke). Once a row has expired, the JWT's own `exp` (same
 /// `jwt_refresh_expiration_days` horizon) already rejects the token in

@@ -9,10 +9,13 @@
 //! - refresh token reuse detection revokes the entire token family
 //! - `session::purge_expired` keeps rotated-out (revoked, unexpired) rows,
 //!   so reuse detection still fires after a purge
+//! - `session::purge_expired` deletes expired rows, revoked or not
 //! - forgot_password reissue invalidates the previous outstanding token
 //! - reset_password tokens are single-use (GETDEL semantics)
 //! - reset_password revokes the entire refresh-token family, not just the
 //!   most recently issued token
+//! - a stale pre-reset token is a plain 401 and does not kill the session
+//!   the user logged in with afterwards
 //! - forgot_password's per-account rate limit silently swallows the 4th
 //!   request within the window (still an Ok response, but no email sent)
 
@@ -358,6 +361,71 @@ async fn purge_expired_keeps_rotated_tokens_so_reuse_still_revokes_family(db: Pg
     assert!(matches!(r2_err, AppError::Unauthorized));
 }
 
+/// The other half of the retention rule: once a row is past `expires_at`,
+/// `purge_expired` deletes it whether or not it was revoked, and leaves
+/// unexpired rows alone.
+#[sqlx::test]
+async fn purge_expired_deletes_expired_rows_revoked_or_not(db: PgPool) {
+    let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
+
+    let r1 = service::register(
+        &db,
+        &mut redis,
+        &cfg,
+        RegisterRequest {
+            email: "purge-expired@example.com".into(),
+            name: "Purge Expired".into(),
+            password: "sup3rsecret".into(),
+        },
+        None,
+    )
+    .await
+    .expect("register");
+
+    // Rotate once (r1 becomes revoked) and once more (r2 revoked, r3 live).
+    let r2 = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r1.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect("first refresh");
+    let r3 = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: r2.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect("second refresh");
+
+    // Backdate r1 (revoked) and r3 (live); r2 (revoked) stays unexpired.
+    for token in [&r1.refresh_token, &r3.refresh_token] {
+        sqlx::query(
+            "UPDATE refresh_tokens SET expires_at = NOW() - INTERVAL '1 minute' WHERE token_hash = $1",
+        )
+        .bind(jwt::hash_token(token))
+        .execute(&db)
+        .await
+        .expect("backdate expires_at");
+    }
+
+    let purged = session::purge_expired(&db).await.expect("purge");
+    assert_eq!(purged, 2, "both expired rows, revoked and live, are deleted");
+
+    let remaining: Vec<String> =
+        sqlx::query_scalar("SELECT token_hash FROM refresh_tokens WHERE user_id = $1")
+            .bind(r1.user.id)
+            .fetch_all(&db)
+            .await
+            .expect("read remaining rows");
+    assert_eq!(remaining, vec![jwt::hash_token(&r2.refresh_token)]);
+}
+
 // ---------------- forgot_password / reset_password token protocol ----------------
 //
 // These 4 pin the reset-token protocol invariants at the `auth::service`
@@ -547,9 +615,8 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
 
     // r2 — the live token at the moment of reset — must now be dead too, not
     // just whichever token happened to be current when the password changed.
-    // (Reusing r1 directly would itself trip reuse-detection family-wipe, so
-    // it is deliberately not replayed here — the DB-level count below is the
-    // unconfounded proof that r1's row is also revoked.)
+    // (r1 is deliberately not replayed here — the DB-level count below is
+    // the direct proof that r1's already-rotated row is gone too.)
     let err = service::refresh_token(
         &db,
         &cfg,
@@ -572,6 +639,98 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
         active_count, 0,
         "all tokens (including r1's already-rotated-away row) should be revoked"
     );
+}
+
+/// `end_all` used to mark rows revoked, and revoked rows are retained until
+/// expiry for reuse detection — so a stale device refreshing with a
+/// pre-reset token after the user logged in again looked like a replay:
+/// `rotate` ran `end_all` again, killing the brand-new session and logging a
+/// false `refresh_token_reuse`. `end_all` now deletes the rows, so the stale
+/// token is a plain 401 and the new session survives.
+#[sqlx::test]
+async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) {
+    let cfg = common::test_auth_config();
+    let mut redis = common::test_redis().await;
+    let background = TaskTracker::new();
+    let email = format!("stale-{}@example.com", Uuid::now_v7());
+
+    let old = service::register(
+        &db,
+        &mut redis,
+        &cfg,
+        RegisterRequest {
+            email: email.clone(),
+            name: "Stale Device".into(),
+            password: "Password!234".into(),
+        },
+        None,
+    )
+    .await
+    .expect("register");
+
+    let mock = Arc::new(MockEmailClient::new());
+    let email_client: Arc<dyn EmailSender> = mock.clone();
+    service::forgot_password(
+        &db,
+        &mut redis,
+        email_client,
+        &background,
+        ForgotPasswordRequest {
+            email: email.clone(),
+        },
+    )
+    .await
+    .expect("forgot_password");
+
+    background.close();
+    background.wait().await;
+    let token = mock.sent()[0].token.clone();
+
+    service::reset_password(
+        &db,
+        &mut redis,
+        ResetPasswordRequest {
+            token,
+            new_password: "BrandNewPassword!234".into(),
+        },
+    )
+    .await
+    .expect("reset_password");
+
+    let fresh = service::login(
+        &db,
+        &mut redis,
+        &cfg,
+        LoginRequest {
+            email: email.clone(),
+            password: "BrandNewPassword!234".into(),
+        },
+    )
+    .await
+    .expect("login with the new password");
+
+    // The stale device refreshes with its pre-reset token: rejected …
+    let err = service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: old.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect_err("pre-reset token must be dead");
+    assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
+
+    // … without taking the new session down with it.
+    service::refresh_token(
+        &db,
+        &cfg,
+        RefreshRequest {
+            refresh_token: fresh.refresh_token.clone(),
+        },
+    )
+    .await
+    .expect("new session's refresh token must still work");
 }
 
 #[sqlx::test]

@@ -39,7 +39,7 @@
   - **refresh token：30 天**（`auth.jwt_refresh_expiration_days`）。
   - 若後端調整這兩個數字，本文件需同步更新——前端不應嘗試從 JWT payload 自行解析 `exp`（可行但非契約保證的介面，後端保留調整 payload 形狀的權利）。
 - **Refresh 輪替（rotation）**：每次呼叫 `POST /auth/refresh` 都會讓舊 refresh token 失效並核發一組全新的 access+refresh token；前端必須用回應中的新 `refresh_token` 覆蓋本機儲存的舊值，不可重複使用同一顆 refresh token。
-- **重用偵測即家族撤銷**：若一顆「已被撤銷」的 refresh token 再次被拿來呼叫 `/auth/refresh`（例如舊 token 外洩、或前端 race condition 下重放了舊值），後端視為憑證竊用，會撤銷該使用者**所有** refresh token（整個裝置/session 家族），並回 401。使用者需重新登入。因此前端必須確保同一時間只有一個 refresh 請求在飛行中（single-flight，見 ADR-0001）。
+- **重用偵測即家族撤銷**：若一顆「已被撤銷」的 refresh token 再次被拿來呼叫 `/auth/refresh`（例如舊 token 外洩、或前端 race condition 下重放了舊值），後端視為憑證竊用，會撤銷該使用者**所有** refresh token（整個裝置/session 家族），並回 401。使用者需重新登入。因此前端必須確保同一時間只有一個 refresh 請求在飛行中（single-flight，見 ADR-0001）。只有「因輪替而失效」的舊 token 會觸發此偵測；因重設密碼、帳號停用或先前的家族撤銷而失效的 token 只會得到一般 401，不影響使用者之後重新登入取得的新 session。
 - `POST /auth/logout` 撤銷傳入的 refresh token（單一裝置登出），是幂等操作（傳入無效 token 也回 200）。
 
 ### 1.3 錯誤格式
