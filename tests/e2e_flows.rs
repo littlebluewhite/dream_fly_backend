@@ -187,9 +187,8 @@ async fn e2e_shopping_flow(db: PgPool) {
 /// Forgot password → capture token from MockEmailClient → reset → login.
 #[sqlx::test]
 async fn e2e_password_reset_flow(db: PgPool) {
-    // Use a unique email so the per-account forgot-password Redis counter
-    // (3 requests per hour per email) does not interfere when this test
-    // runs back-to-back against the same Redis.
+    // Use a unique email so the per-account forgot-password counter
+    // (3 requests per hour per email) can never interfere.
     let app = spawn_test_app(db).await;
     let email = format!("pw-{}@example.com", uuid::Uuid::now_v7());
     app.register_member(&email, "OldPassword!234").await;

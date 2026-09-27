@@ -6,8 +6,8 @@
 //!
 //! - builds a minimal [`AppConfig`] pinned to UTC, a fixed JWT secret, and
 //!   `trust_proxy = true` so the rate-limit middleware honors our synthetic
-//!   `X-Forwarded-For` (each test gets a unique IP, so rate limits are
-//!   effectively isolated per test)
+//!   `X-Forwarded-For` (each `TestApp` gets a unique IP; its buckets live
+//!   in its own store anyway, see below)
 //! - gives each `TestApp` its own `InMemoryEphemeralStore` for short-lived
 //!   state (rate-limit buckets, login/forgot-password counters, OTP, reset
 //!   tokens) and its own `InMemoryAccessCache` (`app.access_cache`) for the
