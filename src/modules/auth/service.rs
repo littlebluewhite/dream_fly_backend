@@ -36,9 +36,7 @@ pub async fn register(
 ) -> Result<AuthResponse, AppError> {
     // Hash password (on a blocking thread so the Argon2 CPU burst doesn't
     // stall async workers).
-    let hashed = password::hash_password(req.password.clone())
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))?;
+    let hashed = password::hash_for_storage(req.password.clone()).await?;
 
     // Wrap user creation + role assignment + outbox event + token
     // persistence in a single transaction so partial failures never leave
@@ -299,9 +297,7 @@ pub async fn reset_password(
     let user_id = reset_tokens::consume(store, &req.token).await?;
 
     // 2. Hash new password
-    let hashed = password::hash_password(req.new_password.clone())
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))?;
+    let hashed = password::hash_for_storage(req.new_password.clone()).await?;
 
     // 3. Update password + revoke all tokens atomically so a partial failure
     //    cannot leave old sessions valid after a password change.

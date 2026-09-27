@@ -109,9 +109,7 @@ pub async fn create_user(
     req: CreateUserRequest,
     correlation_id: Option<String>,
 ) -> Result<UserResponse, AppError> {
-    let hashed = password::hash_password(req.password.clone())
-        .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))?;
+    let hashed = password::hash_for_storage(req.password.clone()).await?;
 
     let mut tx = db.begin().await?;
 

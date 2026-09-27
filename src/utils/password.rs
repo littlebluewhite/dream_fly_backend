@@ -3,6 +3,8 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 
+use crate::error::AppError;
+
 /// Construct an Argon2id hasher with parameters pinned to the OWASP 2024
 /// "first recommended configuration" (m=19 MiB, t=2, p=1). We pin them
 /// explicitly so a future upstream default change cannot silently weaken
@@ -53,6 +55,17 @@ pub async fn verify_password(
     })
     .await
     .expect("argon2 verify_password task panicked")
+}
+
+/// `hash_password` 換成 `AppError` 的薄封裝——三個呼叫端(`auth::service::register`、
+/// `auth::service::reset_password`、`users::service::create_user`)雜湊失敗時
+/// 映射成同一句 log 字串,原本各自重複這行,收進這裡後只有一處。放在
+/// `utils::password` 而非 auth 私有 module,是因為 `users` 不該依賴 auth 的
+/// 私有實作。
+pub async fn hash_for_storage(password: String) -> Result<String, AppError> {
+    hash_password(password)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("password hash error: {e}")))
 }
 
 #[cfg(test)]
