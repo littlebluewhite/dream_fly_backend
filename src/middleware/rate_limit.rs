@@ -8,6 +8,7 @@ use axum::Json;
 use serde_json::json;
 
 use crate::state::AppState;
+use crate::utils::ephemeral::EphemeralStore;
 
 /// Build a JSON error response for rate-limit rejections. Keeps the
 /// call-sites in [`rate_limit_middleware`] and [`strict_rate_limit`] DRY
@@ -72,6 +73,22 @@ fn client_identity(req: &Request, trust_proxy: bool) -> String {
     }
 }
 
+/// Global per-IP bucket. Keyed by IP only (NOT by path), so an attacker
+/// cannot fan out across endpoints to circumvent the cap.
+async fn bump_global(store: &dyn EphemeralStore, identity: &str) -> anyhow::Result<i64> {
+    store
+        .incr_with_ttl(&format!("rate_limit:global:{identity}"), WINDOW_SECONDS)
+        .await
+}
+
+/// Auth-specific bucket. Layered on top of the global one (checked
+/// separately, upstream, by `rate_limit_middleware`), not replacing it.
+async fn bump_auth(store: &dyn EphemeralStore, identity: &str) -> anyhow::Result<i64> {
+    store
+        .incr_with_ttl(&format!("rate_limit:auth:{identity}"), AUTH_WINDOW_SECONDS)
+        .await
+}
+
 /// Global per-IP bucket only (`rate_limit:global:{ip}`, 300/min) — mounted
 /// as the sole outer rate-limit layer in `startup.rs`. The stricter
 /// per-route auth bucket used to be checked here too, behind
@@ -86,12 +103,7 @@ pub async fn rate_limit_middleware(
     let trust_proxy = state.config.server.trust_proxy;
     let identity = client_identity(&req, trust_proxy);
 
-    // Global per-IP bucket. Keyed by IP only (NOT by path), so an attacker
-    // cannot fan out across endpoints to circumvent the cap.
-    let global_key = format!("rate_limit:global:{identity}");
-    let global_count = state
-        .ephemeral
-        .incr_with_ttl(&global_key, WINDOW_SECONDS)
+    let global_count = bump_global(state.ephemeral.as_ref(), &identity)
         .await
         .map_err(|e| {
             tracing::error!("Redis global rate limit error: {e}");
@@ -137,12 +149,7 @@ pub async fn strict_rate_limit(
     let trust_proxy = state.config.server.trust_proxy;
     let identity = client_identity(&req, trust_proxy);
 
-    // Auth-specific bucket. Layered on top of the global one (checked
-    // separately, upstream, by `rate_limit_middleware`), not replacing it.
-    let auth_key = format!("rate_limit:auth:{identity}");
-    let auth_count = state
-        .ephemeral
-        .incr_with_ttl(&auth_key, AUTH_WINDOW_SECONDS)
+    let auth_count = bump_auth(state.ephemeral.as_ref(), &identity)
         .await
         .map_err(|e| {
             tracing::error!("Redis auth rate limit error: {e}");
@@ -154,4 +161,27 @@ pub async fn strict_rate_limit(
     }
 
     Ok(next.run(req).await)
+}
+
+/// Pins the bucket keys and windows against the pre-`EphemeralStore` code
+/// (`eafe837`): a renamed key or changed TTL would silently reset every live
+/// Redis bucket on deploy.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::ephemeral::recording::{Call, RecordingStore};
+
+    #[tokio::test]
+    async fn bucket_keys_and_ttls() {
+        let store = RecordingStore::default();
+        bump_global(&store, "203.0.113.7").await.unwrap();
+        bump_auth(&store, "203.0.113.7").await.unwrap();
+        assert_eq!(
+            store.take_calls(),
+            vec![
+                Call::Incr("rate_limit:global:203.0.113.7".into(), 60),
+                Call::Incr("rate_limit:auth:203.0.113.7".into(), 60),
+            ]
+        );
+    }
 }

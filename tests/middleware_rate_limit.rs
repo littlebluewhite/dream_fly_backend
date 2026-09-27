@@ -120,10 +120,12 @@ async fn logout_endpoint_not_rate_limited_by_strict_bucket(db: PgPool) {
 async fn store_down_returns_500_json(db: PgPool) {
     // Route rate limiting fails closed: with the short-lived state store
     // down, every request is refused with the generic 500 JSON body before
-    // reaching a handler.
+    // reaching a handler. The public course list's handler touches only
+    // Postgres, so the 500 can only come from the rate-limit layer
+    // (`/health` would also PING Redis itself).
     let app = spawn_test_app_with_store(db, Arc::new(FailingEphemeralStore)).await;
 
-    let resp = app.get("/api/v1/health").await;
+    let resp = app.get("/api/v1/courses").await;
     assert_eq!(resp.status_code(), 500);
     assert_eq!(
         resp.json::<serde_json::Value>(),

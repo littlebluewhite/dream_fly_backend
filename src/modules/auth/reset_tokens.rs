@@ -93,3 +93,37 @@ pub(super) async fn consume(store: &dyn EphemeralStore, token: &str) -> Result<U
 
     Ok(user_id)
 }
+
+/// Pins the key formats and TTL against the pre-`EphemeralStore` code
+/// (`eafe837`): a renamed key or changed TTL would silently orphan every
+/// live reset link on deploy.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::ephemeral::recording::{Call, RecordingStore};
+
+    #[tokio::test]
+    async fn issue_and_consume_keys_and_ttls() {
+        let user = Uuid::now_v7();
+        let store = RecordingStore::default();
+
+        let first = issue(&store, user).await.expect("issue first");
+        let second = issue(&store, user).await.expect("issue second");
+        assert_eq!(consume(&store, &second).await.expect("consume"), user);
+
+        assert_eq!(
+            store.take_calls(),
+            vec![
+                Call::Get(format!("password_reset_current:{user}")),
+                Call::SetEx(format!("password_reset:{first}"), 900),
+                Call::SetEx(format!("password_reset_current:{user}"), 900),
+                Call::Get(format!("password_reset_current:{user}")),
+                Call::Del(format!("password_reset:{first}")),
+                Call::SetEx(format!("password_reset:{second}"), 900),
+                Call::SetEx(format!("password_reset_current:{user}"), 900),
+                Call::GetDel(format!("password_reset:{second}")),
+                Call::Del(format!("password_reset_current:{user}")),
+            ]
+        );
+    }
+}

@@ -142,3 +142,74 @@ pub(super) async fn verify_otp(
 
     Ok(())
 }
+
+/// Pins the key formats and TTLs against the pre-`EphemeralStore` code
+/// (`eafe837`): a renamed key or changed TTL would silently reset every live
+/// Redis counter/OTP on deploy.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SmsConfig;
+    use crate::utils::ephemeral::recording::{Call, RecordingStore};
+
+    #[tokio::test]
+    async fn send_otp_keys_and_ttls() {
+        let user = Uuid::now_v7();
+        let store = RecordingStore::default();
+        // Unroutable SMS endpoint: the send fails after every store call.
+        let sms = SmsClient::new(
+            &SmsConfig {
+                twilio_account_sid: "AC-test".into(),
+                twilio_auth_token: "token".into(),
+                twilio_from_number: "+10000000000".into(),
+                twilio_base_url: "http://127.0.0.1:1".into(),
+            },
+            reqwest::Client::new(),
+        );
+        let _ = send_otp(
+            &store,
+            &sms,
+            user,
+            OtpSendRequest {
+                phone: "0912345678".into(),
+            },
+        )
+        .await;
+        assert_eq!(
+            store.take_calls(),
+            vec![
+                Call::Incr(format!("otp_rate:{user}"), 3600),
+                Call::SetEx(format!("otp:{user}"), 300),
+                Call::Del(format!("otp_attempts:{user}")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_otp_keys_and_ttls() {
+        let user = Uuid::now_v7();
+        let store = RecordingStore::default().with_value(
+            &format!("otp:{user}"),
+            r#"{"phone":"0912345678","code":"123456"}"#,
+        );
+        verify_otp(
+            &store,
+            user,
+            &OtpVerifyRequest {
+                phone: "0912345678".into(),
+                code: "123456".into(),
+            },
+        )
+        .await
+        .expect("verify");
+        assert_eq!(
+            store.take_calls(),
+            vec![
+                Call::Incr(format!("otp_attempts:{user}"), 300),
+                Call::Get(format!("otp:{user}")),
+                Call::Del(format!("otp:{user}")),
+                Call::Del(format!("otp_attempts:{user}")),
+            ]
+        );
+    }
+}

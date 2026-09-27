@@ -92,3 +92,84 @@ impl EphemeralStore for RedisEphemeralStore {
         Ok(conn.get_del(key).await?)
     }
 }
+
+/// Unit-test fake shared by the owners' key/TTL pin tests
+/// (`auth::rate_limit`, `auth::otp`, `auth::reset_tokens`,
+/// `middleware::rate_limit`): a plain map (TTLs are recorded, never
+/// enforced) plus a log of every call with the exact key and TTL it carried.
+#[cfg(test)]
+pub(crate) mod recording {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+
+    use super::EphemeralStore;
+
+    /// One store call. `SetEx` omits the value — owners store random
+    /// codes/tokens; the pins are about keys and TTLs.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum Call {
+        Incr(String, u64),
+        Get(String),
+        SetEx(String, u64),
+        Del(String),
+        GetDel(String),
+    }
+
+    #[derive(Default)]
+    pub(crate) struct RecordingStore {
+        values: Mutex<HashMap<String, String>>,
+        calls: Mutex<Vec<Call>>,
+    }
+
+    impl RecordingStore {
+        /// Pre-seed a value without logging a call.
+        pub(crate) fn with_value(self, key: &str, val: &str) -> Self {
+            self.values.lock().unwrap().insert(key.into(), val.into());
+            self
+        }
+
+        /// Drain the call log.
+        pub(crate) fn take_calls(&self) -> Vec<Call> {
+            std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+
+        fn log(&self, call: Call) {
+            self.calls.lock().unwrap().push(call);
+        }
+    }
+
+    #[async_trait]
+    impl EphemeralStore for RecordingStore {
+        async fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> anyhow::Result<i64> {
+            self.log(Call::Incr(key.into(), ttl_secs));
+            let mut values = self.values.lock().unwrap();
+            let next = values.get(key).map_or(0, |v| v.parse::<i64>().unwrap()) + 1;
+            values.insert(key.into(), next.to_string());
+            Ok(next)
+        }
+
+        async fn get(&self, key: &str) -> anyhow::Result<Option<String>> {
+            self.log(Call::Get(key.into()));
+            Ok(self.values.lock().unwrap().get(key).cloned())
+        }
+
+        async fn set_ex(&self, key: &str, val: &str, ttl_secs: u64) -> anyhow::Result<()> {
+            self.log(Call::SetEx(key.into(), ttl_secs));
+            self.values.lock().unwrap().insert(key.into(), val.into());
+            Ok(())
+        }
+
+        async fn del(&self, key: &str) -> anyhow::Result<()> {
+            self.log(Call::Del(key.into()));
+            self.values.lock().unwrap().remove(key);
+            Ok(())
+        }
+
+        async fn getdel(&self, key: &str) -> anyhow::Result<Option<String>> {
+            self.log(Call::GetDel(key.into()));
+            Ok(self.values.lock().unwrap().remove(key))
+        }
+    }
+}

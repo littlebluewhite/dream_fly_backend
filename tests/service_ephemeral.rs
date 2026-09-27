@@ -26,28 +26,30 @@ fn key(name: &str) -> String {
 // --- scenarios ---------------------------------------------------------
 
 /// Counts from 1; the TTL is set when the key is created and a later incr
-/// does not extend it (the count still dies 1s after the first incr).
+/// does not extend it (the count still dies 2s after the first incr).
 async fn incr_does_not_extend_ttl(store: &dyn EphemeralStore) {
     let k = key("incr");
-    assert_eq!(store.incr_with_ttl(&k, 1).await.expect("incr"), 1);
+    assert_eq!(store.incr_with_ttl(&k, 2).await.expect("incr"), 1);
 
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    assert_eq!(store.incr_with_ttl(&k, 1).await.expect("incr"), 2);
+    // 1.2s: 800ms before the original expiry.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(store.incr_with_ttl(&k, 2).await.expect("incr"), 2);
 
-    // 1.4s after creation: gone if the TTL was kept, alive until 1.7s had
-    // the second incr reset it.
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    // 2.8s after creation: 800ms past the kept TTL, still 400ms short of the
+    // 3.2s expiry a TTL-resetting second incr would have given it.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
     assert_eq!(store.get(&k).await.expect("get"), None);
-    assert_eq!(store.incr_with_ttl(&k, 1).await.expect("incr"), 1);
+    assert_eq!(store.incr_with_ttl(&k, 2).await.expect("incr"), 1);
 }
 
 /// A value read after its TTL is gone.
 async fn expired_value_reads_none(store: &dyn EphemeralStore) {
     let k = key("expire");
-    store.set_ex(&k, "v", 1).await.expect("set_ex");
+    store.set_ex(&k, "v", 2).await.expect("set_ex");
     assert_eq!(store.get(&k).await.expect("get"), Some("v".to_string()));
 
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // 800ms past the 2s TTL.
+    tokio::time::sleep(Duration::from_millis(2800)).await;
     assert_eq!(store.get(&k).await.expect("get"), None);
     assert_eq!(store.getdel(&k).await.expect("getdel"), None);
 }

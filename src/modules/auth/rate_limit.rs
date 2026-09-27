@@ -71,3 +71,38 @@ pub(super) async fn forgot_allowed(store: &dyn EphemeralStore, email: &str) -> b
         .unwrap_or(0);
     count <= FORGOT_MAX_REQUESTS
 }
+
+/// Pins the key formats and TTLs against the pre-`EphemeralStore` code
+/// (`eafe837`): a renamed key or changed TTL would silently reset every live
+/// Redis counter on deploy.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::ephemeral::recording::{Call, RecordingStore};
+
+    #[tokio::test]
+    async fn login_failure_counter_key_and_ttl() {
+        let store = RecordingStore::default();
+        login_locked_out(&store, "a@example.com").await;
+        record_login_failure(&store, "a@example.com").await;
+        clear_login_failures(&store, "a@example.com").await;
+        assert_eq!(
+            store.take_calls(),
+            vec![
+                Call::Get("login_fail:a@example.com".into()),
+                Call::Incr("login_fail:a@example.com".into(), 900),
+                Call::Del("login_fail:a@example.com".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn forgot_password_counter_key_and_ttl() {
+        let store = RecordingStore::default();
+        forgot_allowed(&store, "a@example.com").await;
+        assert_eq!(
+            store.take_calls(),
+            vec![Call::Incr("forgot_rate:a@example.com".into(), 3600)]
+        );
+    }
+}
