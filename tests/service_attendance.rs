@@ -1,12 +1,8 @@
-//! Repository-level tests for `attendance::repository::upsert_attendance_tx`'s
-//! self-defending 核准恆勝 guard (ADR-0008). These call the repository directly
-//! (no HTTP, no `marking::plan` pre-check) so they exercise the `ON CONFLICT
-//! ... WHERE` clause in isolation — the deterministic, single-connection proxy
-//! for the TOCTOU race the guard closes. They assert both the *row state*
-//! after the upsert and the `rows_affected` signal: the blocked case affects
-//! zero rows without erroring, and zero has no other producer — which is what
-//! lets `attendance::service` convert an in-window block into the same
-//! batch-wide 422 the pre-check gives.
+//! Service-level tests for `attendance::records`' 核准恆勝 guard (ADR-0008),
+//! driven through `attendance::service::bulk_upsert_attendance`: a genuine
+//! concurrent witness that the write-point guard's zero-row block surfaces as
+//! the same batch-wide 422 as the pre-check, and the guard's verbal-leave
+//! branch.
 
 mod common;
 
@@ -18,8 +14,6 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::attendance::dto::AttendanceRecordEntry;
-use dream_fly_backend::modules::attendance::model::AttendanceStatus;
-use dream_fly_backend::modules::attendance::repository;
 use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::leave::service as leave_service;
 
@@ -32,89 +26,6 @@ fn t(h: u32, m: u32) -> NaiveTime {
 
 fn yesterday() -> chrono::NaiveDate {
     (Utc::now() - Duration::days(1)).date_naive()
-}
-
-/// Guard blocks the write: an `approved` leave, already projected to an
-/// attendance `leave` row, cannot be overwritten present by a direct upsert.
-/// All three OR branches of the guard are false — `EXCLUDED.status = 'present'`
-/// (not leave), the existing row *is* `leave`, and an `approved` leave request
-/// EXISTS — so zero rows change and the row stays `leave`. This is the
-/// deterministic proxy for the concurrency window `marking::plan`'s pre-check
-/// alone can't close.
-#[sqlx::test]
-async fn upsert_guard_blocks_present_over_approved_leave(db: PgPool) {
-    let course_id = seed_course(&db, "Guard Blocked Course", None).await;
-    let session_id = seed_course_session(&db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
-    let member = seed_member(&db, "att-guard-blocked@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
-    seed_leave_request(&db, enrolment_id, session_id, "approved").await;
-    seed_attendance(&db, session_id, enrolment_id, "leave", member).await;
-
-    let mut tx = db.begin().await.expect("begin");
-    let affected = repository::upsert_attendance_tx(
-        &mut tx,
-        session_id,
-        enrolment_id,
-        AttendanceStatus::Present,
-        member,
-    )
-    .await
-    .expect("upsert must not error even when the guard blocks the update");
-    tx.commit().await.expect("commit");
-
-    assert_eq!(
-        affected, 0,
-        "a blocked upsert must report zero rows — the signal `attendance::service` \
-         converts into the batch-wide 422 inside the race window"
-    );
-
-    let status: String = sqlx::query_scalar(
-        "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
-    )
-    .bind(session_id)
-    .bind(enrolment_id)
-    .fetch_one(&db)
-    .await
-    .expect("fetch status");
-    assert_eq!(status, "leave", "the guard must keep the approved-leave row as leave");
-}
-
-/// Guard allows the write: a *verbal* leave (a `leave` attendance row with no
-/// approved leave request behind it) stays freely overwritable. The guard's
-/// third branch — `NOT EXISTS (approved leave)` — is true, so a present upsert
-/// lands. This preserves the pre-existing correction path for verbal leave.
-#[sqlx::test]
-async fn upsert_guard_allows_present_over_verbal_leave(db: PgPool) {
-    let course_id = seed_course(&db, "Verbal Leave Course", None).await;
-    let session_id = seed_course_session(&db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
-    let member = seed_member(&db, "att-guard-verbal@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
-    // Verbal leave: an attendance `leave` row, but no approved leave_request.
-    seed_attendance(&db, session_id, enrolment_id, "leave", member).await;
-
-    let mut tx = db.begin().await.expect("begin");
-    let affected = repository::upsert_attendance_tx(
-        &mut tx,
-        session_id,
-        enrolment_id,
-        AttendanceStatus::Present,
-        member,
-    )
-    .await
-    .expect("upsert");
-    tx.commit().await.expect("commit");
-
-    assert_eq!(affected, 1, "an allowed overwrite must report one row");
-
-    let status: String = sqlx::query_scalar(
-        "SELECT status::text FROM attendance_records WHERE session_id = $1 AND enrolment_id = $2",
-    )
-    .bind(session_id)
-    .bind(enrolment_id)
-    .fetch_one(&db)
-    .await
-    .expect("fetch status");
-    assert_eq!(status, "present", "verbal leave (no approved request) must stay overwritable");
 }
 
 fn present(enrolment_id: Uuid) -> AttendanceRecordEntry {

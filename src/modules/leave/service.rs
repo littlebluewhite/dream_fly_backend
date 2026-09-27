@@ -4,8 +4,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::attendance::model::AttendanceStatus;
-use crate::modules::attendance::repository as attendance_repository;
+use crate::modules::attendance::records as attendance_records;
 use crate::modules::coaches::service as coaches_service;
 use crate::modules::courses::seats;
 use crate::modules::notifications::service as notify;
@@ -191,14 +190,11 @@ pub async fn decide_leave_request(
         .ok_or_else(|| AppError::Conflict(rules::DECIDE_NOT_PENDING.into()))?;
 
     if new_status == LeaveStatus::Approved {
-        // Writing `leave` always passes the upsert guard's first branch
-        // (`EXCLUDED.status = 'leave'` — 核准恆勝, ADR-0008), so the
-        // rows_affected signal the bulk-marking path checks is always 1 here.
-        attendance_repository::upsert_attendance_tx(
+        // 核准恆勝(ADR-0008):投影成 `leave` 恆過寫入點守衛。
+        attendance_records::project_approved_leave_tx(
             &mut tx,
             ctx.session_id,
             ctx.enrolment_id,
-            AttendanceStatus::Leave,
             auth.user_id,
         )
         .await?;

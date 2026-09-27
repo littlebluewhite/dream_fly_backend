@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -10,6 +8,7 @@ use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{AttendanceRecordEntry, MyStudentResponse, RosterEntryResponse};
 use super::marking;
+use super::records;
 use super::repository;
 
 /// `GET /sessions/{id}/roster`. 404 if the session doesn't exist; 403 if the
@@ -42,7 +41,8 @@ pub async fn get_roster(
 /// ownership *before* writing anything: an invalid status string, or any
 /// enrolment that doesn't belong to this session's course and isn't
 /// active, rejects the whole batch with zero writes (422). Otherwise upserts
-/// each record in one transaction and returns the updated roster.
+/// each record in one transaction (`records::mark_tx`, which also enforces
+/// the 核准恆勝 guard, ADR-0008) and returns the updated roster.
 pub async fn bulk_upsert_attendance(
     db: &PgPool,
     at: StudioNow,
@@ -73,56 +73,15 @@ pub async fn bulk_upsert_attendance(
 
     let parsed = marking::parse(&records)?;
 
-    let valid: HashSet<Uuid> = if parsed.is_empty() {
-        HashSet::new()
-    } else {
-        let requested: HashSet<Uuid> = parsed.iter().map(|(id, _)| *id).collect();
-        let ids: Vec<Uuid> = requested.iter().copied().collect();
-        repository::find_active_enrolment_ids_in(db, session_course.course_id, &ids)
-            .await?
-            .into_iter()
-            .collect()
-    };
-
     let mut tx = db.begin().await?;
-
-    // Approved-leave guard, whole-batch pre-check (核准恆勝, ADR-0008): read
-    // the batch's approved-leave enrolments *inside* the write tx, then let
-    // `marking::plan` reject the whole batch (422) if any of them is being
-    // marked present/absent. `plan` is pure, so its `Err` short-circuits via
-    // `?` before any upsert runs — the tx rolls back with zero writes, keeping
-    // the existing "whole batch 422, zero writes" contract. The `ON CONFLICT`
-    // guard in `upsert_attendance_tx` closes the residual TOCTOU window — its
-    // zero-row block is converted into this same batch-wide 422 in the upsert
-    // loop below. Gate order is unchanged: parse (above) precedes both the
-    // membership check and this approved-guard, which `plan` evaluates
-    // together.
-    let approved: HashSet<Uuid> = if parsed.is_empty() {
-        HashSet::new()
-    } else {
-        let ids: Vec<Uuid> = parsed.iter().map(|(id, _)| *id).collect();
-        repository::find_approved_leave_enrolment_ids_tx(&mut tx, session_id, &ids)
-            .await?
-            .into_iter()
-            .collect()
-    };
-    let plan = marking::plan(parsed, &valid, &approved)?;
-
-    for (enrolment_id, status) in &plan.entries {
-        let affected =
-            repository::upsert_attendance_tx(&mut tx, session_id, *enrolment_id, *status, auth.user_id)
-                .await?;
-        // Zero rows has exactly one producer: the write-point guard blocking a
-        // present/absent over an approved leave whose approval committed after
-        // this tx's approved-set read above. Surface the same 422 as the
-        // pre-check; returning here drops the tx, so the whole batch rolls
-        // back unwritten — the contract holds inside the race window too.
-        if affected == 0 {
-            return Err(AppError::Validation(
-                "cannot overwrite an approved leave with present/absent".into(),
-            ));
-        }
-    }
+    records::mark_tx(
+        &mut tx,
+        session_id,
+        session_course.course_id,
+        parsed,
+        auth.user_id,
+    )
+    .await?;
     tx.commit().await?;
 
     let rows = repository::find_roster(db, session_course.course_id, session_id).await?;

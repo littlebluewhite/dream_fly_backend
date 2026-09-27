@@ -8,14 +8,12 @@
 //! session (422 if any of them are marked present/absent — 核准恆勝 /
 //! 點名不可覆寫已核准請假, ADR-0008). Same shape as
 //! `orders::pricing`/`orders::fulfilment`: pure function, zero DB, zero async
-//! — `service::bulk_upsert_attendance` still owns everything genuinely
-//! transactional: session/coach lookup (404/403), the studio-clock "already
-//! started" gate (422, contract §3.19 裁決 4), the
-//! `repository::find_active_enrolment_ids_in` and
-//! `find_approved_leave_enrolment_ids_tx` DB round trips (both skipped when
-//! the batch is empty; the latter runs *inside* the write tx so `plan`'s
-//! verdict and the upserts share one transaction), the upsert transaction
-//! loop, and the roster re-read.
+//! — `service::bulk_upsert_attendance` still owns session/coach lookup
+//! (404/403), the studio-clock "already started" gate (422, contract §3.19
+//! 裁決 4) and the roster re-read; `records::mark_tx` owns everything
+//! transactional: the two set reads (both skipped when the batch is empty,
+//! both inside the write tx so `plan`'s verdict and the upserts share one
+//! transaction) and the upsert loop.
 //!
 //! **Error ordering is load-bearing: [`parse`] must run before the
 //! enrolment-id DB query.** Today an invalid `status` string never triggers
@@ -32,6 +30,10 @@ use crate::error::AppError;
 
 use super::dto::AttendanceRecordEntry;
 use super::model::AttendanceStatus;
+
+/// 點名不可覆寫已核准請假的 422 訊息——[`plan`] 的 pre-check 與
+/// `records::mark_tx` 的寫入點守衛 0 列轉換共用(ADR-0008 決策 3)。
+pub const APPROVED_LEAVE_OVERWRITE: &str = "cannot overwrite an approved leave with present/absent";
 
 /// A `PUT /sessions/{id}/attendance` batch, fully validated and ready for
 /// `service` to write: `(enrolment_id, status)` pairs in the caller's
@@ -65,7 +67,7 @@ pub fn parse(
 ///
 /// 1. **Membership** (contract §3.19 裁決 2): every requested enrolment id
 ///    must be in `valid_enrolment_ids` — the subset the caller already
-///    resolved (via `repository::find_active_enrolment_ids_in`) to belong to
+///    resolved (via `records::mark_tx`'s valid-set read) to belong to
 ///    this session's course and be active. Any mismatch — a requested id
 ///    missing from the valid set (cross-course, cancelled, or nonexistent all
 ///    look identical here) — rejects the batch. This pure seam deliberately
@@ -80,9 +82,9 @@ pub fn parse(
 ///    this set are wholly unaffected — including verbal leave (a `PUT "leave"`
 ///    with no approved request behind it), which stays fully writable and
 ///    overwritable. This pre-check is one of two defense layers; the
-///    `ON CONFLICT` guard in `repository::upsert_attendance_tx` closes the
+///    `ON CONFLICT` guard in `records::mark_tx`'s upsert closes the
 ///    residual TOCTOU window where an approval commits between this check and
-///    the upsert — the service converts that guard's zero-row block into this
+///    the upsert — `records::mark_tx` converts that guard's zero-row block into this
 ///    same 422, so the whole-batch contract holds inside the window too.
 pub fn plan(
     parsed: Vec<(Uuid, AttendanceStatus)>,
@@ -99,9 +101,7 @@ pub fn plan(
         .iter()
         .any(|(id, status)| *status != AttendanceStatus::Leave && approved_leave_enrolment_ids.contains(id))
     {
-        return Err(AppError::Validation(
-            "cannot overwrite an approved leave with present/absent".into(),
-        ));
+        return Err(AppError::Validation(APPROVED_LEAVE_OVERWRITE.into()));
     }
     Ok(MarkingPlan { entries: parsed })
 }
