@@ -1,4 +1,5 @@
 pub mod access;
+mod credentials;
 pub mod dto;
 pub mod handlers;
 pub mod linking;

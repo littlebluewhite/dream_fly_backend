@@ -1,6 +1,9 @@
 //! 帳號層級的限流策略 owner——登入失敗鎖定(每 email 10 次、15 分鐘)與忘
 //! 記密碼請求計數(每 email 每小時 3 次)。key 格式、門檻、TTL 都私有於此,
-//! 呼叫端(`service.rs`)只問「鎖了沒」「還能不能寄」,看不到儲存。
+//! 呼叫端只問「鎖了沒」「還能不能寄」,看不到儲存。登入三函式
+//! (`login_locked_out`/`record_login_failure`/`clear_login_failures`)唯一
+//! 呼叫端是 `credentials`(見該模組文件);忘記密碼的 `forgot_allowed` 仍
+//! 由 `service.rs` 呼叫。
 //!
 //! 兩者都 **fail-open**:短期狀態儲存故障時,鎖定檢查當作沒鎖、失敗計數與
 //! 清除靜默放棄、忘記密碼當作還沒超量——儲存故障不能讓所有人都登不進來。
