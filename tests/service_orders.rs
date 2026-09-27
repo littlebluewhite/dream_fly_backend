@@ -2069,31 +2069,6 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
     pool.close().await;
 }
 
-/// Poll `pg_stat_activity` until some other backend of this test database is
-/// actually waiting on a heavyweight lock (5s cap) — proves the blocked point
-/// instead of trusting a bare sleep. (Mirrors `service_enrolments.rs`.)
-async fn wait_for_lock_waiter(db: &PgPool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let waiting: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
-             WHERE datname = current_database() AND wait_event_type = 'Lock' \
-               AND pid <> pg_backend_pid())",
-        )
-        .fetch_one(db)
-        .await
-        .expect("poll pg_stat_activity");
-        if waiting {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no backend ever blocked on a lock"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-}
-
 /// 冪等唯一鍵違例分支:同 key 的孿生在本次 checkout 預查之後、寫入冪等鍵之前
 /// commit。T0 先 INSERT `order_idempotency(user, 'twin-key', O_twin)` 不
 /// commit,checkout 預查(read committed)看不到它。T0 的 INSERT 經
@@ -2125,6 +2100,7 @@ async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
     .execute(&mut *t0)
     .await
     .unwrap();
+    let t0_pid = common::backend_pid(&mut t0).await;
 
     let connect_opts = db.connect_options().as_ref().clone();
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -2149,7 +2125,7 @@ async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
         ))
     });
 
-    wait_for_lock_waiter(&db).await;
+    common::wait_for_lock_waiter(&db, t0_pid).await;
     assert!(
         !checkout.is_finished(),
         "checkout must be blocked behind T0"

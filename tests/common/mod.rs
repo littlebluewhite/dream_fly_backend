@@ -344,3 +344,39 @@ pub async fn points_balance_of(db: &PgPool, user_id: Uuid) -> i64 {
         .await
         .expect("fetch points_balance")
 }
+
+/// `pg_backend_pid()` of the connection `tx` runs on — the lock holder's pid
+/// for [`wait_for_lock_waiter`].
+pub async fn backend_pid(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> i32 {
+    sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut **tx)
+        .await
+        .expect("select pg_backend_pid")
+}
+
+/// Poll until some backend is waiting on a heavyweight lock held by the
+/// backend `holder_pid` (5s cap) — proves the task under test reached its
+/// blocked point instead of trusting a bare sleep. Matching on
+/// `pg_blocking_pids` (not just "any backend in a Lock wait") keeps an
+/// unrelated waiter from satisfying the poll.
+pub async fn wait_for_lock_waiter(db: &PgPool, holder_pid: i32) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+             WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid)))",
+        )
+        .bind(holder_pid)
+        .fetch_one(db)
+        .await
+        .expect("poll pg_stat_activity");
+        if waiting {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no backend ever blocked on a lock held by pid {holder_pid}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}

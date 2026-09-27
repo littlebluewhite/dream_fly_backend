@@ -330,31 +330,6 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
     assert_eq!(active_count, 1);
 }
 
-/// Poll `pg_stat_activity` until some other backend of this test database is
-/// actually waiting on a heavyweight lock (5s cap) — proves the blocked point
-/// instead of trusting a bare sleep.
-async fn wait_for_lock_waiter(db: &PgPool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let waiting: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
-             WHERE datname = current_database() AND wait_event_type = 'Lock' \
-               AND pid <> pg_backend_pid())",
-        )
-        .fetch_one(db)
-        .await
-        .expect("poll pg_stat_activity");
-        if waiting {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no backend ever blocked on a lock"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-}
-
 /// B5 防死鎖回歸:核准 tx(T1)已持有假單列、出勤 INSERT 還沒跑時,
 /// `cancel_enrolment` 鎖住報名列後卡在「取消待審假單」上;T1 接著 INSERT
 /// 出勤,其 FK 對報名列取 `FOR KEY SHARE`。報名列若是 `FOR UPDATE` 就成環
@@ -387,6 +362,7 @@ async fn cancel_enrolment_vs_in_flight_approval_does_not_deadlock(db: PgPool) {
     .execute(&mut *t1)
     .await
     .expect("t1 approve");
+    let t1_pid = common::backend_pid(&mut t1).await;
 
     let db_cancel = db.clone();
     let handle = tokio::runtime::Handle::current();
@@ -398,7 +374,7 @@ async fn cancel_enrolment_vs_in_flight_approval_does_not_deadlock(db: PgPool) {
         ))
     });
 
-    wait_for_lock_waiter(&db).await;
+    common::wait_for_lock_waiter(&db, t1_pid).await;
     assert!(
         !cancel.is_finished(),
         "cancel must be blocked on t1's leave row"

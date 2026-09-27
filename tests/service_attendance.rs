@@ -6,8 +6,6 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use chrono::{Duration, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -80,8 +78,9 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
     .execute(&mut *t_block)
     .await
     .expect("t_block insert");
+    let t_block_pid = common::backend_pid(&mut t_block).await;
 
-    let db_batch = Arc::new(db.clone());
+    let db_batch = db.clone();
     let handle = tokio::runtime::Handle::current();
     let batch = tokio::task::spawn_blocking(move || {
         handle.block_on(attendance_service::bulk_upsert_attendance(
@@ -93,7 +92,7 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
         ))
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    common::wait_for_lock_waiter(&db, t_block_pid).await;
     assert!(
         !batch.is_finished(),
         "batch must be blocked on A's uncommitted row, after its approved-set read"
