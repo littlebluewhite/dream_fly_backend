@@ -117,3 +117,30 @@ guard 的 `NOT EXISTS` 分支同樣放行。見證:`plan_present_for_non_approve
   重開本 ADR(前者加狀態邊 + 產品決定,後者升隔離級別或加鎖)。
 - 「核准恆勝」與「點名不可覆寫已核准請假」自此是一對明文互補的規則:同一筆 `leave` 列,decide
   寫得進(核准恆勝)、批次點名蓋不掉(guard),方向不對稱是刻意的。
+
+## Addendum(2026-09-27):出勤寫入 owner 收進 `attendance::records`
+
+`attendance_records` 的 runtime 寫入自此只有一個 owner:`attendance::records`(module 公開、函式收
+窄,比照 `auth::session`)。本 ADR 各決策的語意不變,只是住址換了:
+
+- **兩個寫入者 → 一個 owner 的兩個入口**:批次點名走 `pub(super) records::mark_tx`(空批次跳過查
+  詢 → valid-set 讀 → approved-set 讀 → `marking::plan` → 逐列 upsert;0 列 → 同一 422);核准投
+  影走 `pub(crate) records::project_approved_leave_tx`(`decide_leave_request` 同 tx 雙寫原封
+  保留,決策 1)。`upsert_attendance_tx` 改名為私有 `upsert_tx`,`ON CONFLICT … WHERE` 三分支守衛
+  SQL 逐字搬入;`find_active_enrolment_ids_in`、`find_approved_leave_enrolment_ids_tx` 同樣降為
+  records 的私有函式。雙層防護(決策 3)整套住在 `mark_tx` 裡。
+- **valid-set 讀取從 pool 移進寫入 tx**:原本成員資格查詢在 `begin` 之前走 pool。READ COMMITTED
+  下每條語句本來就各取快照,移進 tx 不改錯誤序(session 404 → coach 403 → 未開始 422 → parse 422
+  → 成員資格/approved-guard 422)與狀態碼;唯一差別是 DB 故障時失敗點變成 `begin`,兩者都是 500。
+- **錯誤文字單一化**:「cannot overwrite an approved leave with present/absent」收成
+  `marking::APPROVED_LEAVE_OVERWRITE`,pre-check 與 0 列轉換共用同一常數。
+- **決策 3 的見證換成真競態**:`service_attendance.rs::approval_committed_mid_batch_rolls_back_whole_batch`
+  取代原本直呼 repository 的決定性代理 `upsert_guard_blocks_present_over_approved_leave`——另一
+  tx 先持有 A 的未 commit 出勤列,讓批次在讀完 approved-set(∅)後卡在 A;期間以真的
+  `decide_leave_request` 核准 B 並 commit;放行後斷言整批 422、A 零列、B 維持 `leave`。這是決策 3
+  「零列轉整批 422」在真並發下的第一個見證。決策 3/4 的口頭請假見證
+  `upsert_guard_allows_present_over_verbal_leave` 同樣改由 service 層的
+  `bulk_present_over_verbal_leave_overwrites` 取代(守衛第三分支)。
+- seed 的 `insert_attendance_bulk`、fixtures 的 `seed_attendance` 照 ADR-0010 繼續 bypass。
+
+本檔其餘敘述維持決策當下狀態。
