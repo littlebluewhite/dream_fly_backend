@@ -825,7 +825,7 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 4. **`status`（`upcoming`/`ongoing`/`done`）是牆鐘衍生值，不是狀態機**：沒有 `suspended`/`cancelled` 等額外狀態，每次讀取當下即時計算、不落地儲存。邊界採 **[start, end) 閉開**——`now == start_time` 即 `ongoing`，`now == end_time` 即 `done`，三態剛好無縫銜接。換算 `session_date`+`start_time`/`end_time` 為 UTC 時如遇 DST 造成當地時間不存在或有歧義（裁決 2 的換算規則），**降級為以 studio-local 日期層級比較**：`session_date` 早於今天 → `done`；晚於今天 → `upcoming`；等於今天則依「是否已開始」二分為 `ongoing`/`upcoming`——不會讓端點因此報錯（`Asia/Taipei` 無 DST，此分支 production 不可達）。前端原本若有自行依 `start_time`/`end_time` 推導狀態的邏輯，現在可以直接淘汰，改讀這裡的 `status`。
 
 #### `GET /courses/{id}/sessions?from=YYYY-MM-DD&to=YYYY-MM-DD` — 需登入
-先物化（依該課程的 `schedule_slots`，為 `[from, to]` 範圍內尚未存在的場次執行 `INSERT ... ON CONFLICT DO NOTHING`；重複呼叫同一範圍不會產生重複場次），再回傳該課程在此範圍內的場次列表。`from`/`to` 皆選填：預設 `from=今天`、`to=from+28 天`（只給其中一個時，另一個仍依此規則相對計算）。422：`to < from`，或範圍跨距（`to - from`）超過 **60 天**（剛好 60 天可接受）。404：課程不存在。
+先物化（依該課程的 `schedule_slots`，只為 `[max(from, 今天), to]` 範圍內尚未存在的場次執行 `INSERT ... ON CONFLICT DO NOTHING`；重複呼叫同一範圍不會產生重複場次），再回傳該課程在 `[from, to]` 範圍內的場次列表。**過去日期不物化**：`from` 早於今天時，今天以前的部分只回已存在的場次列，不依當下的週課表新建（當下課表不代表那天實際上了什麼課，ADR-0011）。`from`/`to` 皆選填：預設 `from=今天`、`to=from+28 天`（只給其中一個時，另一個仍依此規則相對計算）。422：`to < from`，或範圍跨距（`to - from`）超過 **60 天**（剛好 60 天可接受）。404：課程不存在。
 
 回應（`CourseSessionResponse[]`，純陣列，依 `session_date, start_time` 排序）：
 
@@ -1217,7 +1217,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 - `retention`：**近 6 studio 月**出席 cohort（由舊到新，6 桶零填）。會員某月有 ≥1 筆 `present` 即「該月活躍」；`new_count`=首次活躍月落在該月者、`returning_count`=該月活躍且此前已有活躍月者；`rate`=`|上月活躍 ∩ 本月活躍| / |上月活躍|`，**上月為空集合 → `null`**。首次活躍判定掃全期歷史（非僅 6 月窗）。
 - `funnel`：誠實 **2 段**、近 **90 studio 天**：`trial_inquiries`（`contact_inquiries` 之 `inquiry_type='trial'` 計數）→ `new_enrolments`（`enrolments` created 且 `status <> 'cancelled'`）。不造中間段。
 - `weekday_load`：近 **30 天**已物化場次的 `present` **出席人次**按星期分 **7 桶**（`weekday` `0=週日`..`6=週六`，§3.18 慣例），零填。
-- `venue_usage`：**本月**（呼叫時先冪等物化本月場次）已物化場次依各自的場地快照 `course_sessions.venue`（語意見 §3.18 `GET /sessions/today` 的 `venue`）分組、SUM 場次分鐘數；**`venue` 為 NULL 的場次不入**。非固定桶——無場次的場地不出列。此為**整月投影口徑**（先冪等物化整月場次、含未來場次），與其他段落「月初至今」的實績計算不同。
+- `venue_usage`：**本月**（呼叫時先冪等物化今天起到月底的場次；本月已過去的日子只算已存在的場次，不回填，ADR-0011）場次依各自的場地快照 `course_sessions.venue`（語意見 §3.18 `GET /sessions/today` 的 `venue`）分組、SUM 場次分鐘數；**`venue` 為 NULL 的場次不入**。非固定桶——無場次的場地不出列。此為**整月投影口徑**（已過去的日子 + 今天起到月底的未來場次），與其他段落「月初至今」的實績計算不同。某天變成過去之前若從未被任何讀取端物化過，就不會計入。
 - `members`：`total`/`new_this_month` 為 `users` 全體計數（不分角色）；`active` 為擁有至少一筆 `active` enrolment 的 distinct 使用者數。
 - `courses`：全部課程（不篩 `is_active`），依名稱排序；`enrolled` 為該課程 `active` enrolments 數；`waitlist_count` 為 `waiting` 筆數。
 - `coaches`：全部教練（不篩 `is_active`），依姓名排序；`course_count` 為其 `courses.coach_id` 對應課程數；`student_count` 為其課程 active enrolments 之 distinct 學員數（同一學員修該教練多堂課只算一次）；`revenue_cents_12m`=**course 類** order-line 毛額歸 `courses.coach_id`（票券/裝備/場租不歸因），近 12 studio 月（與 `revenue.trend` 同窗）；`attendance_rate`=該教練課程 `present/(present+absent)`（`leave` 不入分母，全期；無資料 → `null`）。

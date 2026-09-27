@@ -107,3 +107,8 @@ Task P4-B2）採**建立時快照**：一筆 booking 誕生的當下，把當時
 ## Addendum（2026-07-13）：場租計收狀態集歸家 bookings::model
 
 Consequences 首條「口徑集中寫在 `reports::dto`/`reports::repository` 的 doc comment 上」自此有一個例外：場租計收狀態集 `VENUE_REVENUE_STATUSES` 連同其權威 doc 已歸家 `bookings::model`（「哪些狀態算場租營收」的單一歸屬點，reports 改為 import 消費同一常數）。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-09-27）：venue_usage 的物化只往前
+
+Consequences 提到的「`venue_usage` 之前的 idempotent session 物化」自此只物化今天起到月底；本月已過去的日子只
+算已存在的場次，不再依當下週課表回填（會造出幻影場次）。決策與代價見 ADR-0011。本檔其餘敘述維持決策當下狀態。
