@@ -12,6 +12,9 @@
 //! `auth::access::AccessCache` seam; `tests/service_access.rs` runs the same
 //! scenarios against them and the production Redis adapter.
 //!
+//! `InMemoryEphemeralStore`/`FailingEphemeralStore` do the same for the
+//! `utils::ephemeral::EphemeralStore` seam (`tests/service_ephemeral.rs`).
+//!
 //! `FakeGoogleIdentity` stands in for `utils::google_oauth::
 //! GoogleIdentityProvider` in service-level login-rule tests; the real
 //! adapter is covered against `wiremock` in `tests/google_identity.rs`.
@@ -29,6 +32,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
+use dream_fly_backend::utils::ephemeral::EphemeralStore;
 use dream_fly_backend::utils::google_oauth::{GoogleIdentity, GoogleIdentityProvider};
 
 #[derive(Debug, Clone)]
@@ -181,6 +185,94 @@ impl AccessCache for FailingAccessCache {
 
     async fn del(&self, _keys: &[String]) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("access cache unavailable"))
+    }
+}
+
+/// In-memory `EphemeralStore`: a `Mutex<HashMap>` of value + deadline,
+/// expired lazily on access. `incr_with_ttl` sets the deadline only when it
+/// creates the key — the same semantics as the Redis adapter's Lua script.
+#[derive(Default)]
+pub struct InMemoryEphemeralStore {
+    entries: Mutex<HashMap<String, (String, Instant)>>,
+}
+
+impl InMemoryEphemeralStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Lock the map with every expired entry already dropped.
+    fn live(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, Instant)>> {
+        let mut entries = self.entries.lock().expect("ephemeral store lock");
+        let now = Instant::now();
+        entries.retain(|_, (_, deadline)| now < *deadline);
+        entries
+    }
+}
+
+#[async_trait]
+impl EphemeralStore for InMemoryEphemeralStore {
+    async fn incr_with_ttl(&self, key: &str, ttl_secs: u64) -> anyhow::Result<i64> {
+        let mut entries = self.live();
+        match entries.get_mut(key) {
+            Some((val, _deadline)) => {
+                let count = val.parse::<i64>()? + 1;
+                *val = count.to_string();
+                Ok(count)
+            }
+            None => {
+                let deadline = Instant::now() + std::time::Duration::from_secs(ttl_secs);
+                entries.insert(key.to_string(), ("1".to_string(), deadline));
+                Ok(1)
+            }
+        }
+    }
+
+    async fn get(&self, key: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.live().get(key).map(|(val, _)| val.clone()))
+    }
+
+    async fn set_ex(&self, key: &str, val: &str, ttl_secs: u64) -> anyhow::Result<()> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(ttl_secs);
+        self.live()
+            .insert(key.to_string(), (val.to_string(), deadline));
+        Ok(())
+    }
+
+    async fn del(&self, key: &str) -> anyhow::Result<()> {
+        self.live().remove(key);
+        Ok(())
+    }
+
+    async fn getdel(&self, key: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.live().remove(key).map(|(val, _)| val))
+    }
+}
+
+/// `EphemeralStore` whose every call fails — pins each owner's fail-open /
+/// fail-closed policy.
+pub struct FailingEphemeralStore;
+
+#[async_trait]
+impl EphemeralStore for FailingEphemeralStore {
+    async fn incr_with_ttl(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<i64> {
+        Err(anyhow::anyhow!("ephemeral store unavailable"))
+    }
+
+    async fn get(&self, _key: &str) -> anyhow::Result<Option<String>> {
+        Err(anyhow::anyhow!("ephemeral store unavailable"))
+    }
+
+    async fn set_ex(&self, _key: &str, _val: &str, _ttl_secs: u64) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("ephemeral store unavailable"))
+    }
+
+    async fn del(&self, _key: &str) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("ephemeral store unavailable"))
+    }
+
+    async fn getdel(&self, _key: &str) -> anyhow::Result<Option<String>> {
+        Err(anyhow::anyhow!("ephemeral store unavailable"))
     }
 }
 

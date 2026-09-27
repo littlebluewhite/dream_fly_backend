@@ -22,6 +22,9 @@
 //!   then refused), a success clears the count, and the lockout is per email
 //! - OTP: the 4th send within the hour is refused (3 SMS total), and the 6th
 //!   verify attempt invalidates the code until a fresh one is sent
+//! - short-lived state store down (`FailingEphemeralStore`): login and the
+//!   forgot-password counter fail open; OTP and reset tokens fail closed
+//!   (so forgot-password for a known email is a 500, an unknown one a 200)
 //! - google_auth login rules, with `FakeGoogleIdentity` standing in for
 //!   Google (the real adapter is covered in `tests/google_identity.rs`):
 //!   welcome on Create only, Link keeps roles and doesn't resend welcome,
@@ -53,7 +56,9 @@ use dream_fly_backend::utils::jwt;
 use dream_fly_backend::utils::sms::SmsClient;
 use wiremock::MockServer;
 
-use common::mocks::{FakeGoogleIdentity, InMemoryAccessCache, MockEmailClient};
+use common::mocks::{
+    FailingEphemeralStore, FakeGoogleIdentity, InMemoryAccessCache, MockEmailClient,
+};
 use common::twilio::{extract_otp_code, mount_twilio, twilio_sent};
 
 #[sqlx::test]
@@ -1043,6 +1048,104 @@ async fn otp_verify_sixth_attempt_invalidates_code_until_resend(db: PgPool) {
         .await
         .expect("read phone_verified");
     assert!(verified);
+}
+
+// ------- short-lived state store down (`FailingEphemeralStore`) -------
+
+fn assert_internal(err: &AppError) {
+    assert!(
+        matches!(err, AppError::Internal(_)),
+        "expected 500, got: {err:?}"
+    );
+}
+
+/// Login fails open: the lockout check reads as "not locked" and failure
+/// counting/clearing are skipped, so a store outage locks nobody out.
+#[sqlx::test]
+async fn login_fails_open_when_store_is_down(db: PgPool) {
+    let email = format!("down-login-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &email, "Password!234").await;
+
+    fail_logins(&db, &FailingEphemeralStore, &email, 1).await;
+    login_as(&db, &FailingEphemeralStore, &email, "Password!234")
+        .await
+        .expect("login still works with the store down");
+}
+
+/// The forgot-password counter fails open, but issuing the reset token fails
+/// closed: a known email is a 500 with no email sent. An unknown email
+/// returns before touching the store, so it is still the plain 200.
+#[sqlx::test]
+async fn forgot_password_when_store_is_down(db: PgPool) {
+    let background = TaskTracker::new();
+    let email = format!("down-forgot-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &email, "Password!234").await;
+    let mock = Arc::new(MockEmailClient::new());
+    let email_client: Arc<dyn EmailSender> = mock.clone();
+
+    let err = service::forgot_password(
+        &db,
+        &FailingEphemeralStore,
+        email_client.clone(),
+        &background,
+        ForgotPasswordRequest {
+            email: email.clone(),
+        },
+    )
+    .await
+    .expect_err("known email: token issue fails closed");
+    assert_internal(&err);
+
+    service::forgot_password(
+        &db,
+        &FailingEphemeralStore,
+        email_client,
+        &background,
+        ForgotPasswordRequest {
+            email: format!("down-ghost-{}@example.com", Uuid::now_v7()),
+        },
+    )
+    .await
+    .expect("unknown email never reaches the store");
+
+    background.close();
+    background.wait().await;
+    assert!(mock.sent().is_empty(), "no email with the store down");
+}
+
+/// Consuming a reset token fails closed.
+#[sqlx::test]
+async fn reset_password_fails_closed_when_store_is_down(db: PgPool) {
+    let err = service::reset_password(
+        &db,
+        &FailingEphemeralStore,
+        ResetPasswordRequest {
+            token: "any-token".into(),
+            new_password: "NewPassword!234".into(),
+        },
+    )
+    .await
+    .expect_err("reset must fail closed");
+    assert_internal(&err);
+}
+
+/// OTP send and verify fail closed — no SMS goes out unmetered.
+#[sqlx::test]
+async fn otp_fails_closed_when_store_is_down(db: PgPool) {
+    let (server, sms) = twilio_sms().await;
+    let email = format!("down-otp-{}@example.com", Uuid::now_v7());
+    let user_id = common::seed_member(&db, &email, "Password!234").await;
+
+    let err = send_otp(&FailingEphemeralStore, &sms, user_id)
+        .await
+        .expect_err("send must fail closed");
+    assert_internal(&err);
+    assert!(twilio_sent(&server).await.is_empty(), "no SMS sent");
+
+    let err = verify_otp(&db, &FailingEphemeralStore, user_id, "123456")
+        .await
+        .expect_err("verify must fail closed");
+    assert_internal(&err);
 }
 
 // ------- google_auth login rules (fake `GoogleIdentityProvider`) -------

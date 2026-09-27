@@ -1,6 +1,6 @@
-//! Integration tests for the Redis-backed rate-limit middleware.
+//! Integration tests for the rate-limit middleware.
 //!
-//! Each TestApp uses a unique synthetic `X-Forwarded-For`, so rate limit
+//! Each TestApp has its own in-memory short-lived state store, so rate limit
 //! buckets are naturally isolated per test. Within a single test we hit
 //! the same endpoint many times from the same bucket to trigger the limit.
 //!
@@ -9,7 +9,10 @@
 
 mod common;
 
-use common::http::spawn_test_app;
+use std::sync::Arc;
+
+use common::http::{spawn_test_app, spawn_test_app_with_store};
+use common::mocks::FailingEphemeralStore;
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -111,4 +114,19 @@ async fn logout_endpoint_not_rate_limited_by_strict_bucket(db: PgPool) {
             "logout unexpectedly rate-limited on iteration {i}"
         );
     }
+}
+
+#[sqlx::test]
+async fn store_down_returns_500_json(db: PgPool) {
+    // Route rate limiting fails closed: with the short-lived state store
+    // down, every request is refused with the generic 500 JSON body before
+    // reaching a handler.
+    let app = spawn_test_app_with_store(db, Arc::new(FailingEphemeralStore)).await;
+
+    let resp = app.get("/api/v1/health").await;
+    assert_eq!(resp.status_code(), 500);
+    assert_eq!(
+        resp.json::<serde_json::Value>(),
+        json!({ "error": "internal server error" })
+    );
 }

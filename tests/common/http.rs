@@ -8,12 +8,15 @@
 //!   `trust_proxy = true` so the rate-limit middleware honors our synthetic
 //!   `X-Forwarded-For` (each test gets a unique IP, so rate limits are
 //!   effectively isolated per test)
-//! - connects to a shared Redis (db 15 by default) for rate-limit counters
-//!   (plus OTP / reset tokens), with a per-test prefix flush. The account
-//!   access cache the `AuthUser` extractor reads is NOT Redis here: each
-//!   `TestApp` gets its own `InMemoryAccessCache` (`app.access_cache`), so
-//!   HTTP tests never touch the Redis adapter — `tests/service_access.rs`
-//!   covers both adapters directly
+//! - gives each `TestApp` its own `InMemoryEphemeralStore` for short-lived
+//!   state (rate-limit buckets, login/forgot-password counters, OTP, reset
+//!   tokens) and its own `InMemoryAccessCache` (`app.access_cache`) for the
+//!   account access cache the `AuthUser` extractor reads, so HTTP tests
+//!   never touch either Redis adapter — `tests/service_ephemeral.rs` and
+//!   `tests/service_access.rs` cover both adapters of each seam directly.
+//!   [`spawn_test_app_with_store`] swaps in another store (e.g.
+//!   `FailingEphemeralStore`). A Redis connection (db 15 by default) is
+//!   still opened, only for the `/health` PING
 //! - wraps the real production router (`startup::build_router`) so every
 //!   test exercises the entire middleware stack + extractors + handlers
 //! - exposes [`MockEmailClient`] via `app.email` so tests can assert on
@@ -49,15 +52,15 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
-use dream_fly_backend::utils::ephemeral::{EphemeralStore, RedisEphemeralStore};
+use dream_fly_backend::utils::ephemeral::EphemeralStore;
 use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use dream_fly_backend::utils::sms::SmsClient;
 
-use super::mocks::{InMemoryAccessCache, MockClock, MockEmailClient};
+use super::mocks::{InMemoryAccessCache, InMemoryEphemeralStore, MockClock, MockEmailClient};
 
 /// Client IP counter so every `TestApp` gets a unique synthetic source IP.
-/// Combined with `trust_proxy=true`, this gives each test its own rate-limit
-/// bucket in Redis even though they all share the same physical Redis DB.
+/// Combined with `trust_proxy=true`, the rate-limit middleware keys each
+/// `TestApp`'s buckets off its own IP.
 static IP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn next_client_ip() -> IpAddr {
@@ -245,14 +248,6 @@ impl TestApp {
         self.seed_user_with_roles(&email, &["admin"]).await
     }
 
-    /// Fresh Redis connection for test setup/teardown assertions.
-    pub async fn redis_conn(&self) -> redis::aio::ConnectionManager {
-        let client = redis::Client::open(self.config.redis.url.as_str()).expect("redis");
-        redis::aio::ConnectionManager::new(client)
-            .await
-            .expect("connect redis")
-    }
-
     /// Deterministically wait for every background task spawned so far
     /// (e.g. the password-reset email send in `auth::service::
     /// forgot_password`) to finish, replacing a fixed `sleep` + poll.
@@ -292,27 +287,32 @@ pub async fn spawn_test_app(db: PgPool) -> TestApp {
 /// Spawn a `TestApp`, allowing the caller to mutate the `AppConfig` before
 /// the router is built. Typical use: redirecting Google OAuth / Twilio.
 pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: F) -> TestApp {
+    spawn(db, adjust, Arc::new(InMemoryEphemeralStore::new())).await
+}
+
+/// Spawn a `TestApp` over the given short-lived state store instead of a
+/// fresh in-memory one — e.g. `FailingEphemeralStore` to pin what the
+/// middleware does when the store is down.
+pub async fn spawn_test_app_with_store(db: PgPool, ephemeral: Arc<dyn EphemeralStore>) -> TestApp {
+    spawn(db, |_| {}, ephemeral).await
+}
+
+async fn spawn<F: FnOnce(&mut AppConfig)>(
+    db: PgPool,
+    adjust: F,
+    ephemeral: Arc<dyn EphemeralStore>,
+) -> TestApp {
     let config = test_app_config(adjust);
     let redis_url = config.redis.url.clone();
 
-    // Connect to Redis. If this fails the test literally cannot run (rate
-    // limit + auth extractor both require Redis) — panic with a clear msg.
+    // Connect to Redis — only `/health`'s PING uses it (short-lived state
+    // is `ephemeral`, the access cache is in-memory). Panic with a clear
+    // message if it is not running.
     let redis_client = redis::Client::open(redis_url.as_str())
         .expect("failed to build test redis client (is redis running on TEST_REDIS_URL?)");
-    let mut redis = redis::aio::ConnectionManager::new(redis_client)
+    let redis = redis::aio::ConnectionManager::new(redis_client)
         .await
         .expect("failed to connect to test redis");
-
-    // Each test gets a unique synthetic IP (see next_client_ip below), but
-    // different test binaries restart the counter at 0 — a stale
-    // `rate_limit:auth:10.0.0.0` key from a previous run would instantly
-    // trip the 429 on the very first request. Clear both buckets for the
-    // IP we're about to hand out before constructing the router.
-    let ip_preview = next_client_ip();
-    for prefix in ["rate_limit:global:", "rate_limit:auth:"] {
-        let key = format!("{prefix}{ip_preview}");
-        let _: Result<(), _> = redis::AsyncCommands::del::<_, ()>(&mut redis, key).await;
-    }
 
     let email = Arc::new(MockEmailClient::new());
     let email_state: Arc<dyn EmailSender> = email.clone();
@@ -341,8 +341,6 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     // silently false-green.
     let background = TaskTracker::new();
 
-    let ephemeral: Arc<dyn EphemeralStore> = Arc::new(RedisEphemeralStore::new(redis.clone()));
-
     let state = AppState {
         db: db.clone(),
         access_cache: access_cache_state,
@@ -360,10 +358,9 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     let router = startup::build_router(state);
     let mut server = TestServer::new(router);
 
-    // Use the IP we already cleared in Redis above. With `trust_proxy=true`
-    // in the test config, the rate-limit middleware reads this header and
-    // maintains a separate bucket for this test run.
-    let client_ip = ip_preview;
+    // With `trust_proxy=true` in the test config, the rate-limit middleware
+    // reads this header as the client identity.
+    let client_ip = next_client_ip();
     server.add_header("x-forwarded-for", client_ip.to_string());
 
     TestApp {

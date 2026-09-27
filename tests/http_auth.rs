@@ -15,7 +15,6 @@ mod common;
 use common::google::mount_google;
 use common::http::{spawn_test_app, spawn_test_app_with};
 use common::twilio::{extract_otp_code, mount_twilio, twilio_sent};
-use redis::AsyncCommands;
 use serde_json::json;
 use sqlx::PgPool;
 use wiremock::matchers::method;
@@ -299,18 +298,6 @@ async fn otp_send_authenticated_records_sms(db: PgPool) {
         sent[0].body,
         format!("Your Dream Fly verification code is: {code}. Valid for 5 minutes.")
     );
-
-    // Refactor regression (Step 1): the per-user rate-limit key must still
-    // carry a TTL, now set by `EphemeralStore::incr_with_ttl` instead of the
-    // deleted `rate_limit::bump_count`. Read via TestApp's own Redis
-    // connection (DB 15) — `common::test_redis()` is DB 0 and would never
-    // see a key the app itself wrote.
-    let mut redis = app.redis_conn().await;
-    let ttl: i64 = redis
-        .ttl(format!("otp_rate:{}", user.user_id))
-        .await
-        .expect("ttl");
-    assert!(ttl > 0, "expected otp_rate TTL > 0, got {ttl}");
 }
 
 /// Exercises the real non-2xx branch in `send_sms` (`src/utils/sms.rs`)
@@ -352,7 +339,7 @@ async fn otp_verify_round_trip_marks_phone_verified(db: PgPool) {
     .await;
     let user = app.register_member("otpv@example.com", "Password!234").await;
 
-    // Send first to populate Redis with a code for this user.
+    // Send first to store a code for this user.
     app.post("/api/v1/auth/otp/send")
         .authorization_bearer(&user.access_token)
         .json(&json!({ "phone": "+15551234567" }))
@@ -404,8 +391,8 @@ async fn otp_verify_wrong_code_returns_bad_request(db: PgPool) {
 
 #[sqlx::test]
 async fn forgot_password_for_existing_user_records_email(db: PgPool) {
-    // `forgot_password` is rate-limited at 3 per email per hour on Redis, so
-    // use a per-test unique address to avoid leftover counters from prior runs.
+    // `forgot_password` is rate-limited at 3 per email per hour; a per-test
+    // unique address keeps this independent of other tests.
     let app = spawn_test_app(db).await;
     let email = format!("forgot-{}@example.com", uuid::Uuid::now_v7());
     app.register_member(&email, "Password!234").await;

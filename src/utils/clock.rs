@@ -21,7 +21,9 @@
 //!   against the database server's own clock, not this seam.
 //! - JWT `exp` — validated by the `jsonwebtoken` crate against the system
 //!   clock.
-//! - Rate-limit TTLs — Redis `EXPIRE`/`TTL`, timed by Redis's own clock.
+//! - Short-lived state TTLs (`utils::ephemeral`: rate limits, OTP, reset
+//!   tokens) — timed by the `EphemeralStore` adapter (Redis's own clock in
+//!   production, `std::time::Instant` in the in-memory test adapter).
 //! - Account access cache TTLs (`auth::access`, 60s is_active / 900s
 //!   roles) — timed by the `AccessCache` adapter (Redis's own clock in
 //!   production, `std::time::Instant` in the in-memory test adapter).
