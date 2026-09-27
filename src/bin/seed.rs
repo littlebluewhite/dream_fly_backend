@@ -73,7 +73,7 @@ use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::{LedgerDelta, OrderPointsFlow, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
-use dream_fly_backend::modules::sessions::calendar::materialize_range;
+use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock;
 
@@ -1746,7 +1746,7 @@ async fn main() -> anyhow::Result<()> {
 
     // -- course sessions: materialize the past 6 months ---------------------
     let six_months_ago = today.checked_sub_months(Months::new(6)).expect("valid seed range");
-    materialize_range(&db, &course_ids, six_months_ago, today)
+    backfill_for_seed(&db, &course_ids, six_months_ago, today)
         .await
         .context("materialize course sessions for the past 6 months")?;
     let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_sessions")

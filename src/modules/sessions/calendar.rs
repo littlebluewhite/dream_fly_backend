@@ -1,8 +1,10 @@
 //! 場次日曆:`course_sessions` 與 `course_schedule_slots` 兩張表的唯一
 //! runtime 寫入者。
 //!
-//! - 物化:[`materialize_range`]/[`materialize_day`] 把週課表展開成場次列,
-//!   並回傳 [`MaterializedRange`]/[`MaterializedDay`] witness 給讀取端。
+//! - 物化:[`materialize_range`]/[`materialize_today`] 把週課表展開成場次列,
+//!   只往前(≥ studio 今天,ADR-0011),並回傳
+//!   [`MaterializedRange`]/[`MaterializedDay`] witness 給讀取端;seed 專用的
+//!   [`backfill_for_seed`] 是唯一可寫過去日期的入口。
 //! - 週課表:[`set_initial_schedule_tx`](`create_course`)與
 //!   [`replace_weekly_schedule_tx`](換 slot + 對齊未來場次)。
 //!
@@ -35,11 +37,14 @@ const SLOT_OF_SESSION: &str = "s.course_id = cs.course_id \
 /// `schedule::repository::SlotRow`.
 pub type SlotRow = (i16, NaiveTime, NaiveTime, Option<String>);
 
-/// Proof that `materialize_range(db, course_ids, from, to)` has already run
-/// for this exact `(course_ids, from, to)` — collapses the "materialize
-/// then read" call-order invariant, previously enforced only by doc comments
-/// across 5 call sites, into the type system: read functions take `&
-/// MaterializedRange` instead of raw `(course_ids, from, to)` parameters.
+/// Proof that `materialize_range(db, today, course_ids, from, to)` has
+/// already run for this exact `(course_ids, from, to)` — collapses the
+/// "materialize then read" call-order invariant, previously enforced only by
+/// doc comments across 5 call sites, into the type system: read functions
+/// take `&MaterializedRange` instead of raw `(course_ids, from, to)`
+/// parameters. The bounds are the *requested* window; only its
+/// `≥ today` part was materialized, dates before that are whatever rows
+/// already exist (ADR-0011) — readers need not care which.
 ///
 /// This is **not** a course-scope filter guarantee: it proves the range was
 /// materialized, not that every reader filters by `course_ids`. Some readers
@@ -73,8 +78,8 @@ impl MaterializedRange {
     }
 }
 
-/// 證明 `materialize_day(db, course_ids, date)` 已針對這組確切的
-/// `(course_ids, date)` 執行過——[`MaterializedRange`] 的單日姊妹型別。
+/// 證明 `materialize_today(db, course_ids, today)` 已針對這組確切的
+/// `(course_ids, today)` 執行過——[`MaterializedRange`] 的單日姊妹型別。
 /// 兩個消費端額外要求單日窗(`from == to`):`find_today_sessions_in`——
 /// `TodaySessionRow` 無日期欄,多日範圍會把多天混成「今天」;
 /// `coach_today_and_pending`——「今天」本身無多日語意。這個前提以前只靠
@@ -83,12 +88,12 @@ impl MaterializedRange {
 /// 只物化了一天,release build 拿掉這道斷言後,悄悄傳入的多日 witness 沒
 /// 有其他防線接住(對照 `LedgerDelta` 幅度 debug_assert 的
 /// defense-in-depth 判準,見 ADR-0007 第四則 Addendum)。本型別把「單日」
-/// 前提收進建構點:[`materialize_day`] 是唯一建構方式,消費端不再需要自
+/// 前提收進建構點:[`materialize_today`] 是唯一建構方式,消費端不再需要自
 /// 行斷言。
 ///
 /// 與 [`MaterializedRange`] 分工:只要求「這個範圍已物化」的讀取端繼續
 /// 收 `&MaterializedRange`;額外要求「而且剛好一天」的讀取端改收
-/// `&MaterializedDay`。欄位全私有,僅 `materialize_day` 能建構。
+/// `&MaterializedDay`。欄位全私有,僅 `materialize_today` 能建構。
 #[derive(Debug, Clone)]
 pub struct MaterializedDay {
     range: MaterializedRange,
@@ -104,29 +109,27 @@ impl MaterializedDay {
     }
 }
 
-/// Materialize `course_sessions` rows for every date in `[from, to]` whose
-/// weekday matches one of `course_ids`' weekly slots. Idempotent — calling
-/// this twice for the same range never creates duplicate rows, thanks to
-/// `ON CONFLICT DO NOTHING` on `course_sessions_unique`. Each new row
-/// snapshots its slot's `venue` — an already-materialized session keeps the
-/// venue it was created with (the conflict skips it); only
-/// [`replace_weekly_schedule_tx`] re-syncs it, and only for future dates.
-/// Returns a
-/// [`MaterializedRange`] witness for this exact `(course_ids, from, to)` —
-/// including on both early-return paths — so callers thread it into the
-/// matching read function instead of re-stating the "materialize first"
-/// precondition in prose.
+/// Materialize `course_sessions` rows for every date in
+/// `[max(from, today), to]` whose weekday matches one of `course_ids`' weekly
+/// slots — **forward only** (ADR-0011): a date before `today` (the
+/// studio-local calendar date) is never created, because today's weekly
+/// schedule says nothing reliable about what actually ran on a past date.
+/// Past dates in `[from, to]` are read from whatever rows already exist.
+/// Idempotent — calling this twice for the same range never creates
+/// duplicate rows, thanks to `ON CONFLICT DO NOTHING` on
+/// `course_sessions_unique`. Each new row snapshots its slot's `venue` — an
+/// already-materialized session keeps the venue it was created with (the
+/// conflict skips it); only [`replace_weekly_schedule_tx`] re-syncs it, and
+/// only for future dates.
 ///
-/// Implemented as two steps (candidate SELECT, then a Rust-id-keyed bulk
-/// INSERT via UNNEST) rather than a single `INSERT ... SELECT` so that every
-/// row's `id` is a `Uuid::now_v7()` generated in application code, per this
-/// repo's ID convention — mirrors `schedule::repository::bulk_create_tx`'s
-/// UNNEST + `ARRAY_FILL` shape for the constant `created_at` column. The
-/// candidate SELECT derives each would-be session `cs` from slot × date and
-/// keeps it only when [`SLOT_OF_SESSION`] holds — the same rule the
-/// reconcile UPDATE/DELETE apply to existing rows.
+/// Returns a [`MaterializedRange`] witness for the *requested*
+/// `(course_ids, from, to)` — not the clamped window, and including on every
+/// early-return path (no courses, or a range entirely before `today`) — so
+/// callers thread it into the matching read function unchanged instead of
+/// re-stating the "materialize first" precondition in prose.
 pub async fn materialize_range(
     db: &PgPool,
+    today: NaiveDate,
     course_ids: &[Uuid],
     from: NaiveDate,
     to: NaiveDate,
@@ -137,8 +140,64 @@ pub async fn materialize_range(
         to,
     };
 
-    if course_ids.is_empty() {
+    let start = from.max(today);
+    if start > to {
         return Ok(witness);
+    }
+    insert_sessions(db, course_ids, start, to).await?;
+
+    Ok(witness)
+}
+
+/// `materialize_today` 是 [`MaterializedDay`] 的唯一建構點——內部呼叫
+/// `materialize_range(db, today, course_ids, today, today)`,冪等與早退邏
+/// 輯全部重用,不重複實作。
+pub async fn materialize_today(
+    db: &PgPool,
+    course_ids: &[Uuid],
+    today: NaiveDate,
+) -> Result<MaterializedDay, sqlx::Error> {
+    let range = materialize_range(db, today, course_ids, today, today).await?;
+    Ok(MaterializedDay { range })
+}
+
+/// **Seed only** (`src/bin/seed.rs`) — runtime code must never call this.
+/// Fills every date in `[from, to]`, past dates included, from the
+/// *current* weekly schedule: exactly the phantom-session source
+/// [`materialize_range`] forbids at runtime (ADR-0011), acceptable only for
+/// a fresh dev dataset whose schedule has never changed. Same idempotent
+/// INSERT as `materialize_range`; returns no witness because no reader
+/// should consume its output directly.
+pub async fn backfill_for_seed(
+    db: &PgPool,
+    course_ids: &[Uuid],
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<(), sqlx::Error> {
+    insert_sessions(db, course_ids, from, to).await
+}
+
+/// The shared INSERT behind [`materialize_range`] and
+/// [`backfill_for_seed`]: create every slot date in `[from, to]` for
+/// `course_ids` that doesn't exist yet. No date policy of its own — callers
+/// decide the window.
+///
+/// Implemented as two steps (candidate SELECT, then a Rust-id-keyed bulk
+/// INSERT via UNNEST) rather than a single `INSERT ... SELECT` so that every
+/// row's `id` is a `Uuid::now_v7()` generated in application code, per this
+/// repo's ID convention — mirrors `schedule::repository::bulk_create_tx`'s
+/// UNNEST + `ARRAY_FILL` shape for the constant `created_at` column. The
+/// candidate SELECT derives each would-be session `cs` from slot × date and
+/// keeps it only when [`SLOT_OF_SESSION`] holds — the same rule the
+/// reconcile UPDATE/DELETE apply to existing rows.
+async fn insert_sessions(
+    db: &PgPool,
+    course_ids: &[Uuid],
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Result<(), sqlx::Error> {
+    if course_ids.is_empty() {
+        return Ok(());
     }
 
     let candidates = sqlx::query_as::<_, (Uuid, NaiveDate, NaiveTime, NaiveTime, Option<String>)>(
@@ -159,7 +218,7 @@ pub async fn materialize_range(
     .await?;
 
     if candidates.is_empty() {
-        return Ok(witness);
+        return Ok(());
     }
 
     let mut ids: Vec<Uuid> = Vec::with_capacity(candidates.len());
@@ -194,19 +253,7 @@ pub async fn materialize_range(
     .execute(db)
     .await?;
 
-    Ok(witness)
-}
-
-/// `materialize_day` 是 [`MaterializedDay`] 的唯一建構點——內部呼叫
-/// `materialize_range(db, course_ids, date, date)`,冪等與早退邏輯全部
-/// 重用,不重複實作。
-pub async fn materialize_day(
-    db: &PgPool,
-    course_ids: &[Uuid],
-    date: NaiveDate,
-) -> Result<MaterializedDay, sqlx::Error> {
-    let range = materialize_range(db, course_ids, date, date).await?;
-    Ok(MaterializedDay { range })
+    Ok(())
 }
 
 /// A new course's first weekly schedule (`courses::service::create_course`),

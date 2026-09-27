@@ -30,7 +30,9 @@ fn parse_query_date(s: &str) -> Result<NaiveDate, AppError> {
 }
 
 /// Materialize then list a single course's sessions in `[from, to]`
-/// (defaults: from=studio-local today, to=from+28d). 422 if `to < from` or
+/// (defaults: from=studio-local today, to=from+28d). Only dates from today
+/// on are materialized; a past `from` just reads the rows that already
+/// exist (ADR-0011). 422 if `to < from` or
 /// the span exceeds `MAX_RANGE_DAYS`. 404 if the course doesn't exist.
 pub async fn list_course_sessions(
     db: &PgPool,
@@ -63,7 +65,7 @@ pub async fn list_course_sessions(
         )));
     }
 
-    let mat = calendar::materialize_range(db, &[course_id], from, to).await?;
+    let mat = calendar::materialize_range(db, today, &[course_id], from, to).await?;
     let sessions = repository::find_sessions_in(db, &mat).await?;
     Ok(sessions
         .into_iter()
@@ -97,7 +99,7 @@ pub async fn today_sessions(
         }
     };
 
-    let day = calendar::materialize_day(db, &course_ids, today).await?;
+    let day = calendar::materialize_today(db, &course_ids, today).await?;
     let rows = repository::find_today_sessions_in(db, &day).await?;
     Ok(rows
         .into_iter()

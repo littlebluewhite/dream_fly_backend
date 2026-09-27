@@ -19,7 +19,7 @@
 
 mod common;
 
-use chrono::{Datelike, NaiveTime, Utc};
+use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ use dream_fly_backend::modules::sessions::{calendar, service};
 
 use common::fixtures::{
     seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_course_session, seed_enrolment, seed_session_scene,
+    seed_course_session, seed_course_session_with_venue, seed_enrolment, seed_session_scene,
 };
 
 /// PostgreSQL `EXTRACT(DOW)` / this module's `day_of_week` convention:
@@ -48,7 +48,7 @@ async fn materialize_range_is_idempotent(db: PgPool) {
     let today = Utc::now().date_naive();
     seed_course_schedule_slot(&db, course_id, dow_of(today), t(9, 0), t(10, 0)).await;
 
-    calendar::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, today, &[course_id], today, today)
         .await
         .expect("first materialize");
     let count_1: i64 =
@@ -59,7 +59,7 @@ async fn materialize_range_is_idempotent(db: PgPool) {
             .unwrap();
     assert_eq!(count_1, 1);
 
-    calendar::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, today, &[course_id], today, today)
         .await
         .expect("second materialize");
     let count_2: i64 =
@@ -88,7 +88,7 @@ async fn materialize_snapshots_slot_venue(db: PgPool) {
     )
     .await;
 
-    calendar::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, today, &[course_id], today, today)
         .await
         .expect("first materialize");
     assert_eq!(
@@ -104,13 +104,68 @@ async fn materialize_snapshots_slot_venue(db: PgPool) {
         .execute(&db)
         .await
         .unwrap();
-    calendar::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, today, &[course_id], today, today)
         .await
         .expect("second materialize");
     assert_eq!(
         session_venues(&db, course_id).await,
         vec![Some("Main Hall".to_string())]
     );
+}
+
+#[sqlx::test]
+async fn materialize_range_never_creates_past_dates(db: PgPool) {
+    // today = 2026-09-16 (Wednesday). A Monday + a Wednesday slot over the
+    // whole of September: only [today, 09-30] may be created (Wed 16/23/30,
+    // Mon 21/28); the witness still carries the requested [09-01, 09-30].
+    let today = NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let d = |day: u32| NaiveDate::from_ymd_opt(2026, 9, day).unwrap();
+    let course_id = seed_course(&db, "Forward Only Calendar", None).await;
+    seed_course_schedule_slot(&db, course_id, 1, t(9, 0), t(10, 0)).await;
+    seed_course_schedule_slot(&db, course_id, 3, t(18, 0), t(19, 0)).await;
+
+    // Entirely in the past: nothing created, witness still returned.
+    let past = calendar::materialize_range(&db, today, &[course_id], d(1), d(15))
+        .await
+        .expect("past-only materialize");
+    assert_eq!((past.from_date(), past.to_date()), (d(1), d(15)));
+    assert_eq!(session_dates(&db, course_id).await, Vec::<NaiveDate>::new());
+
+    let mat = calendar::materialize_range(&db, today, &[course_id], d(1), d(30))
+        .await
+        .expect("materialize");
+    assert_eq!((mat.from_date(), mat.to_date()), (d(1), d(30)));
+    assert_eq!(
+        session_dates(&db, course_id).await,
+        vec![d(16), d(21), d(23), d(28), d(30)]
+    );
+}
+
+#[sqlx::test]
+async fn backfill_for_seed_creates_past_rows(db: PgPool) {
+    // The seed-only backfill is the one writer allowed to fill past dates
+    // from the current weekly schedule.
+    let d = |day: u32| NaiveDate::from_ymd_opt(2026, 9, day).unwrap();
+    let course_id = seed_course(&db, "Seed Backfill Course", None).await;
+    seed_course_schedule_slot(&db, course_id, 1, t(9, 0), t(10, 0)).await;
+
+    calendar::backfill_for_seed(&db, &[course_id], d(1), d(30))
+        .await
+        .expect("backfill");
+    assert_eq!(
+        session_dates(&db, course_id).await,
+        vec![d(7), d(14), d(21), d(28)]
+    );
+}
+
+async fn session_dates(db: &PgPool, course_id: Uuid) -> Vec<NaiveDate> {
+    sqlx::query_scalar(
+        "SELECT session_date FROM course_sessions WHERE course_id = $1 ORDER BY session_date",
+    )
+    .bind(course_id)
+    .fetch_all(db)
+    .await
+    .expect("fetch session dates")
 }
 
 #[sqlx::test]
@@ -135,7 +190,7 @@ async fn materialize_then_reconcile_is_noop(db: PgPool) {
 
     let from = today + chrono::Duration::days(1);
     let to = today + chrono::Duration::days(14);
-    calendar::materialize_range(&db, &[course_id], from, to)
+    calendar::materialize_range(&db, today, &[course_id], from, to)
         .await
         .expect("materialize");
     let before = session_snapshot(&db, course_id).await;
@@ -189,6 +244,42 @@ async fn session_venues(db: &PgPool, course_id: Uuid) -> Vec<Option<String>> {
     .fetch_all(db)
     .await
     .expect("fetch session venues")
+}
+
+#[sqlx::test]
+async fn list_course_sessions_past_from_returns_existing_rows_only(db: PgPool) {
+    // 2026-09-16 is a Wednesday. A Monday slot's September dates are
+    // 7/14/21/28; only 09-07 was ever materialized before "today". A `from`
+    // in the past must read that existing row but never create 09-14.
+    let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap());
+    let d = |day: u32| NaiveDate::from_ymd_opt(2026, 9, day).unwrap();
+    let course_id = seed_course(&db, "Past From Course", None).await;
+    seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "A").await;
+    seed_course_session_with_venue(&db, course_id, d(7), t(9, 0), t(10, 0), "A").await;
+
+    let sessions = service::list_course_sessions(
+        &db,
+        at,
+        course_id,
+        SessionsRangeQuery {
+            from: Some("2026-09-01".into()),
+            to: Some("2026-09-30".into()),
+        },
+    )
+    .await
+    .expect("list");
+
+    let dates: Vec<NaiveDate> = sessions.iter().map(|s| s.session_date).collect();
+    assert_eq!(dates, vec![d(7), d(21), d(28)]);
+    let n_14: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM course_sessions WHERE course_id = $1 AND session_date = $2",
+    )
+    .bind(course_id)
+    .bind(d(14))
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(n_14, 0, "a past date must not be materialized");
 }
 
 #[sqlx::test]
@@ -508,7 +599,7 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
 async fn today_sessions_materializes_todays_slot_without_preexisting_session(db: PgPool) {
     // Every other today_sessions test pre-seeds its session row (via
     // seed_session_scene), so they stay green even if the materialize step
-    // inside `materialize_day` silently stopped running. This slot-only
+    // inside `materialize_today` silently stopped running. This slot-only
     // arrange is the one guard on that wire: the session row must come into
     // existence through today_sessions() itself.
     let course_id = seed_course(&db, "Slot Only Today", None).await;

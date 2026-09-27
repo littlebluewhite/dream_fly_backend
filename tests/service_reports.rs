@@ -35,10 +35,10 @@ use dream_fly_backend::utils::studio_clock::StudioNow;
 use common::fixtures::{
     SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
     seed_course_revenue, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_course_session, seed_course_with_capacity, seed_enrolment, seed_entitlement_product,
-    seed_marked_attendance, seed_member_created_at, seed_message, seed_order_bare,
-    seed_order_with_items, seed_venue_rentals, seed_waitlist_entry, set_birth_date,
-    set_points_balance,
+    seed_course_session, seed_course_session_with_venue, seed_course_with_capacity, seed_enrolment,
+    seed_entitlement_product, seed_marked_attendance, seed_member_created_at, seed_message,
+    seed_order_bare, seed_order_with_items, seed_venue_rentals, seed_waitlist_entry,
+    set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on};
 
@@ -941,6 +941,28 @@ async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
     };
     assert_eq!(minutes("Old Hall"), Some(4 * 60));
     assert_eq!(minutes("New Hall"), None);
+}
+
+#[sqlx::test]
+async fn admin_report_does_not_materialize_past_days(db: PgPool) {
+    // 2026-09-16 is a Wednesday. A Monday slot's September dates are
+    // 7/14/21/28; only 09-07 exists from before. The month-wide report must
+    // count the existing past row and the future dates, but never create a
+    // phantom 09-14 row: 3 sessions × 60 min.
+    let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap());
+    let course_id = seed_course(&db, "Forward Only Course", None).await;
+    seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "A").await;
+    let sep_7 = NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+    seed_course_session_with_venue(&db, course_id, sep_7, t(9, 0), t(10, 0), "A").await;
+
+    let report = service::admin_report(&db, at).await.expect("admin_report");
+
+    let minutes = report
+        .venue_usage
+        .iter()
+        .find(|r| r.venue == "A")
+        .map(|r| r.minutes);
+    assert_eq!(minutes, Some(3 * 60));
 }
 
 #[sqlx::test]

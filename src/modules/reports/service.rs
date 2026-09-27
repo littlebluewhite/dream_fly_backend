@@ -61,14 +61,17 @@ pub async fn admin_report(db: &PgPool, at: StudioNow) -> Result<AdminReportRespo
     let funnel_row = repository::funnel(db, at).await?;
     let weekday_rows = repository::weekday_load(db, at).await?;
 
-    // `venue_usage` is over *this studio month's* sessions, which may not all
-    // be materialized yet (future dates in the current month) — so idempotently
-    // materialize the whole month for every course first, mirroring how the
-    // coach/member reports materialize their own windows before counting.
+    // `venue_usage` is over *this studio month's* sessions. The whole month is
+    // passed to the calendar, which materializes only its not-yet-past part
+    // (today .. month end) and leaves the past days to the rows that already
+    // exist — no phantom sessions from today's weekly schedule (ADR-0011).
+    // Mirrors how the coach/member reports materialize their own windows
+    // before counting.
     let today = studio_clock::today(tz, now);
     let (month_start, month_end) = studio_month_bounds(today);
     let all_course_ids = sessions_repository::find_all_course_ids(db).await?;
-    let mat = calendar::materialize_range(db, &all_course_ids, month_start, month_end).await?;
+    let mat =
+        calendar::materialize_range(db, today, &all_course_ids, month_start, month_end).await?;
     let venue_rows = repository::venue_usage(db, &mat).await?;
 
     let current_month_key = studio_clock::month_key(tz, now);
@@ -91,10 +94,12 @@ pub async fn admin_report(db: &PgPool, at: StudioNow) -> Result<AdminReportRespo
     Ok(assembly::assemble_admin_report(inputs, &current_month_key))
 }
 
-/// `(first_day, last_day)` of `today`'s calendar month. Used to bound the
-/// idempotent session materialization the `venue_usage` aggregate needs —
-/// `venue_usage` receives it only via the `MaterializedRange` witness's
-/// date bounds, not by re-deriving it in SQL (see
+/// `(first_day, last_day)` of `today`'s calendar month — the window the
+/// `venue_usage` aggregate reads. Passed whole to
+/// `calendar::materialize_range`, which clamps the materialized part to
+/// `today ..= last_day` (past days count existing rows only, ADR-0011);
+/// `venue_usage` receives the full month only via the `MaterializedRange`
+/// witness's date bounds, not by re-deriving it in SQL (see
 /// `repository::venue_usage`). Thin shell over `studio_clock::month_bounds`
 /// (the year-rollover + `pred_opt` dance's single owner now); `today`'s own
 /// year/month always yields valid bounds, so the `expect` is total.
@@ -125,7 +130,7 @@ pub async fn coach_report(
 
     let today = studio_clock::today(tz, now);
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
-    let day = calendar::materialize_day(db, &course_ids, today).await?;
+    let day = calendar::materialize_today(db, &course_ids, today).await?;
 
     let (today_sessions, pending_attendance) =
         repository::coach_today_and_pending(db, coach.id, &day).await?;
@@ -162,7 +167,7 @@ pub async fn member_report(
     let active_enrolments = course_ids.len() as i64;
 
     let window_to = today + Duration::days(MEMBER_UPCOMING_WINDOW_DAYS);
-    let mat = calendar::materialize_range(db, &course_ids, today, window_to).await?;
+    let mat = calendar::materialize_range(db, today, &course_ids, today, window_to).await?;
     let upcoming_sessions_7d = repository::upcoming_session_count(db, &mat).await?;
 
     Ok(MemberReportResponse {
