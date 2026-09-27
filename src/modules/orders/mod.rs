@@ -1,6 +1,7 @@
 pub mod dto;
 pub mod fulfilment;
 pub mod handlers;
+pub mod idempotency;
 pub mod locks;
 pub mod model;
 pub mod pricing;
@@ -8,3 +9,4 @@ pub mod refund;
 pub mod repository;
 pub mod routes;
 pub mod service;
+mod tx_witness;

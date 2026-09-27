@@ -427,7 +427,7 @@ async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: P
 /// none of `ascii_graphic | '-' | '_'`) is rejected outright with 400
 /// instead of being silently downgraded to an unprotected checkout (the
 /// fail-open behavior this task removes — see
-/// `orders::handlers::extract_idempotency_key`). The request never reaches
+/// `orders::idempotency::IdempotencyKey::from_headers`). The request never reaches
 /// the transaction: no order is created and the cart survives untouched,
 /// same contract as the other pre-checkout 4xx rejections above.
 #[sqlx::test]

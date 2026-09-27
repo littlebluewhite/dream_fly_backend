@@ -31,6 +31,7 @@ use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::courses::seats as courses_seats;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
+use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::service;
 use dream_fly_backend::modules::products::service as product_service;
@@ -713,7 +714,7 @@ async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool
     let course = seed_course_with_capacity(&db, "Replay Course", None, 12).await;
     add_course_to_cart(&db, user, course).await;
 
-    let key = Some("idempotency-key-1".to_string());
+    let key = Some(IdempotencyKey::parse("idempotency-key-1").unwrap());
     let first = service::checkout(
         &db,
         user,
@@ -856,7 +857,7 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     )
     .await;
 
-    let key = Some("concurrent-idempotency-key".to_string());
+    let key = Some(IdempotencyKey::parse("concurrent-idempotency-key").unwrap());
     let key_a = key.clone();
     let key_b = key;
 
@@ -2008,7 +2009,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
         .await
         .expect("build single-connection pool on the test database");
 
-    let key = Some("single-conn-key".to_string());
+    let key = Some(IdempotencyKey::parse("single-conn-key").unwrap());
 
     // 1. Checkout happy path: commit → assemble. The tx commits (freeing the
     //    lone connection) before `assemble_response` re-reads items/artifacts.
@@ -2141,7 +2142,7 @@ async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
         handle.block_on(service::checkout(
             &checkout_pool,
             user,
-            Some("twin-key".to_string()),
+            Some(IdempotencyKey::parse("twin-key").unwrap()),
             CheckoutRequest::default(),
             None,
             common::studio_now_utc(chrono::Utc::now()),

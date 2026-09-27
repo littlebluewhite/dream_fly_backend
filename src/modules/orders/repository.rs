@@ -217,47 +217,6 @@ pub async fn update_status_and_paid_at_tx(
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency table
-// ---------------------------------------------------------------------------
-
-/// Return the order id associated with a prior (user_id, key) pair, if any.
-/// Used by the checkout flow to short-circuit duplicate retries.
-pub async fn find_idempotency(
-    db: &PgPool,
-    user_id: Uuid,
-    key: &str,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT order_id FROM order_idempotency \
-         WHERE user_id = $1 AND idempotency_key = $2",
-    )
-    .bind(user_id)
-    .bind(key)
-    .fetch_optional(db)
-    .await
-}
-
-/// Insert the idempotency row inside the checkout tx so either both the
-/// order and the key persist, or neither does.
-pub async fn insert_idempotency_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-    key: &str,
-    order_id: Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO order_idempotency (user_id, idempotency_key, order_id, created_at) \
-         VALUES ($1, $2, $3, NOW())",
-    )
-    .bind(user_id)
-    .bind(key)
-    .bind(order_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Admin order list
 // ---------------------------------------------------------------------------
 

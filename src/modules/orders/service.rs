@@ -23,11 +23,13 @@ use super::dto::{
     OrderSummary,
 };
 use super::fulfilment;
+use super::idempotency::{self, IdempotencyKey, Recorded};
 use super::locks;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
 use super::refund::{self, TransitionDecision};
 use super::repository::{self, OrderAmounts};
+use super::tx_witness::TxReleased;
 
 /// The checkout request after every check that needs no database: the
 /// payment method resolved against `PAYMENT_METHODS` (defaulting to
@@ -65,13 +67,14 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
     })
 }
 
-/// Checkout the user's cart. When an `idempotency_key` is supplied, a second
+/// Checkout the user's cart. When an idempotency `key` is supplied, a second
 /// attempt with the same (user_id, key) returns the original order instead
-/// of creating a duplicate (double-click, network retry, mobile 502 retry).
+/// of creating a duplicate (double-click, network retry, mobile 502 retry) —
+/// the table and its replay mechanics are owned by `orders::idempotency`.
 ///
 /// Outcome priority — the first rule that fires decides the response:
 /// - Idempotency replay: a key already recorded for this user returns that
-///   order, before any other check (`replay_by_key`).
+///   order, before any other check (`idempotency::replay`).
 /// - Invalid payment method: 422 (`parse_request`), before the transaction
 ///   opens.
 /// - Unknown user: 404 from the points-balance lock (`lock_balance_tx`,
@@ -80,7 +83,7 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 ///   compensation mutually exclusive with checkout for the same buyer;
 ///   ADR-0007).
 /// - Empty cart: 400 — unless a same-key twin already committed, which is
-///   replayed instead.
+///   replayed instead (`idempotency::replay_or`).
 /// - Deactivated line: 422 (`fulfilment::ensure_all_purchasable`).
 /// - Unknown/inactive/expired coupon: 422.
 /// - Subtotal overflow: 422 (`pricing::price`, which also does the coupon
@@ -93,7 +96,7 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 ///   `subscriptions::service::grant_from_purchase_tx` — a time-based grant
 ///   can't be multiplied into one subscription row).
 /// - Idempotency unique violation: a concurrent same-key twin won — its
-///   order is replayed.
+///   order is replayed (`idempotency::record`).
 ///
 /// Every rejection after the transaction opens rolls the whole checkout
 /// back. On success the order is created already `paid`, followed by its
@@ -110,7 +113,7 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 pub async fn checkout(
     db: &PgPool,
     user_id: Uuid,
-    idempotency_key: Option<String>,
+    key: Option<IdempotencyKey>,
     req: CheckoutRequest,
     correlation_id: Option<String>,
     at: StudioNow,
@@ -118,12 +121,8 @@ pub async fn checkout(
     let StudioNow { tz, now } = at;
     // Idempotency pre-check (outside tx). If we've already processed this
     // key for this user, return the prior order (artifacts included).
-    if let Some(key) = &idempotency_key {
-        if let Some(response) =
-            replay_by_key(db, user_id, key, tx_witness::TxReleased::no_open_tx()).await?
-        {
-            return Ok(response);
-        }
+    if let Some(response) = idempotency::replay(db, user_id, key.as_ref()).await? {
+        return Ok(response);
     }
 
     // Parse the request before opening the transaction — after the replay
@@ -150,34 +149,16 @@ pub async fn checkout(
         cart_service::find_cart_items_for_checkout_tx(&mut tx, locks.balance()).await?;
 
     if cart_items.is_empty() {
-        // A concurrent request carrying the *same* idempotency key may have
-        // already won this cart. Idempotency is scoped per user_id, so both
-        // requests first contend on the SAME buyer's `users` row: the
-        // unconditional `lock_balance_tx` step of `acquire_checkout_locks`
-        // above (ahead of any cart read) is what actually serializes
-        // the two checkouts. The loser blocks there until the winner locks
-        // these same cart rows, runs the whole checkout, clears the cart,
-        // and commits (`clear_cart_tx`/`insert_idempotency_tx`/
-        // `TxReleased::commit` below) — so by the time the
-        // loser is unblocked and reaches this empty-cart check, the winner
-        // is guaranteed to have already committed too (cart-clear and
-        // idempotency-insert share that one transaction). Failing outright
-        // here, before ever checking idempotency, breaks the "same key
-        // replay returns the first order" contract. Release the tx first —
-        // the replay's `assemble_response` runs pool queries, so the
-        // connection has to go back before it (the shared self-deadlock
-        // rationale now lives in `TxReleased`) — then re-check idempotency
-        // before giving up. Note the release only happens when a key is
-        // present: with `idempotency_key == None` the `if let` is skipped,
-        // `tx` is never moved, and the `Err` return below drop-rolls-it-back
-        // exactly as before.
-        if let Some(key) = &idempotency_key {
-            let released = tx_witness::TxReleased::release(tx);
-            if let Some(response) = replay_by_key(db, user_id, key, released).await? {
-                return Ok(response);
-            }
-        }
-        return Err(AppError::BadRequest("cart is empty".into()));
+        // A same-key twin may already have won this cart — replay it
+        // instead of the 400 (`idempotency::replay_or` has the why).
+        return idempotency::replay_or(
+            db,
+            tx,
+            user_id,
+            key.as_ref(),
+            AppError::BadRequest("cart is empty".into()),
+        )
+        .await;
     }
 
     // Purchasability gate (甲案): every line in the snapshot just locked
@@ -193,9 +174,9 @@ pub async fn checkout(
     //   - BEFORE the coupon load below: whether the cart's own
     //     contents are still legal to buy is decided before any discount is
     //     even considered.
-    //   - Deliberately NOT paired with a `TxReleased` release + idempotency
-    //     re-check, unlike the empty-cart branch above and the two unique-
-    //     violation branches further down this function: a product/course
+    //   - Deliberately NOT paired with an idempotency replay, unlike the
+    //     empty-cart branch above and the unique-violation branch
+    //     (`idempotency::record`) further down this function: a product/course
     //     going inactive is never *caused* by a concurrent checkout attempt
     //     — it's an independent admin-side deactivation — so there is no
     //     winning twin transaction to go replay here. This 422 is a business
@@ -361,32 +342,12 @@ pub async fn checkout(
     // Clear the cart within the same transaction.
     cart_service::clear_cart_tx(&mut tx, user_id).await?;
 
-    // Record the idempotency key inside the same tx so a concurrent
-    // retry sees either nothing (and races for the lock) or the
-    // committed row.
-    if let Some(key) = &idempotency_key {
-        match repository::insert_idempotency_tx(&mut tx, user_id, key, order.id).await {
-            Ok(()) => {}
-            Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {
-                // Concurrent retry beat us. Release the tx first — the replay
-                // path's `assemble_response` runs pool queries (shared
-                // self-deadlock rationale in `TxReleased`) — then replay the
-                // winning row. `Ok(None)` here would be an invariant break,
-                // not a legitimate race outcome — see `replay_by_key`'s doc
-                // comment for the unreachability argument.
-                let released = tx_witness::TxReleased::release(tx);
-                let response = replay_by_key(db, user_id, key, released)
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::Internal(anyhow::anyhow!(
-                            "idempotency unique violation but no committed row"
-                        ))
-                    })?;
-                return Ok(response);
-            }
-            Err(e) => return Err(AppError::Database(e)),
-        }
-    }
+    // Record the idempotency key inside the same tx; a concurrent same-key
+    // twin that already committed wins, and its order is the response.
+    let mut tx = match idempotency::record(db, tx, user_id, key.as_ref(), order.id).await? {
+        Recorded::Fresh(tx) => tx,
+        Recorded::TwinWon(response) => return Ok(response),
+    };
 
     // Queue the order_created event into the outbox — persisted
     // atomically with the order itself. The background dispatcher (see
@@ -408,7 +369,7 @@ pub async fn checkout(
     )
     .await?;
 
-    let released = tx_witness::TxReleased::commit(tx).await?;
+    let released = TxReleased::commit(tx).await?;
 
     // Inline notification — the user expects order confirmation
     // regardless of whether Kafka is enabled, and even if the
@@ -419,60 +380,6 @@ pub async fn checkout(
 
     // Assemble the response (items + artifacts, looked up by order_id).
     assemble_response(db, order, released).await
-}
-
-/// Self-deadlock discipline for `assemble_response`, lifted out of three
-/// cross-referencing comments into the type system. See `TxReleased`.
-///
-/// A private submodule on purpose: `TxReleased`'s only field is private, so
-/// one can be built solely from *inside this module*. Isolating the type here
-/// means the surrounding `service` functions — the very code this discipline
-/// governs — cannot hand-write `TxReleased(())` to skip the constructors; they
-/// must go through `release` / `commit` / `no_open_tx`. (Same private-field
-/// witness technique as `courses::seats`'s `SessionLock`.)
-mod tx_witness {
-    use sqlx::{Postgres, Transaction};
-
-    /// Proof that the checkout / status-update transaction has already been
-    /// released back to the pool — rolled back via `release` or committed via
-    /// `commit` — *before* `assemble_response` runs.
-    ///
-    /// `assemble_response` re-reads the order's items + artifacts through the
-    /// pool (`fetch_artifacts`). Issuing a pool query while a transaction
-    /// still holds its pooled connection self-deadlocks under a low-connection
-    /// pool: the query waits for a free connection, the only connection is not
-    /// freed until the transaction ends, and the transaction cannot end while
-    /// it is blocked on that query. `assemble_response` takes this witness *by
-    /// value*, so it cannot be reached without proof the tx is already gone —
-    /// the invariant now lives in the signature instead of in a comment every
-    /// caller has to remember.
-    ///
-    /// Deliberately not `#[must_use]`: the witness is *permission* to call
-    /// `assemble_response`, not an obligation to do anything with it —
-    /// `replay_by_key`'s `Ok(None)` arm (no committed row yet for this key)
-    /// legitimately drops a released witness unused.
-    ///
-    /// Honest residual seam: `no_open_tx` is a caller-attested assertion, not
-    /// a machine-checked fact. The two read-only callers (`checkout`'s
-    /// idempotency pre-check and `get_order`) never open a transaction, so
-    /// there is nothing to release; the witness there records "this path holds
-    /// no open tx" on the caller's word. `release` and `commit` consume a real
-    /// `Transaction`, so those two are machine-checked.
-    pub(super) struct TxReleased(());
-
-    impl TxReleased {
-        pub(super) fn release(tx: Transaction<'_, Postgres>) -> Self {
-            drop(tx);          // sqlx 對被 drop 的交易發 rollback,語意同原呼叫端
-            Self(())
-        }
-        pub(super) async fn commit(tx: Transaction<'_, Postgres>) -> Result<Self, sqlx::Error> {
-            tx.commit().await?;
-            Ok(Self(()))
-        }
-        pub(super) fn no_open_tx() -> Self {
-            Self(())
-        }
-    }
 }
 
 /// Fetch the enrolments/subscriptions a given order produced, mapped to
@@ -496,59 +403,14 @@ async fn fetch_artifacts(
 /// connection would self-deadlock a low-connection pool (see
 /// `tx_witness::TxReleased`). The value is unused at runtime — its work is
 /// done at the type level, by being impossible to obtain without releasing.
-async fn assemble_response(
+pub(super) async fn assemble_response(
     db: &PgPool,
     order: Order,
-    _released: tx_witness::TxReleased,
+    _released: TxReleased,
 ) -> Result<OrderResponse, AppError> {
     let items = repository::find_items_by_order(db, order.id).await?;
     let (enrolments, subscriptions) = fetch_artifacts(db, order.id).await?;
     Ok(OrderResponse::assemble(order, items, enrolments, subscriptions))
-}
-
-/// Look up the order already recorded for `(user_id, key)` and, if one
-/// exists, assemble its full response. This is the shared body of all three
-/// idempotency-replay sites in `checkout`: the pre-check (no tx open yet —
-/// `TxReleased::no_open_tx()`), the empty-cart branch, and the
-/// unique-violation branch (the latter two release their tx first, then
-/// call this).
-///
-/// `Ok(None)` means no row exists yet for `(user_id, key)` — the pre-check
-/// and empty-cart callers fall through and continue (or fail) the checkout
-/// they were already running.
-///
-/// Unreachable-`None` argument for the unique-violation caller specifically
-/// (moved here from that call site, since it justifies how *that caller*
-/// treats `Ok(None)` — see `checkout`'s unique-violation branch): a
-/// PostgreSQL unique-violation on `order_idempotency` means the *other*
-/// transaction that inserted the conflicting row has already committed — an
-/// uncommitted conflicting insert would still be holding its row lock, so
-/// our own insert would block waiting on it rather than fail immediately.
-/// And `order_idempotency` has no DELETE code path anywhere in this
-/// codebase, so a committed row is never removed. Together: by the time the
-/// unique-violation caller reaches this function, the row it is about to
-/// look up is guaranteed to exist — `Ok(None)` there is an invariant break,
-/// not a legitimate outcome to branch on, hence that caller maps it to
-/// `Internal` rather than falling through. **If `order_idempotency` ever
-/// grows a DELETE path, this argument no longer holds and that caller needs
-/// re-auditing.**
-async fn replay_by_key(
-    db: &PgPool,
-    user_id: Uuid,
-    key: &str,
-    released: tx_witness::TxReleased,
-) -> Result<Option<OrderResponse>, AppError> {
-    let Some(existing_id) = repository::find_idempotency(db, user_id, key).await? else {
-        return Ok(None);
-    };
-    let order = repository::find_by_id(db, existing_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "idempotency row referenced missing order {existing_id}"
-            ))
-        })?;
-    Ok(Some(assemble_response(db, order, released).await?))
 }
 
 pub async fn get_order(
@@ -563,7 +425,7 @@ pub async fn get_order(
     // Check ownership or admin
     auth.owns_or_admin(order.user_id, "not authorized to view this order")?;
 
-    assemble_response(db, order, tx_witness::TxReleased::no_open_tx()).await
+    assemble_response(db, order, TxReleased::no_open_tx()).await
 }
 
 pub async fn my_orders(
@@ -631,7 +493,7 @@ pub async fn update_order_status(
         // the tx before `assemble_response` (shared self-deadlock rationale
         // in `TxReleased`).
         TransitionDecision::NoOp => {
-            let released = tx_witness::TxReleased::release(tx);
+            let released = TxReleased::release(tx);
             return assemble_response(db, current, released).await;
         }
         TransitionDecision::Flip => {}
@@ -662,7 +524,7 @@ pub async fn update_order_status(
     )
     .await?;
 
-    let released = tx_witness::TxReleased::commit(tx).await?;
+    let released = TxReleased::commit(tx).await?;
 
     // Inline notification — every status change is user-visible and
     // shouldn't wait for the outbox dispatcher tick.

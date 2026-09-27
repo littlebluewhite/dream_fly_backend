@@ -81,9 +81,10 @@ pub async fn apply_delta_tx(
 /// "this is that user's balance at lock time" (the same pairing guarantee
 /// `courses::seats`'s `SessionLock` gives `session_id`/`course_id`).
 ///
-/// Lives flat in this module rather than behind a private `mod tx_witness`
-/// wrapper (contrast `orders::service`'s `TxReleased`): that extra layer
-/// guards against the *same file*'s other functions hand-building a fake
+/// Lives flat in this module rather than behind a private `tx_witness`
+/// module (contrast `orders::tx_witness`'s `TxReleased`): that extra layer
+/// guards against the governed code *inside the same module*
+/// (`orders::service`/`orders::idempotency`) hand-building a fake
 /// witness to bypass the constructor. Here the governed caller
 /// (`cart::service`) sits in a different module entirely and simply has no
 /// access to these private fields regardless — plain field privacy is

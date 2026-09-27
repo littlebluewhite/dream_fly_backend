@@ -28,7 +28,7 @@
 //! (Point Grant)」詞條即以 `occupies_seat` 的這個 runtime/seed 分工模式
 //! 為對照,是記錄在案的 bypass,不是遺漏。
 //!
-//! 殘餘誠實縫(同 `orders::service::tx_witness::TxReleased` 的
+//! 殘餘誠實縫(同 `orders::tx_witness::TxReleased` 的
 //! `no_open_tx` 自證式):`SlotOccupancy` 的 `#[must_use]` 只擋得住「值
 //! 完全未被使用」這個編譯期可查的情形——一旦綁定給變數,呼叫端仍可能只
 //! 呼叫 `date()`/`start_time()` 讀時間、卻不呼叫
