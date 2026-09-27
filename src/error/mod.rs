@@ -37,9 +37,6 @@ pub enum AppError {
     #[error("database error")]
     Database(#[from] sqlx::Error),
 
-    #[error("redis error")]
-    Redis(#[from] redis::RedisError),
-
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -152,13 +149,6 @@ impl IntoResponse for AppError {
                 // constraint names, table/column metadata, and any bound
                 // parameters included in sqlx's Debug impl.
                 tracing::error!(error = %err, "database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal server error".to_string(),
-                )
-            }
-            AppError::Redis(err) => {
-                tracing::error!(error = %err, "redis error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal server error".to_string(),

@@ -8,7 +8,6 @@ use axum::Json;
 use serde_json::json;
 
 use crate::state::AppState;
-use crate::utils::redis_counter::incr_with_ttl;
 
 /// Build a JSON error response for rate-limit rejections. Keeps the
 /// call-sites in [`rate_limit_middleware`] and [`strict_rate_limit`] DRY
@@ -18,7 +17,7 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 }
 
 /// Global per-IP sliding-window length in seconds.
-const WINDOW_SECONDS: i64 = 60;
+const WINDOW_SECONDS: u64 = 60;
 /// Maximum requests per IP per window across ALL endpoints.
 ///
 /// This is deliberately high — it is a DDoS cliff, not a fine-grained throttle.
@@ -30,7 +29,7 @@ const GLOBAL_MAX_REQUESTS_PER_WINDOW: i64 = 300;
 /// Per-IP auth-endpoint bucket: much stricter than the global bucket because
 /// anyone hitting `/auth/login` at 60 rpm is almost certainly doing credential
 /// stuffing. This bucket is layered ON TOP of the global one.
-const AUTH_WINDOW_SECONDS: i64 = 60;
+const AUTH_WINDOW_SECONDS: u64 = 60;
 const AUTH_MAX_REQUESTS_PER_WINDOW: i64 = 10;
 
 /// Resolve the client's IP address, preferring the TCP peer address when
@@ -86,12 +85,13 @@ pub async fn rate_limit_middleware(
 ) -> Result<Response, Response> {
     let trust_proxy = state.config.server.trust_proxy;
     let identity = client_identity(&req, trust_proxy);
-    let mut redis_conn = state.redis.clone();
 
     // Global per-IP bucket. Keyed by IP only (NOT by path), so an attacker
     // cannot fan out across endpoints to circumvent the cap.
     let global_key = format!("rate_limit:global:{identity}");
-    let global_count = incr_with_ttl(&mut redis_conn, &global_key, WINDOW_SECONDS)
+    let global_count = state
+        .ephemeral
+        .incr_with_ttl(&global_key, WINDOW_SECONDS)
         .await
         .map_err(|e| {
             tracing::error!("Redis global rate limit error: {e}");
@@ -136,12 +136,13 @@ pub async fn strict_rate_limit(
 ) -> Result<Response, Response> {
     let trust_proxy = state.config.server.trust_proxy;
     let identity = client_identity(&req, trust_proxy);
-    let mut redis_conn = state.redis.clone();
 
     // Auth-specific bucket. Layered on top of the global one (checked
     // separately, upstream, by `rate_limit_middleware`), not replacing it.
     let auth_key = format!("rate_limit:auth:{identity}");
-    let auth_count = incr_with_ttl(&mut redis_conn, &auth_key, AUTH_WINDOW_SECONDS)
+    let auth_count = state
+        .ephemeral
+        .incr_with_ttl(&auth_key, AUTH_WINDOW_SECONDS)
         .await
         .map_err(|e| {
             tracing::error!("Redis auth rate limit error: {e}");

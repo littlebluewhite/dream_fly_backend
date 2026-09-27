@@ -48,6 +48,7 @@ use dream_fly_backend::modules::auth::service;
 use dream_fly_backend::modules::auth::session;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::email::EmailSender;
+use dream_fly_backend::utils::ephemeral::{EphemeralStore, RedisEphemeralStore};
 use dream_fly_backend::utils::jwt;
 use dream_fly_backend::utils::sms::SmsClient;
 use wiremock::MockServer;
@@ -152,12 +153,12 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
 #[sqlx::test]
 async fn login_wrong_password_returns_unauthorized(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     common::seed_member(&db, "carol@example.com", "correct-password").await;
 
     let err = service::login(
         &db,
-        &mut redis,
+        &store,
         &cfg,
         LoginRequest {
             email: "carol@example.com".into(),
@@ -173,12 +174,12 @@ async fn login_wrong_password_returns_unauthorized(db: PgPool) {
 #[sqlx::test]
 async fn login_nonexistent_email_returns_unauthorized(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
 
     // Exactly the same error shape as wrong-password — prevents enumeration.
     let err = service::login(
         &db,
-        &mut redis,
+        &store,
         &cfg,
         LoginRequest {
             email: "nobody@example.com".into(),
@@ -437,7 +438,7 @@ async fn purge_expired_deletes_expired_rows_revoked_or_not(db: PgPool) {
 
 #[sqlx::test]
 async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let background = TaskTracker::new();
     let email = format!("reissue-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
@@ -447,7 +448,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
 
     service::forgot_password(
         &db,
-        &mut redis,
+        &store,
         email_client.clone(),
         &background,
         ForgotPasswordRequest {
@@ -459,7 +460,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
 
     service::forgot_password(
         &db,
-        &mut redis,
+        &store,
         email_client.clone(),
         &background,
         ForgotPasswordRequest {
@@ -481,7 +482,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
     // Reissuing invalidates the previous token — only the newest one is live.
     let err = service::reset_password(
         &db,
-        &mut redis,
+        &store,
         ResetPasswordRequest {
             token: first_token,
             new_password: "NewPassword!234".into(),
@@ -496,7 +497,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
 
     service::reset_password(
         &db,
-        &mut redis,
+        &store,
         ResetPasswordRequest {
             token: second_token,
             new_password: "NewPassword!234".into(),
@@ -508,7 +509,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
 
 #[sqlx::test]
 async fn reset_password_token_is_single_use(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let background = TaskTracker::new();
     let email = format!("singleuse-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
@@ -518,7 +519,7 @@ async fn reset_password_token_is_single_use(db: PgPool) {
 
     service::forgot_password(
         &db,
-        &mut redis,
+        &store,
         email_client,
         &background,
         ForgotPasswordRequest {
@@ -535,7 +536,7 @@ async fn reset_password_token_is_single_use(db: PgPool) {
 
     service::reset_password(
         &db,
-        &mut redis,
+        &store,
         ResetPasswordRequest {
             token: token.clone(),
             new_password: "NewPassword!234".into(),
@@ -548,7 +549,7 @@ async fn reset_password_token_is_single_use(db: PgPool) {
     // must fail, not silently succeed again.
     let err = service::reset_password(
         &db,
-        &mut redis,
+        &store,
         ResetPasswordRequest {
             token,
             new_password: "AnotherPassword!234".into(),
@@ -562,7 +563,7 @@ async fn reset_password_token_is_single_use(db: PgPool) {
 #[sqlx::test]
 async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let background = TaskTracker::new();
     let email = format!("family-{}@example.com", Uuid::now_v7());
 
@@ -595,7 +596,7 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
     let email_client: Arc<dyn EmailSender> = mock.clone();
     service::forgot_password(
         &db,
-        &mut redis,
+        &store,
         email_client,
         &background,
         ForgotPasswordRequest {
@@ -611,7 +612,7 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
 
     service::reset_password(
         &db,
-        &mut redis,
+        &store,
         ResetPasswordRequest {
             token,
             new_password: "BrandNewPassword!234".into(),
@@ -657,7 +658,7 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
 #[sqlx::test]
 async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) {
     let cfg = common::test_auth_config();
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let background = TaskTracker::new();
     let email = format!("stale-{}@example.com", Uuid::now_v7());
 
@@ -678,7 +679,7 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
     let email_client: Arc<dyn EmailSender> = mock.clone();
     service::forgot_password(
         &db,
-        &mut redis,
+        &store,
         email_client,
         &background,
         ForgotPasswordRequest {
@@ -694,7 +695,7 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
 
     service::reset_password(
         &db,
-        &mut redis,
+        &store,
         ResetPasswordRequest {
             token,
             new_password: "BrandNewPassword!234".into(),
@@ -705,7 +706,7 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
 
     let fresh = service::login(
         &db,
-        &mut redis,
+        &store,
         &cfg,
         LoginRequest {
             email: email.clone(),
@@ -803,7 +804,7 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
 
 #[sqlx::test]
 async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let background = TaskTracker::new();
     let email = format!("ratelimit-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
@@ -814,7 +815,7 @@ async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool)
     for i in 1..=4 {
         service::forgot_password(
             &db,
-            &mut redis,
+            &store,
             email_client.clone(),
             &background,
             ForgotPasswordRequest {
@@ -841,13 +842,13 @@ async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool)
 
 async fn login_as(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     email: &str,
     password: &str,
 ) -> Result<AuthResponse, AppError> {
     service::login(
         db,
-        redis,
+        store,
         &common::test_auth_config(),
         LoginRequest {
             email: email.into(),
@@ -858,9 +859,9 @@ async fn login_as(
 }
 
 /// `n` wrong-password logins, each refused with the plain 401.
-async fn fail_logins(db: &PgPool, redis: &mut redis::aio::ConnectionManager, email: &str, n: u32) {
+async fn fail_logins(db: &PgPool, store: &dyn EphemeralStore, email: &str, n: u32) {
     for i in 1..=n {
-        let err = login_as(db, redis, email, "wrong-password")
+        let err = login_as(db, store, email, "wrong-password")
             .await
             .expect_err("wrong password must fail");
         assert!(
@@ -872,14 +873,14 @@ async fn fail_logins(db: &PgPool, redis: &mut redis::aio::ConnectionManager, ema
 
 #[sqlx::test]
 async fn login_locks_out_after_ten_failures_even_with_correct_password(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let email = format!("lockout-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
 
-    fail_logins(&db, &mut redis, &email, 10).await;
+    fail_logins(&db, &store, &email, 10).await;
 
     // Same 401 as bad credentials — the lockout is not revealed.
-    let err = login_as(&db, &mut redis, &email, "Password!234")
+    let err = login_as(&db, &store, &email, "Password!234")
         .await
         .expect_err("locked-out email must be refused even with the right password");
     assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
@@ -887,33 +888,33 @@ async fn login_locks_out_after_ten_failures_even_with_correct_password(db: PgPoo
 
 #[sqlx::test]
 async fn login_success_clears_failure_count(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let email = format!("clear-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
 
-    fail_logins(&db, &mut redis, &email, 9).await;
-    login_as(&db, &mut redis, &email, "Password!234")
+    fail_logins(&db, &store, &email, 9).await;
+    login_as(&db, &store, &email, "Password!234")
         .await
         .expect("9 failures do not lock out");
 
     // Without the clear these 9 would make 18 and lock the account.
-    fail_logins(&db, &mut redis, &email, 9).await;
-    login_as(&db, &mut redis, &email, "Password!234")
+    fail_logins(&db, &store, &email, 9).await;
+    login_as(&db, &store, &email, "Password!234")
         .await
         .expect("the earlier success reset the count");
 }
 
 #[sqlx::test]
 async fn login_lockout_is_per_email(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let locked = format!("locked-{}@example.com", Uuid::now_v7());
     let other = format!("other-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &locked, "Password!234").await;
     common::seed_member(&db, &other, "Password!234").await;
 
-    fail_logins(&db, &mut redis, &locked, 10).await;
+    fail_logins(&db, &store, &locked, 10).await;
 
-    login_as(&db, &mut redis, &other, "Password!234")
+    login_as(&db, &store, &other, "Password!234")
         .await
         .expect("another email is not affected by the lockout");
 }
@@ -932,12 +933,12 @@ async fn twilio_sms() -> (MockServer, SmsClient) {
 }
 
 async fn send_otp(
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     sms: &SmsClient,
     user_id: Uuid,
 ) -> Result<(), AppError> {
     service::send_otp(
-        redis,
+        store,
         sms,
         user_id,
         OtpSendRequest {
@@ -950,13 +951,13 @@ async fn send_otp(
 
 async fn verify_otp(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     user_id: Uuid,
     code: &str,
 ) -> Result<(), AppError> {
     service::verify_otp(
         db,
-        redis,
+        store,
         user_id,
         OtpVerifyRequest {
             phone: OTP_PHONE.into(),
@@ -982,18 +983,18 @@ fn assert_bad_request(err: &AppError, message: &str) {
 
 #[sqlx::test]
 async fn otp_send_fourth_request_within_hour_is_rejected(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let (server, sms) = twilio_sms().await;
     let email = format!("otp-rate-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(&db, &email, "Password!234").await;
 
     for i in 1..=3 {
-        send_otp(&mut redis, &sms, user_id)
+        send_otp(&store, &sms, user_id)
             .await
             .unwrap_or_else(|e| panic!("send {i} is within the hourly limit: {e:?}"));
     }
 
-    let err = send_otp(&mut redis, &sms, user_id)
+    let err = send_otp(&store, &sms, user_id)
         .await
         .expect_err("4th send within the hour must be refused");
     assert_bad_request(&err, "too many verification requests, try again later");
@@ -1007,32 +1008,32 @@ async fn otp_send_fourth_request_within_hour_is_rejected(db: PgPool) {
 
 #[sqlx::test]
 async fn otp_verify_sixth_attempt_invalidates_code_until_resend(db: PgPool) {
-    let mut redis = common::test_redis().await;
+    let store = RedisEphemeralStore::new(common::test_redis().await);
     let (server, sms) = twilio_sms().await;
     let email = format!("otp-attempts-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(&db, &email, "Password!234").await;
 
-    send_otp(&mut redis, &sms, user_id).await.expect("send");
+    send_otp(&store, &sms, user_id).await.expect("send");
     let code = last_otp_code(&server).await;
 
     // Codes are 100000..=999999, so "000000" is always wrong.
     for _ in 1..=5 {
-        let err = verify_otp(&db, &mut redis, user_id, "000000")
+        let err = verify_otp(&db, &store, user_id, "000000")
             .await
             .expect_err("wrong code");
         assert_bad_request(&err, "invalid verification code");
     }
 
     // The 6th attempt is refused even with the right code, and kills it.
-    let err = verify_otp(&db, &mut redis, user_id, &code)
+    let err = verify_otp(&db, &store, user_id, &code)
         .await
         .expect_err("6th attempt must be refused");
     assert_bad_request(&err, "too many attempts, request a new code");
 
     // A fresh send resets the attempt count; its new code verifies.
-    send_otp(&mut redis, &sms, user_id).await.expect("resend");
+    send_otp(&store, &sms, user_id).await.expect("resend");
     let new_code = last_otp_code(&server).await;
-    verify_otp(&db, &mut redis, user_id, &new_code)
+    verify_otp(&db, &store, user_id, &new_code)
         .await
         .expect("fresh code verifies after resend");
 

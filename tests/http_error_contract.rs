@@ -17,7 +17,7 @@
 //! - Validation (422) — from `ValidatedJson` rejecting a too-short password
 //! - Payload too large (413) — from the body-limit middleware
 //!
-//! Internal/Database/Redis (500) variants are intentionally NOT tested here
+//! Internal/Database (500) variants are intentionally NOT tested here
 //! because we can't inject a failing DB without breaking test isolation.
 //! The masking guarantee ("internal server error" — no message leak) is
 //! verified by inspection of `src/error/mod.rs`.

@@ -301,7 +301,7 @@ async fn otp_send_authenticated_records_sms(db: PgPool) {
     );
 
     // Refactor regression (Step 1): the per-user rate-limit key must still
-    // carry a TTL, now set by `redis_counter::incr_with_ttl` instead of the
+    // carry a TTL, now set by `EphemeralStore::incr_with_ttl` instead of the
     // deleted `rate_limit::bump_count`. Read via TestApp's own Redis
     // connection (DB 15) — `common::test_redis()` is DB 0 and would never
     // see a key the app itself wrote.

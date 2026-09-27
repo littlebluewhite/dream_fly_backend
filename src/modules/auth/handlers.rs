@@ -27,8 +27,8 @@ pub async fn login(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<LoginRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let response = service::login(&state.db, &mut redis, &state.config.auth, req).await?;
+    let response =
+        service::login(&state.db, state.ephemeral.as_ref(), &state.config.auth, req).await?;
     Ok(Json(response))
 }
 
@@ -76,9 +76,13 @@ pub async fn send_otp(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<OtpSendRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let response =
-        service::send_otp(&mut redis, state.sms_client.as_ref(), auth.user_id, req).await?;
+    let response = service::send_otp(
+        state.ephemeral.as_ref(),
+        state.sms_client.as_ref(),
+        auth.user_id,
+        req,
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -88,8 +92,8 @@ pub async fn verify_otp(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<OtpVerifyRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let response = service::verify_otp(&state.db, &mut redis, auth.user_id, req).await?;
+    let response =
+        service::verify_otp(&state.db, state.ephemeral.as_ref(), auth.user_id, req).await?;
     Ok(Json(response))
 }
 
@@ -98,10 +102,9 @@ pub async fn forgot_password(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<ForgotPasswordRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
-    let mut redis = state.redis.clone();
     let response = service::forgot_password(
         &state.db,
-        &mut redis,
+        state.ephemeral.as_ref(),
         state.email_client.clone(),
         &state.background_tasks,
         req,
@@ -115,7 +118,6 @@ pub async fn reset_password(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<ResetPasswordRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
-    let mut redis = state.redis.clone();
-    let response = service::reset_password(&state.db, &mut redis, req).await?;
+    let response = service::reset_password(&state.db, state.ephemeral.as_ref(), req).await?;
     Ok(Json(response))
 }

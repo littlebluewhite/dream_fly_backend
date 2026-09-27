@@ -18,6 +18,7 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::{Clock, SystemClock};
 use dream_fly_backend::utils::email::{EmailClient, EmailSender};
+use dream_fly_backend::utils::ephemeral::{EphemeralStore, RedisEphemeralStore};
 use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use dream_fly_backend::utils::sms::SmsClient;
 
@@ -183,6 +184,10 @@ async fn main() -> anyhow::Result<()> {
     // trait-erased so integration tests can inject an in-memory adapter.
     let access_cache: Arc<dyn AccessCache> = Arc::new(RedisAccessCache::new(redis.clone()));
 
+    // Short-lived state (rate limits, OTP, reset tokens) over the same Redis
+    // connection; trait-erased for the same reason.
+    let ephemeral: Arc<dyn EphemeralStore> = Arc::new(RedisEphemeralStore::new(redis.clone()));
+
     // Wall-clock source for handler-sampled `now` — production always reads
     // the real system clock; tests substitute `MockClock`.
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
@@ -200,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         redis,
         access_cache,
+        ephemeral,
         kafka_producer,
         config: config_arc.clone(),
         email_client,

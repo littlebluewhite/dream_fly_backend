@@ -49,6 +49,7 @@ use dream_fly_backend::startup;
 use dream_fly_backend::state::AppState;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
+use dream_fly_backend::utils::ephemeral::{EphemeralStore, RedisEphemeralStore};
 use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use dream_fly_backend::utils::sms::SmsClient;
 
@@ -340,9 +341,12 @@ pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: 
     // silently false-green.
     let background = TaskTracker::new();
 
+    let ephemeral: Arc<dyn EphemeralStore> = Arc::new(RedisEphemeralStore::new(redis.clone()));
+
     let state = AppState {
         db: db.clone(),
         access_cache: access_cache_state,
+        ephemeral,
         redis,
         kafka_producer: None,
         config: config_arc.clone(),

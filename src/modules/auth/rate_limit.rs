@@ -1,63 +1,73 @@
-//! Rate-limit counting primitives — the Redis INCR/EXPIRE/GET/DEL shapes
-//! that `login`, `forgot_password`, and the OTP lifecycle each had inline:
-//! a best-effort atomic bump for the failed-login counter, a plain
-//! read-with-default and a fire-and-forget clear for that same counter, and
-//! a best-effort atomic bump-and-return-count for the forgot-password rate
-//! limit. Every TTL/limit constant `login` and the OTP lifecycle use lives
-//! here too — the password-reset token's own TTL lives in `reset_tokens.rs`
-//! instead, next to the issue/consume protocol that owns it.
+//! 帳號層級的限流策略 owner——登入失敗鎖定(每 email 10 次、15 分鐘)與忘
+//! 記密碼請求計數(每 email 每小時 3 次)。key 格式、門檻、TTL 都私有於此,
+//! 呼叫端(`service.rs`)只問「鎖了沒」「還能不能寄」,看不到儲存。
 //!
-//! No policy lives here — "what happens once the count is too high"
-//! (lockout, rejection, silent swallow) stays in the calling flow
-//! (`service.rs` for login/forgot, `otp.rs` for OTP). These functions only
-//! bump, read, or clear a counter at a caller-supplied key; they never
-//! decide whether a count is too high, and they never build the key
-//! strings themselves — callers keep doing that, so the key formats stay
-//! exactly where they were.
+//! 兩者都 **fail-open**:短期狀態儲存故障時,鎖定檢查當作沒鎖、失敗計數與
+//! 清除靜默放棄、忘記密碼當作還沒超量——儲存故障不能讓所有人都登不進來。
+//! OTP 的限流不在這裡:它是 fail-closed(會花錢),和碼本身一起住在
+//! `otp.rs`。
 
-use redis::AsyncCommands;
-
-use crate::utils::redis_counter::incr_with_ttl;
+use crate::utils::ephemeral::EphemeralStore;
 
 /// Max failed login attempts per email before temporary lockout.
-pub(super) const LOGIN_MAX_ATTEMPTS: i64 = 10;
+const LOGIN_MAX_ATTEMPTS: i64 = 10;
 /// Lockout window after hitting the threshold (seconds).
-pub(super) const LOGIN_LOCKOUT_TTL: i64 = 900; // 15 minutes
+const LOGIN_LOCKOUT_TTL: u64 = 900; // 15 minutes
 
-/// Maximum OTP requests a single authenticated user may trigger per hour.
-pub(super) const OTP_REQUESTS_PER_HOUR: i64 = 3;
-/// Maximum failed verification attempts before the OTP is invalidated.
-pub(super) const OTP_MAX_ATTEMPTS: i64 = 5;
-/// OTP lifetime in seconds.
-pub(super) const OTP_TTL_SECONDS: i64 = 300;
-/// OTP rate-limit window in seconds.
-pub(super) const OTP_RATE_LIMIT_TTL: i64 = 3600;
+/// Password-reset emails a single account may trigger per window.
+const FORGOT_MAX_REQUESTS: i64 = 3;
+/// Forgot-password rate-limit window in seconds.
+const FORGOT_WINDOW_SECS: u64 = 3600;
 
-/// Atomic INCR + EXPIRE for the failed-login counter. Best-effort: Redis
-/// outages must not prevent authentication entirely.
-pub(super) async fn bump_login_failure(redis: &mut redis::aio::ConnectionManager, key: &str) {
-    let _ = incr_with_ttl(redis, key, LOGIN_LOCKOUT_TTL).await;
+fn login_fail_key(email: &str) -> String {
+    format!("login_fail:{email}")
 }
 
-/// Read the current value of a counter key, defaulting to 0 if it is unset
-/// or the read fails.
-pub(super) async fn read_count(redis: &mut redis::aio::ConnectionManager, key: &str) -> i64 {
-    redis.get(key).await.unwrap_or(0)
+fn forgot_rate_key(email: &str) -> String {
+    format!("forgot_rate:{email}")
 }
 
-/// Fire-and-forget delete of a counter key. Errors are swallowed — clearing
-/// a counter is a best-effort cleanup, not a correctness requirement.
-pub(super) async fn clear_count(redis: &mut redis::aio::ConnectionManager, key: &str) {
-    let _: Result<(), _> = redis.del::<_, ()>(key).await;
+/// Whether `email` (already normalized) has hit the failed-login threshold.
+/// Fail-open: an unreadable (or unparsable) counter counts as 0.
+pub(super) async fn login_locked_out(store: &dyn EphemeralStore, email: &str) -> bool {
+    let failures: i64 = store
+        .get(&login_fail_key(email))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if failures >= LOGIN_MAX_ATTEMPTS {
+        // A defender inspecting logs will see the counter; the caller answers
+        // with the same 401 as bad credentials.
+        tracing::warn!(%email, failures, "login blocked: lockout threshold reached");
+        return true;
+    }
+    false
 }
 
-/// Atomic INCR + EXPIRE (same shape as `bump_login_failure`) that returns
-/// the post-increment count instead of discarding it. Best-effort: on any
-/// Redis error the count defaults to 0 rather than failing the caller.
-pub(super) async fn bump_count_best_effort(
-    redis: &mut redis::aio::ConnectionManager,
-    key: &str,
-    ttl_seconds: i64,
-) -> i64 {
-    incr_with_ttl(redis, key, ttl_seconds).await.unwrap_or(0)
+/// Count one failed login for `email`. Best-effort: store outages must not
+/// prevent authentication entirely.
+pub(super) async fn record_login_failure(store: &dyn EphemeralStore, email: &str) {
+    let _ = store
+        .incr_with_ttl(&login_fail_key(email), LOGIN_LOCKOUT_TTL)
+        .await;
+}
+
+/// Reset `email`'s failed-login count after a successful login. Errors are
+/// swallowed — clearing is a best-effort cleanup, not a correctness
+/// requirement.
+pub(super) async fn clear_login_failures(store: &dyn EphemeralStore, email: &str) {
+    let _ = store.del(&login_fail_key(email)).await;
+}
+
+/// Count one password-reset request for `email` and report whether it is
+/// still within the per-account limit. Best-effort: on a store error the
+/// count defaults to 0 (allowed).
+pub(super) async fn forgot_allowed(store: &dyn EphemeralStore, email: &str) -> bool {
+    let count = store
+        .incr_with_ttl(&forgot_rate_key(email), FORGOT_WINDOW_SECS)
+        .await
+        .unwrap_or(0);
+    count <= FORGOT_MAX_REQUESTS
 }

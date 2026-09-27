@@ -1,7 +1,13 @@
 //! OTP (One-Time Password) send/verify lifecycle — the complete
 //! phone-verification flow: per-user request-rate check, 6-digit code
-//! generation, Redis-scoped storage, SMS dispatch, and verification
-//! (attempt-count bump + code compare + cleanup).
+//! generation, user-scoped short-lived storage (`EphemeralStore`), SMS
+//! dispatch, and verification (attempt-count bump + code compare + cleanup).
+//! Key formats and limits are private to this module.
+//!
+//! Every store call is **fail-closed**: a store error (INCR, SET, GET or
+//! DEL alike) fails the request with a 500 rather than skipping the rate
+//! limit or the attempt count — unbounded OTP sends cost money, and an
+//! unbounded attempt count would allow brute force.
 //!
 //! The verify-attempt-count-bump and OTP-invalidation-on-too-many-attempts
 //! in `verify_otp` below is a single invariant — bumping the attempt
@@ -13,17 +19,37 @@
 //! has no `PgPool` and never touches the database — it only reports
 //! whether verification succeeded.
 
-use redis::AsyncCommands;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::utils::ephemeral::EphemeralStore;
 use crate::utils::sms::SmsClient;
 
 use super::dto::{MessageResponse, OtpSendRequest, OtpVerifyRequest};
-use super::rate_limit;
+
+/// Maximum OTP requests a single authenticated user may trigger per hour.
+const OTP_REQUESTS_PER_HOUR: i64 = 3;
+/// Maximum failed verification attempts before the OTP is invalidated.
+const OTP_MAX_ATTEMPTS: i64 = 5;
+/// OTP lifetime in seconds.
+const OTP_TTL_SECONDS: u64 = 300;
+/// OTP rate-limit window in seconds.
+const OTP_RATE_LIMIT_TTL: u64 = 3600;
+
+fn rate_key(auth_user_id: Uuid) -> String {
+    format!("otp_rate:{auth_user_id}")
+}
+
+fn otp_key(auth_user_id: Uuid) -> String {
+    format!("otp:{auth_user_id}")
+}
+
+fn attempts_key(auth_user_id: Uuid) -> String {
+    format!("otp_attempts:{auth_user_id}")
+}
 
 pub(super) async fn send_otp(
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     sms_client: &SmsClient,
     auth_user_id: Uuid,
     req: OtpSendRequest,
@@ -31,14 +57,10 @@ pub(super) async fn send_otp(
     use rand::RngExt;
 
     // 1. Per-user rate limit — costs money if unbounded.
-    let rate_key = format!("otp_rate:{}", auth_user_id);
-    let count = crate::utils::redis_counter::incr_with_ttl(
-        redis,
-        &rate_key,
-        rate_limit::OTP_RATE_LIMIT_TTL,
-    )
-    .await?;
-    if count > rate_limit::OTP_REQUESTS_PER_HOUR {
+    let count = store
+        .incr_with_ttl(&rate_key(auth_user_id), OTP_RATE_LIMIT_TTL)
+        .await?;
+    if count > OTP_REQUESTS_PER_HOUR {
         return Err(AppError::BadRequest(
             "too many verification requests, try again later".into(),
         ));
@@ -48,7 +70,7 @@ pub(super) async fn send_otp(
     let code: u32 = rand::rng().random_range(100000..=999999);
     let code_str = format!("{:06}", code);
 
-    // 3. Store in Redis under a user-scoped key so a user cannot verify a
+    // 3. Store under a user-scoped key so a user cannot verify a
     //    phone they did not initiate. Store {phone,code} as a JSON payload.
     let payload = serde_json::json!({
         "phone": req.phone,
@@ -56,18 +78,12 @@ pub(super) async fn send_otp(
     })
     .to_string();
 
-    let otp_key = format!("otp:{}", auth_user_id);
-    redis::cmd("SET")
-        .arg(&otp_key)
-        .arg(&payload)
-        .arg("EX")
-        .arg(rate_limit::OTP_TTL_SECONDS)
-        .query_async::<()>(redis)
+    store
+        .set_ex(&otp_key(auth_user_id), &payload, OTP_TTL_SECONDS)
         .await?;
 
     // Reset attempt counter whenever a fresh OTP is issued.
-    let attempts_key = format!("otp_attempts:{}", auth_user_id);
-    let _: () = redis.del(&attempts_key).await?;
+    store.del(&attempts_key(auth_user_id)).await?;
 
     // 4. Send SMS
     sms_client.send_otp(&req.phone, &code_str).await?;
@@ -81,32 +97,26 @@ pub(super) async fn send_otp(
 /// caller (`service::verify_otp`) is responsible for the DB write that
 /// marks the phone verified.
 pub(super) async fn verify_otp(
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     auth_user_id: Uuid,
     req: &OtpVerifyRequest,
 ) -> Result<(), AppError> {
     use subtle::ConstantTimeEq;
 
     // 1. Bump the per-user attempt counter first — fail-closed on brute force.
-    let attempts_key = format!("otp_attempts:{}", auth_user_id);
-    let attempts = crate::utils::redis_counter::incr_with_ttl(
-        redis,
-        &attempts_key,
-        rate_limit::OTP_TTL_SECONDS,
-    )
-    .await?;
-    if attempts > rate_limit::OTP_MAX_ATTEMPTS {
+    let attempts_key = attempts_key(auth_user_id);
+    let attempts = store.incr_with_ttl(&attempts_key, OTP_TTL_SECONDS).await?;
+    if attempts > OTP_MAX_ATTEMPTS {
         // Invalidate the live OTP on too many attempts.
-        let otp_key = format!("otp:{}", auth_user_id);
-        let _: () = redis.del(&otp_key).await?;
+        store.del(&otp_key(auth_user_id)).await?;
         return Err(AppError::BadRequest(
             "too many attempts, request a new code".into(),
         ));
     }
 
     // 2. Load the OTP payload keyed by the authenticated user.
-    let otp_key = format!("otp:{}", auth_user_id);
-    let stored: Option<String> = redis.get(&otp_key).await?;
+    let otp_key = otp_key(auth_user_id);
+    let stored = store.get(&otp_key).await?;
     let stored = stored.ok_or_else(|| AppError::BadRequest("verification code expired".into()))?;
 
     let payload: serde_json::Value = serde_json::from_str(&stored)
@@ -127,8 +137,8 @@ pub(super) async fn verify_otp(
     }
 
     // 5. Success — delete OTP and attempt counter.
-    let _: () = redis.del(&otp_key).await?;
-    let _: () = redis.del(&attempts_key).await?;
+    store.del(&otp_key).await?;
+    store.del(&attempts_key).await?;
 
     Ok(())
 }

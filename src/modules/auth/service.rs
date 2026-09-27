@@ -9,6 +9,7 @@ use crate::modules::auth::access::AccessCache;
 use crate::modules::notifications::service as notify;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::email::EmailSender;
+use crate::utils::ephemeral::EphemeralStore;
 use crate::utils::google_oauth::GoogleIdentityProvider;
 use crate::utils::password;
 use crate::utils::sms::SmsClient;
@@ -77,7 +78,7 @@ pub async fn register(
 
 pub async fn login(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     config: &AuthConfig,
     req: LoginRequest,
 ) -> Result<AuthResponse, AppError> {
@@ -86,12 +87,9 @@ pub async fn login(
     // 1. Per-email failed-attempt check. A residential-proxy attacker with
     //    thousands of IPs would sail past the per-IP rate limit, so we
     //    additionally throttle on the target account regardless of source.
-    let fail_key = format!("login_fail:{email}");
-    let failures = rate_limit::read_count(redis, &fail_key).await;
-    if failures >= rate_limit::LOGIN_MAX_ATTEMPTS {
+    if rate_limit::login_locked_out(store, &email).await {
         // Same error code as bad credentials to avoid confirming the lockout
-        // to an attacker. A defender inspecting logs will see the counter.
-        tracing::warn!(%email, failures, "login blocked: lockout threshold reached");
+        // to an attacker.
         return Err(AppError::Unauthorized);
     }
 
@@ -103,7 +101,7 @@ pub async fn login(
     let user = match user_opt {
         Some(u) => u,
         None => {
-            rate_limit::bump_login_failure(redis, &fail_key).await;
+            rate_limit::record_login_failure(store, &email).await;
             return Err(AppError::Unauthorized);
         }
     };
@@ -111,7 +109,7 @@ pub async fn login(
     let hash = match user.password_hash.as_deref() {
         Some(h) => h,
         None => {
-            rate_limit::bump_login_failure(redis, &fail_key).await;
+            rate_limit::record_login_failure(store, &email).await;
             return Err(AppError::Unauthorized);
         }
     };
@@ -120,7 +118,7 @@ pub async fn login(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("password verify error: {e}")))?;
     if !valid {
-        rate_limit::bump_login_failure(redis, &fail_key).await;
+        rate_limit::record_login_failure(store, &email).await;
         return Err(AppError::Unauthorized);
     }
 
@@ -132,7 +130,7 @@ pub async fn login(
     }
 
     // 3. Success — clear the failure counter and log last_login.
-    rate_limit::clear_count(redis, &fail_key).await;
+    rate_limit::clear_login_failures(store, &email).await;
 
     let mut conn = db.acquire().await?;
     repository::update_last_login(&mut *conn, user.id).await?;
@@ -256,21 +254,21 @@ pub async fn logout(db: &PgPool, config: &AuthConfig, req: RefreshRequest) -> Re
 }
 
 pub async fn send_otp(
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     sms_client: &SmsClient,
     auth_user_id: Uuid,
     req: OtpSendRequest,
 ) -> Result<MessageResponse, AppError> {
-    otp::send_otp(redis, sms_client, auth_user_id, req).await
+    otp::send_otp(store, sms_client, auth_user_id, req).await
 }
 
 pub async fn verify_otp(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     auth_user_id: Uuid,
     req: OtpVerifyRequest,
 ) -> Result<MessageResponse, AppError> {
-    otp::verify_otp(redis, auth_user_id, &req).await?;
+    otp::verify_otp(store, auth_user_id, &req).await?;
 
     // Update phone_verified now that the code has been confirmed.
     repository::update_phone_verified(db, auth_user_id, &req.phone).await?;
@@ -282,7 +280,7 @@ pub async fn verify_otp(
 
 pub async fn forgot_password(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     email_client: std::sync::Arc<dyn EmailSender>,
     background: &tokio_util::task::TaskTracker,
     req: ForgotPasswordRequest,
@@ -302,9 +300,7 @@ pub async fn forgot_password(
 
     // 2. Per-account request rate limit so the password-reset email is not
     //    weaponized as an email-flooding vector against a known victim.
-    let forgot_rate_key = format!("forgot_rate:{email_lower}");
-    let count = rate_limit::bump_count_best_effort(redis, &forgot_rate_key, 3600i64).await;
-    if count > 3 {
+    if !rate_limit::forgot_allowed(store, &email_lower).await {
         // Swallow silently — do NOT leak to the attacker that they tripped
         // a per-account limit. Same response shape as the success branch.
         return Ok(success_msg);
@@ -312,7 +308,7 @@ pub async fn forgot_password(
 
     // 3. Issue a fresh reset token, invalidating any previous outstanding
     //    one for this user so only the newest link works.
-    let token = reset_tokens::issue(redis, user.id).await?;
+    let token = reset_tokens::issue(store, user.id).await?;
 
     // 4. Spawn the SMTP send so the handler returns at a roughly-constant
     //    latency regardless of whether the email exists. This flattens a
@@ -336,12 +332,12 @@ pub async fn forgot_password(
 
 pub async fn reset_password(
     db: &PgPool,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &dyn EphemeralStore,
     req: ResetPasswordRequest,
 ) -> Result<MessageResponse, AppError> {
     // 1. Atomically consume the token (single-use) and clear the "current
     //    token" index for this user.
-    let user_id = reset_tokens::consume(redis, &req.token).await?;
+    let user_id = reset_tokens::consume(store, &req.token).await?;
 
     // 2. Hash new password
     let hashed = password::hash_password(req.new_password.clone())

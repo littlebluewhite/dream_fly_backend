@@ -8,6 +8,7 @@ use crate::config::AppConfig;
 use crate::modules::auth::access::AccessCache;
 use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
+use crate::utils::ephemeral::EphemeralStore;
 use crate::utils::google_oauth::GoogleIdentityProvider;
 use crate::utils::sms::SmsClient;
 use crate::utils::studio_clock::StudioNow;
@@ -15,12 +16,17 @@ use crate::utils::studio_clock::StudioNow;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Raw Redis handle — only the `/health` PING reads it now; every
+    /// stored value goes through `access_cache` or `ephemeral`.
     pub redis: redis::aio::ConnectionManager,
     /// Account access cache (`auth::access`) — the is_active/role cache the
     /// `AuthUser` extractor reads. Held as a trait object so integration
-    /// tests can substitute an in-memory adapter; rate limiting, OTP and
-    /// reset tokens keep using `redis` directly.
+    /// tests can substitute an in-memory adapter.
     pub access_cache: Arc<dyn AccessCache>,
+    /// Short-lived state (`utils::ephemeral`) — route rate-limit buckets,
+    /// login/forgot-password counters, OTP, password-reset tokens. Held as a
+    /// trait object so integration tests can substitute an in-memory adapter.
+    pub ephemeral: Arc<dyn EphemeralStore>,
     pub kafka_producer: Option<Arc<FutureProducer>>,
     pub config: Arc<AppConfig>,
     /// Shared outbound email sender. Built once at startup to avoid rebuilding
