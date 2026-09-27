@@ -29,3 +29,9 @@
 - **重開條件**(明文,符合任一才重開設計輪,不是自動觸發改動):
   1. 真實發生過一次 pre-commit deliver 的 bug——某個呼叫端在 `tx.commit()` 之前呼叫了 `.deliver(db)`,產生指向已回滾資料的幽靈通知。這代表位置慣例在實務上已經不足以防呆,需要重新評估型別化的成本效益。
   2. notification 交付模型改為 tx 內 outbox(領域寫入與通知紀錄同一交易落地,由背景 dispatcher 之後才真正對外送達)。這種模型下「commit 之後才 deliver」這條規則本身被取代,不是被加強;整個位置慣例連同本 ADR 兩個候選的否決理由都需要重新評估,不是在現有 `PendingNotification` 上修補。
+
+## Addendum（2026-09-27）：`TxReleased` 搬到 `orders/tx_witness.rs`
+
+架構深化 R14（結帳冪等收進 `orders::idempotency`）把 `mod tx_witness` 從 `orders::service` 抽成
+orders 的私有檔 `orders/tx_witness.rs`，`assemble_response` 改為 `pub(super)`。上文引用的
+`orders/service.rs` 行號已位移；witness 的語意與本 ADR 的裁決都不變。

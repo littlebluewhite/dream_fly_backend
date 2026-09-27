@@ -619,6 +619,11 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 見證：`service_orders.rs::refund_cancels_pending_leaves_of_order_enrolments`。本檔其餘敘述維持決策
 當下狀態。
 
+「併發安全論證（退款 vs 自助操作）」段描述的自助取消也隨之改變：`find_by_id_tx` 改取
+`FOR NO KEY UPDATE`，取得報名列之後、commit 之前還會 UPDATE 該報名的待審假單列——「取得後不再碰
+其他列」不再成立。結論不變：自助取消與退款都是先取同一報名列、才碰其假單列，後手在報名列上等待時
+手上沒有假單列鎖，構不成環。
+
 ## Addendum（2026-09-27）：結帳冪等收進 `orders::idempotency`——表的 owner，不是純核
 
 **遷移登記**（行為零變更：400 字串、狀態碼、錯誤優先序、鎖序逐位元等價）：
