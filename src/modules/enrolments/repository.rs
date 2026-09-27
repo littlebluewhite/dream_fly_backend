@@ -41,7 +41,12 @@ pub async fn insert_tx(
 }
 
 /// Transactional lookup with a row lock, used by the cancel path's
-/// ownership check.
+/// ownership check. `FOR NO KEY UPDATE`, not `FOR UPDATE` (B5 防死鎖): two
+/// cancels of the same enrolment still exclude each other, but it doesn't
+/// conflict with the `FOR KEY SHARE` an in-flight leave approval's attendance
+/// INSERT takes on this row through its FK. With `FOR UPDATE`, a cancel that
+/// then waits on that approval's leave row (`cancel_pending_for_enrolments_tx`)
+/// closes a lock cycle.
 pub async fn find_by_id_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -49,7 +54,7 @@ pub async fn find_by_id_tx(
     sqlx::query_as::<_, Enrolment>(
         "SELECT id, user_id, course_id, order_id, status, enrolled_at, created_at, updated_at \
          FROM enrolments WHERE id = $1 \
-         FOR UPDATE",
+         FOR NO KEY UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -84,20 +89,20 @@ pub async fn cancel_if_active_tx(
 /// self-cancelled via `service::cancel_enrolment` before the whole order
 /// was refunded. Seats are view-derived (`active_enrolments`), so
 /// cancelling releases the seat as a side effect of this UPDATE — no
-/// separate seat-release step needed. Returns the number of rows actually
-/// flipped.
+/// separate seat-release step needed. Returns the ids of the rows actually
+/// flipped (B5: only those get their pending leave requests cancelled).
 pub async fn cancel_by_order_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
-) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>(
         "UPDATE enrolments SET status = 'cancelled'::enrolment_status, updated_at = NOW() \
-         WHERE order_id = $1 AND status <> 'cancelled'::enrolment_status",
+         WHERE order_id = $1 AND status <> 'cancelled'::enrolment_status \
+         RETURNING id",
     )
     .bind(order_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(result.rows_affected())
+    .fetch_all(&mut **tx)
+    .await
 }
 
 /// This user's enrolments JOINed with course info, newest first, plus

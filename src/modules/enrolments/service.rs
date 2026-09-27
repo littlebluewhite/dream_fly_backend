@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::courses::seats::{self, CourseLocks};
+use crate::modules::leave::service as leave_service;
 
 use super::dto::{AttendanceEntryResponse, EnrolmentResponse, MyEnrolmentResponse};
 use super::model::Enrolment;
@@ -95,6 +96,9 @@ pub async fn list_by_order(
 
 /// Cancel an enrolment. Owner or admin only; otherwise unconditional (no
 /// 24-hour rule). Cancelling an already-cancelled enrolment is a 409.
+/// 「報名取消」的單一 owner(B5):同 tx 連帶把這筆報名的待審假單轉成
+/// `cancelled`(leave 的 ADR-0005 轉手);已核准假單與已約補課不動
+/// (ADR-0008 gap 1)。不發通知。
 pub async fn cancel_enrolment(
     db: &PgPool,
     auth: &AuthUser,
@@ -112,22 +116,26 @@ pub async fn cancel_enrolment(
         .await?
         .ok_or_else(|| AppError::Conflict("enrolment already cancelled".into()))?;
 
+    leave_service::cancel_pending_for_enrolments_tx(&mut tx, &[id]).await?;
+
     tx.commit().await?;
 
     Ok(EnrolmentResponse::from(updated))
 }
 
-/// Passthrough to `repository::cancel_by_order_tx` — the ADR-0005 seam
-/// `orders::service`'s refund/cancel compensation
-/// (`compensate_order_artifacts_tx`) calls, so
-/// `orders` never imports this module's repository directly.
+/// The ADR-0005 seam `orders::service`'s refund/cancel compensation
+/// (`compensate_order_artifacts_tx`) calls, so `orders` never imports this
+/// module's repository directly. Cancels the order's enrolments, then — same
+/// tx, B5 — the pending leave requests of exactly the enrolments this call
+/// flipped (an enrolment the buyer already self-cancelled had its pending
+/// leaves cancelled back then). Returns the number of enrolments flipped.
 pub async fn cancel_by_order_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
 ) -> Result<u64, AppError> {
-    repository::cancel_by_order_tx(tx, order_id)
-        .await
-        .map_err(AppError::Database)
+    let flipped = repository::cancel_by_order_tx(tx, order_id).await?;
+    leave_service::cancel_pending_for_enrolments_tx(tx, &flipped).await?;
+    Ok(flipped.len() as u64)
 }
 
 /// `GET /enrolments/{id}/attendance`. Owner or admin (mirrors

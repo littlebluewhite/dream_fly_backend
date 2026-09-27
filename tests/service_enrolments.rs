@@ -12,6 +12,8 @@
 //!   duplicate insert (bypassing the service's lock + pre-check) raises a
 //!   unique violation, and the service maps a genuine DB-level violation
 //!   to Conflict("already enrolled") even when its pre-check is blind.
+//! - B5: `cancel_enrolment` racing an in-flight leave approval (假單列已被
+//!   核准 tx 持有、其出勤 INSERT 還沒跑) must queue, not deadlock.
 
 mod common;
 
@@ -19,7 +21,9 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use common::fixtures::{seed_course, seed_course_with_capacity, seed_enrolment};
+use common::fixtures::{
+    seed_course, seed_course_session, seed_course_with_capacity, seed_enrolment, seed_leave_request,
+};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::courses::seats;
 use dream_fly_backend::modules::enrolments::model::Enrolment;
@@ -324,4 +328,117 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
     .await
     .expect("count active enrolments");
     assert_eq!(active_count, 1);
+}
+
+/// Poll `pg_stat_activity` until some other backend of this test database is
+/// actually waiting on a heavyweight lock (5s cap) — proves the blocked point
+/// instead of trusting a bare sleep.
+async fn wait_for_lock_waiter(db: &PgPool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock' \
+               AND pid <> pg_backend_pid())",
+        )
+        .fetch_one(db)
+        .await
+        .expect("poll pg_stat_activity");
+        if waiting {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no backend ever blocked on a lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// B5 防死鎖回歸:核准 tx(T1)已持有假單列、出勤 INSERT 還沒跑時,
+/// `cancel_enrolment` 鎖住報名列後卡在「取消待審假單」上;T1 接著 INSERT
+/// 出勤,其 FK 對報名列取 `FOR KEY SHARE`。報名列若是 `FOR UPDATE` 就成環
+/// ("deadlock detected");`FOR NO KEY UPDATE` 與 `KEY SHARE` 相容,T1 先
+/// commit,取消再看到假單已是 approved → 不動(ADR-0008 gap 1)。
+///
+/// `spawn_blocking` + `Handle::block_on` 讓取消跑在真的 OS thread 上(同
+/// `service_attendance.rs` 的併發測試)。
+#[sqlx::test]
+async fn cancel_enrolment_vs_in_flight_approval_does_not_deadlock(db: PgPool) {
+    let course_id = seed_course(&db, "Cancel vs Approval Course", None).await;
+    let tomorrow = (Utc::now() + chrono::Duration::days(1)).date_naive();
+    let nine = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let ten = chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+    let session_id = seed_course_session(&db, course_id, tomorrow, nine, ten).await;
+    let admin = common::seed_member(&db, "cancel-race-admin@example.com", "Password!234").await;
+    let member = common::seed_member(&db, "cancel-race-member@example.com", "Password!234").await;
+    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&db, enrolment_id, session_id, "pending").await;
+
+    let mut t1 = db.begin().await.expect("begin t1");
+    sqlx::query(
+        "UPDATE leave_requests \
+         SET status = 'approved'::leave_status, decided_by = $2, decided_at = NOW(), \
+             updated_at = NOW() \
+         WHERE id = $1",
+    )
+    .bind(leave_id)
+    .bind(admin)
+    .execute(&mut *t1)
+    .await
+    .expect("t1 approve");
+
+    let db_cancel = db.clone();
+    let handle = tokio::runtime::Handle::current();
+    let cancel = tokio::task::spawn_blocking(move || {
+        handle.block_on(service::cancel_enrolment(
+            &db_cancel,
+            &common::member_auth(member),
+            enrolment_id,
+        ))
+    });
+
+    wait_for_lock_waiter(&db).await;
+    assert!(
+        !cancel.is_finished(),
+        "cancel must be blocked on t1's leave row"
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sqlx::query(
+            "INSERT INTO attendance_records \
+             (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
+             VALUES ($1, $2, $3, 'leave'::attendance_status, $4, NOW(), NOW())",
+        )
+        .bind(Uuid::now_v7())
+        .bind(session_id)
+        .bind(enrolment_id)
+        .bind(admin)
+        .execute(&mut *t1),
+    )
+    .await
+    .expect("t1 attendance insert must not hang")
+    .expect("t1 attendance insert");
+    t1.commit().await.expect("commit t1");
+
+    cancel
+        .await
+        .expect("join cancel")
+        .expect("cancel must succeed after t1 commits");
+
+    let enrolment_status: String =
+        sqlx::query_scalar("SELECT status::text FROM enrolments WHERE id = $1")
+            .bind(enrolment_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(enrolment_status, "cancelled");
+    let leave_status: String =
+        sqlx::query_scalar("SELECT status::text FROM leave_requests WHERE id = $1")
+            .bind(leave_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(leave_status, "approved", "an approved leave is left as-is");
 }

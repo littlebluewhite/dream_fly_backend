@@ -613,8 +613,8 @@ pub async fn update_order_status(
     // compensate) → single atomic UPDATE
     // with conditional `paid_at` → outbox. Reading `current` under `FOR
     // UPDATE` is also the `orders`-row lock that opens the refund lock order
-    // (orders → users → products → enrolments → subscriptions, see
-    // `compensate_order_artifacts_tx`). No split UPDATE+UPDATE+SELECT that
+    // (orders → users → products → enrolments → leave_requests (pending) →
+    // subscriptions, see `compensate_order_artifacts_tx`). No split UPDATE+UPDATE+SELECT that
     // could leave `status='paid' AND paid_at=NULL`.
     let mut tx = db.begin().await?;
 
@@ -704,6 +704,9 @@ pub async fn update_order_status(
 /// 4. `enrolments`/`subscriptions` `cancel_by_order_tx` — order-scoped batch
 ///    UPDATEs, naturally idempotent via `status <> 'cancelled'`, so a buyer
 ///    who already self-cancelled an enrolment is a harmless 0-row no-op.
+///    Lock order enrolments → leave_requests (pending) → subscriptions: the
+///    enrolments owner also cancels the pending leave requests of the
+///    enrolments it just flipped (B5).
 ///
 /// Fixture / directly-built orders, and orders from seed runs before the
 /// seed wrote checkout ledger rows, carry no traces, so every step no-ops

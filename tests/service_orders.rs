@@ -18,8 +18,9 @@ use uuid::Uuid;
 
 use common::add_course_to_cart;
 use common::fixtures::{
-    SeedCartLine, seed_carted_member, seed_course_with_capacity, seed_coupon,
-    seed_entitlement_product, seed_full_course, seed_order_with_item, set_points_balance,
+    SeedCartLine, seed_carted_member, seed_coupon, seed_course_session, seed_course_with_capacity,
+    seed_entitlement_product, seed_full_course, seed_leave_request, seed_order_with_item,
+    set_points_balance,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
@@ -1914,6 +1915,49 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
     .await
     .unwrap();
     assert_eq!(refund_ledger, 2, "both directions reversed");
+}
+
+/// B5:退款補償取消訂單的報名時,同 tx 連帶把該報名的待審假單轉成
+/// `cancelled`(`enrolments::service::cancel_by_order_tx` → leave)。
+#[sqlx::test]
+async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
+    let course = seed_course_with_capacity(&db, "Refund Leave Course", None, 12).await;
+    let user = seed_carted_member(
+        &db,
+        "refund-leave-buyer@example.com",
+        &[SeedCartLine::Course { course_id: course }],
+        0,
+    )
+    .await;
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
+    assert_eq!(order.enrolments.len(), 1);
+
+    let tomorrow = (chrono::Utc::now() + chrono::Duration::days(1)).date_naive();
+    let nine = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+    let ten = chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+    let session = seed_course_session(&db, course, tomorrow, nine, ten).await;
+    let leave = seed_leave_request(&db, order.enrolments[0].id, session, "pending").await;
+
+    service::update_order_status(&db, order.id, "refunded", None)
+        .await
+        .expect("refund");
+
+    let status: String =
+        sqlx::query_scalar("SELECT status::text FROM leave_requests WHERE id = $1")
+            .bind(leave)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(status, "cancelled");
 }
 
 // ---------------------------------------------------------------------

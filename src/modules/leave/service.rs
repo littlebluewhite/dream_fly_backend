@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -102,6 +102,19 @@ pub async fn cancel_leave_request(db: &PgPool, auth: &AuthUser, id: Uuid) -> Res
 
     tx.commit().await?;
     Ok(())
+}
+
+/// Passthrough to `repository::cancel_pending_for_enrolments_tx` — the
+/// ADR-0005 seam `enrolments::service` calls when an enrolment is cancelled
+/// (self-cancel or order compensation), so the enrolment's still-pending
+/// leave requests are cancelled in the same tx (B5). Sends no notification.
+pub async fn cancel_pending_for_enrolments_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    enrolment_ids: &[Uuid],
+) -> Result<u64, AppError> {
+    repository::cancel_pending_for_enrolments_tx(tx, enrolment_ids)
+        .await
+        .map_err(AppError::Database)
 }
 
 /// `GET /leave-requests?status=&course_id=` — coach (own courses only) or

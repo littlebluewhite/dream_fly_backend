@@ -5,6 +5,7 @@ mod common;
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
     seed_attendance, seed_course_session, seed_course_with_capacity, seed_enrolment,
+    seed_leave_request, set_makeup_session,
 };
 use common::http::spawn_test_app;
 use serde_json::json;
@@ -153,6 +154,60 @@ async fn cancel_nonexistent_returns_404(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(resp.status_code(), 404, "body={}", resp.text());
+}
+
+async fn leave_state(db: &PgPool, leave_id: Uuid) -> (String, Option<Uuid>) {
+    sqlx::query_as("SELECT status::text, makeup_session_id FROM leave_requests WHERE id = $1")
+        .bind(leave_id)
+        .fetch_one(db)
+        .await
+        .expect("fetch leave state")
+}
+
+/// B5:取消報名 E 同 tx 把 E 的**待審**假單轉成 `cancelled`;E 已核准(帶
+/// 補課)的假單不動(ADR-0008 gap 1),同一會員另一報名 F 的待審假單也不動。
+#[sqlx::test]
+async fn cancel_enrolment_cancels_only_its_pending_leave_requests(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app
+        .register_member("enr-cancel-leaves@example.com", "Password!234")
+        .await;
+    let course_e = seed_course_with_capacity(&app.db, "Cancel Leaves Course E", None, 10).await;
+    let course_f = seed_course_with_capacity(&app.db, "Cancel Leaves Course F", None, 10).await;
+    let enrolment_e = seed_enrolment(&app.db, user.user_id, course_e, "active", Utc::now()).await;
+    let enrolment_f = seed_enrolment(&app.db, user.user_id, course_f, "active", Utc::now()).await;
+
+    let day = |n| (Utc::now() + Duration::days(n)).date_naive();
+    let e_s1 = seed_course_session(&app.db, course_e, day(1), t(9, 0), t(10, 0)).await;
+    let e_s2 = seed_course_session(&app.db, course_e, day(2), t(9, 0), t(10, 0)).await;
+    let e_makeup = seed_course_session(&app.db, course_e, day(3), t(9, 0), t(10, 0)).await;
+    let f_s1 = seed_course_session(&app.db, course_f, day(1), t(9, 0), t(10, 0)).await;
+
+    let e_pending = seed_leave_request(&app.db, enrolment_e, e_s1, "pending").await;
+    let e_approved = seed_leave_request(&app.db, enrolment_e, e_s2, "approved").await;
+    set_makeup_session(&app.db, e_approved, e_makeup).await;
+    let f_pending = seed_leave_request(&app.db, enrolment_f, f_s1, "pending").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/enrolments/{enrolment_e}/cancel"))
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    assert_eq!(
+        leave_state(&app.db, e_pending).await,
+        ("cancelled".into(), None)
+    );
+    assert_eq!(
+        leave_state(&app.db, e_approved).await,
+        ("approved".into(), Some(e_makeup)),
+        "approved leave and its booked makeup are untouched"
+    );
+    assert_eq!(
+        leave_state(&app.db, f_pending).await,
+        ("pending".into(), None),
+        "another enrolment's pending leave is untouched"
+    );
 }
 
 // ---------------------------------------------------------------------------

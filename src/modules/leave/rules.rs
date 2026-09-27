@@ -71,6 +71,10 @@ pub fn parse_decision(s: &str) -> Result<LeaveStatus, AppError> {
 /// since rejection doesn't grant anything back. Order: not-pending first,
 /// then the enrolment check — a raced/already-decided request must surface
 /// that error regardless of enrolment state.
+///
+/// B5 起,報名取消同 tx 已把待審假單轉成 `cancelled`,所以取消之後的審核
+/// 走的是 not-pending 409;報名 409 降為併發 backstop,只擋兩種列:取消
+/// commit 之後才插入的 pending 列,以及上線前遺留的資料。
 pub fn check_decidable(ctx: &LeaveDecisionContext, decision: LeaveStatus) -> Result<(), AppError> {
     if ctx.status != LeaveStatus::Pending {
         return Err(AppError::Conflict(DECIDE_NOT_PENDING.into()));

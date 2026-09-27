@@ -130,6 +130,25 @@ pub async fn cancel_if_pending_tx(
     .await
 }
 
+/// Batch counterpart of [`cancel_if_pending_tx`] for enrolment cancellation
+/// (B5): every still-`pending` leave request of the given enrolments →
+/// `cancelled`, same predicate. Approved/rejected/cancelled rows (and any
+/// booked makeup) are left as-is (ADR-0008 gap 1). Returns the number of rows
+/// actually flipped.
+pub async fn cancel_pending_for_enrolments_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    enrolment_ids: &[Uuid],
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE leave_requests SET status = 'cancelled'::leave_status, updated_at = NOW() \
+         WHERE enrolment_id = ANY($1) AND status = 'pending'::leave_status",
+    )
+    .bind(enrolment_ids)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Coach/admin list — optional `status`/`course_id` filters, plus an
 /// optional `coach_scope` (the caller's own `coaches.id`; `None` = no
 /// restriction, i.e. admin sees every course's leave requests).

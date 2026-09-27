@@ -570,12 +570,11 @@ async fn decide_invalid_status_value_returns_422(db: PgPool) {
     assert_eq!(resp.status_code(), 422, "body={}", resp.text());
 }
 
-/// Task 3: once the member's enrolment backing this leave request has been
-/// cancelled (through the real cancel route, not a fixture writing straight
-/// to the DB — same as the two makeup regressions below), a coach may no
-/// longer *approve* the still-pending request.
+/// B5: cancelling the enrolment (through the real cancel route) cancels its
+/// still-pending leave request in the same tx, so a later approve hits the
+/// not-pending 409 — the enrolment-cancelled 409 is only a backstop now.
 #[sqlx::test]
-async fn decide_approve_cancelled_enrolment_returns_409(db: PgPool) {
+async fn decide_approve_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (coach_user_id, coach_token) = app
         .seed_user_with_roles("leave-decide-cancelled-coach@example.com", &["coach"])
@@ -604,13 +603,17 @@ async fn decide_approve_cancelled_enrolment_returns_409(db: PgPool) {
         .json(&json!({"status": "approved"}))
         .await;
     assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+    assert_eq!(
+        resp.json::<serde_json::Value>()["error"],
+        "僅待審核假單可審核"
+    );
 }
 
-/// Task 3 counterpart: rejecting a pending request whose enrolment has since
-/// been cancelled must still succeed — rejection grants nothing back, so
-/// there's nothing for the cancellation to invalidate.
+/// B5 counterpart: rejecting after the enrolment cancel is now also a
+/// not-pending 409 (it used to be 200) — the request was already cancelled
+/// along with its enrolment, so it never sits in the coach's pending queue.
 #[sqlx::test]
-async fn decide_reject_cancelled_enrolment_succeeds(db: PgPool) {
+async fn decide_reject_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Decide Cancelled Reject Course", None).await;
@@ -632,6 +635,61 @@ async fn decide_reject_cancelled_enrolment_succeeds(db: PgPool) {
 
     let resp = app
         .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"status": "rejected"}))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+    assert_eq!(
+        resp.json::<serde_json::Value>()["error"],
+        "僅待審核假單可審核"
+    );
+}
+
+/// Backstop: a pending leave on an already-cancelled enrolment (a row inserted
+/// after the cancel committed, or pre-B5 legacy data — built here straight by
+/// fixture) still can't be approved.
+#[sqlx::test]
+async fn decide_approve_pending_on_cancelled_enrolment_returns_409(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Leave Backstop Approve Course", None).await;
+    let member = app
+        .register_member("leave-backstop-approve@example.com", "Password!234")
+        .await;
+    let session = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
+    let enrolment =
+        seed_enrolment(&app.db, member.user_id, course_id, "cancelled", Utc::now()).await;
+    let leave = seed_leave_request(&app.db, enrolment, session, "pending").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/leave-requests/{leave}"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"status": "approved"}))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+    assert_eq!(
+        resp.json::<serde_json::Value>()["error"],
+        "報名已取消，無法核准請假"
+    );
+}
+
+/// Backstop counterpart: such a leftover pending leave can still be rejected,
+/// so a coach can clear it out of the pending queue.
+#[sqlx::test]
+async fn decide_reject_pending_on_cancelled_enrolment_succeeds(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Leave Backstop Reject Course", None).await;
+    let member = app
+        .register_member("leave-backstop-reject@example.com", "Password!234")
+        .await;
+    let session = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
+    let enrolment =
+        seed_enrolment(&app.db, member.user_id, course_id, "cancelled", Utc::now()).await;
+    let leave = seed_leave_request(&app.db, enrolment, session, "pending").await;
+
+    let resp = app
+        .patch(&format!("/api/v1/leave-requests/{leave}"))
         .authorization_bearer(&admin_token)
         .json(&json!({"status": "rejected"}))
         .await;
