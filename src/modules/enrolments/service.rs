@@ -134,7 +134,9 @@ pub async fn cancel_by_order_tx(
     order_id: Uuid,
 ) -> Result<u64, AppError> {
     let flipped = repository::cancel_by_order_tx(tx, order_id).await?;
-    leave_service::cancel_pending_for_enrolments_tx(tx, &flipped).await?;
+    if !flipped.is_empty() {
+        leave_service::cancel_pending_for_enrolments_tx(tx, &flipped).await?;
+    }
     Ok(flipped.len() as u64)
 }
 
