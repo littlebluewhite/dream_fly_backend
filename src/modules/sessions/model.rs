@@ -89,7 +89,7 @@ pub struct CourseSession {
 /// Round 4 Task B8 additive fields: `coach_name` (JOIN courses -> coaches ->
 /// users, `None` when the course has no assigned coach) and `venue`
 /// (the session's own `course_sessions.venue` snapshot, copied from its slot
-/// by `materialize_range` — `None` when the slot had no venue then, or for
+/// by `calendar::materialize_range` — `None` when the slot had no venue then, or for
 /// rows that predate the column and matched no slot at backfill; a later
 /// slot edit doesn't change it).
 #[derive(Debug, sqlx::FromRow, Serialize)]

@@ -73,7 +73,8 @@ async fn course_sessions_default_range_materializes_todays_slot(db: PgPool) {
 
     // Calling again must not duplicate rows (materialize idempotency at the
     // HTTP layer; the repository-level row-count assertion lives in
-    // service_sessions.rs::materialize_range_is_idempotent).
+    // service_sessions.rs::materialize_range_is_idempotent, against
+    // sessions::calendar).
     let resp2 = app
         .get(&format!("/api/v1/courses/{course_id}/sessions"))
         .authorization_bearer(&user.access_token)

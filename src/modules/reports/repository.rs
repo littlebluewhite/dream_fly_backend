@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::modules::bookings::model::VENUE_REVENUE_STATUSES;
 use crate::modules::contact::model::InquiryType;
 use crate::modules::orders::model::REVENUE_STATUSES;
-use crate::modules::sessions::repository::{MaterializedDay, MaterializedRange};
+use crate::modules::sessions::calendar::{MaterializedDay, MaterializedRange};
 use crate::utils::studio_clock::StudioNow;
 
 use super::model::{

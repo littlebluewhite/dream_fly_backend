@@ -59,7 +59,7 @@ impl PointReason {
 /// 兩者取得),在型別層再收一次是不必要的重複防線。`debug_assert!(magnitude
 /// >= 0, ...)` 只在 debug/測試 build 存在、release build 會被編掉——這是有
 /// owner 兜底之後「順手多檢查一次」的 defense-in-depth,不是唯一防線,
-/// release build 少了這道斷言不影響正確性(對照 `sessions::repository` 的
+/// release build 少了這道斷言不影響正確性(對照 `sessions::calendar` 的
 /// 單日物化案:那裡的 `MaterializedRange` 單日前提原本同樣是唯一防線,已
 /// 改型別化收進 `MaterializedDay`——同判準、相反結論,詳見 ADR-0007 第四
 /// 則 Addendum)。斷言用 `>=` 不用 `>`:零幅度被放行通過建構子,交給

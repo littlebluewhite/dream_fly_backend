@@ -8,6 +8,7 @@ use crate::modules::coaches::service as coaches_service;
 use crate::modules::courses::repository as courses_repository;
 use crate::utils::studio_clock::{self, StudioNow};
 
+use super::calendar;
 use super::dto::{
     CourseSessionResponse, MyScheduleEntryResponse, SessionsRangeQuery, TodaySessionResponse,
 };
@@ -62,7 +63,7 @@ pub async fn list_course_sessions(
         )));
     }
 
-    let mat = repository::materialize_range(db, &[course_id], from, to).await?;
+    let mat = calendar::materialize_range(db, &[course_id], from, to).await?;
     let sessions = repository::find_sessions_in(db, &mat).await?;
     Ok(sessions
         .into_iter()
@@ -96,7 +97,7 @@ pub async fn today_sessions(
         }
     };
 
-    let day = repository::materialize_day(db, &course_ids, today).await?;
+    let day = calendar::materialize_day(db, &course_ids, today).await?;
     let rows = repository::find_today_sessions_in(db, &day).await?;
     Ok(rows
         .into_iter()

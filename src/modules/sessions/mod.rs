@@ -1,3 +1,4 @@
+pub mod calendar;
 pub mod dto;
 pub mod handlers;
 pub mod model;

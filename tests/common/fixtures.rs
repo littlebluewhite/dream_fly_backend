@@ -105,7 +105,7 @@ pub async fn seed_course_with_capacity(
 /// `PATCH /courses/{id}` `schedule_slots` upsert), so sessions tests can set
 /// up a course's weekly pattern without going through the courses HTTP/service
 /// layer. `day_of_week` is 0=Sunday..6=Saturday (PostgreSQL `EXTRACT(DOW)`
-/// convention — matches `sessions::repository::materialize_range`). Returns
+/// convention — matches `sessions::calendar::materialize_range`). Returns
 /// the slot id.
 pub async fn seed_course_schedule_slot(
     db: &PgPool,
@@ -164,7 +164,7 @@ pub async fn seed_course_schedule_slot_with_venue(
 }
 
 /// Insert a `course_sessions` row directly (bypassing
-/// `sessions::repository::materialize_range`), so attendance tests get a
+/// `sessions::calendar::materialize_range`), so attendance tests get a
 /// concrete session id without first setting up a weekly schedule slot.
 pub async fn seed_course_session(
     db: &PgPool,
@@ -193,7 +193,7 @@ pub async fn seed_course_session(
 
 /// Same as [`seed_course_session`] but with a caller-supplied `venue`
 /// snapshot (that fixture leaves the column `NULL`) — mirrors what
-/// `materialize_range` writes for a slot that has a venue.
+/// `calendar::materialize_range` writes for a slot that has a venue.
 pub async fn seed_course_session_with_venue(
     db: &PgPool,
     course_id: Uuid,
@@ -1134,7 +1134,7 @@ pub struct SessionScene {
 /// 是呼叫端才知道的變異點。`session_date`/`start_time` 顯式入參：測試常需
 /// 要場次精確落在「今天」或某個未來/過去日期，composite 沒辦法代猜是哪一
 /// 天。`venue` 給 `Some` 時同時落在 slot 與場次的 venue 快照上（同
-/// `materialize_range` 物化時的寫法，供 venue 解析測試比對），`None` 兩
+/// `calendar::materialize_range` 物化時的寫法，供 venue 解析測試比對），`None` 兩
 /// 者皆同原生的 NULL 預設。**不適用**於
 /// 「slot 本身有無存在就是測試標的」（例如場次無對應 slot 時 venue 應為
 /// null 的測試——需要真的沒有 slot）或「materialize 本身就是測試標的」

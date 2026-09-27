@@ -2,7 +2,7 @@ use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
-use crate::modules::sessions::repository as sessions_repository;
+use crate::modules::sessions::calendar::{self, SlotRow};
 use crate::utils::slug::slugify;
 use crate::utils::studio_clock::{self, StudioNow};
 
@@ -11,17 +11,15 @@ use super::dto::{
     CourseScheduleSlotResponse, CreateCourseRequest, UpdateCourseRequest,
 };
 use super::model::{AgeRange, CourseLevel};
-use super::repository::{self, CourseCreate, CourseSlotRow, CourseUpdate};
+use super::repository::{self, CourseCreate, CourseUpdate};
 
 /// Parse+validate `schedule_slots` request entries into the tuple shape
-/// `repository::replace_slots_tx` takes. `AppError::Validation`
+/// `sessions::calendar`'s weekly-schedule writers take. `AppError::Validation`
 /// (422) on an unparseable time or `end_time <= start_time` — the per-field
 /// bounds (day_of_week 0-6, string length) are already enforced by
 /// `ValidatedJson` via `CourseScheduleSlotEntry`'s own `Validate` derive
 /// before the service layer ever sees this.
-fn parse_schedule_slots(
-    entries: &[CourseScheduleSlotEntry],
-) -> Result<Vec<CourseSlotRow>, AppError> {
+fn parse_schedule_slots(entries: &[CourseScheduleSlotEntry]) -> Result<Vec<SlotRow>, AppError> {
     entries
         .iter()
         .map(|e| {
@@ -148,7 +146,7 @@ pub async fn create_course(
     .map_err(|e| AppError::conflict_on_unique(e, "course slug already exists"))?;
 
     if let Some(slots) = &parsed_slots {
-        repository::replace_slots_tx(&mut tx, course.id, slots).await?;
+        calendar::set_initial_schedule_tx(&mut tx, course.id, slots).await?;
     }
 
     tx.commit().await?;
@@ -232,8 +230,7 @@ pub async fn update_course(
     .ok_or_else(|| AppError::NotFound("course not found".into()))?;
 
     if let Some(slots) = &parsed_slots {
-        repository::replace_slots_tx(&mut tx, course.id, slots).await?;
-        sessions_repository::reconcile_future_sessions_tx(&mut tx, course.id, at.today()).await?;
+        calendar::replace_weekly_schedule_tx(&mut tx, course.id, slots, at.today()).await?;
     }
 
     tx.commit().await?;

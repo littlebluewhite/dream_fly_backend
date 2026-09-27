@@ -14,7 +14,6 @@
 //! 這 18+2 欄投影,套用到本檔全部 7 個投影站:`SELECT` 讀側與
 //! `create`/`update` 的 `RETURNING` 共用同一份定義,不再各自手抄。
 
-use chrono::NaiveTime;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -161,8 +160,8 @@ pub async fn find_age_bounds_for_update_tx(
 
 /// Takes an already-open transaction (rather than `&PgPool`) so
 /// `courses::service` can insert the course row and, when the request
-/// carries `schedule_slots`, replace the course's weekly slots
-/// (`replace_slots_tx`) atomically in one commit.
+/// carries `schedule_slots`, set the course's weekly slots
+/// (`sessions::calendar::set_initial_schedule_tx`) atomically in one commit.
 pub async fn create(
     tx: &mut Transaction<'_, Postgres>,
     input: CourseCreate<'_>,
@@ -195,7 +194,8 @@ pub async fn create(
 /// Executor-generic (single statement — no lock of its own) so
 /// `update_course` can run it inside the same transaction as its
 /// `find_age_bounds_for_update_tx` row lock and, when the request carries
-/// `schedule_slots`, `replace_slots_tx`; callers pass `&mut *tx`.
+/// `schedule_slots`, `sessions::calendar::replace_weekly_schedule_tx`;
+/// callers pass `&mut *tx`.
 pub async fn update(
     executor: impl sqlx::PgExecutor<'_>,
     id: Uuid,
@@ -252,11 +252,6 @@ pub async fn update(
     qb.build_query_as::<Course>().fetch_optional(executor).await
 }
 
-/// `(day_of_week, start_time, end_time, venue)` — pre-parsed input row for
-/// [`replace_slots_tx`]. Aliased for readability, mirroring
-/// `schedule::repository::SlotRow`.
-pub type CourseSlotRow = (i16, NaiveTime, NaiveTime, Option<String>);
-
 pub async fn find_slots_by_course(
     db: &PgPool,
     course_id: Uuid,
@@ -270,38 +265,4 @@ pub async fn find_slots_by_course(
     .bind(course_id)
     .fetch_all(db)
     .await
-}
-
-/// Replace all of a course's weekly slots within an already-open
-/// transaction (delete + insert), so the caller (`courses::service`) can
-/// commit this atomically alongside the course row's own INSERT/UPDATE.
-/// Each tuple is `(day_of_week, start_time, end_time, venue)` — already
-/// parsed/validated by the caller.
-pub async fn replace_slots_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    course_id: Uuid,
-    slots: &[CourseSlotRow],
-) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM course_schedule_slots WHERE course_id = $1")
-        .bind(course_id)
-        .execute(&mut **tx)
-        .await?;
-
-    for (day_of_week, start_time, end_time, venue) in slots {
-        sqlx::query(
-            "INSERT INTO course_schedule_slots \
-             (id, course_id, day_of_week, start_time, end_time, venue, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())",
-        )
-        .bind(Uuid::now_v7())
-        .bind(course_id)
-        .bind(day_of_week)
-        .bind(start_time)
-        .bind(end_time)
-        .bind(venue.as_deref())
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    Ok(())
 }

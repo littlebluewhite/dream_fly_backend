@@ -7,6 +7,7 @@ use crate::extractors::auth::AuthUser;
 use crate::modules::attendance::repository as attendance_repository;
 use crate::modules::coaches::service as coaches_service;
 use crate::modules::messages::repository as messages_repository;
+use crate::modules::sessions::calendar;
 use crate::modules::sessions::repository as sessions_repository;
 use crate::utils::studio_clock::{self, StudioNow};
 
@@ -67,8 +68,7 @@ pub async fn admin_report(db: &PgPool, at: StudioNow) -> Result<AdminReportRespo
     let today = studio_clock::today(tz, now);
     let (month_start, month_end) = studio_month_bounds(today);
     let all_course_ids = sessions_repository::find_all_course_ids(db).await?;
-    let mat =
-        sessions_repository::materialize_range(db, &all_course_ids, month_start, month_end).await?;
+    let mat = calendar::materialize_range(db, &all_course_ids, month_start, month_end).await?;
     let venue_rows = repository::venue_usage(db, &mat).await?;
 
     let current_month_key = studio_clock::month_key(tz, now);
@@ -125,7 +125,7 @@ pub async fn coach_report(
 
     let today = studio_clock::today(tz, now);
     let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
-    let day = sessions_repository::materialize_day(db, &course_ids, today).await?;
+    let day = calendar::materialize_day(db, &course_ids, today).await?;
 
     let (today_sessions, pending_attendance) =
         repository::coach_today_and_pending(db, coach.id, &day).await?;
@@ -162,7 +162,7 @@ pub async fn member_report(
     let active_enrolments = course_ids.len() as i64;
 
     let window_to = today + Duration::days(MEMBER_UPCOMING_WINDOW_DAYS);
-    let mat = sessions_repository::materialize_range(db, &course_ids, today, window_to).await?;
+    let mat = calendar::materialize_range(db, &course_ids, today, window_to).await?;
     let upcoming_sessions_7d = repository::upcoming_session_count(db, &mat).await?;
 
     Ok(MemberReportResponse {

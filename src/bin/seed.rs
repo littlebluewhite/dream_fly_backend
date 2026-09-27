@@ -73,7 +73,7 @@ use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::{LedgerDelta, OrderPointsFlow, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
-use dream_fly_backend::modules::sessions::repository::materialize_range;
+use dream_fly_backend::modules::sessions::calendar::materialize_range;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock;
 
@@ -797,7 +797,7 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
 
 /// Bulk-insert attendance rows (idempotent on the real
 /// `UNIQUE(session_id, enrolment_id)` constraint). Single UNNEST statement,
-/// mirroring `sessions::repository::materialize_range`'s bulk shape.
+/// mirroring `sessions::calendar::materialize_range`'s bulk shape.
 async fn insert_attendance_bulk(
     db: &PgPool,
     marked_by: Uuid,

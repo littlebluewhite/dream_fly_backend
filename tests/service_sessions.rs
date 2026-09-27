@@ -1,8 +1,11 @@
-//! Integration tests for `sessions::service` / `sessions::repository`.
+//! Integration tests for `sessions::service` / `sessions::repository` /
+//! `sessions::calendar`.
 //!
 //! Covered paths:
 //! - `materialize_range` is idempotent (repeat calls don't duplicate rows)
 //!   and snapshots the slot's `venue` onto the session at creation time
+//! - materialize and reconcile agree on the slot↔session correspondence:
+//!   reconciling right after materializing touches no row
 //! - `list_course_sessions` materializes and returns a course's sessions;
 //!   404 on an unknown course; 422 on `to < from` or a >60-day span
 //! - `my_weekly_schedule` includes only courses the caller holds an *active*
@@ -22,7 +25,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
-use dream_fly_backend::modules::sessions::{repository as sessions_repository, service};
+use dream_fly_backend::modules::sessions::{calendar, service};
 
 use common::fixtures::{
     seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
@@ -45,7 +48,7 @@ async fn materialize_range_is_idempotent(db: PgPool) {
     let today = Utc::now().date_naive();
     seed_course_schedule_slot(&db, course_id, dow_of(today), t(9, 0), t(10, 0)).await;
 
-    sessions_repository::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, &[course_id], today, today)
         .await
         .expect("first materialize");
     let count_1: i64 =
@@ -56,7 +59,7 @@ async fn materialize_range_is_idempotent(db: PgPool) {
             .unwrap();
     assert_eq!(count_1, 1);
 
-    sessions_repository::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, &[course_id], today, today)
         .await
         .expect("second materialize");
     let count_2: i64 =
@@ -85,7 +88,7 @@ async fn materialize_snapshots_slot_venue(db: PgPool) {
     )
     .await;
 
-    sessions_repository::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, &[course_id], today, today)
         .await
         .expect("first materialize");
     assert_eq!(
@@ -101,13 +104,81 @@ async fn materialize_snapshots_slot_venue(db: PgPool) {
         .execute(&db)
         .await
         .unwrap();
-    sessions_repository::materialize_range(&db, &[course_id], today, today)
+    calendar::materialize_range(&db, &[course_id], today, today)
         .await
         .expect("second materialize");
     assert_eq!(
         session_venues(&db, course_id).await,
         vec![Some("Main Hall".to_string())]
     );
+}
+
+#[sqlx::test]
+async fn materialize_then_reconcile_is_noop(db: PgPool) {
+    // Cross-anchor for `SLOT_OF_SESSION`: every row `materialize_range`
+    // creates must be one the reconcile step already considers aligned —
+    // re-applying the same weekly schedule right after materializing must
+    // UPDATE 0 rows (no `xmin` changes) and DELETE 0 rows.
+    let course_id = seed_course(&db, "Calendar Anchor Course", None).await;
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap(); // Wednesday
+    let slots: Vec<calendar::SlotRow> = vec![
+        (1, t(9, 0), t(10, 0), Some("A".to_string())),
+        (1, t(14, 0), t(15, 30), Some("C".to_string())),
+        (3, t(18, 0), t(19, 30), None),
+        (5, t(7, 0), t(8, 0), Some("B".to_string())),
+    ];
+    let mut tx = db.begin().await.unwrap();
+    calendar::set_initial_schedule_tx(&mut tx, course_id, &slots)
+        .await
+        .expect("set slots");
+    tx.commit().await.unwrap();
+
+    let from = today + chrono::Duration::days(1);
+    let to = today + chrono::Duration::days(14);
+    calendar::materialize_range(&db, &[course_id], from, to)
+        .await
+        .expect("materialize");
+    let before = session_snapshot(&db, course_id).await;
+    // Mon 9/21, 9/28 ×2 slots; Wed 9/23, 9/30; Fri 9/18, 9/25.
+    assert_eq!(
+        before.len(),
+        8,
+        "materialize should create every future slot date: {before:?}"
+    );
+
+    let mut tx = db.begin().await.unwrap();
+    calendar::replace_weekly_schedule_tx(&mut tx, course_id, &slots, today)
+        .await
+        .expect("replace + reconcile");
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        session_snapshot(&db, course_id).await,
+        before,
+        "reconcile right after materialize must neither update nor delete any session"
+    );
+}
+
+type SessionSnapshotRow = (
+    String,
+    Uuid,
+    chrono::NaiveDate,
+    NaiveTime,
+    NaiveTime,
+    Option<String>,
+);
+
+/// Every session of `course_id` incl. its row version (`xmin`), so an
+/// UPDATE that rewrites identical values still shows up as a change.
+async fn session_snapshot(db: &PgPool, course_id: Uuid) -> Vec<SessionSnapshotRow> {
+    sqlx::query_as(
+        "SELECT xmin::text, id, session_date, start_time, end_time, venue \
+         FROM course_sessions WHERE course_id = $1 ORDER BY session_date, start_time",
+    )
+    .bind(course_id)
+    .fetch_all(db)
+    .await
+    .expect("fetch session snapshot")
 }
 
 async fn session_venues(db: &PgPool, course_id: Uuid) -> Vec<Option<String>> {
