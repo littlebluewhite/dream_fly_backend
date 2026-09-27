@@ -18,6 +18,10 @@
 //!   the user logged in with afterwards
 //! - forgot_password's per-account rate limit silently swallows the 4th
 //!   request within the window (still an Ok response, but no email sent)
+//! - login locks an email out after 10 failures (even the right password is
+//!   then refused), a success clears the count, and the lockout is per email
+//! - OTP: the 4th send within the hour is refused (3 SMS total), and the 6th
+//!   verify attempt invalidates the code until a fresh one is sent
 //! - google_auth login rules, with `FakeGoogleIdentity` standing in for
 //!   Google (the real adapter is covered in `tests/google_identity.rs`):
 //!   welcome on Create only, Link keeps roles and doesn't resend welcome,
@@ -29,7 +33,6 @@ mod common;
 
 use std::sync::Arc;
 
-use redis::AsyncCommands;
 use sqlx::PgPool;
 use tokio_util::task::TaskTracker;
 use uuid::Uuid;
@@ -37,8 +40,8 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::auth::access;
 use dream_fly_backend::modules::auth::dto::{
-    AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, LoginRequest, RefreshRequest,
-    RegisterRequest, ResetPasswordRequest,
+    AuthResponse, ForgotPasswordRequest, GoogleAuthRequest, LoginRequest, OtpSendRequest,
+    OtpVerifyRequest, RefreshRequest, RegisterRequest, ResetPasswordRequest,
 };
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::auth::service;
@@ -46,8 +49,11 @@ use dream_fly_backend::modules::auth::session;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::jwt;
+use dream_fly_backend::utils::sms::SmsClient;
+use wiremock::MockServer;
 
 use common::mocks::{FakeGoogleIdentity, InMemoryAccessCache, MockEmailClient};
+use common::twilio::{extract_otp_code, mount_twilio, twilio_sent};
 
 #[sqlx::test]
 async fn register_creates_user_with_hashed_password(db: PgPool) {
@@ -434,7 +440,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
     let mut redis = common::test_redis().await;
     let background = TaskTracker::new();
     let email = format!("reissue-{}@example.com", Uuid::now_v7());
-    let user_id = common::seed_member(&db, &email, "Password!234").await;
+    common::seed_member(&db, &email, "Password!234").await;
 
     let mock = Arc::new(MockEmailClient::new());
     let email_client: Arc<dyn EmailSender> = mock.clone();
@@ -473,26 +479,31 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
     assert_ne!(first_token, second_token);
 
     // Reissuing invalidates the previous token — only the newest one is live.
-    let first_exists: bool = redis
-        .exists(format!("password_reset:{first_token}"))
-        .await
-        .expect("check first token key");
+    let err = service::reset_password(
+        &db,
+        &mut redis,
+        ResetPasswordRequest {
+            token: first_token,
+            new_password: "NewPassword!234".into(),
+        },
+    )
+    .await
+    .expect_err("previous token must be invalidated on reissue");
     assert!(
-        !first_exists,
-        "previous token must be invalidated on reissue"
+        matches!(&err, AppError::BadRequest(m) if m == "invalid or expired token"),
+        "got: {err:?}"
     );
 
-    let second_exists: bool = redis
-        .exists(format!("password_reset:{second_token}"))
-        .await
-        .expect("check second token key");
-    assert!(second_exists, "newest token must still be live");
-
-    let index_value: Option<String> = redis
-        .get(format!("password_reset_current:{user_id}"))
-        .await
-        .expect("read index key");
-    assert_eq!(index_value.as_deref(), Some(second_token.as_str()));
+    service::reset_password(
+        &db,
+        &mut redis,
+        ResetPasswordRequest {
+            token: second_token,
+            new_password: "NewPassword!234".into(),
+        },
+    )
+    .await
+    .expect("newest token must still be live");
 }
 
 #[sqlx::test]
@@ -824,6 +835,213 @@ async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool)
         3,
         "the 4th request must be swallowed silently — no 4th email sent"
     );
+}
+
+// ---------------- login lockout (per email) ----------------
+
+async fn login_as(
+    db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
+    email: &str,
+    password: &str,
+) -> Result<AuthResponse, AppError> {
+    service::login(
+        db,
+        redis,
+        &common::test_auth_config(),
+        LoginRequest {
+            email: email.into(),
+            password: password.into(),
+        },
+    )
+    .await
+}
+
+/// `n` wrong-password logins, each refused with the plain 401.
+async fn fail_logins(db: &PgPool, redis: &mut redis::aio::ConnectionManager, email: &str, n: u32) {
+    for i in 1..=n {
+        let err = login_as(db, redis, email, "wrong-password")
+            .await
+            .expect_err("wrong password must fail");
+        assert!(
+            matches!(err, AppError::Unauthorized),
+            "failure {i}: {err:?}"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn login_locks_out_after_ten_failures_even_with_correct_password(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let email = format!("lockout-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &email, "Password!234").await;
+
+    fail_logins(&db, &mut redis, &email, 10).await;
+
+    // Same 401 as bad credentials — the lockout is not revealed.
+    let err = login_as(&db, &mut redis, &email, "Password!234")
+        .await
+        .expect_err("locked-out email must be refused even with the right password");
+    assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
+}
+
+#[sqlx::test]
+async fn login_success_clears_failure_count(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let email = format!("clear-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &email, "Password!234").await;
+
+    fail_logins(&db, &mut redis, &email, 9).await;
+    login_as(&db, &mut redis, &email, "Password!234")
+        .await
+        .expect("9 failures do not lock out");
+
+    // Without the clear these 9 would make 18 and lock the account.
+    fail_logins(&db, &mut redis, &email, 9).await;
+    login_as(&db, &mut redis, &email, "Password!234")
+        .await
+        .expect("the earlier success reset the count");
+}
+
+#[sqlx::test]
+async fn login_lockout_is_per_email(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let locked = format!("locked-{}@example.com", Uuid::now_v7());
+    let other = format!("other-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &locked, "Password!234").await;
+    common::seed_member(&db, &other, "Password!234").await;
+
+    fail_logins(&db, &mut redis, &locked, 10).await;
+
+    login_as(&db, &mut redis, &other, "Password!234")
+        .await
+        .expect("another email is not affected by the lockout");
+}
+
+// ---------------- OTP send/verify limits (Twilio via wiremock) ----------------
+
+const OTP_PHONE: &str = "+15551234567";
+
+/// A real `SmsClient` pointed at a `wiremock` Twilio stub.
+async fn twilio_sms() -> (MockServer, SmsClient) {
+    let server = MockServer::start().await;
+    mount_twilio(&server).await;
+    let config = common::http::test_app_config(|cfg| cfg.sms.twilio_base_url = server.uri());
+    let sms = SmsClient::new(&config.sms, reqwest::Client::new());
+    (server, sms)
+}
+
+async fn send_otp(
+    redis: &mut redis::aio::ConnectionManager,
+    sms: &SmsClient,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    service::send_otp(
+        redis,
+        sms,
+        user_id,
+        OtpSendRequest {
+            phone: OTP_PHONE.into(),
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn verify_otp(
+    db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
+    user_id: Uuid,
+    code: &str,
+) -> Result<(), AppError> {
+    service::verify_otp(
+        db,
+        redis,
+        user_id,
+        OtpVerifyRequest {
+            phone: OTP_PHONE.into(),
+            code: code.into(),
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// The code in the most recent SMS the stub received.
+async fn last_otp_code(server: &MockServer) -> String {
+    let sent = twilio_sent(server).await;
+    extract_otp_code(&sent.last().expect("otp sms sent").body).expect("otp code")
+}
+
+fn assert_bad_request(err: &AppError, message: &str) {
+    assert!(
+        matches!(err, AppError::BadRequest(m) if m == message),
+        "expected 400 {message:?}, got: {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn otp_send_fourth_request_within_hour_is_rejected(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let (server, sms) = twilio_sms().await;
+    let email = format!("otp-rate-{}@example.com", Uuid::now_v7());
+    let user_id = common::seed_member(&db, &email, "Password!234").await;
+
+    for i in 1..=3 {
+        send_otp(&mut redis, &sms, user_id)
+            .await
+            .unwrap_or_else(|e| panic!("send {i} is within the hourly limit: {e:?}"));
+    }
+
+    let err = send_otp(&mut redis, &sms, user_id)
+        .await
+        .expect_err("4th send within the hour must be refused");
+    assert_bad_request(&err, "too many verification requests, try again later");
+
+    assert_eq!(
+        twilio_sent(&server).await.len(),
+        3,
+        "no SMS for the 4th request"
+    );
+}
+
+#[sqlx::test]
+async fn otp_verify_sixth_attempt_invalidates_code_until_resend(db: PgPool) {
+    let mut redis = common::test_redis().await;
+    let (server, sms) = twilio_sms().await;
+    let email = format!("otp-attempts-{}@example.com", Uuid::now_v7());
+    let user_id = common::seed_member(&db, &email, "Password!234").await;
+
+    send_otp(&mut redis, &sms, user_id).await.expect("send");
+    let code = last_otp_code(&server).await;
+
+    // Codes are 100000..=999999, so "000000" is always wrong.
+    for _ in 1..=5 {
+        let err = verify_otp(&db, &mut redis, user_id, "000000")
+            .await
+            .expect_err("wrong code");
+        assert_bad_request(&err, "invalid verification code");
+    }
+
+    // The 6th attempt is refused even with the right code, and kills it.
+    let err = verify_otp(&db, &mut redis, user_id, &code)
+        .await
+        .expect_err("6th attempt must be refused");
+    assert_bad_request(&err, "too many attempts, request a new code");
+
+    // A fresh send resets the attempt count; its new code verifies.
+    send_otp(&mut redis, &sms, user_id).await.expect("resend");
+    let new_code = last_otp_code(&server).await;
+    verify_otp(&db, &mut redis, user_id, &new_code)
+        .await
+        .expect("fresh code verifies after resend");
+
+    let verified: bool = sqlx::query_scalar("SELECT phone_verified FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&db)
+        .await
+        .expect("read phone_verified");
+    assert!(verified);
 }
 
 // ------- google_auth login rules (fake `GoogleIdentityProvider`) -------
