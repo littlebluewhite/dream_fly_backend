@@ -1977,11 +1977,12 @@ async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
 ///
 /// Three of the witness kinds are exercised directly: `commit` (checkout
 /// happy path + status transition), `release` (same-status no-op), and
-/// `no_open_tx` (the idempotency pre-check on same-key replay). Honest
-/// declaration: the other two `release` sites (empty-cart replay,
-/// unique-violation replay) are concurrency-race branches — guarded by the
-/// existing concurrent tests plus the witness type itself, not re-exercised
-/// here.
+/// `no_open_tx` (the idempotency pre-check on same-key replay). The
+/// unique-violation replay's `release` is pinned on its own single-connection
+/// pool by `checkout_same_key_twin_committed_mid_flight_replays_twin`. Honest
+/// declaration: the empty-cart replay `release` site is a concurrency-race
+/// branch — guarded by the existing concurrent test plus the witness type
+/// itself, not re-exercised here.
 ///
 /// The hand-built pool is NOT owned by `#[sqlx::test]`, so it MUST be closed
 /// explicitly: dropping a pool doesn't guarantee the server-side connection is
@@ -2064,5 +2065,113 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
 
     // The hand-built pool is not managed by `#[sqlx::test]`; close it so no
     // server-side connection lingers to block the test database teardown.
+    pool.close().await;
+}
+
+/// Poll `pg_stat_activity` until some other backend of this test database is
+/// actually waiting on a heavyweight lock (5s cap) — proves the blocked point
+/// instead of trusting a bare sleep. (Mirrors `service_enrolments.rs`.)
+async fn wait_for_lock_waiter(db: &PgPool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock' \
+               AND pid <> pg_backend_pid())",
+        )
+        .fetch_one(db)
+        .await
+        .expect("poll pg_stat_activity");
+        if waiting {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no backend ever blocked on a lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// 冪等唯一鍵違例分支:同 key 的孿生在本次 checkout 預查之後、寫入冪等鍵之前
+/// commit。T0 先 INSERT `order_idempotency(user, 'twin-key', O_twin)` 不
+/// commit,checkout 預查(read committed)看不到它。T0 的 INSERT 經
+/// `order_idempotency.user_id` FK 對買家 users 列取 `FOR KEY SHARE`,所以
+/// checkout 實際是卡在取鎖第一步(users `FOR UPDATE`)——以
+/// `pg_stat_activity` 確認它真的在等鎖後才 commit T0。放行後 checkout 走完整個
+/// 流程,寫冪等鍵時撞上已 commit 的列 → 唯一鍵違例 → 先 release tx 再重播
+/// O_twin。
+///
+/// 跑在**單連線池**上:唯一鍵違例分支若沒先 release 就重播,
+/// `assemble_response` 會在空池上等到 `PoolTimedOut`——同時證明這個站點不會
+/// 自我死鎖(補上 `order_paths_complete_on_a_single_connection_pool` 沒覆蓋的
+/// 那個 release 站點)。
+#[sqlx::test]
+async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
+    let user = common::seed_member(&db, "twin-buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "twin-prod", 1000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    let o_twin = seed_order_with_item(&db, user, product, "twin-prod", 1, 1000, "paid").await;
+
+    // T0: the twin's idempotency row, inserted but NOT committed yet.
+    let mut t0 = db.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO order_idempotency (user_id, idempotency_key, order_id, created_at) \
+         VALUES ($1, 'twin-key', $2, NOW())",
+    )
+    .bind(user)
+    .bind(o_twin)
+    .execute(&mut *t0)
+    .await
+    .unwrap();
+
+    let connect_opts = db.connect_options().as_ref().clone();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_with(connect_opts)
+        .await
+        .expect("build single-connection pool on the test database");
+
+    // Real OS thread (the `#[sqlx::test]` runtime is current-thread), so the
+    // checkout makes progress and blocks while this task keeps polling.
+    let handle = tokio::runtime::Handle::current();
+    let checkout_pool = pool.clone();
+    let checkout = tokio::task::spawn_blocking(move || {
+        handle.block_on(service::checkout(
+            &checkout_pool,
+            user,
+            Some("twin-key".to_string()),
+            CheckoutRequest::default(),
+            None,
+            common::studio_now_utc(chrono::Utc::now()),
+        ))
+    });
+
+    wait_for_lock_waiter(&db).await;
+    assert!(
+        !checkout.is_finished(),
+        "checkout must be blocked behind T0"
+    );
+    t0.commit().await.unwrap();
+
+    let replayed = checkout
+        .await
+        .expect("checkout task panicked")
+        .expect("unique violation must replay the twin, not fail");
+    assert_eq!(replayed.id, o_twin, "must replay the twin's order");
+
+    assert_eq!(common::order_count(&db, user).await, 1, "no second order");
+    assert_eq!(
+        common::cart_count(&db, user).await,
+        1,
+        "losing checkout rolled back"
+    );
+    assert_eq!(
+        common::product_stock(&db, product).await,
+        Some(5),
+        "stock untouched"
+    );
+
     pool.close().await;
 }
