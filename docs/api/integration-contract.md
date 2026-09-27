@@ -234,7 +234,7 @@ Body：`{ email, name, password }`（email 格式、name 2-100 字、password 8-
 
 #### `POST /auth/login` — 公開
 Body：`{ email, password }`。回應：`AuthResponse`。
-錯誤：401（帳密錯誤、帳號停用、或觸發每信箱 15 分鐘鎖定 — 皆回同一訊息，不區分原因）。
+錯誤：401（帳密錯誤、帳號停用、或觸發每信箱 15 分鐘鎖定 — 皆回同一訊息，不區分原因）。回應時間不洩漏帳號是否存在——查無帳號或只綁 Google 的帳號一樣跑一次 Argon2 驗證。
 
 #### `POST /auth/google` — 公開
 Body：`{ code }`（Google OAuth authorization code）。回應：`AuthResponse`。
