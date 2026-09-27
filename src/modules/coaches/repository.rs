@@ -184,7 +184,7 @@ pub async fn find_schedules(
 /// transaction). Each tuple is `(day_of_week, start_time, end_time,
 /// is_available)` — already parsed/validated by the caller
 /// (`coaches::service::parse_schedule_entries`). Mirrors
-/// `sessions::calendar::replace_weekly_schedule_tx`'s pre-parsed-row contract.
+/// `sessions::calendar::SlotRow`'s pre-parsed-row contract.
 pub async fn replace_schedules(
     db: &PgPool,
     coach_id: Uuid,

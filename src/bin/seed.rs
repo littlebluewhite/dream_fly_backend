@@ -797,7 +797,8 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
 
 /// Bulk-insert attendance rows (idempotent on the real
 /// `UNIQUE(session_id, enrolment_id)` constraint). Single UNNEST statement,
-/// mirroring `sessions::calendar::materialize_range`'s bulk shape.
+/// mirroring the UNNEST bulk INSERT of `sessions::calendar`'s private
+/// slot-date insert (behind `backfill_for_seed`).
 async fn insert_attendance_bulk(
     db: &PgPool,
     marked_by: Uuid,

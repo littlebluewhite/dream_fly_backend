@@ -9,9 +9,9 @@
 //! sub-lists, the KPI/income aggregates, and the activity feed's
 //! merged-UNION row) get a named `FromRow` struct here; every other
 //! aggregate query decodes straight into a scalar or tuple in
-//! `repository.rs` (mirrors `sessions::calendar::materialize_range`'s
-//! tuple-decoded candidates query — no dedicated struct needed for a
-//! handful of primitive columns).
+//! `repository.rs` (mirrors the tuple-decoded candidates query of
+//! `sessions::calendar`'s private slot-date INSERT — no dedicated struct
+//! needed for a handful of primitive columns).
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;

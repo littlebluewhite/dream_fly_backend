@@ -32,8 +32,8 @@ fn parse_query_date(s: &str) -> Result<NaiveDate, AppError> {
 /// Materialize then list a single course's sessions in `[from, to]`
 /// (defaults: from=studio-local today, to=from+28d). Only dates from today
 /// on are materialized; a past `from` just reads the rows that already
-/// exist (ADR-0011). 422 if `to < from` or
-/// the span exceeds `MAX_RANGE_DAYS`. 404 if the course doesn't exist.
+/// exist (ADR-0011). 422 if `to < from` or the span exceeds
+/// `MAX_RANGE_DAYS`. 404 if the course doesn't exist.
 pub async fn list_course_sessions(
     db: &PgPool,
     at: StudioNow,

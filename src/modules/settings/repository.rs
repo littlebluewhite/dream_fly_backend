@@ -12,9 +12,9 @@ pub async fn find_all(db: &PgPool) -> Result<Vec<Setting>, sqlx::Error> {
 }
 
 /// Upsert one key within an already-open transaction — `service` loops this
-/// once per key in the `PUT /settings` body (mirrors
-/// `attendance::records::upsert_tx`'s per-row loop-in-tx
-/// style), then commits once so the whole request is a single transaction.
+/// once per key in the `PUT /settings` body (mirrors the per-row
+/// loop-in-tx style of `attendance::records::mark_tx`), then commits once
+/// so the whole request is a single transaction.
 pub async fn upsert_tx(
     tx: &mut Transaction<'_, Postgres>,
     key: &str,

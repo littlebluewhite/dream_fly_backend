@@ -1,5 +1,6 @@
-//! Self-deadlock discipline for `service::assemble_response`, lifted out of
-//! three cross-referencing comments into the type system. See `TxReleased`.
+//! Private witness file for `orders`: the self-deadlock discipline for
+//! `service::assemble_response`, enforced by a type (it replaced three
+//! cross-referencing comments). See `TxReleased`.
 //!
 //! A private file module of `orders` on purpose: `TxReleased`'s only field is
 //! private, so one can be built solely from *inside this file*. Isolating the
