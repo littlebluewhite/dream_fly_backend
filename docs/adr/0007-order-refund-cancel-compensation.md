@@ -618,3 +618,32 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 報名（非 key 欄位，`NO KEY UPDATE` 級）相容，不成環。整段仍在同一 tx，任何失敗連同假單一起回滾。
 見證：`service_orders.rs::refund_cancels_pending_leaves_of_order_enrolments`。本檔其餘敘述維持決策
 當下狀態。
+
+## Addendum（2026-09-27）：結帳冪等收進 `orders::idempotency`——表的 owner，不是純核
+
+**遷移登記**（行為零變更：400 字串、狀態碼、錯誤優先序、鎖序逐位元等價）：
+
+- 新增 `orders::idempotency`（`pub mod`），是 `order_idempotency` 表的唯一 owner。它**不是**
+  「訂單決策純件」那一類純核：它擁有一張表，查詢與寫入都有 IO。
+  - `IdempotencyKey`（欄位私有）：`from_headers` 搬自 `orders::handlers::extract_idempotency_key`，
+    400「Idempotency-Key must be 1-128 ASCII printable characters」逐字；`parse` 是驗值規則本身。
+  - `pub(super)` 三個具名呼叫：`replay`（優先序第 1 條）、`replay_or`（空購物車）、
+    `record`（唯一鍵違例，回 `Recorded { Fresh(tx), TwinWon(OrderResponse) }`）。key 為 `None`
+    時三者都放行。`replay_or`/`record` 以值收下 tx，失敗分支在函式內先 release 再重播。
+  - `find_idempotency`/`insert_idempotency_tx` 從 `orders::repository` 搬入、降為私有；
+    `replay_by_key` 一併搬入。「`order_idempotency` 沒有 DELETE 路徑」的論證移到 `record` 的 doc。
+- `TxReleased` 從 `orders::service` 內的 `mod tx_witness` 抽成 orders 的私有檔
+  `orders/tx_witness.rs`，`assemble_response` 改為 `pub(super)`。建構子仍只有
+  `release`/`commit`/`no_open_tx`（本檔 2026-07-20 Addendum 的 witness 不變）。
+- `checkout(db, user_id, key: Option<IdempotencyKey>, …)`：函式體只剩業務錯誤與三個具名呼叫。
+  doc 的結果優先序清單**仍是唯一權威**，只把三格指向新函式；順帶修正下架 422 註解裡過時的
+  「two unique-violation branches」（實際只有一個）。
+
+**「不做 `plan_checkout`」的裁決不受影響**：冪等搬出去的是表與重播機制，不是優先序。三個重播
+點在優先序裡的位置照舊寫在 `checkout` 的 doc，`idempotency` 模組本身不描述順序。
+
+**測試**：`handlers.rs` 的 7 支 header 單元測試搬進 `orders::idempotency`，另補 `parse` 邊界
+（128/129 字元、trim 後才算長度）。新增
+`service_orders::checkout_same_key_twin_committed_mid_flight_replays_twin`：它在單連線池上釘住
+唯一鍵違例 → 先 release → 重播這條路徑，補上 `order_paths_complete_on_a_single_connection_pool`
+原本坦承沒覆蓋的那個 release 站點。這支測試在重構前後都是綠的。本檔其餘敘述維持決策當下狀態。
