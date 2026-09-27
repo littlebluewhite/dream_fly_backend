@@ -629,7 +629,7 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunded" }`。回應：更新後的 `OrderResponse`。
 狀態機（非法轉換回 400）：`pending→paid|cancelled`；`paid→processing|refunded|cancelled`；`processing→completed|refunded`；`completed→refunded`；同狀態原地不動視為合法（幂等）。**Seed 出來的訂單一律已是 `paid`**（見 §1.8），實務上前端幾乎不會看到 `pending`。
 
-**補償語意（轉入 `cancelled`/`refunded`）**：當轉入前的狀態計入營收（`paid`/`processing`/`completed`）且目標是 `cancelled` 或 `refunded` 時（兩者補償語意相同，無差異——ADR-0007 決策 1），同一個交易內會依序：反轉該訂單結帳當下的點數流（ledger 實錄為準，不是抄訂單彙總欄——`checkout_redeem` 反轉為 `refund_restore`、`checkout_earn` 反轉為 `refund_clawback`，順序 restore 先、clawback 後，見 §1.6）→ 回補該訂單有實際扣減庫存的商品行（沒有扣減過的行，例如結帳當下是無限庫存，不會被回補，即使商品後來被改成有限庫存）→ 取消該訂單產生的報名與訂閱（`status` 一併轉為 `cancelled`，見 §3.11/§3.12）。**是整單語意**：不論訂單此刻已經核銷/使用多少，一律全額反轉，不按使用比例折算。優惠券使用不會被反轉（優惠券本身無使用次數計數），`paid_at` 也維持原值不清空。
+**補償語意（轉入 `cancelled`/`refunded`）**：當轉入前的狀態計入營收（`paid`/`processing`/`completed`）且目標是 `cancelled` 或 `refunded` 時（兩者補償語意相同，無差異——ADR-0007 決策 1），同一個交易內會依序：反轉該訂單結帳當下的點數流（ledger 實錄為準，不是抄訂單彙總欄——`checkout_redeem` 反轉為 `refund_restore`、`checkout_earn` 反轉為 `refund_clawback`，順序 restore 先、clawback 後，見 §1.6）→ 回補該訂單有實際扣減庫存的商品行（沒有扣減過的行，例如結帳當下是無限庫存，不會被回補，即使商品後來被改成有限庫存）→ 取消該訂單產生的報名（連同這些報名底下的**待審**假單轉為 `cancelled`，已核准假單與補課不動，見 §3.12/§3.20）與訂閱（`status` 一併轉為 `cancelled`，見 §3.11/§3.12）。**是整單語意**：不論訂單此刻已經核銷/使用多少，一律全額反轉，不按使用比例折算。優惠券使用不會被反轉（優惠券本身無使用次數計數），`paid_at` 也維持原值不清空。
 
 `pending → cancelled`（訂單從未成交）與**同狀態重複 PATCH** 都不觸發任何補償——前者沒有東西可撤銷，後者直接回傳既有訂單（200，不 UPDATE、無新的 outbox 事件或通知，可觀測地冪等，不會重複補償）。
 
@@ -683,6 +683,8 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 
 #### `PATCH /enrolments/{id}/cancel` — 需登入（本人或 admin）
 無 body。回應：更新後的 `EnrolmentResponse`（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。**`cancelled` 另一個來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——與本端點的自助/admin 取消是同一個 `status` 值，`EnrolmentResponse` 本身無法分辨這筆報名是被使用者自己取消還是因為訂單整筆退款而取消。已經自助取消過的報名再被訂單退款觸及是安全的 no-op，不會報錯。
+
+**連帶取消待審假單**：取消報名（本端點或訂單退款/取消）會在同一個交易內，把這筆報名底下 `status = "pending"` 的假單一併轉為 `cancelled`（見 §3.20）；**已核准的假單與已預約的補課不受影響**。不另發通知。錯誤序不變：404（不存在）→ 403（非本人也非 admin）→ 409（已取消）。
 
 #### `GET /enrolments/{id}/attendance` — 需登入（本人或 admin）
 這筆報名的逐堂出勤紀錄：`attendance_records` JOIN `course_sessions`，只回**已點名**的場次(未點名場次不出現)，依 `session_date`(次要鍵 `start_time`)**舊到新**排序。回應（`AttendanceEntryResponse[]`，純陣列）：
@@ -940,7 +942,7 @@ Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，�
 回應：`LeaveRequestResponse[]`（**純陣列，不分頁**，新到舊）——形狀同上，每筆皆含 `makeup_session_id`/`makeup_session_date`/`makeup_start_time`。
 
 #### `DELETE /leave-requests/{id}` — 需登入（僅本人 owner，無 admin 例外）
-無 body。僅 `status = "pending"` 的假單可取消 → 更新為 `cancelled`。回應：**204 No Content**。錯誤：404（不存在）；403（非本人）；409（非 pending，例如已核准/已駁回/已取消）。
+無 body。僅 `status = "pending"` 的假單可取消 → 更新為 `cancelled`。回應：**204 No Content**。錯誤：404（不存在）；403（非本人）；409「僅待審核假單可取消」（非 pending，例如已核准/已駁回/已取消——含報名取消時被連帶取消的假單，見 §3.12）。
 
 #### `GET /leave-requests?status=&course_id=` — admin 或該課教練
 分頁列表；`status`（`pending`/`approved`/`rejected`/`cancelled`）與 `course_id` 皆選填。教練僅能看到自己教的課程（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者）；admin 看全部。回應（`LeaveRequestListResponse`）：
@@ -965,7 +967,7 @@ Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，�
 #### `PATCH /leave-requests/{id}` — admin 或該課教練
 Body：`{ status: "approved" | "rejected" }`（其他任何值，包含 `pending`/`cancelled`，一律 422）。僅 `status = "pending"` 的假單可審核。**核准在同一交易內**完成兩件事：更新假單為 `approved`（寫入 `decided_by`/`decided_at`），並 upsert 該場次的 `attendance_records` 為 `status = 'leave'`（`marked_by` = 決定者）；駁回僅更新假單狀態，**不寫入**任何出勤紀錄。此 `leave` 投影**即使覆寫該生既有的 `present`/`absent` 也照寫**——核准恆勝，晚核准合法、`decide` 無時間閘；反向的批次點名（§3.19 `PUT`）則不可把此 `leave` 覆寫回 `present`/`absent`，見 §3.19 裁決 5 與 ADR-0008。決定完成（交易提交後）才同步寫入通知，見上方「其他細節」。回應：更新後的 `LeaveRequestResponse`（此時 `makeup_session_id` 等欄位必為 `null`——補課須另呼叫下方端點）。
 
-錯誤：404（不存在）；403（非本課教練且非 admin）；409（非 pending；或核准時該假單所屬報名已取消，訊息「報名已取消，無法核准請假」——駁回不受此限，即使報名已取消仍可駁回）；422（`status` 非 `approved`/`rejected`）。
+錯誤：404（不存在）；403（非本課教練且非 admin）；409「僅待審核假單可審核」（非 pending——報名取消時待審假單已被連帶轉為 `cancelled`（見 §3.12），因此報名取消後再核准**或駁回**都回這個 409）；409「報名已取消，無法核准請假」（併發 backstop：pending 假單所屬報名已取消，只出現在報名取消 commit 之後才建立的假單或舊資料上——駁回不受此限，仍可駁回）；422（`status` 非 `approved`/`rejected`）。
 
 #### `POST /leave-requests/{id}/makeup` — 需登入（僅本人 owner）
 Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順序：假單須為 `approved` 且尚未預約過補課（`makeup_session_id IS NULL`，否則 409）→ 報名仍有效（否則 409）→ 目標場次須與原假單同一課程（否則 422）→ 目標場次不可為請假場次本身（否則 422）→ 目標場次須尚未開始（否則 422）→ 名額檢查（見下，否則 409）。成功寫入 `makeup_session_id`，回應更新後的 `LeaveRequestResponse`（`makeup_session_date`/`makeup_start_time` 補上目標場次的日期/時間）。

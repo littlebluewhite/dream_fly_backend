@@ -603,3 +603,18 @@ anchor 與 CONTEXT「行計畫」詞條）。本則推翻該裁決：取鎖收�
 混合購物車退款由 `refund_reverses_stock_enrolment_subscription_and_points` 端到端覆蓋）。
 `tests/service_orders.rs` 的端到端補償測試與 36 格 `decide_transition` 表格原樣保留。本檔其餘敘述
 維持決策當下狀態。
+
+## Addendum（2026-09-27）：補償步驟 4 多一個 owner 寫入——報名的待審假單
+
+ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假單」，單一 owner 是
+`enrolments::service`。補償的步驟 4 因此多一個寫入，但 `compensate_order_artifacts_tx` 的平鋪清單
+**不變**（orders 不動）：`enrolments::service::cancel_by_order_tx` 內部先以 `RETURNING id` 取得真的
+翻轉的報名，再於同 tx 呼叫 `leave::service::cancel_pending_for_enrolments_tx` 只取消這些報名的
+`pending` 假單；對外仍回 `u64`。已自助取消過的報名不在 `RETURNING` 內——它的待審假單當時已由
+`cancel_enrolment` 取消。已核准假單與補課不動（ADR-0008 gap 1）。
+
+**鎖序**更新為 orders → users → products → enrolments → leave_requests（待審）→ subscriptions。
+假單列只在報名列之後取；核准路徑（先假單列、後經出勤 FK 對報名列取 `KEY SHARE`）與退款的 UPDATE
+報名（非 key 欄位，`NO KEY UPDATE` 級）相容，不成環。整段仍在同一 tx，任何失敗連同假單一起回滾。
+見證：`service_orders.rs::refund_cancels_pending_leaves_of_order_enrolments`。本檔其餘敘述維持決策
+當下狀態。

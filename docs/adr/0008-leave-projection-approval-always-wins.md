@@ -144,3 +144,39 @@ guard 的 `NOT EXISTS` 分支同樣放行。見證:`plan_present_for_non_approve
 - seed 的 `insert_attendance_bulk`、fixtures 的 `seed_attendance` 照 ADR-0010 繼續 bypass。
 
 本檔其餘敘述維持決策當下狀態。
+
+## Addendum(2026-09-27):報名取消連帶取消待審假單;核准 409 降為 backstop
+
+**使用者裁決**:報名取消時,同一報名底下的**待審**假單同 tx 轉成 `cancelled`;已核准假單與已約補
+課不動。這延續「只擋核准、不擋拒絕」的初衷——假單不會卡在教練的待審清單裡。**決策 5 的 gap 1
+不重開**:`approved` 仍無撤銷路徑,本變更只碰 `pending`。
+
+- **owner**:「報名取消」的單一 owner 是 `enrolments::service`。`cancel_enrolment`(自助/admin)在
+  `cancel_if_active_tx` 之後、同 tx 呼叫 `leave::service::cancel_pending_for_enrolments_tx`(ADR-0005
+  轉手,repository 同名函式:`WHERE enrolment_id = ANY($1) AND status = 'pending'`,謂詞與
+  `cancel_if_pending_tx` 相同);`cancel_by_order_tx`(退款補償)改以 `RETURNING id` 只把真的翻轉
+  的報名交給 leave,對外仍回 `u64`,orders 不動。錯誤序 404 → 403 → 409 不變;不發通知。
+- **讀取端守衛**:`rules::check_decidable` 的「報名已取消,無法核准請假」409 降為**併發 backstop**
+  ——取消之後的審核改走 not-pending 409「僅待審核假單可審核」(駁回也是,原本 200)。backstop 仍擋
+  兩種列:取消 commit 之後才插入的 pending 列(`create_leave_request` 讀 `active_enrolments` 與
+  INSERT 之間的窄窗),以及上線前遺留的資料(不做資料遷移;教練仍可駁回清掉)。
+  `check_makeup_source` 的報名 409、座位公式的 active 過濾原樣保留。
+- **死鎖論證**:decide 不鎖假單列,真正的環在報名列。核准 tx 先 UPDATE 假單列(持有列鎖),再經
+  `records::project_approved_leave_tx` INSERT 出勤——`attendance_records.enrolment_id` 的 FK 對報名
+  列取 `FOR KEY SHARE`。取消 tx 以前用 `find_by_id_tx` 的 `FOR UPDATE` 鎖報名列;只要取消路徑也要
+  動假單,兩邊就各持一把、各等對方:取消等假單列,核准的 INSERT 等報名列 → "deadlock detected"。
+  修法:`find_by_id_tx` 改取 `FOR NO KEY UPDATE`(同 ADR-0007 商品預鎖的手法)。它與 `KEY SHARE`
+  相容,核准的 INSERT 直接通過並 commit;取消隨後重新評估假單列,看到已是 `approved` → 不動(合法的
+  「先核准再退課」狀態)。兩個取消之間仍互斥(`NO KEY UPDATE` 彼此衝突);`cancel_if_active_tx` 只改
+  非 key 欄位,本身也只取 `NO KEY UPDATE` 級。退款路徑(UPDATE 報名 → UPDATE 假單)同理不成環。
+  副作用:取消進行中時,參照該報名的 FK INSERT 不再被擋到 commit。
+- **見證**:`service_enrolments.rs::cancel_enrolment_vs_in_flight_approval_does_not_deadlock`(T1 以
+  raw SQL 核准並持有假單列 → 取消卡住(輪詢 `pg_stat_activity` 確認在等鎖)→ T1 INSERT 出勤、
+  commit → 兩邊皆 Ok、報名 cancelled、假單仍 approved;改鎖前單跑得到 40P01 "deadlock detected")、
+  `http_enrolments.rs::cancel_enrolment_cancels_only_its_pending_leave_requests`、
+  `service_orders.rs::refund_cancels_pending_leaves_of_order_enrolments`,以及 `http_leave.rs` 的
+  `decide_{approve,reject}_after_enrolment_cancel_is_409_not_pending` 與兩支 backstop
+  `decide_approve_pending_on_cancelled_enrolment_returns_409`、
+  `decide_reject_pending_on_cancelled_enrolment_succeeds`。
+
+本檔其餘敘述維持決策當下狀態。
