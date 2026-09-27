@@ -1919,7 +1919,8 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
 }
 
 /// B5:退款補償取消訂單的報名時,同 tx 連帶把該報名的待審假單轉成
-/// `cancelled`(`enrolments::service::cancel_by_order_tx` → leave)。
+/// `cancelled`(`enrolments::service::cancel_by_order_tx` → leave);同一報名
+/// 已核准的假單維持 `approved`(ADR-0008 gap 1)。
 #[sqlx::test]
 async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
     let course = seed_course_with_capacity(&db, "Refund Leave Course", None, 12).await;
@@ -1947,6 +1948,10 @@ async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
     let ten = chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap();
     let session = seed_course_session(&db, course, tomorrow, nine, ten).await;
     let leave = seed_leave_request(&db, order.enrolments[0].id, session, "pending").await;
+    let day_after = tomorrow + chrono::Duration::days(1);
+    let approved_session = seed_course_session(&db, course, day_after, nine, ten).await;
+    let approved_leave =
+        seed_leave_request(&db, order.enrolments[0].id, approved_session, "approved").await;
 
     service::update_order_status(&db, order.id, "refunded", None)
         .await
@@ -1959,6 +1964,16 @@ async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
             .await
             .unwrap();
     assert_eq!(status, "cancelled");
+    let approved_status: String =
+        sqlx::query_scalar("SELECT status::text FROM leave_requests WHERE id = $1")
+            .bind(approved_leave)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        approved_status, "approved",
+        "an approved leave is left as-is"
+    );
 }
 
 // ---------------------------------------------------------------------

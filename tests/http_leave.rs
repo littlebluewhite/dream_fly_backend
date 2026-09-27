@@ -645,6 +645,43 @@ async fn decide_reject_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
     );
 }
 
+/// B5 member-side counterpart: once the enrolment cancel has cancelled the
+/// pending leave in the same tx, the member's own `DELETE` on it is the
+/// not-pending 409.
+#[sqlx::test]
+async fn cancel_leave_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let course_id = seed_course(&app.db, "Leave Cancel After Enrolment Cancel Course", None).await;
+    let member = app
+        .register_member(
+            "leave-cancel-after-enrolment-cancel@example.com",
+            "Password!234",
+        )
+        .await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
+
+    let cancel_resp = app
+        .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
+        .authorization_bearer(&member.access_token)
+        .await;
+    assert_eq!(
+        cancel_resp.status_code(),
+        200,
+        "body={}",
+        cancel_resp.text()
+    );
+
+    let resp = app
+        .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
+        .authorization_bearer(&member.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 409, "body={}", resp.text());
+    assert_eq!(
+        resp.json::<serde_json::Value>()["error"],
+        "僅待審核假單可取消"
+    );
+}
+
 /// Backstop: a pending leave on an already-cancelled enrolment (a row inserted
 /// after the cancel committed, or pre-B5 legacy data — built here straight by
 /// fixture) still can't be approved.
