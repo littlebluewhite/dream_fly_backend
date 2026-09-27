@@ -6,7 +6,7 @@ Dream Fly 體操館的後端服務 — 以 Rust + Axum 0.8 打造的模組化 RE
 
 | 類別 | 技術 |
 | --- | --- |
-| 語言 / 版本 | Rust 2024 edition (rustc ≥ 1.85) |
+| 語言 / 版本 | Rust 2024 edition (rustc ≥ 1.96) |
 | Web 框架 | [Axum](https://github.com/tokio-rs/axum) 0.8 + Tower / Tower-HTTP |
 | 資料庫 | PostgreSQL 17 + [sqlx](https://github.com/launchbadge/sqlx) 0.8 |
 | 快取 / Rate limit | Redis 7（經 `AccessCache` / `EphemeralStore` seam） |
@@ -89,7 +89,7 @@ notifications · contact
 
 ### 1. 先決條件
 
-- Rust 工具鏈（rustc ≥ 1.85，建議用 [rustup](https://rustup.rs/)）
+- Rust 工具鏈（rustc ≥ 1.96，建議用 [rustup](https://rustup.rs/)）
 - Docker 與 Docker Compose
 - `sqlx-cli`（用於執行 migration）
 
