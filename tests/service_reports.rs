@@ -871,6 +871,11 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
     // materializes this month's sessions, so the summed minutes are exactly
     // (this-month session count) × (per-session duration). A NULL-venue slot
     // and a session matching no slot must both be excluded.
+    //
+    // Fixed clock: 2026-09-01 is a Tuesday and the 1st of the month, so the
+    // whole month is ≥ today — every slot date in September is counted
+    // (A: Mondays 7/14/21/28, B: Tuesdays 1/8/15/22/29).
+    let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap());
     let course_a = seed_course(&db, "Venue A Course", None).await;
     let course_b = seed_course(&db, "Venue B Course", None).await;
     let course_c = seed_course(&db, "Venue C Course", None).await;
@@ -885,28 +890,14 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
     // A directly-seeded session for course_d at a time no slot matches -> the
     // session's venue snapshot is NULL -> excluded. Pinned to the 1st of this month so
     // it is inside the venue-usage window.
-    let month_start = Utc::now().date_naive().with_day(1).unwrap();
+    let month_start = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
     seed_course_session(&db, course_d, month_start, t(23, 0), t(23, 30)).await;
 
-    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
-        .await
-        .expect("admin_report");
-
-    let n_a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_sessions WHERE course_id = $1")
-        .bind(course_a)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    let n_b: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_sessions WHERE course_id = $1")
-        .bind(course_b)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert!(n_a >= 1 && n_b >= 1, "materialize should create ≥1 session for each slot this month");
+    let report = service::admin_report(&db, at).await.expect("admin_report");
 
     let minutes = |venue: &str| report.venue_usage.iter().find(|r| r.venue == venue).map(|r| r.minutes);
-    assert_eq!(minutes("A 訓練館"), Some(n_a * 120));
-    assert_eq!(minutes("B 教室"), Some(n_b * 60));
+    assert_eq!(minutes("A 訓練館"), Some(4 * 120));
+    assert_eq!(minutes("B 教室"), Some(5 * 60));
     assert!(
         report.venue_usage.iter().all(|r| r.venue == "A 訓練館" || r.venue == "B 教室"),
         "NULL-venue slot and no-slot session must be excluded, got {:?}",
@@ -922,16 +913,12 @@ async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
     let slot_id =
         seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "Old Hall")
             .await;
-    // First report materializes this month's sessions with "Old Hall".
-    service::admin_report(&db, common::studio_now_utc(Utc::now()))
+    // First report (2026-09-01, 1st of the month) materializes all four
+    // September Mondays (7/14/21/28) with "Old Hall".
+    let first_at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap());
+    service::admin_report(&db, first_at)
         .await
         .expect("first admin_report");
-    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_sessions WHERE course_id = $1")
-        .bind(course_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert!(n >= 1, "every month has at least one Monday");
 
     sqlx::query("UPDATE course_schedule_slots SET venue = 'New Hall' WHERE id = $1")
         .bind(slot_id)
@@ -939,7 +926,10 @@ async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
         .await
         .unwrap();
 
-    let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
+    // Second report later in the same month: the already-materialized rows
+    // keep their snapshot.
+    let second_at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 22, 0, 0, 0).unwrap());
+    let report = service::admin_report(&db, second_at)
         .await
         .expect("second admin_report");
     let minutes = |venue: &str| {
@@ -949,7 +939,7 @@ async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
             .find(|r| r.venue == venue)
             .map(|r| r.minutes)
     };
-    assert_eq!(minutes("Old Hall"), Some(n * 60));
+    assert_eq!(minutes("Old Hall"), Some(4 * 60));
     assert_eq!(minutes("New Hall"), None);
 }
 
