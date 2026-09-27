@@ -35,6 +35,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
 use tokio_util::task::TaskTracker;
@@ -57,7 +58,8 @@ use dream_fly_backend::utils::sms::SmsClient;
 use wiremock::MockServer;
 
 use common::mocks::{
-    FailingEphemeralStore, FakeGoogleIdentity, InMemoryAccessCache, MockEmailClient,
+    FailingEphemeralStore, FakeGoogleIdentity, InMemoryAccessCache, InMemoryEphemeralStore,
+    MockEmailClient,
 };
 use common::twilio::{extract_otp_code, mount_twilio, twilio_sent};
 
@@ -1394,4 +1396,87 @@ async fn google_auth_provider_rejection_writes_nothing(db: PgPool) {
             .expect("count rows");
         assert_eq!(rows, 0, "`{count_sql}` must be 0");
     }
+}
+
+// ---------------- login timing (bug #1: 帳號列舉時間差) ----------------
+
+/// 三條 401 路徑各跑 1 次熱身(不計時)、再量 3 次取最小值:查無 email、
+/// 只綁 Google 的帳號、已知帳號但密碼錯。修正前,前兩條完全跳過 Argon2
+/// (只碰記憶體 store,耗時趨近 0);已知帳號密碼錯那條一定跑一次 Argon2
+/// (~50-100ms)。4 倍餘裕只會被「miss 路徑跳過 Argon2」弄紅,commit 前照
+/// brief 連跑 20 次觀察 wall-clock 餘裕是否夠(機器負載可能影響)。
+#[sqlx::test]
+async fn login_miss_costs_one_argon2_verification(db: PgPool) {
+    let store = InMemoryEphemeralStore::new();
+    let cfg = common::test_auth_config();
+
+    let known_email = format!("timing-known-{}@example.com", Uuid::now_v7());
+    common::seed_member(&db, &known_email, "Password!234").await;
+
+    let missing_email = format!("timing-missing-{}@example.com", Uuid::now_v7());
+
+    let google_email = format!("timing-google-{}@example.com", Uuid::now_v7());
+    sqlx::query(
+        r#"
+        INSERT INTO users (id, email, name, password_hash, google_id, phone_verified, is_active, created_at, updated_at)
+        VALUES ($1, $2, 'Timing Google User', NULL, $3, false, true, NOW(), NOW())
+        "#,
+    )
+    .bind(Uuid::now_v7())
+    .bind(&google_email)
+    .bind(format!("google-fixture-{google_email}"))
+    .execute(&db)
+    .await
+    .expect("insert google-only user");
+
+    async fn timed_login(
+        db: &PgPool,
+        store: &InMemoryEphemeralStore,
+        cfg: &dream_fly_backend::config::AuthConfig,
+        email: &str,
+        password: &str,
+    ) -> Duration {
+        let start = Instant::now();
+        let err = service::login(
+            db,
+            store,
+            cfg,
+            LoginRequest {
+                email: email.into(),
+                password: password.into(),
+            },
+        )
+        .await
+        .expect_err("failure count stays well under the lockout threshold in this test");
+        assert!(matches!(err, AppError::Unauthorized), "got: {err:?}");
+        start.elapsed()
+    }
+
+    /// 1 次熱身(不計入)、再量 3 次取最小值。
+    async fn min_of_three(
+        db: &PgPool,
+        store: &InMemoryEphemeralStore,
+        cfg: &dream_fly_backend::config::AuthConfig,
+        email: &str,
+        password: &str,
+    ) -> Duration {
+        timed_login(db, store, cfg, email, password).await;
+        let mut min = Duration::MAX;
+        for _ in 0..3 {
+            min = min.min(timed_login(db, store, cfg, email, password).await);
+        }
+        min
+    }
+
+    let min_missing = min_of_three(&db, &store, &cfg, &missing_email, "anything").await;
+    let min_google = min_of_three(&db, &store, &cfg, &google_email, "anything").await;
+    let min_known = min_of_three(&db, &store, &cfg, &known_email, "wrong-password").await;
+
+    let min_miss = min_missing.min(min_google);
+    assert!(
+        min_miss * 4 >= min_known,
+        "a miss path (no account / no password hash) must cost at least ~1/4 of a \
+         real Argon2 verification, not skip it: min_miss={min_miss:?} \
+         (missing={min_missing:?}, google-only={min_google:?}), min_known={min_known:?}"
+    );
 }

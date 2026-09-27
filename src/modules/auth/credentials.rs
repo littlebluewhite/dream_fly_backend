@@ -8,9 +8,10 @@
 //! DB、不跑 Argon2,只洩漏「這個 key 被鎖了」,不洩漏「這個帳號存不存
 //! 在」(不存在的 email 一樣會被鎖進同一個計數器)。
 //!
-//! 查無帳號與只綁 Google 的帳號(無 `password_hash`)沿用「略過 Argon2」
-//! 的舊行為——1d 前的狀態,之後這裡的行為變成一律驗一次
-//! (`utils::password::verify_password`),見該 commit。
+//! 查無帳號與只綁 Google 的帳號(無 `password_hash`)一律照跑一次 Argon2
+//! (`utils::password::verify_password`,`hash: None` 對假雜湊驗、恆回
+//! `Ok(false)`)——回應時間不再洩漏帳號是否存在(bug #1,1d 修正;此前
+//! 這兩條路徑會略過驗證,耗時趨近 0)。
 //!
 //! `is_active` 檢查收在 `judge` 裡:密碼驗證通過之後才判,順序仍先於
 //! 呼叫端(`service::login`)清計數與 `update_last_login`。
@@ -63,14 +64,12 @@ pub(super) async fn verify(
     // 2. 查帳號。
     let user = repository::find_user_by_email(db, email).await?;
 
-    // 3. 只在帳號存在且有密碼雜湊時才跑 Argon2——查無帳號、只綁 Google 的
-    //    帳號沿用舊行為略過驗證(1d 改)。
-    let matched = match user.as_ref().and_then(|u| u.password_hash.as_deref()) {
-        Some(hash) => self::password::verify_password(password.to_string(), hash.to_string())
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("password verify error: {e}")))?,
-        None => false,
-    };
+    // 3. 一律驗一次——查無帳號、只綁 Google 的帳號沒有 `password_hash`,
+    //    `verify_password` 對假雜湊驗一次並恆回 `false`,不再是提早略過。
+    let hash = user.as_ref().and_then(|u| u.password_hash.clone());
+    let matched = self::password::verify_password(password.to_string(), hash)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("password verify error: {e}")))?;
 
     // 4. 判決收尾:唯一呼叫 rate_limit 計數/清除的地方。
     match judge(user, matched) {
