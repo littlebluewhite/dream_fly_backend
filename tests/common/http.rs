@@ -19,6 +19,10 @@
 //! - answers `/health` from a `StaticHealthProbe` (`up()` by default), so no
 //!   HTTP test needs Redis; [`spawn_test_app_with_health`] swaps in another
 //!   probe (e.g. `StaticHealthProbe::redis_down()`)
+//! - builds `AppState` through the production `AppState::new`: `Infra` is
+//!   the in-memory adapters above, `Overrides` swaps only email and clock,
+//!   so the HTTP client, SMS client, Google adapter and background tracker
+//!   are the production ones
 //! - wraps the real production router (`startup::build_router`) so every
 //!   test exercises the entire middleware stack + extractors + handlers
 //! - exposes [`MockEmailClient`] via `app.email` so tests can assert on

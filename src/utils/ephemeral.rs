@@ -14,8 +14,8 @@
 //!
 //! **為什麼不擴充 `auth::access::AccessCache`**:access 用不到
 //! `incr_with_ttl`/`getdel`,併進去只會加寬它的 interface。兩個 Redis
-//! adapter 共用同一個 `ConnectionManager`(`main.rs` 各包一份
-//! `redis.clone()`)。
+//! adapter 共用同一個 `ConnectionManager`(`state::Infra::redis` 各包一
+//! 份)。
 
 use async_trait::async_trait;
 use redis::AsyncCommands;

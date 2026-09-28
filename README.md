@@ -50,8 +50,9 @@ notifications · contact
 | 檔案 | 用途 |
 | --- | --- |
 | `src/main.rs` | 啟動入口：載入 env、tracing、DB pool、Redis、（選用）Kafka producer/consumer |
-| `src/startup.rs` | 組建 Axum Router、掛載中介層、`/api/v1/health` 健康檢查 |
-| `src/state/mod.rs` | `AppState { db, redis, access_cache, ephemeral, kafka_producer, config, email_client, sms_client, clock, google_identity, background_tasks }`；限流桶、登入/忘記密碼計數、OTP、重設 token 一律經 `ephemeral`（`utils::ephemeral::EphemeralStore` seam，正式環境為 Redis adapter，整合測試換 in-memory），`redis` 只剩 `/health` 的 PING |
+| `src/startup.rs` | 組建 Axum Router、掛載中介層 |
+| `src/health.rs` | `/api/v1/health` 健康檢查：`HealthProbe` seam（正式環境 `RedisHealthProbe`，整合測試換 `StaticHealthProbe`）與 handler |
+| `src/state/mod.rs` | `AppState { db, access_cache, ephemeral, health, config, email_client, sms_client, clock, google_identity, background_tasks }`，唯一建構點 `AppState::new(db, config, Infra, Overrides)`（`Infra::redis` 為正式組裝）；限流桶、登入/忘記密碼計數、OTP、重設 token 一律經 `ephemeral`（`utils::ephemeral::EphemeralStore` seam，正式環境為 Redis adapter，整合測試換 in-memory），`/health` 經 `health` |
 | `src/config/mod.rs` | 階層式設定：`config/default.toml` → `config/{APP_ENV}.toml` → `APP__*` 環境變數 |
 | `src/error/mod.rs` | `AppError` enum → HTTP 狀態碼，統一錯誤回應格式 |
 
