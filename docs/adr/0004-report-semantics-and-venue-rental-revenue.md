@@ -112,3 +112,9 @@ Consequences 首條「口徑集中寫在 `reports::dto`/`reports::repository` �
 
 Consequences 提到的「`venue_usage` 之前的 idempotent session 物化」自此只物化今天起到月底；本月已過去的日子只
 算已存在的場次，不再依當下週課表回填（會造出幻影場次）。決策與代價見 ADR-0011。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-09-28）：`coaches[].course_count`/`student_count` 含已下架課程
+
+`coaches` 段（Round 4 Phase 4 新增）的 `course_count`/`student_count` 自始就未篩 `courses.is_active`；這是「教
+練名下課程範圍不受上架/下架影響」這條裁決在本端點的體現，權威裁決與其餘五個讀取端的一致性見 ADR-0012。本檔
+其餘敘述維持決策當下狀態。

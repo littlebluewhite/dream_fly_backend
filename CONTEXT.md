@@ -16,8 +16,20 @@ _Avoid_: notification, message
 牆鐘語意的單一歸屬,`utils::studio_clock`,契約 §3.18 裁決 2。`StudioNow { tz, now }`(`Copy`)是這個時間情境本身的單一值化——取代逐 service 各自收 `server: &ServerConfig, now: DateTime<Utc>` 兩個參數的舊形狀;唯一 production 建構點是 `AppState::studio_now()`(取樣一次 `clock.now()`,配上 `config.server.studio_timezone`)。seed 的唯一取樣點是 `bin/seed/main.rs`——同一 `StudioNow { tz: config.server.studio_timezone, now: Utc::now() }` 建構一次,交給 `dataset::run` 往下傳(見「Seed 資料集」詞條)。`studio_clock` 模組內的自由函式(`today`/`has_started`/`require_not_started`/…)簽章不變,仍各自收 `(tz, now)`——`StudioNow` 只是呼叫端把這兩個值一起攜帶的容器,不改變這一層純函式的介面。`ServerConfig::studio_timezone` 本身也從 `String` 改型別為 `chrono_tz::Tz`(直接 deserialize,非法 IANA 名稱在 config 載入當下就拒絕,不再是 runtime fallback)。
 
 **課程教練所有權(Course-Coach Ownership)**:
-`coaches::service::resolve/require_course_coach`;三態政策=所有權 gate 403 / 範圍列表空集合 / 儀表板 404。所有權 gate 有**第二形狀**——教練—學員**關係** gate(契約 §3.22「教過此生,active 或 cancelled 皆算」),刻意 inline 於 `certificates::service::create_certificate`(src/modules/certificates/service.rs:80-90:`coaches::service::resolve` + `user_has_enrolment_with_coach` EXISTS 查詢),**不歸戶 coaches 模組**——單一呼叫端,依 ADR-0005 判準,為它建姊妹 helper 是淺模組;出現第二個「教練發給自己學員」類端點時再歸戶。對照:單課 gate `require_course_coach`(coaches/service.rs:44-64)已歸戶,`create_report_card`(certificates/service.rs:29)是其消費端。
+`coaches::service::resolve/require_course_coach`;三態政策=所有權 gate 403 / 範圍列表空集合 / 儀表板 404。所有權 gate 有**第二形狀**——教練—學員**關係** gate(契約 §3.22「教過此生,active 或 cancelled 皆算」),刻意 inline 於 `certificates::service::create_certificate`(src/modules/certificates/service.rs:80-90:`coaches::service::resolve` + `user_has_enrolment_with_coach` EXISTS 查詢),**不歸戶 coaches 模組**——單一呼叫端,依 ADR-0005 判準,為它建姊妹 helper 是淺模組;出現第二個「教練發給自己學員」類端點時再歸戶。對照:單課 gate `require_course_coach`(coaches/service.rs:44-64)已歸戶,`create_report_card`(certificates/service.rs:29)是其消費端。與「教練範圍」是不同維度:這裡問的是單一資源的教練 gate(這個人是不是這堂課的教練),範圍列表本身要不要含已下架課程另見該詞條與 ADR-0012。
 _Avoid_: 把這條關係 gate 與單課 gate `require_course_coach` 混同
+
+**教練範圍(Coach Scope)**:
+「教練名下的課程/學員」= `courses.coach_id` 指向該教練的**全部**課程,不論 `is_active`;範圍下的學員 = 這些
+課程 `active_enrolments` 去重後的 distinct 使用者集合。六個讀取端(`GET /coaches/me/students`、
+`GET /reports/coach` 的 `student_count`/`today_sessions`/`pending_attendance`、`GET /reports/admin` 的
+`coaches[].course_count`/`student_count`、教練身分呼叫 `GET /leave-requests`)一律同一口徑,由跨面交叉測試
+(`tests/service_reports.rs::coach_scope_includes_delisted_courses_on_every_surface`)錨定,不靠共用 view/SQL
+片段——`attendance::repository` 曾在其中兩處多帶 `AND c.is_active = true`,是漂移點,已刪(ADR-0012)。與「課
+程教練所有權」不同維度(那是單資源 403 gate,這裡是名下範圍列表);與「上架可見性」也不同維度(下架只影響
+訪客/會員瀏覽端看不看得到、買不買得到,不影響教練自己或 admin 代管視角看到的範圍)。
+_Avoid_: 把某堂課下架當成把它從教練名下移除的手段(要移除得取消報名或改派 `courses.coach_id`);替單一讀取
+端加回 `is_active` 過濾去「修正」跟其他讀取端對不上的數字(六處本就該同口徑)。
 
 **訂單定價(Order Pricing)**:
 `orders::pricing::price → PricingOutcome`,純函式,交易編排留 checkout。`PricingOutcome::ledger_deltas(order_id) → Vec<LedgerDelta>` 是結帳點數帳的單一 owner:`checkout_redeem` 先、`checkout_earn` 後,幅度 0 的方向跳過;checkout 只剩一個迴圈逐筆 `apply_delta_tx`。退款側的對稱件不在 orders:`points::model::OrderPointsFlow::reversal_deltas(order_id)`(`refund_restore` 先、`refund_clawback` 後,幅度 0 跳過),由 `points::service::reverse_order_tx` 套用(見「退款」)。請求端不需 DB 的檢查(付款方式值域 422、coupon trim、`use_points` 預設)由 `orders::service` 私有的 `parse_request → CheckoutIntent` 吸收;`price` 直接收 `BalanceLock` 鎖到的餘額,只在 `use_points` 時讀它。
@@ -161,7 +173,7 @@ _Avoid_: 在 owner 之外拼這些 key 或直接呼叫 store、把門檻或 fail
 
 **上架可見性(Listing Visibility)**:
 `products`/`courses`/`venues`/`coaches` 四模組的公開明細端點統一收斂:owner 是各自 repository 的 scoped finder——`find_active_by_slug`/`find_active_by_id`(products、courses 兩者皆備;venues 僅 `find_active_by_slug`,因其明細端點本就 slug-only;coaches 僅 `find_active_by_id`,因其明細端點是 UUID-only),`is_active = true` 直接寫進 SQL WHERE,不是 fetch 後再濾——service 端(`get_by_slug`/`get_by_id`/`get_detail`)拿到 `None` 就地回 `NotFound`,已下架資源因此與不存在同形(契約用語見各端點的「已下架資源走公開明細一律 404」註記,含 coaches 的公開班表端點同一謂詞下沉)。公開列表端點(`find_all_active`)本已濾,這輪收斂補的是明細/班表側先前敞開的側門。
-Cart 加入購物車路徑刻意不重用這條謂詞:`cart::service::add_product_item`/`add_course_item` 走一般(未限定 active)的 `find_by_id`,改由 `Product::ensure_purchasable`(`products/model.rs:88`)回 400「product is not available」——已登入買家主動加入購物車時,「這項目目前不可購買」比對外瀏覽用的遮蔽性 404 更有用。結帳自己的下架 gate(甲案,見「結帳快照」詞條)是第三種形狀(422、整批、列名)。同一件事(下架)在三個操作站點各自對應不同狀態碼,是刻意分流,不是三套裁決漂移。
+Cart 加入購物車路徑刻意不重用這條謂詞:`cart::service::add_product_item`/`add_course_item` 走一般(未限定 active)的 `find_by_id`,改由 `Product::ensure_purchasable`(`products/model.rs:88`)回 400「product is not available」——已登入買家主動加入購物車時,「這項目目前不可購買」比對外瀏覽用的遮蔽性 404 更有用。結帳自己的下架 gate(甲案,見「結帳快照」詞條)是第三種形狀(422、整批、列名)。同一件事(下架)在三個操作站點各自對應不同狀態碼,是刻意分流,不是三套裁決漂移。教練自己(或 admin 代管視角)看到的課程/學員範圍不受這條謂詞影響——那是「教練範圍」的獨立語意,見該詞條與 ADR-0012。
 _Avoid_: 把 cart 的 400 或結帳的 422 誤認為上架可見性謂詞沒收乾淨的殘留破口——三者是刻意不同語意,不該收斂成同一種寫法。
 
 **結帳快照(Checkout Snapshot)**:

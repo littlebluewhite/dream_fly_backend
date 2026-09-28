@@ -876,7 +876,7 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 **裁決**：
 1. 權限採「該課教練或 admin」：`courses.coach_id` 指向的 `coaches` 列之 `user_id` 等於呼叫者，才算「該課教練」；非本課教練（含掛 `coach` 角色但教的是別堂課）一律 403。呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列（資料異常）同樣視為非本課教練 → 403（與 `GET /sessions/today` 查無資料時「降級為空陣列」不同——這裡是存取單一場次資源，403 才是正確語意）。
 2. `PUT /sessions/{id}/attendance` 的驗證發生在任何寫入之前：先驗證每筆 `status` 是合法值、每筆 `enrolment_id` 都屬於該場次所在課程且狀態為 `active`；只要有一筆不符合，**整批 422 拒絕，零寫入**（即使批次中其餘筆數本身合法有效）。
-3. `GET /coaches/me/students` 僅限 `coach` 角色（無 admin 例外）。「我的 active 課程」＝ `courses.coach_id` 指向呼叫者的課程且 `is_active = true`；「active enrolments」＝該課程 `enrolments.status = 'active'`。同一學員在此教練名下多堂課皆有效報名時只會出現一筆，`courses` 欄位彙整該學員在這位教練名下的所有課程，每筆課程條目皆帶該學員在該課程的 `enrolment_id`（供前端「寫評語」呼叫 `POST /report-cards` 使用）。
+3. `GET /coaches/me/students` 僅限 `coach` 角色（無 admin 例外）。「我的課程」＝ `courses.coach_id` 指向呼叫者的**全部**課程，含 `is_active = false`（教練範圍含已下架課程，見 ADR-0012；下架＝停售不是停課）；「active enrolments」＝該課程 `enrolments.status = 'active'`。同一學員在此教練名下多堂課皆有效報名時只會出現一筆，`courses` 欄位彙整該學員在這位教練名下的所有課程（含已下架），每筆課程條目皆帶該學員在該課程的 `enrolment_id`（供前端「寫評語」呼叫 `POST /report-cards` 使用）。
 4. `PUT /sessions/{id}/attendance` 要求場次已經開始才能點名（與 §3.20 請假「開課前皆可申請」極性相反）：「已開始」的判定與 §3.18 裁決 2 一致，以 `studio_timezone` 當地牆鐘時間比較 `session_date`+`start_time` 與呼叫當下，開始瞬間本身即視為已開始（含界，同 `has_started`）；尚未開始 → 422（訊息「場次尚未開始，無法點名」）。此檢查發生在裁決 1 的教練/admin 權限驗證之後、裁決 2 的批次內容驗證之前——**即使 `records` 為空陣列，未開始場次一樣回 422**（空批次不再是恆成功的 no-op；行為變更，舊版無此檢查恆回 200）。
 5. **核准恆勝、點名不可覆寫已核准請假**（見 ADR-0008）：核准請假（§3.20 `PATCH`）在同一交易內把該場次出勤投影為 `leave`（`marked_by` = 核准者），此投影**覆寫**該筆既有的 `present`/`absent` 是合法裁決——晚核准是營運常態，`decide` 無時間閘。反方向則被擋下：`PUT /sessions/{id}/attendance` 若把一筆對該場次持有 `approved` 假單的成員點成 `present`/`absent`，**整批 422、零寫入**（與裁決 2 同為全有全無）；點成 `leave` 則通過（冪等）。此規則以兩層實作——批次寫入前的整批 pre-check，加上 upsert 寫入點守衛（關閉兩者之間的競態殘餘窗；守衛在窗內擋下時，同樣以整批 422、零寫入收場）。**口頭請假**（直接 `PUT "leave"`、背後無核准假單）不受此限，仍可自由被覆寫。此檢查在裁決 2 的成員資格驗證同層（皆 422、皆整批拒絕）。
 
@@ -945,7 +945,7 @@ Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，�
 無 body。僅 `status = "pending"` 的假單可取消 → 更新為 `cancelled`。回應：**204 No Content**。錯誤：404（不存在）；403（非本人）；409「僅待審核假單可取消」（非 pending，例如已核准/已駁回/已取消——含報名取消時被連帶取消的假單，見 §3.12）。
 
 #### `GET /leave-requests?status=&course_id=` — admin 或該課教練
-分頁列表；`status`（`pending`/`approved`/`rejected`/`cancelled`）與 `course_id` 皆選填。教練僅能看到自己教的課程（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者）；admin 看全部。回應（`LeaveRequestListResponse`）：
+分頁列表；`status`（`pending`/`approved`/`rejected`/`cancelled`）與 `course_id` 皆選填。教練僅能看到自己教的課程（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者，含已下架課程，教練範圍口徑同 ADR-0012）；admin 看全部。回應（`LeaveRequestListResponse`）：
 
 ```jsonc
 {
@@ -1222,7 +1222,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 - `venue_usage`：**本月**（呼叫時先冪等物化今天起到月底的場次；本月已過去的日子只算已存在的場次，不回填，ADR-0011）場次依各自的場地快照 `course_sessions.venue`（語意見 §3.18 `GET /sessions/today` 的 `venue`）分組、SUM 場次分鐘數；**`venue` 為 NULL 的場次不入**。非固定桶——無場次的場地不出列。此為**整月投影口徑**（已過去的日子 + 今天起到月底的未來場次），與其他段落「月初至今」的實績計算不同。某天變成過去之前若從未被任何讀取端物化過，就不會計入。
 - `members`：`total`/`new_this_month` 為 `users` 全體計數（不分角色）；`active` 為擁有至少一筆 `active` enrolment 的 distinct 使用者數。
 - `courses`：全部課程（不篩 `is_active`），依名稱排序；`enrolled` 為該課程 `active` enrolments 數；`waitlist_count` 為 `waiting` 筆數。
-- `coaches`：全部教練（不篩 `is_active`），依姓名排序；`course_count` 為其 `courses.coach_id` 對應課程數；`student_count` 為其課程 active enrolments 之 distinct 學員數（同一學員修該教練多堂課只算一次）；`revenue_cents_12m`=**course 類** order-line 毛額歸 `courses.coach_id`（票券/裝備/場租不歸因），近 12 studio 月（與 `revenue.trend` 同窗）；`attendance_rate`=該教練課程 `present/(present+absent)`（`leave` 不入分母，全期；無資料 → `null`）。
+- `coaches`：全部教練（不篩 `is_active`，此處指 `coaches.is_active`），依姓名排序；`course_count` 為其 `courses.coach_id` 對應課程數；`student_count` 為其課程 active enrolments 之 distinct 學員數（同一學員修該教練多堂課只算一次）——兩者皆含教練名下已下架課程，教練範圍口徑同 ADR-0012；`revenue_cents_12m`=**course 類** order-line 毛額歸 `courses.coach_id`（票券/裝備/場租不歸因），近 12 studio 月（與 `revenue.trend` 同窗）；`attendance_rate`=該教練課程 `present/(present+absent)`（`leave` 不入分母，全期；無資料 → `null`）。
 
 空庫（無任何 orders/users/enrolments/courses/coaches）：`revenue` 全 `0`（`trend` 12 筆皆 `0`）、`members` 全 `0`、`courses`/`coaches`/`payment_split`/`venue_usage` 皆為 `[]`；`kpis` 全 `0`（`attendance_rate` 兩欄 `null`）、`funnel` 兩欄 `0`；固定桶各段一律零填其固定桶數（`revenue_breakdown` 6、`income_sources_12m` 72、`category_split` 5、`attendance_distribution` 4、`age_distribution` 6、`tier_distribution` 4、`retention` 6、`weekday_load` 7）——皆不會是 500。
 
@@ -1243,7 +1243,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 - `today_sessions`：呼叫者名下課程今日場次數（studio 當地日期）。
 - `pending_attendance`：今日場次中「尚無任何一筆 `attendance_records`」者的數量（只要有任一筆紀錄即不算 pending，不要求全班點完）。
 - `unread_messages`：呼叫者參與的所有對話中，對方尚未讀訊息總數（跨對話加總，定義同 §3.21 的 `unread_count`）。
-- `student_count`：呼叫者 active 課程之 active enrolments 之 distinct 學員數（口徑同 `GET /coaches/me/students`，這裡只回總數）。
+- `student_count`：呼叫者名下全部課程（含已下架，教練範圍口徑同 ADR-0012）之 active enrolments 之 distinct 學員數（口徑同 `GET /coaches/me/students`，這裡只回總數）。
 - `attendance_rate_30d`：呼叫者名下課程、場次日期落在「今日往前 30 天（含）」內的出勤紀錄，`present/(present+absent)`，`leave` 不計；無資料回 `null`。
 
 錯誤：404（呼叫者掛 `coach` 角色但查無 `coaches` 資料列，見上方裁決 5）。空域（有教練身分但無任何課程/學員/訊息）：`today_sessions`/`pending_attendance`/`unread_messages`/`student_count` 皆 `0`，`attendance_rate_30d` 為 `null`——不會是 500。
