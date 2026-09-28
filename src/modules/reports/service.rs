@@ -135,7 +135,9 @@ pub async fn coach_report(
     let (today_sessions, pending_attendance) =
         repository::coach_today_and_pending(db, coach.id, &day).await?;
     let unread_messages = messages_repository::count_unread_for_user(db, auth.user_id).await?;
-    let student_count = attendance_repository::count_my_students(db, coach.id).await?;
+    let student_count = attendance_repository::find_my_students(db, coach.id)
+        .await?
+        .len() as i64;
 
     let window_from = today - Duration::days(COACH_ATTENDANCE_WINDOW_DAYS);
     let (present, absent) =

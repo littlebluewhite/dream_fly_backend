@@ -48,9 +48,9 @@ pub async fn find_roster(
 /// Distinct students across 教練名下全部課程（含已下架，ADR-0012）的 active
 /// enrolments,each with a `jsonb_agg`-aggregated `courses` list — one query
 /// for the whole roster, not one per student. `WHERE` 子句中 enrolment-active
-/// 的篩選已下沉為 `active_enrolments` view(migration `20260711000001`);剩下
-/// 的 `c.coach_id` 條件與 [`count_my_students`] 是同一份謂詞,兩者一致性仍由
-/// 本模組維護(原因見該函式 doc)。
+/// 的篩選已下沉為 `active_enrolments` view(migration `20260711000001`)。回傳
+/// 列數即 distinct 學員數(`u.id` GROUP BY),`reports::service::coach_report`
+/// 的 `student_count` 直接取 `.len()`,不再另維護一支 COUNT 攣生查詢。
 pub async fn find_my_students(
     db: &PgPool,
     coach_id: Uuid,
@@ -69,22 +69,5 @@ pub async fn find_my_students(
     )
     .bind(coach_id)
     .fetch_all(db)
-    .await
-}
-
-/// Distinct student count across 教練名下全部課程（含已下架，ADR-0012）的
-/// active enrolments — the `COUNT` variant of [`find_my_students`]'s roster
-/// query,kept beside it so any future `WHERE` drift between the two is
-/// visible in one file instead of split across modules. Enrolment-active
-/// 這段謂詞現由 `active_enrolments` view 單一持有;`c.coach_id` 這段仍是本
-/// 模組所有;current caller: `reports::service::coach_report`.
-pub async fn count_my_students(db: &PgPool, coach_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT e.user_id) FROM active_enrolments e \
-         JOIN courses c ON c.id = e.course_id \
-         WHERE c.coach_id = $1",
-    )
-    .bind(coach_id)
-    .fetch_one(db)
     .await
 }
