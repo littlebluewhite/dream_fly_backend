@@ -95,7 +95,7 @@ pub async fn create_course(
     db: &PgPool,
     req: CreateCourseRequest,
 ) -> Result<CourseDetailResponse, AppError> {
-    let level: CourseLevel = req.level.to_lowercase().parse().map_err(|_| {
+    let level: CourseLevel = req.level.parse().map_err(|_| {
         AppError::Validation(
             "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite".into(),
         )
@@ -170,17 +170,19 @@ pub async fn update_course(
     id: uuid::Uuid,
     req: UpdateCourseRequest,
 ) -> Result<CourseDetailResponse, AppError> {
-    // Validate level if provided
-    let level_str = if let Some(ref level) = req.level {
-        let _: CourseLevel = level.parse().map_err(|_| {
+    // Validate level if provided — parsed once into `CourseLevel` so the
+    // repository writes the lowercased value instead of the caller's raw
+    // (possibly mixed-case) string.
+    let level: Option<CourseLevel> = req
+        .level
+        .as_deref()
+        .map(|s| s.parse::<CourseLevel>())
+        .transpose()
+        .map_err(|_| {
             AppError::Validation(
                 "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite".into(),
             )
         })?;
-        Some(level.to_lowercase())
-    } else {
-        None
-    };
 
     let parsed_slots = req
         .schedule_slots
@@ -209,7 +211,7 @@ pub async fn update_course(
         CourseUpdate {
             name: req.name.as_deref(),
             slug: req.slug.as_deref(),
-            level: level_str.as_deref(),
+            level,
             description: req.description.as_deref(),
             duration_minutes: req.duration_minutes,
             price_cents: req.price_cents,

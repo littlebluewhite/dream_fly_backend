@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "notification_type", rename_all = "snake_case")]
 pub enum NotificationType {
     BookingConfirmed,

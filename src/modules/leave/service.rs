@@ -133,7 +133,7 @@ pub async fn list_leave_requests(
             let parsed: LeaveStatus = s
                 .parse()
                 .map_err(|_| AppError::Validation(format!("status 參數不正確：{s}")))?;
-            Some(parsed.as_str())
+            Some(parsed)
         }
         None => None,
     };

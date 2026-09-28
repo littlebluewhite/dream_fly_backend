@@ -154,7 +154,7 @@ pub async fn cancel_pending_for_enrolments_tx(
 /// restriction, i.e. admin sees every course's leave requests).
 pub async fn find_admin_list(
     db: &PgPool,
-    status_filter: Option<&str>,
+    status_filter: Option<LeaveStatus>,
     course_id_filter: Option<Uuid>,
     coach_scope: Option<Uuid>,
     limit: u32,
@@ -171,7 +171,7 @@ pub async fn find_admin_list(
          JOIN users u ON u.id = e.user_id \
          JOIN course_sessions cs ON cs.id = lr.session_id \
          LEFT JOIN course_sessions mcs ON mcs.id = lr.makeup_session_id \
-         WHERE ($1::text IS NULL OR lr.status = $1::leave_status) \
+         WHERE ($1 IS NULL OR lr.status = $1) \
            AND ($2::uuid IS NULL OR c.id = $2) \
            AND ($3::uuid IS NULL OR c.coach_id = $3) \
          ORDER BY lr.created_at DESC \
@@ -189,7 +189,7 @@ pub async fn find_admin_list(
 /// Count counterpart of [`find_admin_list`] — same filters, no LIMIT/OFFSET.
 pub async fn count_admin_list(
     db: &PgPool,
-    status_filter: Option<&str>,
+    status_filter: Option<LeaveStatus>,
     course_id_filter: Option<Uuid>,
     coach_scope: Option<Uuid>,
 ) -> Result<i64, sqlx::Error> {
@@ -198,7 +198,7 @@ pub async fn count_admin_list(
          FROM leave_requests lr \
          JOIN enrolments e ON e.id = lr.enrolment_id \
          JOIN courses c ON c.id = e.course_id \
-         WHERE ($1::text IS NULL OR lr.status = $1::leave_status) \
+         WHERE ($1 IS NULL OR lr.status = $1) \
            AND ($2::uuid IS NULL OR c.id = $2) \
            AND ($3::uuid IS NULL OR c.coach_id = $3)",
     )
@@ -248,13 +248,13 @@ pub async fn decide_tx(
 ) -> Result<Option<LeaveRequest>, sqlx::Error> {
     sqlx::query_as::<_, LeaveRequest>(
         "UPDATE leave_requests \
-         SET status = $2::leave_status, decided_by = $3, decided_at = NOW(), updated_at = NOW() \
+         SET status = $2, decided_by = $3, decided_at = NOW(), updated_at = NOW() \
          WHERE id = $1 AND status = 'pending'::leave_status \
          RETURNING id, enrolment_id, session_id, reason, status, makeup_session_id, \
                    decided_by, decided_at, created_at, updated_at",
     )
     .bind(id)
-    .bind(new_status.as_str())
+    .bind(new_status)
     .bind(decided_by)
     .fetch_optional(&mut **tx)
     .await

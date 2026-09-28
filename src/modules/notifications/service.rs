@@ -167,7 +167,7 @@ fn certificate_issued_content(title: &str) -> NotificationContent {
 
 async fn emit(db: &PgPool, user_id: Uuid, c: NotificationContent) {
     if let Err(e) =
-        repository::create_notification(db, user_id, &c.notif_type, c.title, &c.message, c.metadata)
+        repository::create_notification(db, user_id, c.notif_type, c.title, &c.message, c.metadata)
             .await
     {
         tracing::error!(error = ?e, notif_type = c.notif_type.as_str(), "failed to write notification");

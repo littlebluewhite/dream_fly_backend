@@ -201,9 +201,9 @@ pub async fn update_status_and_paid_at_tx(
 ) -> Result<Option<Order>, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "UPDATE orders SET \
-            status = $2::order_status, \
+            status = $2, \
             paid_at = CASE \
-                WHEN $2::order_status = 'paid' AND paid_at IS NULL THEN NOW() \
+                WHEN $2 = 'paid' AND paid_at IS NULL THEN NOW() \
                 ELSE paid_at \
             END, \
             updated_at = NOW() \
@@ -211,7 +211,7 @@ pub async fn update_status_and_paid_at_tx(
          RETURNING *",
     )
     .bind(id)
-    .bind(status.as_str())
+    .bind(*status)
     .fetch_optional(&mut **tx)
     .await
 }

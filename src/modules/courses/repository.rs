@@ -47,7 +47,7 @@ pub struct CourseCreate<'a> {
 pub struct CourseUpdate<'a> {
     pub name: Option<&'a str>,
     pub slug: Option<&'a str>,
-    pub level: Option<&'a str>,
+    pub level: Option<CourseLevel>,
     pub description: Option<&'a str>,
     pub duration_minutes: Option<i32>,
     pub price_cents: Option<i64>,
@@ -170,12 +170,12 @@ pub async fn create(
         "INSERT INTO courses AS c (id, name, slug, level, description, duration_minutes, price_cents, \
          max_students, min_age, max_age, features, coach_id, category, schedule_text, is_highlighted, \
          created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3::course_level, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now()) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now()) \
          RETURNING {COURSE_COLUMNS}"
     )))
     .bind(input.name)
     .bind(input.slug)
-    .bind(input.level.as_str())
+    .bind(input.level)
     .bind(input.description)
     .bind(input.duration_minutes)
     .bind(input.price_cents)
@@ -210,7 +210,7 @@ pub async fn update(
         qb.push(", slug = ").push_bind(v);
     }
     if let Some(v) = input.level {
-        qb.push(", level = ").push_bind(v).push("::course_level");
+        qb.push(", level = ").push_bind(v);
     }
     if let Some(v) = input.description {
         qb.push(", description = ").push_bind(v);

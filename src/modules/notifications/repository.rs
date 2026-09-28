@@ -50,18 +50,18 @@ pub async fn mark_read(
 pub(super) async fn create_notification(
     db: &PgPool,
     user_id: Uuid,
-    notification_type: &NotificationType,
+    notification_type: NotificationType,
     title: &str,
     message: &str,
     metadata: Option<serde_json::Value>,
 ) -> Result<Notification, sqlx::Error> {
     sqlx::query_as::<_, Notification>(
         "INSERT INTO notifications (id, user_id, \"type\", title, message, metadata) \
-         VALUES (gen_random_uuid(), $1, $2::notification_type, $3, $4, $5) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5) \
          RETURNING *",
     )
     .bind(user_id)
-    .bind(notification_type.as_str())
+    .bind(notification_type)
     .bind(title)
     .bind(message)
     .bind(metadata)

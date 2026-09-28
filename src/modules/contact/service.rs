@@ -56,7 +56,7 @@ pub async fn update_inquiry(
         .status
         .as_deref()
         .map(|s| {
-            s.parse::<InquiryStatus>().map(|v| v.as_str()).map_err(|_| {
+            s.parse::<InquiryStatus>().map_err(|_| {
                 AppError::Validation("status 僅接受 new/in_progress/resolved/closed".into())
             })
         })

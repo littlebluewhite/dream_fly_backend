@@ -173,7 +173,7 @@ async fn upsert_tx(
     let result = sqlx::query(
         "INSERT INTO attendance_records \
          (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
-         VALUES ($1, $2, $3, $4::attendance_status, $5, NOW(), NOW()) \
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) \
          ON CONFLICT (session_id, enrolment_id) DO UPDATE \
          SET status = EXCLUDED.status, marked_by = EXCLUDED.marked_by, marked_at = EXCLUDED.marked_at \
          WHERE EXCLUDED.status = 'leave'::attendance_status \
@@ -188,7 +188,7 @@ async fn upsert_tx(
     .bind(Uuid::now_v7())
     .bind(session_id)
     .bind(enrolment_id)
-    .bind(status.as_str())
+    .bind(status)
     .bind(marked_by)
     .execute(&mut **tx)
     .await?;

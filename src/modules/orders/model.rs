@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::modules::cart::model::CartItemType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "order_status", rename_all = "snake_case")]
 pub enum OrderStatus {
     Pending,

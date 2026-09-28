@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::ContactInquiry;
+use super::model::{ContactInquiry, InquiryStatus};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
@@ -69,7 +69,7 @@ pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {
 pub async fn update(
     db: &PgPool,
     id: Uuid,
-    status: Option<&str>,
+    status: Option<InquiryStatus>,
     assigned_to: Option<Option<Uuid>>,
 ) -> Result<Option<ContactInquiry>, sqlx::Error> {
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
@@ -77,7 +77,7 @@ pub async fn update(
     );
 
     if let Some(v) = status {
-        qb.push(", status = ").push_bind(v).push("::inquiry_status");
+        qb.push(", status = ").push_bind(v);
     }
     if let Some(v) = assigned_to {
         qb.push(", assigned_to = ").push_bind(v);
