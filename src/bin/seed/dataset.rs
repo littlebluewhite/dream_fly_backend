@@ -711,15 +711,17 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
     let order_id = Uuid::now_v7();
 
     // Exhaustive over `OrderStatus` — a new variant must decide here what
-    // it means for `paid_at`, the recorded `points_earned`, and the ledger.
-    // The seed itself only produces pending / paid / completed / refunded.
-    let (paid_at, points_earned, ledger) = match seed.status {
+    // it means for `paid_at`, the recorded `points_earned`/`points_used`,
+    // and the ledger. The seed itself only produces pending / paid /
+    // completed / refunded.
+    let (paid_at, points_earned, points_used, ledger) = match seed.status {
         // Never paid (`Cancelled` read as the `Pending → Cancelled` edge):
-        // no `paid_at`, nothing earned, no ledger rows.
-        OrderStatus::Pending | OrderStatus::Cancelled => (None, 0, Vec::new()),
+        // no `paid_at`, nothing earned or redeemed, no ledger rows.
+        OrderStatus::Pending | OrderStatus::Cancelled => (None, 0, 0, Vec::new()),
         OrderStatus::Paid | OrderStatus::Processing | OrderStatus::Completed => (
             Some(seed.created_at),
             seed.pricing.points_earned,
+            seed.pricing.points_used,
             seed.pricing.ledger_deltas(order_id),
         ),
         // Refunded keeps its original `paid_at` (matching
@@ -732,7 +734,12 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
                 redeemed: seed.pricing.points_used,
             };
             ledger.extend(flow.reversal_deltas(order_id));
-            (Some(seed.created_at), seed.pricing.points_earned, ledger)
+            (
+                Some(seed.created_at),
+                seed.pricing.points_earned,
+                seed.pricing.points_used,
+                ledger,
+            )
         }
     };
 
@@ -741,7 +748,7 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
         INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
                             coupon_code, points_used, points_earned, payment_method, paid_at,
                             created_at, updated_at)
-        VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, 0, $8, $9, $10, $11, $11)
+        VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, $8, $9, $10, $11, $12, $12)
         "#,
     )
     .bind(order_id)
@@ -751,6 +758,7 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
     .bind(seed.pricing.total_cents)
     .bind(seed.pricing.discount_cents)
     .bind(&seed.pricing.applied_coupon_code)
+    .bind(points_used)
     .bind(points_earned)
     .bind(seed.payment_method)
     .bind(paid_at)
@@ -1754,6 +1762,11 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     // absent / 18-19 leave (~75/15/10); members 22-24 are the low-attendance
     // group → 0-7 present / 8-16 absent / 17-19 leave (~40/45/15), filling
     // the attendance-distribution report's low buckets.
+    // `marked_at` treats the session's studio-local `end_time` as if it
+    // were already UTC (same shortcut `at_utc` takes), then clamps to
+    // `at.now` — same clamp reason as `at_utc`: a session dated `today`
+    // (studio-local, can run up to a day ahead of the UTC date) would
+    // otherwise mark attendance hours in the future.
     let mut past_sessions: Vec<Vec<(Uuid, DateTime<Utc>)>> = Vec::with_capacity(course_ids.len());
     for course_id in &course_ids {
         let rows: Vec<(Uuid, NaiveDate, NaiveTime)> = sqlx::query_as(
@@ -1766,8 +1779,11 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         .fetch_all(db)
         .await
         .context("load past sessions for attendance")?;
-        past_sessions
-            .push(rows.into_iter().map(|(id, d, t)| (id, d.and_time(t).and_utc())).collect());
+        past_sessions.push(
+            rows.into_iter()
+                .map(|(id, d, t)| (id, d.and_time(t).and_utc().min(at.now)))
+                .collect(),
+        );
     }
     let mut attendance_rows: Vec<(Uuid, Uuid, &'static str, DateTime<Utc>)> = Vec::new();
     for (i, k, enrolment_id) in &active_enrolments {

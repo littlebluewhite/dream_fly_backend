@@ -217,3 +217,58 @@ async fn later_run_keeps_invariants(db: PgPool) {
         }
     }
 }
+
+/// `at = 2026-03-10T20:00Z` is already 2026-03-11 04:00 Asia/Taipei — every
+/// timestamp `dataset::run` writes must still clamp to `at.now`, the run
+/// instant, not the studio-local wall clock it derives dates/hours from.
+/// Regression: `attendance_records.marked_at` (seed.rs:1777) used to treat a
+/// session's wall-clock `end_time` as if it were already UTC, with no clamp
+/// — a 2026-03-10 19:00–20:30 session's `marked_at` came out as
+/// 2026-03-10T20:30Z, 30 minutes *after* this `at.now`.
+#[sqlx::test]
+async fn seeded_timestamps_never_exceed_run_instant(db: PgPool) {
+    let at = StudioNow {
+        tz: taipei(),
+        now: Utc.with_ymd_and_hms(2026, 3, 10, 20, 0, 0).unwrap(),
+    };
+    dataset::run(&db, at).await.expect("run");
+
+    let checks: [(&str, &str); 8] = [
+        ("posts.published_at", "SELECT MAX(published_at) FROM posts"),
+        (
+            "enrolments.created_at",
+            "SELECT MAX(created_at) FROM enrolments",
+        ),
+        ("orders.created_at", "SELECT MAX(created_at) FROM orders"),
+        ("orders.paid_at", "SELECT MAX(paid_at) FROM orders"),
+        (
+            "order_items.created_at",
+            "SELECT MAX(created_at) FROM order_items",
+        ),
+        (
+            "bookings.created_at",
+            "SELECT MAX(created_at) FROM bookings",
+        ),
+        (
+            "attendance_records.marked_at",
+            "SELECT MAX(marked_at) FROM attendance_records",
+        ),
+        (
+            "contact_inquiries.created_at",
+            "SELECT MAX(created_at) FROM contact_inquiries",
+        ),
+    ];
+    for (label, sql) in checks {
+        let max_ts: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(sql)
+            .fetch_one(&db)
+            .await
+            .expect("max timestamp query");
+        if let Some(max_ts) = max_ts {
+            assert!(
+                max_ts <= at.now,
+                "{label} max {max_ts} exceeds run instant {}",
+                at.now
+            );
+        }
+    }
+}
