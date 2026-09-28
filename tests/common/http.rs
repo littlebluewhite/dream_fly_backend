@@ -99,8 +99,9 @@ pub fn test_app_config<F: FnOnce(&mut AppConfig)>(adjust: F) -> AppConfig {
             min_connections: 1,
         },
         redis: RedisConfig {
-            url: std::env::var("TEST_REDIS_URL")
-                .unwrap_or_else(|_| "redis://127.0.0.1:6379/15".into()),
+            // Nothing in the HTTP test harness opens this URL any more — it
+            // just needs to parse.
+            url: "redis://unused".into(),
         },
         kafka: KafkaConfig {
             brokers: "localhost:9092".into(),

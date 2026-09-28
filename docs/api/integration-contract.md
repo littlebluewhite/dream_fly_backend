@@ -1331,6 +1331,6 @@ Body（`UpdateSettingsRequest`）：`{ "settings": { "<key>": <value>, ... } }`�
 ## 4. 附註
 
 - 所有 `POST`/`PATCH` 成功回應狀態碼皆為 **200**（本專案沒有任何端點回 201 Created）；`DELETE` 與 `POST /cart` 的清空動作回 **204 No Content**（無 body）。
-- Enum 型欄位（`level`、`product_type`、`status` 等）在 JSON 中一律是小寫 `snake_case` 字串（例：`course_package`），與 DB enum label 一致。**請求端大小寫政策依欄位而異**：`courses` 的 `level`、`posts` 的 `category`/`status`、`contact` 的 `status` 大小寫不敏感（混合大小寫接受，儲存與回應一律小寫）；其餘 enum 欄位（`product_type`、`leave` 的 `status`、`cart` 的 `item_type`、`orders` 的 `status`、`attendance` 的 `status` 等）大小寫敏感，不符即 422。不在允許值域內一律 422，訊息附上允許值清單。
+- Enum 型欄位（`level`、`product_type`、`status` 等）在 JSON 中一律是小寫 `snake_case` 字串（例：`course_package`），與 DB enum label 一致。**請求端大小寫政策依欄位而異**：`courses` 的 `level`、`posts` 的 `category`/`status`、`contact` 的 `status` 大小寫不敏感（混合大小寫接受，儲存與回應一律小寫）；其餘 enum 欄位（`product_type`、`leave` 的 `status`、`cart` 的 `item_type`、`orders` 的 `status`、`attendance` 的 `status` 等）大小寫敏感，不符即 422。不在允許值域內一律 422（`courses`/`posts`/`contact` 的訊息附允許值清單，其餘欄位訊息帶出非法值）。
 - `TEXT[]` 欄位（`features`、`specialties`、`certifications`）序列化為 JSON 字串陣列。
 - 時間戳一律 `TIMESTAMPTZ` → ISO8601（含時區，UTC）；`date`/`time` 型欄位（schedule 相關）為不含時區的 `YYYY-MM-DD` / `HH:MM:SS`。

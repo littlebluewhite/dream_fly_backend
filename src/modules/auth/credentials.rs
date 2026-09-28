@@ -1,12 +1,13 @@
 //! 憑證檢查(Credential Check)——「email + 密碼 → 已驗證 `User` 或 401」的
-//! 單一 owner。`login` 之外沒有第二個呼叫點碰 `rate_limit::record_login_failure`
+//! 單一 owner。本模組之外沒有第二個呼叫點碰 `rate_limit::record_login_failure`
 //! /`clear_login_failures`,登入失敗計數與清除只在這裡發生。
 //!
 //! 流程固定四步:鎖定檢查(`rate_limit::login_locked_out`)→ 查帳號 → Argon2
 //! 驗證 → `judge`(純函式,把「查到什麼、密碼對不對」收斂成一個判決)→
 //! 收尾(計失敗或清計數)。鎖定分支刻意是快速路徑——已鎖的 email 不查
-//! DB、不跑 Argon2,只洩漏「這個 key 被鎖了」,不洩漏「這個帳號存不存
-//! 在」(不存在的 email 一樣會被鎖進同一個計數器)。
+//! DB、不跑 Argon2——已鎖的 key 不能被拿來反覆觸發 Argon2 放大 CPU 成本,只
+//! 洩漏「這個 key 被鎖了」,不洩漏「這個帳號存不存在」(不存在的 email 一
+//! 樣會被鎖進同一個計數器)。
 //!
 //! 查無帳號與只綁 Google 的帳號(無 `password_hash`)一律照跑一次 Argon2
 //! (`utils::password::verify_password`,`hash: None` 對假雜湊驗、恆回
@@ -14,7 +15,8 @@
 //! 這兩條路徑會略過驗證,耗時趨近 0)。
 //!
 //! `is_active` 檢查收在 `judge` 裡:密碼驗證通過之後才判,順序仍先於
-//! 呼叫端(`service::login`)清計數與 `update_last_login`。
+//! 本模組清計數(`Verdict::Accept` 分支)與呼叫端(`service::login`)的
+//! `update_last_login`。
 
 use sqlx::PgPool;
 

@@ -2,10 +2,10 @@
 
 ## Context
 
-「教練名下的課程/學員」這個範圍在後端有五處讀取端(`GET /coaches/me/students`、`GET /reports/coach` 的
+「教練名下的課程/學員」這個範圍在後端有六個讀取端(`GET /coaches/me/students`、`GET /reports/coach` 的
 `student_count`/`today_sessions`/`pending_attendance`、`GET /reports/admin` 的 `coaches[].course_count`/
 `student_count`、`GET /leave-requests` 的教練身分),但只有 `attendance::repository` 的兩處(`find_my_students`、
-`count_my_students`)在謂詞裡多寫了一段 `AND c.is_active = true`;其餘五處(`sessions::repository::
+`count_my_students`)在謂詞裡多寫了一段 `AND c.is_active = true`;其餘五支查詢函式(`sessions::repository::
 find_course_ids_by_coach`、`reports::repository::coach_today_and_pending`/`coach_reports`、
 `leave::repository::find_admin_list`/`count_admin_list` 的 `coach_scope` 分支)自始就只用 `c.coach_id = $1`,
 從未篩過 `is_active`。這造成兩種口徑在同一個教練身上會給出不同的數字:一堂課被下架(停售)的當下,教練儀表
@@ -52,8 +52,8 @@ find_course_ids_by_coach`、`reports::repository::coach_today_and_pending`/`coac
 - 若要讓某位教練不再看到某堂課的學員/場次(例如整堂課要移交給別的教練),正確做法是取消該課程學員的報名或
   把 `courses.coach_id` 改派給別的教練——**不是**下架課程;下架只影響上架可見性,不影響教練範圍。
 - `attendance::repository::count_my_students` 已刪除,`reports::service::coach_report` 的 `student_count`
-  改由 `find_my_students(db, coach.id).await?.len()` 推導(名冊以 `u.id` GROUP BY,列數即 COUNT DISTINCT,見
-  下方 4b commit),行為零變更、少維護一份 SQL。
+  改由 `find_my_students(db, coach.id).await?.len()` 推導(名冊以 `u.id` GROUP BY,列數即 COUNT DISTINCT),
+  行為零變更、少維護一份 SQL。
 - 六個讀取端的一致性由跨面交叉測試錨定(`tests/service_reports.rs::
   coach_scope_includes_delisted_courses_on_every_surface`),不是靠共用 view/片段——任何一處日後不小心加回
   `is_active` 過濾,這條測試會立刻紅。

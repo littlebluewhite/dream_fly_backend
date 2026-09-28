@@ -1058,6 +1058,13 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
 /// on both fields directly instead of scraping stdout.
 pub struct SeedReport {
     pub row_counts: Vec<(&'static str, i64)>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by bin/seed/tests.rs; run() already prints the [points] line"
+        )
+    )]
     pub settled_members: usize,
 }
 
@@ -1957,7 +1964,10 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     );
 
     let row_counts = collect_row_counts(db).await?;
-    Ok(SeedReport { row_counts, settled_members: settled })
+    Ok(SeedReport {
+        row_counts,
+        settled_members: settled,
+    })
 }
 
 #[cfg(test)]
