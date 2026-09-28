@@ -13,6 +13,8 @@
 //! for the idempotency keys and points-ledger settlement shape.
 
 mod dataset;
+#[cfg(test)]
+mod tests;
 
 use anyhow::Context;
 use chrono::Utc;
