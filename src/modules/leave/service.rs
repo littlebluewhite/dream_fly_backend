@@ -12,7 +12,7 @@ use crate::utils::studio_clock::{self, StudioNow};
 
 use super::dto::{
     AdminLeaveRequestResponse, CreateLeaveRequestRequest, LeaveRequestListResponse,
-    LeaveRequestParts, LeaveRequestQuery, LeaveRequestResponse, MakeupInfo, MakeupRequest,
+    LeaveRequestQuery, LeaveRequestResponse, MakeupRequest,
 };
 use super::model::LeaveStatus;
 use super::repository;
@@ -55,23 +55,10 @@ pub async fn create_leave_request(
         AppError::Validation("場次已開始，無法請假".into()),
     )?;
 
-    let lr = repository::insert(db, enrolment_id, req.session_id, req.reason.as_deref())
+    let view = repository::insert(db, enrolment_id, req.session_id, req.reason.as_deref())
         .await
         .map_err(|e| AppError::conflict_on_unique(e, "此場次已有請假紀錄"))?;
-    Ok(LeaveRequestParts {
-        id: lr.id,
-        course_id: session.course_id,
-        course_name: session.course_name,
-        session_id: lr.session_id,
-        session_date: session.session_date,
-        start_time: session.start_time,
-        reason: lr.reason,
-        status: lr.status.as_str().to_string(),
-        makeup: None,
-        decided_at: None,
-        created_at: lr.created_at,
-    }
-    .into())
+    Ok(view.into())
 }
 
 /// `GET /leave-requests/me` — plain array, newest first (mirrors
@@ -225,24 +212,10 @@ pub async fn decide_leave_request(
     .await;
 
     // A just-decided request was `pending`, so it can carry no booked makeup
-    // yet (makeup requires an already-approved request) — `None` here, matching
-    // contract §3.20's "此時 makeup_session_id 等欄位必為 null". The
-    // `Option<MakeupInfo>` constructor makes that null-triple explicit rather
-    // than passing a lone `updated.makeup_session_id` with null date/time.
-    Ok(LeaveRequestParts {
-        id: updated.id,
-        course_id: ctx.course_id,
-        course_name: ctx.course_name,
-        session_id: ctx.session_id,
-        session_date: ctx.session_date,
-        start_time: ctx.start_time,
-        reason: updated.reason,
-        status: updated.status.as_str().to_string(),
-        makeup: None,
-        decided_at: updated.decided_at,
-        created_at: updated.created_at,
-    }
-    .into())
+    // yet (makeup requires an already-approved request) — `updated`'s LEFT
+    // JOINed makeup columns are `NULL` accordingly, matching contract §3.20's
+    // "此時 makeup_session_id 等欄位必為 null".
+    Ok(updated.into())
 }
 
 /// `POST /leave-requests/{id}/makeup` — owner only. Two row locks make the
@@ -305,22 +278,9 @@ pub async fn book_makeup(
 
     tx.commit().await?;
 
-    Ok(LeaveRequestParts {
-        id: updated.id,
-        course_id: leave.course_id,
-        course_name: leave.course_name,
-        session_id: leave.session_id,
-        session_date: leave.session_date,
-        start_time: leave.start_time,
-        reason: updated.reason,
-        status: updated.status.as_str().to_string(),
-        makeup: Some(MakeupInfo {
-            session_id: req.session_id,
-            session_date: target.session_date,
-            start_time: target.start_time,
-        }),
-        decided_at: updated.decided_at,
-        created_at: updated.created_at,
-    }
-    .into())
+    // `updated`'s makeup columns now resolve against the just-written
+    // `makeup_session_id` (the write and this read share the data-modifying
+    // CTE's one statement), so the booked target's date/time need no
+    // separate assembly from `target` here.
+    Ok(updated.into())
 }

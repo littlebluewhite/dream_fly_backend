@@ -5,7 +5,7 @@ use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
 
-use super::model::{AdminLeaveRequestRow, MyLeaveRequestRow};
+use super::model::{AdminLeaveRequestRow, LeaveRequestView};
 
 // ---------------------------------------------------------------------------
 // POST /leave-requests
@@ -24,13 +24,13 @@ pub struct CreateLeaveRequestRequest {
 /// three columns behind a single `Option` makes the "half-set" state (id
 /// present but date/time null, and vice-versa) unrepresentable at every
 /// assembly site (task D5 / ADR-0008). The wire shape stays flat — the two
-/// response structs expand this back into three top-level fields (see their
-/// `new` constructors); it is only an assembly-time grouping, never serialized.
+/// response structs' `From` impls expand this back into three top-level
+/// fields; it is only an assembly-time grouping, never serialized.
 #[derive(Debug, Clone)]
-pub struct MakeupInfo {
-    pub session_id: Uuid,
-    pub session_date: NaiveDate,
-    pub start_time: NaiveTime,
+struct MakeupInfo {
+    session_id: Uuid,
+    session_date: NaiveDate,
+    start_time: NaiveTime,
 }
 
 impl MakeupInfo {
@@ -53,27 +53,6 @@ impl MakeupInfo {
     }
 }
 
-/// Shared assembly payload for [`LeaveRequestResponse`] and
-/// [`AdminLeaveRequestResponse`] — the 11 fields both response shapes have in
-/// common, with `makeup` still grouped (see [`MakeupInfo`]). Packages what
-/// used to be a too-large positional argument list; `From<LeaveRequestParts>
-/// for LeaveRequestResponse` is the single expansion site for the
-/// member-facing shape, and `AdminLeaveRequestResponse::new` takes one of
-/// these plus its two admin-only fields.
-pub struct LeaveRequestParts {
-    pub id: Uuid,
-    pub course_id: Uuid,
-    pub course_name: String,
-    pub session_id: Uuid,
-    pub session_date: NaiveDate,
-    pub start_time: NaiveTime,
-    pub reason: Option<String>,
-    pub status: String,
-    pub makeup: Option<MakeupInfo>,
-    pub decided_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct LeaveRequestResponse {
     pub id: Uuid,
@@ -91,34 +70,18 @@ pub struct LeaveRequestResponse {
     pub created_at: DateTime<Utc>,
 }
 
-impl From<LeaveRequestParts> for LeaveRequestResponse {
-    /// Expands the grouped `makeup` into the three flat wire fields in one
-    /// place. Every assembly site — the three `service` literals and the
-    /// `From<MyLeaveRequestRow>` below — routes through here, so "makeup
-    /// fields are all-set or all-null" is guaranteed by the
-    /// `Option<MakeupInfo>` field rather than re-checked by hand each time.
-    fn from(p: LeaveRequestParts) -> Self {
+impl From<LeaveRequestView> for LeaveRequestResponse {
+    /// Sole expansion site for the member-facing shape — every write
+    /// (`create`/`decide`/`makeup`, each now handing back its own
+    /// [`LeaveRequestView`] straight from the DB) and the `/me` list route
+    /// through here. Expands the three nullable makeup columns into
+    /// `Option<MakeupInfo>` and back out to the three flat wire fields in one
+    /// place, so "all-set or all-null" is guaranteed by the `Option`
+    /// rather than re-checked by hand each time.
+    fn from(r: LeaveRequestView) -> Self {
+        let makeup =
+            MakeupInfo::from_columns(r.makeup_session_id, r.makeup_session_date, r.makeup_start_time);
         Self {
-            id: p.id,
-            course_id: p.course_id,
-            course_name: p.course_name,
-            session_id: p.session_id,
-            session_date: p.session_date,
-            start_time: p.start_time,
-            reason: p.reason,
-            status: p.status,
-            makeup_session_id: p.makeup.as_ref().map(|m| m.session_id),
-            makeup_session_date: p.makeup.as_ref().map(|m| m.session_date),
-            makeup_start_time: p.makeup.map(|m| m.start_time),
-            decided_at: p.decided_at,
-            created_at: p.created_at,
-        }
-    }
-}
-
-impl From<MyLeaveRequestRow> for LeaveRequestResponse {
-    fn from(r: MyLeaveRequestRow) -> Self {
-        LeaveRequestParts {
             id: r.id,
             course_id: r.course_id,
             course_name: r.course_name,
@@ -127,11 +90,12 @@ impl From<MyLeaveRequestRow> for LeaveRequestResponse {
             start_time: r.start_time,
             reason: r.reason,
             status: r.status.as_str().to_string(),
-            makeup: MakeupInfo::from_columns(r.makeup_session_id, r.makeup_session_date, r.makeup_start_time),
+            makeup_session_id: makeup.as_ref().map(|m| m.session_id),
+            makeup_session_date: makeup.as_ref().map(|m| m.session_date),
+            makeup_start_time: makeup.map(|m| m.start_time),
             decided_at: r.decided_at,
             created_at: r.created_at,
         }
-        .into()
     }
 }
 
@@ -167,51 +131,30 @@ pub struct AdminLeaveRequestResponse {
     pub created_at: DateTime<Utc>,
 }
 
-impl AdminLeaveRequestResponse {
-    /// Sibling of [`LeaveRequestParts`]'s `From` impl, with the extra
-    /// `user_id`/`user_name` this coach/admin-facing shape carries. The
-    /// single `From<AdminLeaveRequestRow>` assembly site routes through here
-    /// so the same all-or-nothing makeup invariant holds.
-    pub fn new(parts: LeaveRequestParts, user_id: Uuid, user_name: String) -> Self {
-        Self {
-            id: parts.id,
-            course_id: parts.course_id,
-            course_name: parts.course_name,
-            user_id,
-            user_name,
-            session_id: parts.session_id,
-            session_date: parts.session_date,
-            start_time: parts.start_time,
-            reason: parts.reason,
-            status: parts.status,
-            makeup_session_id: parts.makeup.as_ref().map(|m| m.session_id),
-            makeup_session_date: parts.makeup.as_ref().map(|m| m.session_date),
-            makeup_start_time: parts.makeup.map(|m| m.start_time),
-            decided_at: parts.decided_at,
-            created_at: parts.created_at,
-        }
-    }
-}
-
 impl From<AdminLeaveRequestRow> for AdminLeaveRequestResponse {
+    /// Routes through [`LeaveRequestResponse`]'s conversion for the 11
+    /// shared fields, then adds the two admin-only ones — an explicit field
+    /// list rather than `#[serde(flatten)]`, so this struct's own
+    /// declaration order still controls the wire's key order.
     fn from(r: AdminLeaveRequestRow) -> Self {
-        AdminLeaveRequestResponse::new(
-            LeaveRequestParts {
-                id: r.id,
-                course_id: r.course_id,
-                course_name: r.course_name,
-                session_id: r.session_id,
-                session_date: r.session_date,
-                start_time: r.start_time,
-                reason: r.reason,
-                status: r.status.as_str().to_string(),
-                makeup: MakeupInfo::from_columns(r.makeup_session_id, r.makeup_session_date, r.makeup_start_time),
-                decided_at: r.decided_at,
-                created_at: r.created_at,
-            },
-            r.user_id,
-            r.user_name,
-        )
+        let base = LeaveRequestResponse::from(r.view);
+        Self {
+            id: base.id,
+            course_id: base.course_id,
+            course_name: base.course_name,
+            user_id: r.user_id,
+            user_name: r.user_name,
+            session_id: base.session_id,
+            session_date: base.session_date,
+            start_time: base.start_time,
+            reason: base.reason,
+            status: base.status,
+            makeup_session_id: base.makeup_session_id,
+            makeup_session_date: base.makeup_session_date,
+            makeup_start_time: base.makeup_start_time,
+            decided_at: base.decided_at,
+            created_at: base.created_at,
+        }
     }
 }
 

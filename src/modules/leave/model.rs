@@ -69,11 +69,17 @@ pub struct SessionContext {
     pub start_time: NaiveTime,
 }
 
-/// One row of `GET /leave-requests/me` — `leave_requests` JOINed with its
-/// enrolment's course and its own/makeup `course_sessions` rows. Field names
-/// mirror `LeaveRequestResponse` 1:1 (see `dto.rs`).
+/// The leave-request read projection's one row shape — `leave_requests`
+/// JOINed with its enrolment's course and its own/makeup `course_sessions`
+/// rows. Field names mirror `LeaveRequestResponse` 1:1 (see `dto.rs`). Single
+/// owner of the projection's column list: `repository::VIEW_COLUMNS`/
+/// `VIEW_JOINS` assemble it for every read (`find_my_leave_requests`,
+/// `find_admin_list`) and every write that changes it (`insert`, `decide_tx`,
+/// `set_makeup_session_tx`, via a data-modifying CTE's `RETURNING` re-joined
+/// through the same two consts) — a write's response is this same row, not a
+/// hand-copied echo of it.
 #[derive(Debug, sqlx::FromRow)]
-pub struct MyLeaveRequestRow {
+pub struct LeaveRequestView {
     pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
@@ -89,26 +95,17 @@ pub struct MyLeaveRequestRow {
     pub created_at: DateTime<Utc>,
 }
 
-/// Same shape as [`MyLeaveRequestRow`] plus the student's `user_id`/`name` —
+/// Same shape as [`LeaveRequestView`] plus the student's `user_id`/`name` —
 /// feeds `GET /leave-requests` (coach/admin list), which spans multiple
-/// students rather than being scoped to the caller.
+/// students rather than being scoped to the caller. `#[sqlx(flatten)]` (this
+/// repo's first use) keeps [`LeaveRequestView`] the projection's single
+/// owner even here, rather than re-declaring its 13 fields.
 #[derive(Debug, sqlx::FromRow)]
 pub struct AdminLeaveRequestRow {
-    pub id: Uuid,
-    pub course_id: Uuid,
-    pub course_name: String,
+    #[sqlx(flatten)]
+    pub view: LeaveRequestView,
     pub user_id: Uuid,
     pub user_name: String,
-    pub session_id: Uuid,
-    pub session_date: NaiveDate,
-    pub start_time: NaiveTime,
-    pub reason: Option<String>,
-    pub status: LeaveStatus,
-    pub makeup_session_id: Option<Uuid>,
-    pub makeup_session_date: Option<NaiveDate>,
-    pub makeup_start_time: Option<NaiveTime>,
-    pub decided_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
 }
 
 /// Everything `PATCH /leave-requests/{id}` (approve/reject) needs about a

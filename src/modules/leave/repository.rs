@@ -3,8 +3,21 @@ use uuid::Uuid;
 
 use super::model::{
     AdminLeaveRequestRow, LeaveDecisionContext, LeaveRequest, LeaveRequestForMakeup,
-    LeaveRequestOwnerRow, LeaveStatus, MyLeaveRequestRow, SessionContext,
+    LeaveRequestOwnerRow, LeaveRequestView, LeaveStatus, SessionContext,
 };
+
+/// The leave-request read projection's 13-column select list — single owner
+/// of [`super::model::LeaveRequestView`]'s shape. `lr` is the row source's
+/// alias, real table or a data-modifying CTE (see [`insert`]/[`decide_tx`]/
+/// [`set_makeup_session_tx`]) alike.
+const VIEW_COLUMNS: &str = "lr.id, e.course_id, c.name AS course_name, lr.session_id, cs.session_date, \
+    cs.start_time, lr.reason, lr.status, lr.makeup_session_id, mcs.session_date AS makeup_session_date, \
+    mcs.start_time AS makeup_start_time, lr.decided_at, lr.created_at";
+
+/// [`VIEW_COLUMNS`]'s matching JOIN clause — assumes a `lr` row source
+/// already in scope (the `leave_requests` table or a `WITH lr AS (...)` CTE).
+const VIEW_JOINS: &str = "JOIN enrolments e ON e.id = lr.enrolment_id JOIN courses c ON c.id = e.course_id \
+    JOIN course_sessions cs ON cs.id = lr.session_id LEFT JOIN course_sessions mcs ON mcs.id = lr.makeup_session_id";
 
 /// `course_sessions` JOINed with its course's `name` — used both by
 /// `POST /leave-requests` (plain pool read) and the makeup endpoint's
@@ -46,23 +59,29 @@ pub async fn find_active_enrolment(
     .await
 }
 
-/// Insert a new `pending` leave request. Duplicate (enrolment_id, session_id)
-/// while an existing row is `pending`/`approved` trips the partial unique
-/// index `uniq_leave_requests_active` — `service` catches that as a 23505
-/// and maps it to a friendly 409.
+/// Insert a new `pending` leave request, returning its read projection row
+/// directly — a data-modifying CTE (`WITH lr AS (INSERT ... RETURNING *)`)
+/// feeds the insert's own output back through [`VIEW_JOINS`], so the caller
+/// gets the same shape [`find_my_leave_requests`] would without a second
+/// query. Duplicate (enrolment_id, session_id) while an existing row is
+/// `pending`/`approved` trips the partial unique index
+/// `uniq_leave_requests_active` — `service` catches that as a 23505 and maps
+/// it to a friendly 409.
 pub async fn insert(
     db: &PgPool,
     enrolment_id: Uuid,
     session_id: Uuid,
     reason: Option<&str>,
-) -> Result<LeaveRequest, sqlx::Error> {
-    sqlx::query_as::<_, LeaveRequest>(
-        "INSERT INTO leave_requests \
-         (id, enrolment_id, session_id, reason, status, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, 'pending'::leave_status, NOW(), NOW()) \
-         RETURNING id, enrolment_id, session_id, reason, status, makeup_session_id, \
-                   decided_by, decided_at, created_at, updated_at",
-    )
+) -> Result<LeaveRequestView, sqlx::Error> {
+    sqlx::query_as::<_, LeaveRequestView>(sqlx::AssertSqlSafe(format!(
+        "WITH lr AS ( \
+             INSERT INTO leave_requests \
+             (id, enrolment_id, session_id, reason, status, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, 'pending'::leave_status, NOW(), NOW()) \
+             RETURNING * \
+         ) \
+         SELECT {VIEW_COLUMNS} FROM lr {VIEW_JOINS}"
+    )))
     .bind(Uuid::now_v7())
     .bind(enrolment_id)
     .bind(session_id)
@@ -76,20 +95,14 @@ pub async fn insert(
 pub async fn find_my_leave_requests(
     db: &PgPool,
     user_id: Uuid,
-) -> Result<Vec<MyLeaveRequestRow>, sqlx::Error> {
-    sqlx::query_as::<_, MyLeaveRequestRow>(
-        "SELECT lr.id, e.course_id, c.name AS course_name, lr.session_id, \
-                cs.session_date, cs.start_time, lr.reason, lr.status, lr.makeup_session_id, \
-                mcs.session_date AS makeup_session_date, mcs.start_time AS makeup_start_time, \
-                lr.decided_at, lr.created_at \
+) -> Result<Vec<LeaveRequestView>, sqlx::Error> {
+    sqlx::query_as::<_, LeaveRequestView>(sqlx::AssertSqlSafe(format!(
+        "SELECT {VIEW_COLUMNS} \
          FROM leave_requests lr \
-         JOIN enrolments e ON e.id = lr.enrolment_id \
-         JOIN courses c ON c.id = e.course_id \
-         JOIN course_sessions cs ON cs.id = lr.session_id \
-         LEFT JOIN course_sessions mcs ON mcs.id = lr.makeup_session_id \
+         {VIEW_JOINS} \
          WHERE e.user_id = $1 \
-         ORDER BY lr.created_at DESC",
-    )
+         ORDER BY lr.created_at DESC"
+    )))
     .bind(user_id)
     .fetch_all(db)
     .await
@@ -160,23 +173,17 @@ pub async fn find_admin_list(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<AdminLeaveRequestRow>, sqlx::Error> {
-    sqlx::query_as::<_, AdminLeaveRequestRow>(
-        "SELECT lr.id, e.course_id, c.name AS course_name, u.id AS user_id, u.name AS user_name, \
-                lr.session_id, cs.session_date, cs.start_time, lr.reason, lr.status, \
-                lr.makeup_session_id, mcs.session_date AS makeup_session_date, \
-                mcs.start_time AS makeup_start_time, lr.decided_at, lr.created_at \
+    sqlx::query_as::<_, AdminLeaveRequestRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {VIEW_COLUMNS}, u.id AS user_id, u.name AS user_name \
          FROM leave_requests lr \
-         JOIN enrolments e ON e.id = lr.enrolment_id \
-         JOIN courses c ON c.id = e.course_id \
+         {VIEW_JOINS} \
          JOIN users u ON u.id = e.user_id \
-         JOIN course_sessions cs ON cs.id = lr.session_id \
-         LEFT JOIN course_sessions mcs ON mcs.id = lr.makeup_session_id \
          WHERE ($1 IS NULL OR lr.status = $1) \
            AND ($2::uuid IS NULL OR c.id = $2) \
            AND ($3::uuid IS NULL OR c.coach_id = $3) \
          ORDER BY lr.created_at DESC \
-         LIMIT $4 OFFSET $5",
-    )
+         LIMIT $4 OFFSET $5"
+    )))
     .bind(status_filter)
     .bind(course_id_filter)
     .bind(coach_scope)
@@ -237,22 +244,25 @@ pub async fn find_decision_context(
     .await
 }
 
-/// Conditional approve/reject — only succeeds while still `pending`. Returns
-/// `None` if the row was raced to a different status (caller maps that to
-/// 409); mirrors [`cancel_if_pending_tx`]'s guard shape.
+/// Conditional approve/reject — only succeeds while still `pending`, returning
+/// its read projection row (via the same data-modifying CTE shape as
+/// [`insert`]). Returns `None` if the row was raced to a different status
+/// (caller maps that to 409); mirrors [`cancel_if_pending_tx`]'s guard shape.
 pub async fn decide_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
     new_status: LeaveStatus,
     decided_by: Uuid,
-) -> Result<Option<LeaveRequest>, sqlx::Error> {
-    sqlx::query_as::<_, LeaveRequest>(
-        "UPDATE leave_requests \
-         SET status = $2, decided_by = $3, decided_at = NOW(), updated_at = NOW() \
-         WHERE id = $1 AND status = 'pending'::leave_status \
-         RETURNING id, enrolment_id, session_id, reason, status, makeup_session_id, \
-                   decided_by, decided_at, created_at, updated_at",
-    )
+) -> Result<Option<LeaveRequestView>, sqlx::Error> {
+    sqlx::query_as::<_, LeaveRequestView>(sqlx::AssertSqlSafe(format!(
+        "WITH lr AS ( \
+             UPDATE leave_requests \
+             SET status = $2, decided_by = $3, decided_at = NOW(), updated_at = NOW() \
+             WHERE id = $1 AND status = 'pending'::leave_status \
+             RETURNING * \
+         ) \
+         SELECT {VIEW_COLUMNS} FROM lr {VIEW_JOINS}"
+    )))
     .bind(id)
     .bind(new_status)
     .bind(decided_by)
@@ -291,7 +301,10 @@ pub async fn find_for_makeup_tx(
     .await
 }
 
-/// Write the makeup session onto an approved, not-yet-made-up leave request.
+/// Write the makeup session onto an approved, not-yet-made-up leave request,
+/// returning its read projection row — the same data-modifying CTE shape as
+/// [`insert`]/[`decide_tx`], with `mcs` in [`VIEW_JOINS`] now resolving
+/// against the just-written `makeup_session_id` within this one statement.
 /// The `WHERE` guard is a defense-in-depth belt alongside the `FOR UPDATE`
 /// row lock already held via [`find_for_makeup_tx`] — by the time this runs,
 /// `service::book_makeup` has already re-validated the locked row in-process,
@@ -300,13 +313,15 @@ pub async fn set_makeup_session_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
     makeup_session_id: Uuid,
-) -> Result<Option<LeaveRequest>, sqlx::Error> {
-    sqlx::query_as::<_, LeaveRequest>(
-        "UPDATE leave_requests SET makeup_session_id = $2, updated_at = NOW() \
-         WHERE id = $1 AND status = 'approved'::leave_status AND makeup_session_id IS NULL \
-         RETURNING id, enrolment_id, session_id, reason, status, makeup_session_id, \
-                   decided_by, decided_at, created_at, updated_at",
-    )
+) -> Result<Option<LeaveRequestView>, sqlx::Error> {
+    sqlx::query_as::<_, LeaveRequestView>(sqlx::AssertSqlSafe(format!(
+        "WITH lr AS ( \
+             UPDATE leave_requests SET makeup_session_id = $2, updated_at = NOW() \
+             WHERE id = $1 AND status = 'approved'::leave_status AND makeup_session_id IS NULL \
+             RETURNING * \
+         ) \
+         SELECT {VIEW_COLUMNS} FROM lr {VIEW_JOINS}"
+    )))
     .bind(id)
     .bind(makeup_session_id)
     .fetch_optional(&mut **tx)
