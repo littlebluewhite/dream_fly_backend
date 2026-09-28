@@ -323,6 +323,21 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
     assert_eq!(arr[0]["course_id"], course_a.to_string());
 }
 
+/// Case policy: `status` is one of the fields the wire is case-sensitive
+/// about — a legal value in the wrong case is rejected, not silently
+/// accepted.
+#[sqlx::test]
+async fn list_mixed_case_status_returns_422(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .get("/api/v1/leave-requests?status=Pending")
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
 #[sqlx::test]
 async fn list_as_coach_scoped_to_own_courses(db: PgPool) {
     let app = spawn_test_app(db).await;

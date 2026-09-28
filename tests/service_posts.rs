@@ -49,7 +49,24 @@ async fn create_post_invalid_category_returns_validation(db: PgPool) {
     let err = service::create_post(&db, author, create_req("Hi", "nonsense"))
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)));
+    match err {
+        AppError::Validation(msg) => assert_eq!(
+            msg,
+            "invalid category, must be one of: announcement, article, promotion, event"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+/// Case policy: `category` is one of the 4 fields the wire accepts
+/// case-insensitively (parsed via `to_lowercase`) and stores lowercase.
+#[sqlx::test]
+async fn create_post_with_mixed_case_category_is_stored_lowercase(db: PgPool) {
+    let author = common::seed_member(&db, "a@example.com", "hunter22-secret").await;
+    let post = service::create_post(&db, author, create_req("Mixed Case", "Article"))
+        .await
+        .expect("mixed-case category must be accepted");
+    assert_eq!(post.category, "article");
 }
 
 #[sqlx::test]

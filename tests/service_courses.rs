@@ -152,9 +152,49 @@ async fn create_course_invalid_level_returns_validation(db: PgPool) {
     .unwrap_err();
 
     match err {
-        AppError::Validation(msg) => assert!(msg.contains("level"), "msg: {msg}"),
+        AppError::Validation(msg) => assert_eq!(
+            msg,
+            "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite"
+        ),
         other => panic!("expected Validation, got {other:?}"),
     }
+}
+
+/// Case policy: `level` is one of the 4 fields the wire accepts
+/// case-insensitively (parsed via `to_lowercase`) and stores lowercase.
+#[sqlx::test]
+async fn create_course_with_mixed_case_level_is_stored_lowercase(db: PgPool) {
+    let resp = service::create_course(
+        &db,
+        CreateCourseRequest {
+            level: "Beginner".into(),
+            ..minimal_create("Mixed Case Level")
+        },
+    )
+    .await
+    .expect("mixed-case level must be accepted");
+    assert_eq!(resp.course.level, "beginner");
+}
+
+/// Same case policy, on the PATCH path.
+#[sqlx::test]
+async fn update_course_with_mixed_case_level_is_stored_lowercase(db: PgPool) {
+    let created = service::create_course(&db, minimal_create("To Update Level"))
+        .await
+        .unwrap();
+
+    let updated = service::update_course(
+        &db,
+        common::studio_now_utc(Utc::now()),
+        created.course.id,
+        UpdateCourseRequest {
+            level: Some("ADVANCED".into()),
+            ..slots_only_update(None)
+        },
+    )
+    .await
+    .expect("mixed-case level must be accepted");
+    assert_eq!(updated.course.level, "advanced");
 }
 
 /// Task 7: `course_level` grew from 3 tiers to 5 (`foundation`/`elite`

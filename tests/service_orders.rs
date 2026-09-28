@@ -1344,6 +1344,34 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
     assert!(message.contains("processing"));
 }
 
+/// Case policy: order `status` is one of the fields the wire is
+/// case-sensitive about — a legal value in the wrong case is rejected, not
+/// silently accepted.
+#[sqlx::test]
+async fn update_order_status_mixed_case_returns_422(db: PgPool) {
+    let user = common::seed_member(&db, "buyer-case@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "prod-case", 1500, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
+
+    let err = service::update_order_status(&db, order.id, "Paid", None)
+        .await
+        .unwrap_err();
+    match err {
+        AppError::Validation(msg) => assert_eq!(msg, "invalid order status: Paid"),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------
 // Task E2: `correlation_id` (x-request-id) threaded into the outbox payload
 // ---------------------------------------------------------------------

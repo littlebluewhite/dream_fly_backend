@@ -121,7 +121,25 @@ async fn add_item_inactive_product_is_rejected(db: PgPool) {
 async fn add_item_invalid_item_type_is_rejected(db: PgPool) {
     let user = seed_member(&db, "c6b@example.com", "Password!234").await;
     let err = service::add_item(&db, user, "bogus", Uuid::now_v7(), 1).await.unwrap_err();
-    assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    match err {
+        AppError::Validation(msg) => assert_eq!(msg, "invalid item_type: bogus"),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+/// Case policy: `item_type` is one of the fields the wire is case-sensitive
+/// about — a legal value in the wrong case is rejected, not silently
+/// accepted.
+#[sqlx::test]
+async fn add_item_mixed_case_item_type_returns_422(db: PgPool) {
+    let user = seed_member(&db, "c6c@example.com", "Password!234").await;
+    let err = service::add_item(&db, user, "PRODUCT", Uuid::now_v7(), 1)
+        .await
+        .unwrap_err();
+    match err {
+        AppError::Validation(msg) => assert_eq!(msg, "invalid item_type: PRODUCT"),
+        other => panic!("expected Validation, got {other:?}"),
+    }
 }
 
 #[sqlx::test]

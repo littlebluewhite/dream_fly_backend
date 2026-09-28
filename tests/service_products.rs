@@ -72,7 +72,21 @@ async fn create_product_unknown_type_returns_validation(db: PgPool) {
         .await
         .unwrap_err();
     match err {
-        AppError::Validation(msg) => assert!(msg.contains("nft"), "msg: {msg}"),
+        AppError::Validation(msg) => assert_eq!(msg, "invalid product_type: nft"),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+/// Case policy: `product_type` is one of the fields the wire is
+/// case-sensitive about — a legal value in the wrong case is rejected, not
+/// silently accepted.
+#[sqlx::test]
+async fn create_product_mixed_case_type_returns_422(db: PgPool) {
+    let err = service::create(&db, create("Mystery", None, "Ticket"))
+        .await
+        .unwrap_err();
+    match err {
+        AppError::Validation(msg) => assert_eq!(msg, "invalid product_type: Ticket"),
         other => panic!("expected Validation, got {other:?}"),
     }
 }
@@ -249,7 +263,7 @@ async fn update_product_invalid_type_returns_validation(db: PgPool) {
     .unwrap_err();
 
     match err {
-        AppError::Validation(msg) => assert!(msg.contains("invalid-type"), "msg: {msg}"),
+        AppError::Validation(msg) => assert_eq!(msg, "invalid product_type: invalid-type"),
         other => panic!("expected Validation, got {other:?}"),
     }
 }

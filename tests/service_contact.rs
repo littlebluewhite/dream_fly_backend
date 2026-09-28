@@ -10,7 +10,7 @@ mod common;
 use sqlx::PgPool;
 
 use dream_fly_backend::extractors::pagination::PaginationParams;
-use dream_fly_backend::modules::contact::dto::CreateInquiryRequest;
+use dream_fly_backend::modules::contact::dto::{CreateInquiryRequest, UpdateInquiryRequest};
 use dream_fly_backend::modules::contact::service;
 
 fn req(subject: &str) -> CreateInquiryRequest {
@@ -95,4 +95,25 @@ async fn list_inquiries_clamps_per_page(db: PgPool) {
     .await
     .expect("list");
     assert_eq!(resp.meta.per_page, 100);
+}
+
+/// Case policy: `status` is one of the 4 fields the wire accepts
+/// case-insensitively (parsed via `to_lowercase`) and stores lowercase.
+#[sqlx::test]
+async fn update_inquiry_with_mixed_case_status_is_stored_lowercase(db: PgPool) {
+    let created = service::submit_inquiry(&db, req("Mixed Case Status"))
+        .await
+        .expect("submit_inquiry");
+
+    let updated = service::update_inquiry(
+        &db,
+        created.id,
+        &UpdateInquiryRequest {
+            status: Some("Resolved".into()),
+            assigned_to: None,
+        },
+    )
+    .await
+    .expect("mixed-case status must be accepted");
+    assert_eq!(updated.status, "resolved");
 }
