@@ -18,6 +18,10 @@
 //! `FakeGoogleIdentity` stands in for `utils::google_oauth::
 //! GoogleIdentityProvider` in service-level login-rule tests; the real
 //! adapter is covered against `wiremock` in `tests/google_identity.rs`.
+//!
+//! `StaticHealthProbe` stands in for `health::HealthProbe` so HTTP tests need
+//! no Redis; `tests/http_health.rs` pins the `/health` body for each answer
+//! and pings the test Redis through the production `RedisHealthProbe`.
 
 #![allow(dead_code)]
 
@@ -29,6 +33,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::health::HealthProbe;
 use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::email::EmailSender;
@@ -307,5 +312,45 @@ impl GoogleIdentityProvider for FakeGoogleIdentity {
         self.identity
             .clone()
             .ok_or_else(|| AppError::BadRequest("Google authentication failed".into()))
+    }
+}
+
+/// `HealthProbe` with fixed answers: Redis PING succeeds iff `redis_up`,
+/// Kafka reports `kafka_connected`.
+pub struct StaticHealthProbe {
+    pub redis_up: bool,
+    pub kafka_connected: bool,
+}
+
+impl StaticHealthProbe {
+    /// Redis up, Kafka disabled — the harness default.
+    pub fn up() -> Self {
+        Self {
+            redis_up: true,
+            kafka_connected: false,
+        }
+    }
+
+    /// Redis PING fails, Kafka disabled.
+    pub fn redis_down() -> Self {
+        Self {
+            redis_up: false,
+            kafka_connected: false,
+        }
+    }
+}
+
+#[async_trait]
+impl HealthProbe for StaticHealthProbe {
+    async fn ping_redis(&self) -> anyhow::Result<()> {
+        if self.redis_up {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("redis unavailable"))
+        }
+    }
+
+    fn kafka_connected(&self) -> bool {
+        self.kafka_connected
     }
 }

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use rdkafka::producer::FutureProducer;
 use sqlx::PgPool;
 use tokio_util::task::TaskTracker;
 
 use crate::config::AppConfig;
+use crate::health::HealthProbe;
 use crate::modules::auth::access::AccessCache;
 use crate::utils::clock::Clock;
 use crate::utils::email::EmailSender;
@@ -16,9 +16,6 @@ use crate::utils::studio_clock::StudioNow;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    /// Raw Redis handle — only the `/health` PING reads it now; every
-    /// stored value goes through `access_cache` or `ephemeral`.
-    pub redis: redis::aio::ConnectionManager,
     /// Account access cache (`auth::access`) — the is_active/role cache the
     /// `AuthUser` extractor reads. Held as a trait object so integration
     /// tests can substitute an in-memory adapter.
@@ -27,7 +24,10 @@ pub struct AppState {
     /// login/forgot-password counters, OTP, password-reset tokens. Held as a
     /// trait object so integration tests can substitute an in-memory adapter.
     pub ephemeral: Arc<dyn EphemeralStore>,
-    pub kafka_producer: Option<Arc<FutureProducer>>,
+    /// `/health` 的依賴探針(`health`):Redis PING 與開機時的 Kafka 旗標。
+    /// Held as a trait object so integration tests can substitute
+    /// `StaticHealthProbe` and run without Redis.
+    pub health: Arc<dyn HealthProbe>,
     pub config: Arc<AppConfig>,
     /// Shared outbound email sender. Built once at startup to avoid rebuilding
     /// the TLS stack on every password-reset request. Held as a trait object

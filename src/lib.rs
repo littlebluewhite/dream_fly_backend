@@ -1,6 +1,7 @@
 pub mod config;
 pub mod error;
 pub mod extractors;
+pub mod health;
 pub mod kafka;
 pub mod middleware;
 pub mod modules;

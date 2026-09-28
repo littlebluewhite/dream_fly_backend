@@ -1,13 +1,4 @@
-use std::time::Duration;
-
-use axum::{
-    Json, Router,
-    extract::Request,
-    http::StatusCode,
-    middleware,
-    routing::get,
-};
-use serde_json::{Value, json};
+use axum::{Router, extract::Request, middleware, routing::get};
 use tower_http::{
     compression::CompressionLayer,
     limit::RequestBodyLimitLayer,
@@ -17,6 +8,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
+use crate::health;
 use crate::middleware::cors::cors_layer;
 use crate::middleware::rate_limit::{rate_limit_middleware, strict_rate_limit};
 use crate::middleware::require_admin::require_admin;
@@ -24,54 +16,6 @@ use crate::middleware::require_coach::require_coach;
 use crate::middleware::require_staff::require_staff;
 use crate::modules;
 use crate::state::AppState;
-
-async fn health_check(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> (StatusCode, Json<Value>) {
-    // Bound each dependency probe so a wedged Redis/PG cannot hang liveness.
-    let db_ok = tokio::time::timeout(
-        Duration::from_millis(500),
-        sqlx::query("SELECT 1").execute(&state.db),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .is_some();
-
-    let redis_ok = tokio::time::timeout(
-        Duration::from_millis(500),
-        redis::cmd("PING").query_async::<String>(&mut state.redis.clone()),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .is_some();
-
-    let kafka_status = if state.kafka_producer.is_some() {
-        "connected"
-    } else {
-        "disabled"
-    };
-
-    let healthy = db_ok && redis_ok;
-    let status = if healthy {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-
-    (
-        status,
-        Json(json!({
-            "status": if healthy { "healthy" } else { "degraded" },
-            "services": {
-                "database": if db_ok { "up" } else { "down" },
-                "redis": if redis_ok { "up" } else { "down" },
-                "kafka": kafka_status,
-            }
-        })),
-    )
-}
 
 pub fn build_router(state: AppState) -> Router {
     use axum::http::{HeaderName, HeaderValue};
@@ -133,7 +77,7 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_coach));
 
     let api_v1 = Router::new()
-        .route("/health", get(health_check))
+        .route("/health", get(health::health_check))
         // auth 的嚴格桶(10/min)透過 route_layer 掛在 throttled_router() 上,
         // 宣告形狀比照下方 admin_api/staff_api;`/auth/logout` 不吃嚴格桶,
         // 走旁邊的 router() merge(見 `middleware::rate_limit::strict_rate_limit`)。

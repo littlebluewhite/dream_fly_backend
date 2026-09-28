@@ -15,8 +15,10 @@
 //!   never touch either Redis adapter — `tests/service_ephemeral.rs` and
 //!   `tests/service_access.rs` cover both adapters of each seam directly.
 //!   [`spawn_test_app_with_store`] swaps in another store (e.g.
-//!   `FailingEphemeralStore`). A Redis connection (db 15 by default) is
-//!   still opened, only for the `/health` PING
+//!   `FailingEphemeralStore`)
+//! - answers `/health` from a `StaticHealthProbe` (`up()` by default), so no
+//!   HTTP test needs Redis; [`spawn_test_app_with_health`] swaps in another
+//!   probe (e.g. `StaticHealthProbe::redis_down()`)
 //! - wraps the real production router (`startup::build_router`) so every
 //!   test exercises the entire middleware stack + extractors + handlers
 //! - exposes [`MockEmailClient`] via `app.email` so tests can assert on
@@ -45,6 +47,7 @@ use dream_fly_backend::config::{
     AppConfig, AuthConfig, DatabaseConfig, EmailConfig, KafkaConfig, RedisConfig, ServerConfig,
     SmsConfig,
 };
+use dream_fly_backend::health::HealthProbe;
 use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
@@ -56,7 +59,9 @@ use dream_fly_backend::utils::ephemeral::EphemeralStore;
 use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use dream_fly_backend::utils::sms::SmsClient;
 
-use super::mocks::{InMemoryAccessCache, InMemoryEphemeralStore, MockClock, MockEmailClient};
+use super::mocks::{
+    InMemoryAccessCache, InMemoryEphemeralStore, MockClock, MockEmailClient, StaticHealthProbe,
+};
 
 /// Client IP counter so every `TestApp` gets a unique synthetic source IP.
 /// Combined with `trust_proxy=true`, the rate-limit middleware keys each
@@ -287,32 +292,36 @@ pub async fn spawn_test_app(db: PgPool) -> TestApp {
 /// Spawn a `TestApp`, allowing the caller to mutate the `AppConfig` before
 /// the router is built. Typical use: redirecting Google OAuth / Twilio.
 pub async fn spawn_test_app_with<F: FnOnce(&mut AppConfig)>(db: PgPool, adjust: F) -> TestApp {
-    spawn(db, adjust, Arc::new(InMemoryEphemeralStore::new())).await
+    spawn(
+        db,
+        adjust,
+        Arc::new(InMemoryEphemeralStore::new()),
+        Arc::new(StaticHealthProbe::up()),
+    )
+    .await
 }
 
 /// Spawn a `TestApp` over the given short-lived state store instead of a
 /// fresh in-memory one — e.g. `FailingEphemeralStore` to pin what the
 /// middleware does when the store is down.
 pub async fn spawn_test_app_with_store(db: PgPool, ephemeral: Arc<dyn EphemeralStore>) -> TestApp {
-    spawn(db, |_| {}, ephemeral).await
+    spawn(db, |_| {}, ephemeral, Arc::new(StaticHealthProbe::up())).await
+}
+
+/// Spawn a `TestApp` whose `/health` answers from the given probe instead of
+/// `StaticHealthProbe::up()` — e.g. `StaticHealthProbe::redis_down()` to pin
+/// the degraded body.
+pub async fn spawn_test_app_with_health(db: PgPool, health: Arc<dyn HealthProbe>) -> TestApp {
+    spawn(db, |_| {}, Arc::new(InMemoryEphemeralStore::new()), health).await
 }
 
 async fn spawn<F: FnOnce(&mut AppConfig)>(
     db: PgPool,
     adjust: F,
     ephemeral: Arc<dyn EphemeralStore>,
+    health: Arc<dyn HealthProbe>,
 ) -> TestApp {
     let config = test_app_config(adjust);
-    let redis_url = config.redis.url.clone();
-
-    // Connect to Redis — only `/health`'s PING uses it (short-lived state
-    // is `ephemeral`, the access cache is in-memory). Panic with a clear
-    // message if it is not running.
-    let redis_client = redis::Client::open(redis_url.as_str())
-        .expect("failed to build test redis client (is redis running on TEST_REDIS_URL?)");
-    let redis = redis::aio::ConnectionManager::new(redis_client)
-        .await
-        .expect("failed to connect to test redis");
 
     let email = Arc::new(MockEmailClient::new());
     let email_state: Arc<dyn EmailSender> = email.clone();
@@ -345,8 +354,7 @@ async fn spawn<F: FnOnce(&mut AppConfig)>(
         db: db.clone(),
         access_cache: access_cache_state,
         ephemeral,
-        redis,
-        kafka_producer: None,
+        health,
         config: config_arc.clone(),
         email_client: email_state,
         sms_client,

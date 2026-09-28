@@ -122,7 +122,7 @@ async fn store_down_returns_500_json(db: PgPool) {
     // down, every request is refused with the generic 500 JSON body before
     // reaching a handler. The public course list's handler touches only
     // Postgres, so the 500 can only come from the rate-limit layer
-    // (`/health` would also PING Redis itself).
+    // (`/health` would also consult its own `HealthProbe`).
     let app = spawn_test_app_with_store(db, Arc::new(FailingEphemeralStore)).await;
 
     let resp = app.get("/api/v1/courses").await;

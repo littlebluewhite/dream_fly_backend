@@ -11,6 +11,7 @@ use tokio_util::task::TaskTracker;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use dream_fly_backend::config::{AppConfig, AppEnv, validate_production_config};
+use dream_fly_backend::health::{HealthProbe, RedisHealthProbe};
 use dream_fly_backend::kafka;
 use dream_fly_backend::kafka::producer::KafkaPublisher;
 use dream_fly_backend::modules::auth::access::{AccessCache, RedisAccessCache};
@@ -188,6 +189,11 @@ async fn main() -> anyhow::Result<()> {
     // connection; trait-erased for the same reason.
     let ephemeral: Arc<dyn EphemeralStore> = Arc::new(RedisEphemeralStore::new(redis.clone()));
 
+    // `/health` probe over the same Redis connection, plus whether the Kafka
+    // producer came up at boot; trait-erased for the same reason.
+    let health: Arc<dyn HealthProbe> =
+        Arc::new(RedisHealthProbe::new(redis, kafka_producer.is_some()));
+
     // Wall-clock source for handler-sampled `now` — production always reads
     // the real system clock; tests substitute `MockClock`.
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
@@ -203,10 +209,9 @@ async fn main() -> anyhow::Result<()> {
     // Build application state
     let state = AppState {
         db: db.clone(),
-        redis,
         access_cache,
         ephemeral,
-        kafka_producer,
+        health,
         config: config_arc.clone(),
         email_client,
         sms_client,
@@ -286,7 +291,7 @@ async fn main() -> anyhow::Result<()> {
     // at-least-once semantics. If Kafka is disabled, events accumulate in
     // the table (a clear operational signal) until the feature is enabled
     // and the dispatcher drains the backlog at boot.
-    let outbox_handle = match (&state.kafka_producer, config_arc.kafka.enabled) {
+    let outbox_handle = match (&kafka_producer, config_arc.kafka.enabled) {
         (Some(producer), true) => {
             let dispatcher_db = state.db.clone();
             let dispatcher_publisher = Arc::new(KafkaPublisher((**producer).clone()));
