@@ -48,16 +48,11 @@ use dream_fly_backend::config::{
     SmsConfig,
 };
 use dream_fly_backend::health::HealthProbe;
-use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
-use dream_fly_backend::state::AppState;
-use dream_fly_backend::utils::clock::Clock;
-use dream_fly_backend::utils::email::EmailSender;
+use dream_fly_backend::state::{AppState, Infra, Overrides};
 use dream_fly_backend::utils::ephemeral::EphemeralStore;
-use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
-use dream_fly_backend::utils::sms::SmsClient;
 
 use super::mocks::{
     InMemoryAccessCache, InMemoryEphemeralStore, MockClock, MockEmailClient, StaticHealthProbe,
@@ -324,44 +319,32 @@ async fn spawn<F: FnOnce(&mut AppConfig)>(
     let config = test_app_config(adjust);
 
     let email = Arc::new(MockEmailClient::new());
-    let email_state: Arc<dyn EmailSender> = email.clone();
     let clock = Arc::new(MockClock::new());
-    let clock_state: Arc<dyn Clock> = clock.clone();
     let access_cache = Arc::new(InMemoryAccessCache::new());
-    let access_cache_state: Arc<dyn AccessCache> = access_cache.clone();
-
-    let http_client = reqwest::Client::new();
-    // Real client, not a mock: SMS tests redirect it to a `wiremock` server
-    // via `config.sms.twilio_base_url` (see `common::twilio`).
-    let sms_client = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
-    // Real adapter, not a fake: `/auth/google` HTTP tests redirect it to a
-    // `wiremock` server via `config.auth.google_token_url`/`google_jwks_url`.
-    let google_identity: Arc<dyn GoogleIdentityProvider> =
-        Arc::new(GoogleOAuthClient::new(&config.auth, http_client));
-
     let config_arc = Arc::new(config);
 
-    // Independent binding, created before `AppState` so `TestApp` can keep
-    // it after `startup::build_router` moves `state` away — same identity
-    // discipline as `main.rs` (see `AppState::background_tasks` doc). Using
-    // a second `TaskTracker::new()` here instead of a clone would make
-    // `drain_background` wait on an empty tracker while the router's own
-    // tracker (inside `state`) is the one actually accumulating spawns —
-    // silently false-green.
-    let background = TaskTracker::new();
-
-    let state = AppState {
-        db: db.clone(),
-        access_cache: access_cache_state,
-        ephemeral,
-        health,
-        config: config_arc.clone(),
-        email_client: email_state,
-        sms_client,
-        clock: clock_state,
-        google_identity,
-        background_tasks: background.clone(),
-    };
+    // SMS and Google identity stay the real adapters, not fakes: SMS tests
+    // redirect them to a `wiremock` server via `config.sms.twilio_base_url`
+    // (see `common::twilio`), `/auth/google` HTTP tests via
+    // `config.auth.google_token_url`/`google_jwks_url`.
+    let state = AppState::new(
+        db.clone(),
+        config_arc.clone(),
+        Infra {
+            access_cache: access_cache.clone(),
+            ephemeral,
+            health,
+        },
+        Overrides {
+            email: Some(email.clone()),
+            clock: Some(clock.clone()),
+            ..Default::default()
+        },
+    )
+    .expect("build test AppState");
+    // Taken before `build_router` moves `state` away — see the doc on
+    // `AppState::background_tasks`.
+    let background = state.background_tasks.clone();
 
     let router = startup::build_router(state);
     let mut server = TestServer::new(router);

@@ -7,21 +7,13 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::watch;
-use tokio_util::task::TaskTracker;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use dream_fly_backend::config::{AppConfig, AppEnv, validate_production_config};
-use dream_fly_backend::health::{HealthProbe, RedisHealthProbe};
 use dream_fly_backend::kafka;
 use dream_fly_backend::kafka::producer::KafkaPublisher;
-use dream_fly_backend::modules::auth::access::{AccessCache, RedisAccessCache};
 use dream_fly_backend::startup;
-use dream_fly_backend::state::AppState;
-use dream_fly_backend::utils::clock::{Clock, SystemClock};
-use dream_fly_backend::utils::email::{EmailClient, EmailSender};
-use dream_fly_backend::utils::ephemeral::{EphemeralStore, RedisEphemeralStore};
-use dream_fly_backend::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
-use dream_fly_backend::utils::sms::SmsClient;
+use dream_fly_backend::state::{AppState, Infra, Overrides};
 
 /// Bound on the total time we'll wait for background tasks and the DB
 /// pool to finish during graceful shutdown. Container orchestrators
@@ -152,73 +144,12 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Build a shared HTTP client (connection pooling). Keep the global
-    // timeout short — handlers that need longer can set per-call timeouts.
-    // A 10s global blocks async tasks + DB connections when Google/Twilio
-    // stalls; 5s is a reasonable cap.
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .connect_timeout(Duration::from_secs(3))
-        .pool_idle_timeout(Duration::from_secs(30))
-        .build()
-        .context("failed to build HTTP client")?;
-
-    // Build the shared SMTP client once (TLS + connection pooling) and
-    // erase the concrete type at the AppState boundary so integration tests
-    // can inject a recording mock in its place.
-    let email_client: Arc<dyn EmailSender> = Arc::new(
-        EmailClient::new(&config.email)
-            .context("failed to build email client — check APP__EMAIL__* settings")?,
-    );
-
-    // Twilio client — reuses the HTTP connection pool. Concrete type, not
-    // trait-erased like email: test substitution goes through
-    // `SmsConfig::twilio_base_url` instead (see `AppState::sms_client`).
-    let sms_client: Arc<SmsClient> = Arc::new(SmsClient::new(&config.sms, http_client.clone()));
-
-    // Google identity (code exchange + JWKS verification) — also reuses the
-    // HTTP connection pool; trait-erased so service tests can inject a fake.
-    let google_identity: Arc<dyn GoogleIdentityProvider> =
-        Arc::new(GoogleOAuthClient::new(&config.auth, http_client));
-
-    // Account access cache (is_active/roles) over the same Redis connection;
-    // trait-erased so integration tests can inject an in-memory adapter.
-    let access_cache: Arc<dyn AccessCache> = Arc::new(RedisAccessCache::new(redis.clone()));
-
-    // Short-lived state (rate limits, OTP, reset tokens) over the same Redis
-    // connection; trait-erased for the same reason.
-    let ephemeral: Arc<dyn EphemeralStore> = Arc::new(RedisEphemeralStore::new(redis.clone()));
-
-    // `/health` probe over the same Redis connection, plus whether the Kafka
-    // producer came up at boot; trait-erased for the same reason.
-    let health: Arc<dyn HealthProbe> =
-        Arc::new(RedisHealthProbe::new(redis, kafka_producer.is_some()));
-
-    // Wall-clock source for handler-sampled `now` — production always reads
-    // the real system clock; tests substitute `MockClock`.
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-
     // Wrap the config in Arc once — AppState::clone is per-request.
     let config_arc = Arc::new(config);
-
-    // Independent binding, created before `AppState` so it survives past
-    // `startup::build_router` moving `state` away — see `background_tasks`
-    // teardown below and the doc on `AppState::background_tasks`.
-    let background_tasks = TaskTracker::new();
-
-    // Build application state
-    let state = AppState {
-        db: db.clone(),
-        access_cache,
-        ephemeral,
-        health,
-        config: config_arc.clone(),
-        email_client,
-        sms_client,
-        clock,
-        google_identity,
-        background_tasks: background_tasks.clone(),
-    };
+    let infra = Infra::redis(redis, kafka_producer.is_some());
+    let state = AppState::new(db.clone(), config_arc.clone(), infra, Overrides::default())?;
+    // Drain handle for teardown — see the doc on `AppState::background_tasks`.
+    let background_tasks = state.background_tasks.clone();
 
     // Shutdown signaling channel: broadcasts a single `true` when the
     // server needs to wind down, so both the HTTP layer and the Kafka
