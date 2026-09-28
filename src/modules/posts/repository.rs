@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::Post;
+use super::model::{Post, PostCategory, PostStatus};
 
 /// posts 的 12 欄投影,供本檔全部 7 個投影站共用(any-status/`published_posts`
 /// 讀側的 `SELECT`,以及 `create`/`update` 的 `RETURNING`)。fragment const +
@@ -92,13 +92,13 @@ pub async fn create(
     slug: &str,
     content: &str,
     excerpt: Option<&str>,
-    category: &str,
+    category: PostCategory,
     cover_image: Option<&str>,
 ) -> Result<Post, sqlx::Error> {
     sqlx::query_as::<_, Post>(sqlx::AssertSqlSafe(format!(
         "INSERT INTO posts (id, author_id, title, slug, content, excerpt, category, \
          cover_image, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6::post_category, $7, now(), now()) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, now(), now()) \
          RETURNING {POST_COLUMNS}"
     )))
     .bind(author_id)
@@ -120,8 +120,8 @@ pub async fn update(
     slug: Option<&str>,
     content: Option<&str>,
     excerpt: Option<Option<&str>>,
-    category: Option<&str>,
-    status: Option<&str>,
+    category: Option<PostCategory>,
+    status: Option<PostStatus>,
     cover_image: Option<Option<&str>>,
     published_at: Option<Option<DateTime<Utc>>>,
 ) -> Result<Option<Post>, sqlx::Error> {
@@ -140,10 +140,10 @@ pub async fn update(
         qb.push(", excerpt = ").push_bind(v);
     }
     if let Some(v) = category {
-        qb.push(", category = ").push_bind(v).push("::post_category");
+        qb.push(", category = ").push_bind(v);
     }
     if let Some(v) = status {
-        qb.push(", status = ").push_bind(v).push("::post_status");
+        qb.push(", status = ").push_bind(v);
     }
     if let Some(v) = cover_image {
         qb.push(", cover_image = ").push_bind(v);

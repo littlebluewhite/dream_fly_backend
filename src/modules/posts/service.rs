@@ -56,7 +56,7 @@ pub async fn create_post(
     req: CreatePostRequest,
 ) -> Result<PostDetailResponse, AppError> {
     // Validate category
-    let _: PostCategory = req.category.parse().map_err(|_| {
+    let category: PostCategory = req.category.parse().map_err(|_| {
         AppError::Validation(
             "invalid category, must be one of: announcement, article, promotion, event".into(),
         )
@@ -73,7 +73,7 @@ pub async fn create_post(
         &slug,
         &req.content,
         req.excerpt.as_deref(),
-        &req.category.to_lowercase(),
+        category,
         req.cover_image.as_deref(),
     )
     .await
@@ -104,14 +104,19 @@ pub async fn update_post(
 
     auth.owns_or_admin(existing.author_id, "you can only update your own posts")?;
 
-    // Validate category if provided
-    if let Some(ref category) = req.category {
-        let _: PostCategory = category.parse().map_err(|_| {
+    // Validate category if provided — parsed once into `PostCategory` so
+    // the repository writes the lowercased value instead of the caller's
+    // raw (possibly mixed-case) string.
+    let category: Option<PostCategory> = req
+        .category
+        .as_deref()
+        .map(|s| s.parse::<PostCategory>())
+        .transpose()
+        .map_err(|_| {
             AppError::Validation(
                 "invalid category, must be one of: announcement, article, promotion, event".into(),
             )
         })?;
-    }
 
     // Validate status if provided — parsed once into `PostStatus` so the
     // published_at decision below matches on the enum instead of re-parsing
@@ -142,8 +147,8 @@ pub async fn update_post(
         req.slug.as_deref(),
         req.content.as_deref(),
         req.excerpt.as_ref().map(|o| o.as_deref()),
-        req.category.as_deref(),
-        new_status.as_ref().map(|s| s.as_str()),
+        category,
+        new_status,
         req.cover_image.as_ref().map(|o| o.as_deref()),
         published_at,
     )

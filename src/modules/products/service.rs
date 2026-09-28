@@ -13,6 +13,16 @@ use super::dto::{
 use super::model::{OrderStockTrace, Product, ProductType};
 use super::repository::{self, ProductCreate, ProductUpdate};
 
+/// Parse+validate a `product_type` wire string into [`ProductType`] — the
+/// single service-boundary parser `create`/`update`/`list` all share, so the
+/// error message stays identical across the three call sites (this refactor
+/// mustn't change it). Case-sensitive: [`ProductType`]'s `FromStr` doesn't
+/// lowercase, matching `create_product_mixed_case_type_returns_422`.
+fn parse_product_type(s: &str) -> Result<ProductType, AppError> {
+    s.parse::<ProductType>()
+        .map_err(|_| AppError::Validation(format!("invalid product_type: {}", s)))
+}
+
 /// Attach the `sold` aggregate to a single product. Used by the
 /// single-row endpoints (`get_by_slug`, `get_by_id`, `create`, `update`);
 /// `list` batches `find_sold_counts` across the whole page instead, to
@@ -28,6 +38,10 @@ pub async fn list(
     product_type_filter: Option<&str>,
     pagination: &PaginationParams,
 ) -> Result<ProductListResponse, AppError> {
+    // Parsed once at the service boundary — an unparseable filter 422s here
+    // instead of reaching the SQL `product_type` cast and failing as a 500.
+    let product_type_filter = product_type_filter.map(parse_product_type).transpose()?;
+
     // Count first so a zero-total response doesn't need a second (empty)
     // result set; both queries share the same filter.
     let total = repository::count_active(db, product_type_filter).await?;
@@ -92,9 +106,7 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
     let slug = req.slug.unwrap_or_else(|| slugify(&req.name));
 
     // Validate product_type
-    let pt = &req.product_type;
-    pt.parse::<ProductType>()
-        .map_err(|_| AppError::Validation(format!("invalid product_type: {}", pt)))?;
+    let product_type = parse_product_type(&req.product_type)?;
 
     // Rely on the DB unique index for slug uniqueness — avoids TOCTOU race
     // between a SELECT check and the INSERT.
@@ -103,7 +115,7 @@ pub async fn create(db: &PgPool, req: CreateProductRequest) -> Result<ProductRes
         ProductCreate {
             name: &req.name,
             slug: &slug,
-            product_type: pt,
+            product_type,
             description: req.description.as_deref(),
             price_cents: req.price_cents,
             original_price_cents: req.original_price_cents,
@@ -133,10 +145,11 @@ pub async fn update(
     req: UpdateProductRequest,
 ) -> Result<ProductResponse, AppError> {
     // Validate product_type if provided
-    if let Some(ref pt) = req.product_type {
-        pt.parse::<ProductType>()
-            .map_err(|_| AppError::Validation(format!("invalid product_type: {}", pt)))?;
-    }
+    let product_type = req
+        .product_type
+        .as_deref()
+        .map(parse_product_type)
+        .transpose()?;
 
     let product = repository::update(
         db,
@@ -144,7 +157,7 @@ pub async fn update(
         ProductUpdate {
             name: req.name.as_deref(),
             slug: req.slug.as_deref(),
-            product_type: req.product_type.as_deref(),
+            product_type,
             description: req.description.as_deref(),
             price_cents: req.price_cents,
             original_price_cents: req.original_price_cents,

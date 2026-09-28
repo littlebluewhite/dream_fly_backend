@@ -296,3 +296,34 @@ async fn list_published_paginates_and_excludes_drafts(db: PgPool) {
         assert_eq!(p.status, "published");
     }
 }
+
+#[sqlx::test]
+async fn update_post_mixed_case_category_is_stored_lowercase(db: PgPool) {
+    // `update_post` validated the category via `PostCategory::from_str`
+    // (which lowercases), but then wrote the caller's raw string to the
+    // repository — a mixed-case variant of a legal category passed
+    // validation and then blew up the SQL `::post_category` cast (500).
+    let author = common::seed_member(&db, "a@example.com", "hunter22-secret").await;
+    let post = service::create_post(&db, author, create_req("Mine", "article"))
+        .await
+        .unwrap();
+
+    let updated = service::update_post(
+        &db,
+        post.id,
+        &common::member_auth(author),
+        UpdatePostRequest {
+            title: None,
+            slug: None,
+            content: None,
+            excerpt: None,
+            category: Some("Article".into()),
+            status: None,
+            cover_image: None,
+        },
+    )
+    .await
+    .expect("mixed-case category must be accepted, same as create_post");
+
+    assert_eq!(updated.category, "article");
+}

@@ -5,14 +5,14 @@ use uuid::Uuid;
 
 use crate::modules::orders::model::REVENUE_STATUSES;
 
-use super::model::{OrderStockTrace, Product};
+use super::model::{OrderStockTrace, Product, ProductType};
 
 /// Input payload for `create`. Packages the 10 fields that previously formed
 /// a too-large positional argument list.
 pub struct ProductCreate<'a> {
     pub name: &'a str,
     pub slug: &'a str,
-    pub product_type: &'a str,
+    pub product_type: ProductType,
     pub description: Option<&'a str>,
     pub price_cents: i64,
     pub original_price_cents: Option<i64>,
@@ -32,7 +32,7 @@ pub struct ProductCreate<'a> {
 pub struct ProductUpdate<'a> {
     pub name: Option<&'a str>,
     pub slug: Option<&'a str>,
-    pub product_type: Option<&'a str>,
+    pub product_type: Option<ProductType>,
     pub description: Option<&'a str>,
     pub price_cents: Option<i64>,
     pub original_price_cents: Option<Option<i64>>,
@@ -47,7 +47,7 @@ pub struct ProductUpdate<'a> {
 
 pub async fn find_all_active(
     db: &PgPool,
-    product_type_filter: Option<&str>,
+    product_type_filter: Option<ProductType>,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<Product>, sqlx::Error> {
@@ -57,7 +57,7 @@ pub async fn find_all_active(
          valid_days, session_count, is_active, created_at, updated_at \
          FROM products \
          WHERE is_active = true \
-           AND ($1::text IS NULL OR product_type = $1::product_type) \
+           AND ($1 IS NULL OR product_type = $1) \
          ORDER BY name \
          LIMIT $2 OFFSET $3",
     )
@@ -72,12 +72,12 @@ pub async fn find_all_active(
 /// [`find_all_active`] so the two queries stay filter-aligned.
 pub async fn count_active(
     db: &PgPool,
-    product_type_filter: Option<&str>,
+    product_type_filter: Option<ProductType>,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM products \
          WHERE is_active = true \
-           AND ($1::text IS NULL OR product_type = $1::product_type)",
+           AND ($1 IS NULL OR product_type = $1)",
     )
     .bind(product_type_filter)
     .fetch_one(db)
@@ -269,7 +269,7 @@ pub async fn create(db: &PgPool, input: ProductCreate<'_>) -> Result<Product, sq
         "INSERT INTO products (id, name, slug, product_type, description, price_cents, \
          original_price_cents, features, is_highlighted, badge, stock, valid_days, session_count, \
          is_active, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3::product_type, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
          true, NOW(), NOW()) \
          RETURNING *",
     )
@@ -303,7 +303,7 @@ pub async fn update(
         qb.push(", slug = ").push_bind(v);
     }
     if let Some(v) = input.product_type {
-        qb.push(", product_type = ").push_bind(v).push("::product_type");
+        qb.push(", product_type = ").push_bind(v);
     }
     if let Some(v) = input.description {
         qb.push(", description = ").push_bind(v);

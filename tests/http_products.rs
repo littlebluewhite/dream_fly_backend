@@ -361,3 +361,16 @@ async fn update_product_clears_nullable_fields_to_null(db: PgPool) {
     assert_eq!(body4["valid_days"], 45);
     assert_eq!(body4["session_count"], 8);
 }
+
+#[sqlx::test]
+async fn list_products_invalid_type_filter_returns_422(db: PgPool) {
+    // `product_type` filter used to be handed straight to the SQL
+    // `::product_type` cast — an unparseable value made Postgres itself
+    // reject the query (500), instead of the service layer 422ing it the
+    // same way `create`/`update` already do.
+    let app = spawn_test_app(db).await;
+    let resp = app.get("/api/v1/products?product_type=bogus").await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "invalid product_type: bogus");
+}

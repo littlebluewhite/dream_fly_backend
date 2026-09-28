@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "post_category", rename_all = "snake_case")]
 pub enum PostCategory {
     Announcement,
@@ -36,7 +36,7 @@ impl std::str::FromStr for PostCategory {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "post_status", rename_all = "snake_case")]
 pub enum PostStatus {
     Draft,
