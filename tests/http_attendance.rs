@@ -594,28 +594,40 @@ async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: P
 }
 
 #[sqlx::test]
-async fn my_students_excludes_inactive_course(db: PgPool) {
+async fn my_students_includes_delisted_course(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (coach_user_id, coach_token) = app
-        .seed_user_with_roles("att-students-inactive@example.com", &["coach"])
+        .seed_user_with_roles("att-students-delisted@example.com", &["coach"])
         .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Inactive Course Coach").await;
-    let course_id = seed_course(&app.db, "Soon Inactive Course", Some(coach_id)).await;
-    let student = app.register_member("att-students-inactive-s@example.com", "Password!234").await;
-    seed_enrolment(&app.db, student.user_id, course_id, "active", Utc::now()).await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "Delisted Course Coach").await;
+    let course_id = seed_course(&app.db, "Soon Delisted Course", Some(coach_id)).await;
+    let student = app.register_member("att-students-delisted-s@example.com", "Password!234").await;
+    let enrolment_id =
+        seed_enrolment(&app.db, student.user_id, course_id, "active", Utc::now()).await;
 
     sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
         .bind(course_id)
         .execute(&app.db)
         .await
-        .expect("deactivate course");
+        .expect("delist course");
 
     let resp = app
         .get("/api/v1/coaches/me/students")
         .authorization_bearer(&coach_token)
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
-    assert_eq!(resp.json::<serde_json::Value>().as_array().unwrap().len(), 0);
+    let body: serde_json::Value = resp.json();
+    let arr = body.as_array().expect("plain array, not an envelope");
+    assert_eq!(
+        arr.len(),
+        1,
+        "coach scope includes delisted courses (ADR-0012), got {arr:?}"
+    );
+    assert_eq!(arr[0]["user_id"], student.user_id.to_string());
+    let courses = arr[0]["courses"].as_array().expect("courses array");
+    assert_eq!(courses.len(), 1, "delisted course must still be listed");
+    assert_eq!(courses[0]["course_id"], course_id.to_string());
+    assert_eq!(courses[0]["enrolment_id"], enrolment_id.to_string());
 }
 
 /// Sanity check that `Duration` import above is actually used (kept for a

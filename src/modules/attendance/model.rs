@@ -76,10 +76,11 @@ pub struct StudentCourseBrief {
     pub enrolment_id: Uuid,
 }
 
-/// One distinct student across a coach's active courses' active enrolments,
-/// for `GET /coaches/me/students`. `courses` is aggregated with `jsonb_agg`
-/// in the same query (see `repository::find_my_students`) — one query for
-/// the whole list, not one per student.
+/// One distinct student across 教練名下全部課程（含已下架，ADR-0012）的
+/// active enrolments,for `GET /coaches/me/students`. `courses` is
+/// aggregated with `jsonb_agg` in the same query (see
+/// `repository::find_my_students`) — one query for the whole list, not one
+/// per student.
 #[derive(Debug, sqlx::FromRow)]
 pub struct MyStudentRow {
     pub user_id: Uuid,

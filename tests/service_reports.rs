@@ -26,6 +26,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::attendance::service as attendance_service;
+use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
+use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
@@ -36,8 +40,8 @@ use common::fixtures::{
     SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
     seed_course_revenue, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
     seed_course_session, seed_course_session_with_venue, seed_course_with_capacity, seed_enrolment,
-    seed_entitlement_product, seed_marked_attendance, seed_member_created_at, seed_message,
-    seed_order_bare, seed_order_with_items, seed_venue_rentals, seed_waitlist_entry,
+    seed_entitlement_product, seed_leave_request, seed_marked_attendance, seed_member_created_at,
+    seed_message, seed_order_bare, seed_order_with_items, seed_venue_rentals, seed_waitlist_entry,
     set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on};
@@ -1631,4 +1635,111 @@ async fn points_tier_matches_sql_tier_distribution_case(db: PgPool) {
             "balance {balance}: PointsTier and the SQL CASE disagree"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// B-5 (ADR-0012): coach scope includes delisted courses on every surface
+// ---------------------------------------------------------------------------
+
+/// Cross-surface lock: a coach's scope is *all* courses pointing at their
+/// `coach_id`, delisted (`is_active = false`) or not (下架＝停售不是停課,
+/// `sessions/service.rs:44`) — `/coaches/me/students`, `/reports/coach`,
+/// `/reports/admin`'s `coaches` rows, and `/leave-requests` (coach identity)
+/// must all agree. Coach A has course X (listed) and course Y (delisted
+/// after setup); s1 is only in X, s2 is only in Y, s3 is in both (counted
+/// once), s4's Y enrolment is cancelled (never counted). Y has one
+/// today-session with no attendance recorded and one pending leave request.
+#[sqlx::test]
+async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
+    let coach_user = seed_member(&db, "delisted-coach@example.com", "Password!234").await;
+    let coach_id = seed_coach(&db, coach_user, "Delisted Scope Coach").await;
+    let course_x = seed_course(&db, "Delisted Scope X", Some(coach_id)).await;
+    let course_y = seed_course(&db, "Delisted Scope Y", Some(coach_id)).await;
+
+    let s1 = seed_member(&db, "delisted-s1@example.com", "Password!234").await;
+    let s2 = seed_member(&db, "delisted-s2@example.com", "Password!234").await;
+    let s3 = seed_member(&db, "delisted-s3@example.com", "Password!234").await;
+    let s4 = seed_member(&db, "delisted-s4@example.com", "Password!234").await;
+
+    seed_enrolment(&db, s1, course_x, "active", Utc::now()).await;
+    let enrolment_s2_y = seed_enrolment(&db, s2, course_y, "active", Utc::now()).await;
+    seed_enrolment(&db, s3, course_x, "active", Utc::now()).await;
+    seed_enrolment(&db, s3, course_y, "active", Utc::now()).await;
+    seed_enrolment(&db, s4, course_y, "cancelled", Utc::now()).await;
+
+    let today = Utc::now().date_naive();
+    let session_y_today = seed_course_session(&db, course_y, today, t(9, 0), t(10, 0)).await;
+    seed_leave_request(&db, enrolment_s2_y, session_y_today, "pending").await;
+
+    // Y is delisted only after its roster/session/leave request are all in
+    // place — delisting must not retroactively erase any of this.
+    sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
+        .bind(course_y)
+        .execute(&db)
+        .await
+        .expect("delist course Y");
+
+    let auth = common::coach_auth(coach_user);
+
+    // GET /coaches/me/students — s1, s2, s3 all appear; s3 shows both courses.
+    let students = attendance_service::my_students(&db, &auth)
+        .await
+        .expect("my_students");
+    let student_ids: std::collections::HashSet<Uuid> = students.iter().map(|s| s.user_id).collect();
+    assert_eq!(
+        student_ids,
+        std::collections::HashSet::from([s1, s2, s3]),
+        "coach scope must include Y's students even though Y is delisted, got {students:?}"
+    );
+    let s3_row = students
+        .iter()
+        .find(|s| s.user_id == s3)
+        .expect("s3 present");
+    assert_eq!(s3_row.courses.len(), 2, "s3 must show both X and Y");
+
+    // GET /reports/coach — student_count/today_sessions/pending_attendance
+    // all count Y.
+    let coach_report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
+        .await
+        .expect("coach_report");
+    assert_eq!(coach_report.student_count, 3);
+    assert_eq!(coach_report.today_sessions, 1);
+    assert_eq!(
+        coach_report.pending_attendance, 1,
+        "Y's today session is unmarked"
+    );
+
+    // GET /reports/admin — coaches[A] also counts Y.
+    let admin_report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
+        .await
+        .expect("admin_report");
+    let coach_row = admin_report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_id)
+        .expect("coach A row");
+    assert_eq!(coach_row.course_count, 2);
+    assert_eq!(coach_row.student_count, 3);
+
+    // GET /leave-requests as this coach — Y's pending leave request still
+    // surfaces.
+    let leave_list = leave_service::list_leave_requests(
+        &db,
+        &auth,
+        LeaveRequestQuery {
+            status: None,
+            course_id: None,
+        },
+        &PaginationParams::default(),
+    )
+    .await
+    .expect("list_leave_requests");
+    assert!(
+        leave_list
+            .leave_requests
+            .iter()
+            .any(|r| r.course_id == course_y),
+        "coach must still see Y's pending leave request, got {:?}",
+        leave_list.leave_requests
+    );
 }
