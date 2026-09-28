@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn from_str_parses_every_all_entrys_as_str_output_back_to_its_variant() {
+    fn from_str_roundtrips_every_all_entry() {
         for v in ProductType::ALL {
             assert_eq!(v.as_str().parse::<ProductType>(), Ok(v));
         }

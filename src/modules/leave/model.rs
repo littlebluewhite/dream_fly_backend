@@ -17,7 +17,12 @@ pub enum LeaveStatus {
 impl LeaveStatus {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` derives from this instead of hand-copying the list.
-    pub const ALL: [Self; 4] = [Self::Pending, Self::Approved, Self::Rejected, Self::Cancelled];
+    pub const ALL: [Self; 4] = [
+        Self::Pending,
+        Self::Approved,
+        Self::Rejected,
+        Self::Cancelled,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
