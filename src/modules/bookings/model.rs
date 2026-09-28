@@ -35,7 +35,7 @@ impl BookingStatus {
     /// whether this booking currently occupies a seat on its time slot.
     /// `time_slots.booked` is a denormalized read cache of this predicate
     /// (maintained at runtime by the increment/decrement protocol on
-    /// create/cancel); `src/bin/seed.rs` consumes this same predicate
+    /// create/cancel); `src/bin/seed/dataset.rs` consumes this same predicate
     /// instead of hand-picking which literal statuses count as occupied.
     /// `Completed`/`NoShow` are terminal but still occupy — only
     /// `Cancelled` frees the seat.

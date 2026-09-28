@@ -227,7 +227,7 @@ fn env_source() -> config::Environment {
 /// `staging`, `production`. Single owner for reading/comparing the env name
 /// — previously read and compared ad hoc (and case-sensitively) at four
 /// separate sites: this module's `load()`, `main.rs`'s production guard,
-/// `main.rs`'s log-format switch, and `bin/seed.rs`'s production refusal.
+/// `main.rs`'s log-format switch, and `bin/seed/main.rs`'s production refusal.
 ///
 /// Not to be confused with the `config` crate's `config::Environment`
 /// (`env_source()` above) — that's a config *source* that reads

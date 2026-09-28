@@ -19,7 +19,7 @@
 //!    模組存在的目的。google 的角色指派已在 Phase 6A 收斂到
 //!    `permissions::assign_role_by_name`,不需要再靠這裡收攏一次。
 //!
-//! 2. **`bin/seed.rs` 的開發種子資料**——`upsert_user`/`upsert_seed_member`
+//! 2. **`bin/seed/dataset.rs` 的開發種子資料**——`upsert_user`/`upsert_seed_member`
 //!    都是冪等 upsert(`ON CONFLICT DO NOTHING` + 條件式二次 `SELECT`),
 //!    不是一次性誕生;種子帳號的角色因人而異(admin 帳完全沒有 `member`
 //!    角色),且 `points_balance` 是顯式種子輸入,不是「新帳號預設 0」的

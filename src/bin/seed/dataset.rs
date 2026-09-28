@@ -1,10 +1,8 @@
-//! Idempotent development seed data.
-//!
-//! Run with `cargo run --bin seed`. Loads configuration the same way
-//! `main.rs` does (`AppConfig::load()` — `config/default.toml` →
-//! `config/{APP_ENV}.toml` → `APP__*` env vars) and applies migrations before
-//! seeding, so this works standalone against a freshly-`docker-compose up -d`
-//! database with no other setup step.
+//! The dev/reporting dataset `dataset::run` writes — split out of
+//! `bin/seed/main.rs` (the entry point: env/config/pool/migrate, then one
+//! sampled `StudioNow` handed in here) so the dataset itself, `SeedReport`
+//! and its `#[sqlx::test]`s can live together without dragging in
+//! process-level concerns.
 //!
 //! Every insert is `INSERT ... ON CONFLICT DO NOTHING` keyed on the table's
 //! natural unique column (email / slug / code) — a bare `ON CONFLICT DO
@@ -60,10 +58,8 @@ use anyhow::Context;
 use chrono::{DateTime, Datelike, Days, Duration, Months, NaiveDate, NaiveTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-use dream_fly_backend::config::{AppConfig, AppEnv};
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::{CartItemType, CheckoutLine};
 use dream_fly_backend::modules::contact::model::InquiryType;
@@ -75,7 +71,7 @@ use dream_fly_backend::modules::points::model::{LedgerDelta, OrderPointsFlow, Po
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
-use dream_fly_backend::utils::studio_clock;
+use dream_fly_backend::utils::studio_clock::StudioNow;
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
 /// to bind a Postgres `TEXT[]` column.
@@ -88,9 +84,12 @@ fn vs(items: &[&str]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Insert a user (idempotent on `email`) and return its id whether the row
-/// was just inserted or already existed. The INSERT always writes
-/// `points_balance = 0`; when the row is newly inserted (not a conflict)
-/// and `points_balance > 0`, the target balance is granted via
+/// was just inserted or already existed. Takes an already-hashed password
+/// (see `run`'s one-Argon2-per-plaintext precompute of the Admin/Member/
+/// Coach hashes) rather than hashing here, so callers sharing a plaintext
+/// share the hash instead of re-hashing it per call. The INSERT always
+/// writes `points_balance = 0`; when the row is newly inserted (not a
+/// conflict) and `points_balance > 0`, the target balance is granted via
 /// `points_service::apply_delta_tx` (`LedgerDelta::admin_adjust`) in the same
 /// transaction as the INSERT — user row and `point_ledger` grant land
 /// atomically (a failed grant rolls back the insert too), and a conflict
@@ -99,13 +98,9 @@ async fn upsert_user(
     db: &PgPool,
     email: &str,
     name: &str,
-    plain_password: &str,
+    password_hash: &str,
     points_balance: i64,
 ) -> anyhow::Result<Uuid> {
-    let hash = password::hash_password(plain_password.to_string())
-        .await
-        .map_err(|e| anyhow::anyhow!("hashing password for {email}: {e}"))?;
-
     let mut tx = db
         .begin()
         .await
@@ -122,7 +117,7 @@ async fn upsert_user(
     .bind(Uuid::now_v7())
     .bind(email)
     .bind(name)
-    .bind(&hash)
+    .bind(password_hash)
     .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert user {email}"))?;
@@ -458,8 +453,13 @@ struct PostSeed {
 }
 
 /// Insert a published announcement post (idempotent on `LOWER(slug)`).
-async fn insert_post(db: &PgPool, author_id: Uuid, seed: &PostSeed) -> anyhow::Result<()> {
-    let published_at: DateTime<Utc> = Utc::now() - Duration::days(seed.days_ago);
+async fn insert_post(
+    db: &PgPool,
+    author_id: Uuid,
+    seed: &PostSeed,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let published_at: DateTime<Utc> = now - Duration::days(seed.days_ago);
 
     sqlx::query(
         r#"
@@ -526,8 +526,8 @@ async fn insert_venue(db: &PgPool, seed: &VenueSeed) -> anyhow::Result<()> {
 /// in UTC (dev `STUDIO_TIMEZONE`) or Asia/Taipei. Clamped to now: `today` is
 /// the studio-tz date, which can run up to a day ahead of the UTC date, so a
 /// today-dated seed row would otherwise land hours in the future.
-fn at_utc(date: NaiveDate, hour: u32) -> DateTime<Utc> {
-    date.and_hms_opt(hour, 0, 0).expect("valid seed hour").and_utc().min(Utc::now())
+fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
+    date.and_hms_opt(hour, 0, 0).expect("valid seed hour").and_utc().min(now)
 }
 
 /// Insert a reporting-dataset member (idempotent on `email`) and return its
@@ -1010,10 +1010,11 @@ async fn insert_inquiry_if_absent(db: &PgPool, seed: &InquirySeed) -> anyhow::Re
 }
 
 // ---------------------------------------------------------------------------
-// verification helper — printed at the end of every run
+// verification helper — collected at the end of every run, printed by
+// `bin/seed/main.rs` under the `-- row counts --` header.
 // ---------------------------------------------------------------------------
 
-async fn print_row_counts(db: &PgPool) -> anyhow::Result<()> {
+async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i64)>> {
     // Literal (label, query) pairs — kept as `&'static str` rather than a
     // `format!`-built string so sqlx's `SqlSafeStr` compile-time check (no
     // dynamic SQL strings) is satisfied without an `AssertSqlSafe` escape
@@ -1036,59 +1037,49 @@ async fn print_row_counts(db: &PgPool) -> anyhow::Result<()> {
         ("bookings", "SELECT COUNT(*) FROM bookings"),
         ("contact_inquiries", "SELECT COUNT(*) FROM contact_inquiries"),
     ];
-    println!("\n-- row counts --");
+    let mut row_counts = Vec::with_capacity(QUERIES.len());
     for (table, sql) in QUERIES {
         let n: i64 = sqlx::query_scalar(sql).fetch_one(db).await?;
-        println!("{table:<19} {n}");
+        row_counts.push((table, n));
     }
-    Ok(())
+    Ok(row_counts)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+/// What one `dataset::run` finished with — `bin/seed/main.rs` prints
+/// `row_counts` under the `-- row counts --` header; `#[sqlx::test]`s assert
+/// on both fields directly instead of scraping stdout.
+pub struct SeedReport {
+    pub row_counts: Vec<(&'static str, i64)>,
+    pub settled_members: usize,
+}
 
-    // Refuse to run against production: this binary unconditionally upserts
-    // a known admin credential (admin@dreamfly.tw / Admin#2026), which must
-    // never exist outside development/staging. Read `APP_ENV` the same way
-    // `config::AppConfig::load` and `config::validate_production_config` do,
-    // and check it before the config is loaded or any DB connection is
-    // opened.
-    let app_env = AppEnv::from_env();
-    if app_env.is_production() {
-        anyhow::bail!(
-            "refusing to run: APP_ENV={env} looks like production. This binary seeds \
-             known credentials (admin@dreamfly.tw / Admin#2026) and must never run against \
-             a production database.",
-            env = app_env.raw()
-        );
-    }
-
-    let config = AppConfig::load().context(
-        "failed to load configuration — check APP_ENV, config/*.toml overlays, and APP__* env vars",
-    )?;
-
-    let db = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&config.database.url)
+/// The seed dataset itself — everything `bin/seed/main.rs`'s entry point
+/// (env/config/pool/migrate, one sampled `at: StudioNow`) hands off to.
+/// Idempotent and safe to re-run: see the module doc for the per-table
+/// idempotency keys and the points-ledger settlement shape.
+pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
+    // Hash each distinct dev plaintext once, up front — Admin#2026 (admin),
+    // Member#2026 (test member + all 24 reporting members) and Coach#2026
+    // (all 4 coaches) — instead of once per `upsert_user`/`upsert_seed_member`
+    // call: 7 Argon2 hashes down to 3 per run.
+    let admin_hash = password::hash_password("Admin#2026".to_string())
         .await
-        .context("failed to connect to PostgreSQL — check APP__DATABASE__URL and that the DB is reachable")?;
-
-    sqlx::migrate!("./migrations")
-        .run(&db)
+        .map_err(|e| anyhow::anyhow!("hashing seed admin password: {e}"))?;
+    let member_hash = password::hash_password("Member#2026".to_string())
         .await
-        .context("failed to run database migrations")?;
-
-    println!("Connected + migrated. Seeding dev data (idempotent, safe to re-run)...");
+        .map_err(|e| anyhow::anyhow!("hashing seed member password: {e}"))?;
+    let coach_hash = password::hash_password("Coach#2026".to_string())
+        .await
+        .map_err(|e| anyhow::anyhow!("hashing seed coach password: {e}"))?;
 
     // -- admin -----------------------------------------------------------
-    let admin_id = upsert_user(&db, "admin@dreamfly.tw", "系統管理員", "Admin#2026", 0).await?;
-    assign_role(&db, admin_id, "admin").await?;
+    let admin_id = upsert_user(db, "admin@dreamfly.tw", "系統管理員", &admin_hash, 0).await?;
+    assign_role(db, admin_id, "admin").await?;
     println!("[users]    admin ready: admin@dreamfly.tw / Admin#2026");
 
     // -- test member -------------------------------------------------------
-    let member_id = upsert_user(&db, "member@dreamfly.tw", "測試會員", "Member#2026", 1250).await?;
-    assign_role(&db, member_id, "member").await?;
+    let member_id = upsert_user(db, "member@dreamfly.tw", "測試會員", &member_hash, 1250).await?;
+    assign_role(db, member_id, "member").await?;
     println!("[users]    member ready: member@dreamfly.tw / Member#2026 (points_balance=1250)");
 
     // -- coaches -----------------------------------------------------------
@@ -1137,9 +1128,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut coach_ids: HashMap<&'static str, Uuid> = HashMap::new();
     for seed in &coach_seeds {
-        let user_id = upsert_user(&db, seed.email, seed.user_name, "Coach#2026", 0).await?;
-        assign_role(&db, user_id, "coach").await?;
-        let coach_id = upsert_coach(&db, user_id, seed).await?;
+        let user_id = upsert_user(db, seed.email, seed.user_name, &coach_hash, 0).await?;
+        assign_role(db, user_id, "coach").await?;
+        let coach_id = upsert_coach(db, user_id, seed).await?;
         coach_ids.insert(seed.slug, coach_id);
         println!("[coaches]  {} ready: {} / Coach#2026", seed.user_name, seed.email);
     }
@@ -1260,7 +1251,7 @@ async fn main() -> anyhow::Result<()> {
         let coach_id = *coach_ids
             .get(seed.coach_slug)
             .ok_or_else(|| anyhow::anyhow!("unknown coach slug '{}'", seed.coach_slug))?;
-        insert_course(&db, seed, coach_id).await?;
+        insert_course(db, seed, coach_id).await?;
     }
     println!("[courses]  {} courses ready", course_seeds.len());
 
@@ -1270,10 +1261,10 @@ async fn main() -> anyhow::Result<()> {
     let mut course_ids: Vec<Uuid> = Vec::with_capacity(course_seeds.len());
     let mut slot_count = 0usize;
     for seed in &course_seeds {
-        let course_id = course_id_by_slug(&db, seed.slug).await?;
+        let course_id = course_id_by_slug(db, seed.slug).await?;
         course_ids.push(course_id);
         for (day_of_week, start_time, end_time) in seed.slots {
-            insert_course_schedule_slot(&db, course_id, *day_of_week, start_time, end_time, seed.venue)
+            insert_course_schedule_slot(db, course_id, *day_of_week, start_time, end_time, seed.venue)
                 .await?;
             slot_count += 1;
         }
@@ -1284,7 +1275,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .bind(course_id)
         .bind(seed.venue)
-        .execute(&db)
+        .execute(db)
         .await
         .with_context(|| format!("backfill slot venue for course '{}'", seed.slug))?;
     }
@@ -1382,7 +1373,7 @@ async fn main() -> anyhow::Result<()> {
     ];
 
     for seed in &product_seeds {
-        insert_product(&db, seed).await?;
+        insert_product(db, seed).await?;
     }
     println!("[products] {} products/plans ready", product_seeds.len());
 
@@ -1393,7 +1384,7 @@ async fn main() -> anyhow::Result<()> {
         ("WELCOME50", 5_000),
     ];
     for (code, discount_cents) in coupon_seeds {
-        insert_coupon(&db, code, discount_cents).await?;
+        insert_coupon(db, code, discount_cents).await?;
     }
     println!("[coupons]  {} coupons ready", coupon_seeds.len());
 
@@ -1422,7 +1413,7 @@ async fn main() -> anyhow::Result<()> {
         },
     ];
     for seed in &reward_seeds {
-        insert_reward_if_absent(&db, seed).await?;
+        insert_reward_if_absent(db, seed).await?;
     }
     println!("[rewards]  {} rewards ready", reward_seeds.len());
 
@@ -1452,7 +1443,7 @@ async fn main() -> anyhow::Result<()> {
     ];
 
     for seed in &post_seeds {
-        insert_post(&db, admin_id, seed).await?;
+        insert_post(db, admin_id, seed, at.now).await?;
     }
     println!("[posts]    {} announcement posts ready", post_seeds.len());
 
@@ -1485,7 +1476,7 @@ async fn main() -> anyhow::Result<()> {
     ];
 
     for seed in &venue_seeds {
-        insert_venue(&db, seed).await?;
+        insert_venue(db, seed).await?;
     }
     println!("[venues]   {} venues ready", venue_seeds.len());
 
@@ -1495,17 +1486,15 @@ async fn main() -> anyhow::Result<()> {
     // produce the identical set (and the per-table idempotency keys make
     // re-runs no-ops regardless).
     // =====================================================================
-    let today: NaiveDate = studio_clock::today(config.server.studio_timezone, Utc::now());
+    let today: NaiveDate = at.today();
 
     // -- members ×24 -------------------------------------------------------
     // Age buckets (6-12 / 13-17 / 18-25 / 26-40) rotate on (i-1)%4 — six
     // members each, so the age-distribution report always has every bucket.
     // Points tiers (`PointsTier`) block on (i-1)/6 — six members each, see
     // `member_points_target`. Different index bases so age and tier
-    // decorrelate.
-    let member_hash = password::hash_password("Member#2026".to_string())
-        .await
-        .map_err(|e| anyhow::anyhow!("hashing seed member password: {e}"))?;
+    // decorrelate. `member_hash` is the same Member#2026 hash the test
+    // member above shares — hashed once, up front (see `run`'s precompute).
     let mut member_ids: Vec<Uuid> = Vec::with_capacity(24);
     // `(user_id, points-tier target balance)` for every one of the 24
     // members — settled to its tier target after the order loop below has
@@ -1532,8 +1521,8 @@ async fn main() -> anyhow::Result<()> {
             .expect("valid seed birth_date");
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
-        let user_id = upsert_seed_member(&db, &email, &name, &member_hash, birth_date).await?;
-        assign_role(&db, user_id, "member").await?;
+        let user_id = upsert_seed_member(db, &email, &name, &member_hash, birth_date).await?;
+        assign_role(db, user_id, "member").await?;
         member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);
     }
@@ -1564,9 +1553,9 @@ async fn main() -> anyhow::Result<()> {
         for k in picks {
             let status = if (i + k) % 10 == 3 { "cancelled" } else { "active" };
             let days_ago = 50 + ((i * 13 + k * 29) % 130);
-            let created_at = at_utc(today - Days::new(days_ago as u64), 6);
+            let created_at = at_utc(today - Days::new(days_ago as u64), 6, at.now);
             let enrolment_id =
-                insert_enrolment_if_absent(&db, member_ids[i - 1], course_ids[k], status, created_at)
+                insert_enrolment_if_absent(db, member_ids[i - 1], course_ids[k], status, created_at)
                     .await?;
             enrolment_total += 1;
             if status == "active" {
@@ -1589,7 +1578,7 @@ async fn main() -> anyhow::Result<()> {
     // carries one refunded (seq 4) and one pending (seq 7) contrast row.
     let mut product_ids: Vec<Uuid> = Vec::with_capacity(product_seeds.len());
     for seed in &product_seeds {
-        product_ids.push(product_id_by_slug(&db, seed.slug).await?);
+        product_ids.push(product_id_by_slug(db, seed.slug).await?);
     }
     // seq-keyed payment_method weights: credit_card ×5, line_pay ×2,
     // atm / jkopay / cash ×1 each. Indexes into `PAYMENT_METHODS` (the same
@@ -1609,7 +1598,7 @@ async fn main() -> anyhow::Result<()> {
     ];
     // Every seq-2 order applies DREAMFLY100 — loaded once, the way checkout
     // loads a code, so its discount comes from the `[coupons]` row above.
-    let seed_coupon = coupons_repository::find_valid_by_code(&db, "DREAMFLY100")
+    let seed_coupon = coupons_repository::find_valid_by_code(db, "DREAMFLY100")
         .await
         .context("load seed coupon DREAMFLY100")?
         .context("seed coupon DREAMFLY100 is missing, inactive or expired")?;
@@ -1630,7 +1619,11 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 1 + ((seq * 3 + m as usize * 5) % 28)
             };
-            let ts = at_utc(month_first.with_day(day as u32).expect("day ≤ 28/today"), 4);
+            let ts = at_utc(
+                month_first.with_day(day as u32).expect("day ≤ 28/today"),
+                4,
+                at.now,
+            );
             let status = if seq == 4 {
                 OrderStatus::Refunded
             } else if seq == 7 {
@@ -1688,7 +1681,7 @@ async fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("price seed order DF-SEED-{ym}-{seq:02}"))?;
 
             insert_order_if_absent(
-                &db,
+                db,
                 &SeedOrder {
                     order_number: format!("DF-SEED-{ym}-{seq:02}"),
                     user_id: member_ids[(g * 11) % 24],
@@ -1725,7 +1718,7 @@ async fn main() -> anyhow::Result<()> {
     for (user_id, target) in &member_targets {
         let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_one(&db)
+            .fetch_one(db)
             .await
             .with_context(|| format!("fetch points_balance for seed member {user_id}"))?;
         let delta = target - balance;
@@ -1747,11 +1740,11 @@ async fn main() -> anyhow::Result<()> {
 
     // -- course sessions: materialize the past 6 months ---------------------
     let six_months_ago = today.checked_sub_months(Months::new(6)).expect("valid seed range");
-    backfill_for_seed(&db, &course_ids, six_months_ago, today)
+    backfill_for_seed(db, &course_ids, six_months_ago, today)
         .await
         .context("materialize course sessions for the past 6 months")?;
     let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_sessions")
-        .fetch_one(&db)
+        .fetch_one(db)
         .await?;
     println!("[sessions] materialized {six_months_ago} → {today} ({session_count} sessions total)");
 
@@ -1770,7 +1763,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .bind(course_id)
         .bind(today)
-        .fetch_all(&db)
+        .fetch_all(db)
         .await
         .context("load past sessions for attendance")?;
         past_sessions
@@ -1796,7 +1789,7 @@ async fn main() -> anyhow::Result<()> {
             attendance_rows.push((*session_id, *enrolment_id, status, *marked_at));
         }
     }
-    insert_attendance_bulk(&db, admin_id, &attendance_rows).await?;
+    insert_attendance_bulk(db, admin_id, &attendance_rows).await?;
     println!("[attendance] {} attendance records ready", attendance_rows.len());
 
     // -- venue rental: time_slots (~168) + bookings --------------------------
@@ -1807,10 +1800,10 @@ async fn main() -> anyhow::Result<()> {
     // s%20 → 0-11 completed (60%) / 12-13 cancelled (10%) / 14 no_show (5%)
     // / 15-19 unbooked.
     let venue_ids = [
-        venue_id_by_slug(&db, "trampoline-zone").await?,
-        venue_id_by_slug(&db, "floor-gymnastics-zone").await?,
-        venue_id_by_slug(&db, "aerial-skills-zone").await?,
-        venue_id_by_slug(&db, "kids-play-zone").await?,
+        venue_id_by_slug(db, "trampoline-zone").await?,
+        venue_id_by_slug(db, "floor-gymnastics-zone").await?,
+        venue_id_by_slug(db, "aerial-skills-zone").await?,
+        venue_id_by_slug(db, "kids-play-zone").await?,
     ];
     let venue_prices: [i64; 4] = [80_000, 100_000, 130_000, 150_000];
     let slot_hours: [(u32, u32); 3] = [(10, 12), (14, 16), (19, 21)];
@@ -1836,7 +1829,7 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let occupies = booking_status.as_ref().is_some_and(|s| s.occupies_seat());
                 let slot_id = upsert_time_slot(
-                    &db,
+                    db,
                     &TimeSlotSeed {
                         venue_id: venue_ids[v],
                         date,
@@ -1851,12 +1844,12 @@ async fn main() -> anyhow::Result<()> {
                 rental_slots += 1;
                 if let Some(status) = booking_status {
                     insert_booking_if_absent(
-                        &db,
+                        db,
                         member_ids[(s * 7) % 24],
                         slot_id,
                         status.as_str(),
                         venue_prices[v],
-                        at_utc(date - Days::new(3), 8),
+                        at_utc(date - Days::new(3), 8, at.now),
                     )
                     .await?;
                     rental_bookings += 1;
@@ -1892,9 +1885,9 @@ async fn main() -> anyhow::Result<()> {
             let parent_name = format!("試上家長{seq:02}");
             let phone = format!("09{:08}", (k as usize * 37 + seq * 13) % 100_000_000);
             let created_at =
-                at_utc(month_first.with_day(clamp(seq * 5 + k as usize * 3)).expect("valid day"), 2);
+                at_utc(month_first.with_day(clamp(seq * 5 + k as usize * 3)).expect("valid day"), 2, at.now);
             insert_inquiry_if_absent(
-                &db,
+                db,
                 &InquirySeed {
                     email: format!("df-seed-trial-{ym}-{seq:02}@example.com"),
                     name: parent_name.clone(),
@@ -1924,9 +1917,9 @@ async fn main() -> anyhow::Result<()> {
             const SUBJECTS: [&str; 4] =
                 ["課程費用詢問", "場地租借詢問", "會員方案詢問", "營業時間詢問"];
             let created_at =
-                at_utc(month_first.with_day(clamp(seq * 7 + k as usize * 5)).expect("valid day"), 2);
+                at_utc(month_first.with_day(clamp(seq * 7 + k as usize * 5)).expect("valid day"), 2, at.now);
             insert_inquiry_if_absent(
-                &db,
+                db,
                 &InquirySeed {
                     email: format!("df-seed-general-{ym}-{seq:02}@example.com"),
                     name: format!("洽詢民眾{seq:02}"),
@@ -1947,16 +1940,8 @@ async fn main() -> anyhow::Result<()> {
         inquiry_trials + inquiry_generals
     );
 
-    print_row_counts(&db).await?;
-
-    println!("\nSeed complete. Dev accounts:");
-    println!("  admin:  admin@dreamfly.tw  / Admin#2026");
-    println!("  member: member@dreamfly.tw / Member#2026 (points_balance=1250)");
-    println!("  coach:  coach1..coach4@dreamfly.tw / Coach#2026");
-    println!("  members: seed-member-01..24@dreamfly.tw / Member#2026 (12-month reporting dataset)");
-
-    db.close().await;
-    Ok(())
+    let row_counts = collect_row_counts(db).await?;
+    Ok(SeedReport { row_counts, settled_members: settled })
 }
 
 #[cfg(test)]

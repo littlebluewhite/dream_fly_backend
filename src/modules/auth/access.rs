@@ -222,7 +222,7 @@ impl AccessDirty {
 
     /// Consume the witness without touching the cache — for a user id that
     /// provably has no cache entry (e.g. a row created in this very
-    /// transaction), or for `bin/seed.rs`'s dev-only exception: a seed
+    /// transaction), or for `bin/seed/dataset.rs`'s dev-only exception: a seed
     /// re-run's target user may not be new, so this is not provably
     /// uncached there, but a stale entry just lives out its TTL (60s
     /// active flag / 900s roles) before self-correcting. A named no-op so

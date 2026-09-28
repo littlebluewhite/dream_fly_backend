@@ -161,7 +161,7 @@ pub async fn materialize_today(
     Ok(MaterializedDay { range })
 }
 
-/// **Seed only** (`src/bin/seed.rs`) — runtime code must never call this.
+/// **Seed only** (`src/bin/seed/dataset.rs`) — runtime code must never call this.
 /// Fills every date in `[from, to]`, past dates included, from the
 /// *current* weekly schedule: exactly the phantom-session source
 /// [`materialize_range`] forbids at runtime (ADR-0011), acceptable only for

@@ -18,7 +18,7 @@
 //! [`crate::modules::courses::seats`]:佔位判斷的 SQL 必須與判斷邏輯同檔,
 //! 佔位協定才能成為 interface 的一部分,而不是散在呼叫端的紀律。
 //!
-//! 【seed bypass】`src/bin/seed.rs` 佈歷史場租資料時**不消費**本模組——
+//! 【seed bypass】`src/bin/seed/dataset.rs` 佈歷史場租資料時**不消費**本模組——
 //! 它是 pool-based 冪等批次(重複執行需先辨識既有列,`booked` 直接算好
 //! 帶入 INSERT),本模組「`&mut Transaction` + WHERE gate」的 runtime 形狀
 //! 對它是錯的形狀;硬套需要把這裡的函式升級成 `pub`,摧毀私有化的目的。

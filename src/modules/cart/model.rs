@@ -30,7 +30,7 @@ impl CartItemType {
     ///   u.product_id IS NOT NULL THEN 'product' ELSE 'course' END` derivation
     /// - `reports::repository` income-source `CASE` — maps `oi.item_type =
     ///   'course'` into the `course` revenue bucket
-    /// - `bin/seed.rs` order-line `CASE` — the same product/course derivation
+    /// - `bin/seed/dataset.rs` order-line `CASE` — the same product/course derivation
     ///   for the deterministic reporting dataset
     /// - `products::repository::find_stock_traces_by_order_tx` — `item_type =
     ///   'product'::cart_item_type` filter
