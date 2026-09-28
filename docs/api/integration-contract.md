@@ -464,7 +464,7 @@ Body：`{ is_closed: boolean }`。admin 手動關閉／重新開放單一時段�
 ### 3.7 Products
 
 #### `GET /products?product_type=&page=&per_page=` — 公開
-`product_type` 選填篩選：`ticket|course_package|membership|merchandise`。回應（`ProductListResponse`）：`{ "products": [ProductResponse], "total", "page", "per_page" }`。
+`product_type` 選填篩選：`ticket|course_package|membership|merchandise`（大小寫敏感）。回應（`ProductListResponse`）：`{ "products": [ProductResponse], "total", "page", "per_page" }`。錯誤：422（`product_type` 帶值但不在允許值域內）。
 
 `ProductResponse`：
 
@@ -488,7 +488,7 @@ Body：`{ is_closed: boolean }`。admin 手動關閉／重新開放單一時段�
 同 courses，slug 或 UUID 皆可。回應：`ProductResponse`。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `POST /products` / `PATCH /products/{id}` — admin
-Create body：`{ name, slug?, product_type, description?, price_cents, original_price_cents?, features?, is_highlighted?, badge?, stock?, valid_days?, session_count? }`。Update 為對應欄位皆選填的 PATCH（`Some(null)` 語意清除欄位，前端只需照一般 PATCH 語意送想改的欄位）。錯誤（PATCH）：409（`slug` 與其他商品衝突，訊息含衝突的 slug 值）。
+Create body：`{ name, slug?, product_type, description?, price_cents, original_price_cents?, features?, is_highlighted?, badge?, stock?, valid_days?, session_count? }`。Update 為對應欄位皆選填的 PATCH（`Some(null)` 語意清除欄位，前端只需照一般 PATCH 語意送想改的欄位）。`product_type` 大小寫敏感，不在允許值域內一律 422。錯誤（PATCH）：409（`slug` 與其他商品衝突，訊息含衝突的 slug 值）、422（`product_type` 無效）。
 
 ---
 
@@ -792,10 +792,10 @@ Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位�
 slug 或 UUID 皆可。回應（`PostDetailResponse`，**多了 `content` 與 `updated_at`**）：同上欄位 + `content: string`、`updated_at: ISO8601`。草稿/封存文章走此端點一律 404（非 admin 亦看不到）。
 
 #### `POST /posts` — admin 或 coach
-Body：`{ title, slug?, content, excerpt?, category, cover_image? }`（category 1-50 字，非嚴格 enum 檢查但預期為上述四值之一）。新建文章預設 `status: "draft"`。回應：`PostDetailResponse`。
+Body：`{ title, slug?, content, excerpt?, category, cover_image? }`（`category` 為 `announcement|article|promotion|event` 四值之一，**大小寫不敏感**——混合大小寫如 `"Article"` 一樣接受，儲存與回應皆為小寫；不在值域內 422）。新建文章預設 `status: "draft"`。回應：`PostDetailResponse`。
 
 #### `PATCH /posts/{id}` — admin 或該文章作者本人
-Body（皆選填）：`{ title?, slug?, content?, excerpt?, category?, status?, cover_image? }`（`status` 可設為 `draft|published|archived`，設為 `published` 才會出現在公開端點）。`excerpt`/`cover_image` 可明確傳 `null` 清空，欄位不帶則維持原值不動。回應：`PostDetailResponse`。錯誤：409（`slug` 與其他文章衝突）。
+Body（皆選填）：`{ title?, slug?, content?, excerpt?, category?, status?, cover_image? }`（`category` 同上，`status` 可設為 `draft|published|archived`，設為 `published` 才會出現在公開端點；兩者皆**大小寫不敏感**，儲存與回應皆為小寫，不在值域內 422）。`excerpt`/`cover_image` 可明確傳 `null` 清空，欄位不帶則維持原值不動。回應：`PostDetailResponse`。錯誤：409（`slug` 與其他文章衝突）、422（`category`/`status` 無效）。
 
 #### `DELETE /posts/{id}` — admin
 回應：204 No Content。
@@ -1331,6 +1331,6 @@ Body（`UpdateSettingsRequest`）：`{ "settings": { "<key>": <value>, ... } }`�
 ## 4. 附註
 
 - 所有 `POST`/`PATCH` 成功回應狀態碼皆為 **200**（本專案沒有任何端點回 201 Created）；`DELETE` 與 `POST /cart` 的清空動作回 **204 No Content**（無 body）。
-- Enum 型欄位（`level`、`product_type`、`status` 等）在 JSON 中一律是小寫 `snake_case` 字串（例：`course_package`），與 DB enum label 一致。
+- Enum 型欄位（`level`、`product_type`、`status` 等）在 JSON 中一律是小寫 `snake_case` 字串（例：`course_package`），與 DB enum label 一致。**請求端大小寫政策依欄位而異**：`courses` 的 `level`、`posts` 的 `category`/`status`、`contact` 的 `status` 大小寫不敏感（混合大小寫接受，儲存與回應一律小寫）；其餘 enum 欄位（`product_type`、`leave` 的 `status`、`cart` 的 `item_type`、`orders` 的 `status`、`attendance` 的 `status` 等）大小寫敏感，不符即 422。不在允許值域內一律 422，訊息附上允許值清單。
 - `TEXT[]` 欄位（`features`、`specialties`、`certifications`）序列化為 JSON 字串陣列。
 - 時間戳一律 `TIMESTAMPTZ` → ISO8601（含時區，UTC）；`date`/`time` 型欄位（schedule 相關）為不含時區的 `YYYY-MM-DD` / `HH:MM:SS`。
