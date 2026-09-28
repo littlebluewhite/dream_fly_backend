@@ -14,6 +14,10 @@ pub enum CartItemType {
 }
 
 impl CartItemType {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` derives from this instead of hand-copying the list.
+    pub const ALL: [Self; 2] = [Self::Product, Self::Course];
+
     /// The SQL string literal for this variant. The Postgres `cart_item_type`
     /// enum, the `item_type` columns, and this method must all agree on these
     /// two spellings, and — outside `fulfilment::plan` — the type system
@@ -83,11 +87,7 @@ impl std::str::FromStr for CartItemType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "product" => Ok(Self::Product),
-            "course" => Ok(Self::Course),
-            _ => Err(()),
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

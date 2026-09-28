@@ -14,6 +14,11 @@ pub enum AttendanceStatus {
 }
 
 impl AttendanceStatus {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` and the allowed-values text (where one exists) both
+    /// derive from this instead of hand-copying the list.
+    pub const ALL: [Self; 3] = [Self::Present, Self::Absent, Self::Leave];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Present => "present",
@@ -27,12 +32,7 @@ impl std::str::FromStr for AttendanceStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "present" => Ok(Self::Present),
-            "absent" => Ok(Self::Absent),
-            "leave" => Ok(Self::Leave),
-            _ => Err(()),
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

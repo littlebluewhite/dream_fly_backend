@@ -12,6 +12,25 @@ use super::dto::{
 use super::model::{PostCategory, PostStatus};
 use super::repository;
 
+/// The `invalid category` 422 message — built from `PostCategory::ALL`
+/// (ADR-0005) so the allowed-values list can't drift out of sync with the
+/// enum; `create_post`/`update_post` share this one owner.
+fn invalid_category_message() -> String {
+    format!(
+        "invalid category, must be one of: {}",
+        PostCategory::ALL.map(|v| v.as_str()).join(", ")
+    )
+}
+
+/// The `invalid status` 422 message — built from `PostStatus::ALL`
+/// (ADR-0005), same rationale as [`invalid_category_message`].
+fn invalid_status_message() -> String {
+    format!(
+        "invalid status, must be one of: {}",
+        PostStatus::ALL.map(|v| v.as_str()).join(", ")
+    )
+}
+
 pub async fn list_published(
     db: &PgPool,
     pagination: &PaginationParams,
@@ -56,11 +75,10 @@ pub async fn create_post(
     req: CreatePostRequest,
 ) -> Result<PostDetailResponse, AppError> {
     // Validate category
-    let category: PostCategory = req.category.parse().map_err(|_| {
-        AppError::Validation(
-            "invalid category, must be one of: announcement, article, promotion, event".into(),
-        )
-    })?;
+    let category: PostCategory = req
+        .category
+        .parse()
+        .map_err(|_| AppError::Validation(invalid_category_message()))?;
 
     let slug = req.slug.unwrap_or_else(|| slugify(&req.title));
 
@@ -112,11 +130,7 @@ pub async fn update_post(
         .as_deref()
         .map(|s| s.parse::<PostCategory>())
         .transpose()
-        .map_err(|_| {
-            AppError::Validation(
-                "invalid category, must be one of: announcement, article, promotion, event".into(),
-            )
-        })?;
+        .map_err(|_| AppError::Validation(invalid_category_message()))?;
 
     // Validate status if provided — parsed once into `PostStatus` so the
     // published_at decision below matches on the enum instead of re-parsing
@@ -126,11 +140,7 @@ pub async fn update_post(
         .as_deref()
         .map(|s| s.parse::<PostStatus>())
         .transpose()
-        .map_err(|_| {
-            AppError::Validation(
-                "invalid status, must be one of: draft, published, archived".into(),
-            )
-        })?;
+        .map_err(|_| AppError::Validation(invalid_status_message()))?;
 
     // If transitioning to published and currently not published, set published_at
     let published_at: Option<Option<chrono::DateTime<chrono::Utc>>> =

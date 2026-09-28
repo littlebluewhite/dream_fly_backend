@@ -13,6 +13,16 @@ use super::dto::{
 use super::model::{AgeRange, CourseLevel};
 use super::repository::{self, CourseCreate, CourseUpdate};
 
+/// The `invalid course level` 422 message — built from `CourseLevel::ALL`
+/// (ADR-0005) so the allowed-values list can't drift out of sync with the
+/// enum; `create_course`/`update_course` share this one owner.
+fn invalid_course_level_message() -> String {
+    format!(
+        "invalid course level, must be one of: {}",
+        CourseLevel::ALL.map(|v| v.as_str()).join(", ")
+    )
+}
+
 /// Parse+validate `schedule_slots` request entries into the tuple shape
 /// `sessions::calendar`'s weekly-schedule writers take. `AppError::Validation`
 /// (422) on an unparseable time or `end_time <= start_time` — the per-field
@@ -95,11 +105,10 @@ pub async fn create_course(
     db: &PgPool,
     req: CreateCourseRequest,
 ) -> Result<CourseDetailResponse, AppError> {
-    let level: CourseLevel = req.level.parse().map_err(|_| {
-        AppError::Validation(
-            "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite".into(),
-        )
-    })?;
+    let level: CourseLevel = req
+        .level
+        .parse()
+        .map_err(|_| AppError::Validation(invalid_course_level_message()))?;
 
     // AgeRange owns the "legal age range" invariant (ordering + 0..=150
     // bounds). The bounds half is already enforced by
@@ -178,11 +187,7 @@ pub async fn update_course(
         .as_deref()
         .map(|s| s.parse::<CourseLevel>())
         .transpose()
-        .map_err(|_| {
-            AppError::Validation(
-                "invalid course level, must be one of: foundation, beginner, intermediate, advanced, elite".into(),
-            )
-        })?;
+        .map_err(|_| AppError::Validation(invalid_course_level_message()))?;
 
     let parsed_slots = req
         .schedule_slots

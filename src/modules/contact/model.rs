@@ -12,6 +12,11 @@ pub enum InquiryStatus {
 }
 
 impl InquiryStatus {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` and the allowed-values text both derive from this
+    /// instead of hand-copying the list.
+    pub const ALL: [Self; 4] = [Self::New, Self::InProgress, Self::Resolved, Self::Closed];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::New => "new",
@@ -26,13 +31,9 @@ impl std::str::FromStr for InquiryStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "new" => Ok(Self::New),
-            "in_progress" => Ok(Self::InProgress),
-            "resolved" => Ok(Self::Resolved),
-            "closed" => Ok(Self::Closed),
-            _ => Err(()),
-        }
+        // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
+        let s = s.to_lowercase();
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 
@@ -52,6 +53,10 @@ pub enum InquiryType {
 }
 
 impl InquiryType {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` derives from this instead of hand-copying the list.
+    pub const ALL: [Self; 2] = [Self::General, Self::Trial];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::General => "general",
@@ -64,11 +69,7 @@ impl std::str::FromStr for InquiryType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "general" => Ok(Self::General),
-            "trial" => Ok(Self::Trial),
-            _ => Err(()),
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

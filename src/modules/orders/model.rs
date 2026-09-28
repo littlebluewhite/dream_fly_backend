@@ -16,6 +16,17 @@ pub enum OrderStatus {
 }
 
 impl OrderStatus {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` derives from this instead of hand-copying the list.
+    pub const ALL: [Self; 6] = [
+        Self::Pending,
+        Self::Paid,
+        Self::Processing,
+        Self::Completed,
+        Self::Cancelled,
+        Self::Refunded,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -66,15 +77,7 @@ impl std::str::FromStr for OrderStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "pending" => Ok(Self::Pending),
-            "paid" => Ok(Self::Paid),
-            "processing" => Ok(Self::Processing),
-            "completed" => Ok(Self::Completed),
-            "cancelled" => Ok(Self::Cancelled),
-            "refunded" => Ok(Self::Refunded),
-            _ => Err(()),
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

@@ -12,6 +12,16 @@ pub enum PostCategory {
 }
 
 impl PostCategory {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` and the allowed-values text both derive from this
+    /// instead of hand-copying the list.
+    pub const ALL: [Self; 4] = [
+        Self::Announcement,
+        Self::Article,
+        Self::Promotion,
+        Self::Event,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Announcement => "announcement",
@@ -26,13 +36,9 @@ impl std::str::FromStr for PostCategory {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "announcement" => Ok(Self::Announcement),
-            "article" => Ok(Self::Article),
-            "promotion" => Ok(Self::Promotion),
-            "event" => Ok(Self::Event),
-            _ => Err(()),
-        }
+        // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
+        let s = s.to_lowercase();
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 
@@ -45,6 +51,11 @@ pub enum PostStatus {
 }
 
 impl PostStatus {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` and the allowed-values text both derive from this
+    /// instead of hand-copying the list.
+    pub const ALL: [Self; 3] = [Self::Draft, Self::Published, Self::Archived];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Draft => "draft",
@@ -58,12 +69,9 @@ impl std::str::FromStr for PostStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "draft" => Ok(Self::Draft),
-            "published" => Ok(Self::Published),
-            "archived" => Ok(Self::Archived),
-            _ => Err(()),
-        }
+        // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
+        let s = s.to_lowercase();
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

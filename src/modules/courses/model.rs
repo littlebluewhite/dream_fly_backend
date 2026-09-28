@@ -15,6 +15,17 @@ pub enum CourseLevel {
 }
 
 impl CourseLevel {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` and the allowed-values text both derive from this
+    /// instead of hand-copying the list.
+    pub const ALL: [Self; 5] = [
+        Self::Foundation,
+        Self::Beginner,
+        Self::Intermediate,
+        Self::Advanced,
+        Self::Elite,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Foundation => "foundation",
@@ -30,14 +41,9 @@ impl std::str::FromStr for CourseLevel {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "foundation" => Ok(Self::Foundation),
-            "beginner" => Ok(Self::Beginner),
-            "intermediate" => Ok(Self::Intermediate),
-            "advanced" => Ok(Self::Advanced),
-            "elite" => Ok(Self::Elite),
-            _ => Err(()),
-        }
+        // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
+        let s = s.to_lowercase();
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

@@ -15,6 +15,10 @@ pub enum LeaveStatus {
 }
 
 impl LeaveStatus {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` derives from this instead of hand-copying the list.
+    pub const ALL: [Self; 4] = [Self::Pending, Self::Approved, Self::Rejected, Self::Cancelled];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -29,13 +33,7 @@ impl std::str::FromStr for LeaveStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "pending" => Ok(Self::Pending),
-            "approved" => Ok(Self::Approved),
-            "rejected" => Ok(Self::Rejected),
-            "cancelled" => Ok(Self::Cancelled),
-            _ => Err(()),
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 

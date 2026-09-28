@@ -10,6 +10,17 @@ use super::dto::{
 use super::model::InquiryStatus;
 use super::repository;
 
+/// The `status 僅接受 ...` 422 message — built from `InquiryStatus::ALL`
+/// (ADR-0005) so the allowed-values list can't drift out of sync with the
+/// enum. Joined with `/` to match this module's existing message style
+/// (unlike the `, `-joined lists elsewhere).
+fn invalid_status_message() -> String {
+    format!(
+        "status 僅接受 {}",
+        InquiryStatus::ALL.map(|v| v.as_str()).join("/")
+    )
+}
+
 pub async fn submit_inquiry(
     db: &PgPool,
     req: CreateInquiryRequest,
@@ -56,9 +67,8 @@ pub async fn update_inquiry(
         .status
         .as_deref()
         .map(|s| {
-            s.parse::<InquiryStatus>().map_err(|_| {
-                AppError::Validation("status 僅接受 new/in_progress/resolved/closed".into())
-            })
+            s.parse::<InquiryStatus>()
+                .map_err(|_| AppError::Validation(invalid_status_message()))
         })
         .transpose()?;
 

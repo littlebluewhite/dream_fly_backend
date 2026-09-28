@@ -14,6 +14,15 @@ pub enum ProductType {
 }
 
 impl ProductType {
+    /// Every variant, in wire-spelling order — single owner of the value
+    /// domain; `FromStr` derives from this instead of hand-copying the list.
+    pub const ALL: [Self; 4] = [
+        Self::Ticket,
+        Self::CoursePackage,
+        Self::Membership,
+        Self::Merchandise,
+    ];
+
     /// The SQL string literal for this variant — matches the Postgres
     /// `product_type` enum's `snake_case` spelling.
     pub fn as_str(&self) -> &'static str {
@@ -30,13 +39,7 @@ impl std::str::FromStr for ProductType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ticket" => Ok(Self::Ticket),
-            "course_package" => Ok(Self::CoursePackage),
-            "membership" => Ok(Self::Membership),
-            "merchandise" => Ok(Self::Merchandise),
-            _ => Err(()),
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
     }
 }
 
@@ -189,30 +192,15 @@ mod tests {
     }
 
     #[test]
-    fn from_str_parses_every_as_str_output_back_to_its_variant() {
-        assert!(matches!("ticket".parse::<ProductType>(), Ok(ProductType::Ticket)));
-        assert!(matches!(
-            "course_package".parse::<ProductType>(),
-            Ok(ProductType::CoursePackage)
-        ));
-        assert!(matches!(
-            "membership".parse::<ProductType>(),
-            Ok(ProductType::Membership)
-        ));
-        assert!(matches!(
-            "merchandise".parse::<ProductType>(),
-            Ok(ProductType::Merchandise)
-        ));
+    fn from_str_parses_every_all_entrys_as_str_output_back_to_its_variant() {
+        for v in ProductType::ALL {
+            assert_eq!(v.as_str().parse::<ProductType>(), Ok(v));
+        }
     }
 
     #[test]
     fn as_str_and_from_str_round_trip_for_every_variant() {
-        for v in [
-            ProductType::Ticket,
-            ProductType::CoursePackage,
-            ProductType::Membership,
-            ProductType::Merchandise,
-        ] {
+        for v in ProductType::ALL {
             let s = v.as_str();
             let parsed: ProductType = s.parse().expect("as_str output must parse");
             assert_eq!(parsed.as_str(), s);
