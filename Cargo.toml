@@ -95,8 +95,5 @@ fake = { version = "5.1", features = ["derive", "chrono"] }
 # quoted-printable body lettre produces, so assertions check email content
 # rather than transport encoding.
 quoted_printable = "0.5"
-# Force serial execution for tests that touch shared global state such as the
-# Redis db 15 used by the rate-limit middleware test.
-serial_test = "3"
 # Better assertion diffs.
 pretty_assertions = "1"

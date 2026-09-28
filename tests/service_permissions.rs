@@ -20,8 +20,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::modules::auth::access::{self, AccessCache, RedisAccessCache};
+use dream_fly_backend::modules::auth::access::{self, AccessCache};
 use dream_fly_backend::modules::permissions::service;
+
+use common::mocks::InMemoryAccessCache;
 
 async fn resolved_roles(db: &PgPool, cache: &dyn AccessCache, user_id: Uuid) -> Vec<String> {
     access::resolve(db, cache, user_id)
@@ -75,9 +77,9 @@ async fn create_role_with_fresh_name_succeeds(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
+async fn assign_role_persists_and_invalidates_access_cache(db: PgPool) {
     let user_id = common::seed_member(&db, "perm@example.com", "hunter22-secret").await;
-    let cache = RedisAccessCache::new(common::test_redis().await);
+    let cache = InMemoryAccessCache::new();
 
     // Warm the access cache with the pre-assignment role set.
     assert_eq!(resolved_roles(&db, &cache, user_id).await, ["member"]);
@@ -114,7 +116,7 @@ async fn assign_role_persists_and_invalidates_redis_cache(db: PgPool) {
 #[sqlx::test]
 async fn assign_role_nonexistent_role_returns_not_found(db: PgPool) {
     let user_id = common::seed_member(&db, "nr@example.com", "hunter22-secret").await;
-    let cache = RedisAccessCache::new(common::test_redis().await);
+    let cache = InMemoryAccessCache::new();
 
     let err = service::assign_role_to_user(&db, &cache, user_id, Uuid::now_v7())
         .await
@@ -125,7 +127,7 @@ async fn assign_role_nonexistent_role_returns_not_found(db: PgPool) {
 #[sqlx::test]
 async fn remove_role_is_idempotent_and_clears_cache(db: PgPool) {
     let user_id = common::seed_member(&db, "rm@example.com", "hunter22-secret").await;
-    let cache = RedisAccessCache::new(common::test_redis().await);
+    let cache = InMemoryAccessCache::new();
 
     let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM roles WHERE name = 'admin'")
         .fetch_one(&db)

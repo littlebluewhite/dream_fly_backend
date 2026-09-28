@@ -52,7 +52,7 @@ use dream_fly_backend::modules::auth::service;
 use dream_fly_backend::modules::auth::session;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::email::EmailSender;
-use dream_fly_backend::utils::ephemeral::{EphemeralStore, RedisEphemeralStore};
+use dream_fly_backend::utils::ephemeral::EphemeralStore;
 use dream_fly_backend::utils::jwt;
 use dream_fly_backend::utils::sms::SmsClient;
 use wiremock::MockServer;
@@ -160,7 +160,7 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
 #[sqlx::test]
 async fn login_wrong_password_returns_unauthorized(db: PgPool) {
     let cfg = common::test_auth_config();
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     common::seed_member(&db, "carol@example.com", "correct-password").await;
 
     let err = service::login(
@@ -181,7 +181,7 @@ async fn login_wrong_password_returns_unauthorized(db: PgPool) {
 #[sqlx::test]
 async fn login_nonexistent_email_returns_unauthorized(db: PgPool) {
     let cfg = common::test_auth_config();
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
 
     // Exactly the same error shape as wrong-password — prevents enumeration.
     let err = service::login(
@@ -445,7 +445,7 @@ async fn purge_expired_deletes_expired_rows_revoked_or_not(db: PgPool) {
 
 #[sqlx::test]
 async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let background = TaskTracker::new();
     let email = format!("reissue-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
@@ -516,7 +516,7 @@ async fn forgot_password_reissue_invalidates_previous_token(db: PgPool) {
 
 #[sqlx::test]
 async fn reset_password_token_is_single_use(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let background = TaskTracker::new();
     let email = format!("singleuse-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
@@ -570,7 +570,7 @@ async fn reset_password_token_is_single_use(db: PgPool) {
 #[sqlx::test]
 async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
     let cfg = common::test_auth_config();
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let background = TaskTracker::new();
     let email = format!("family-{}@example.com", Uuid::now_v7());
 
@@ -665,7 +665,7 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
 #[sqlx::test]
 async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) {
     let cfg = common::test_auth_config();
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let background = TaskTracker::new();
     let email = format!("stale-{}@example.com", Uuid::now_v7());
 
@@ -757,7 +757,7 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
 #[sqlx::test]
 async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
     let cfg = common::test_auth_config();
-    let cache = access::RedisAccessCache::new(common::test_redis().await);
+    let cache = InMemoryAccessCache::new();
 
     let r1 = service::register(
         &db,
@@ -811,7 +811,7 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
 
 #[sqlx::test]
 async fn forgot_password_rate_limit_swallows_fourth_request_silently(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let background = TaskTracker::new();
     let email = format!("ratelimit-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
@@ -880,7 +880,7 @@ async fn fail_logins(db: &PgPool, store: &dyn EphemeralStore, email: &str, n: u3
 
 #[sqlx::test]
 async fn login_locks_out_after_ten_failures_even_with_correct_password(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let email = format!("lockout-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
 
@@ -895,7 +895,7 @@ async fn login_locks_out_after_ten_failures_even_with_correct_password(db: PgPoo
 
 #[sqlx::test]
 async fn login_success_clears_failure_count(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let email = format!("clear-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &email, "Password!234").await;
 
@@ -913,7 +913,7 @@ async fn login_success_clears_failure_count(db: PgPool) {
 
 #[sqlx::test]
 async fn login_lockout_is_per_email(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let locked = format!("locked-{}@example.com", Uuid::now_v7());
     let other = format!("other-{}@example.com", Uuid::now_v7());
     common::seed_member(&db, &locked, "Password!234").await;
@@ -990,7 +990,7 @@ fn assert_bad_request(err: &AppError, message: &str) {
 
 #[sqlx::test]
 async fn otp_send_fourth_request_within_hour_is_rejected(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let (server, sms) = twilio_sms().await;
     let email = format!("otp-rate-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(&db, &email, "Password!234").await;
@@ -1015,7 +1015,7 @@ async fn otp_send_fourth_request_within_hour_is_rejected(db: PgPool) {
 
 #[sqlx::test]
 async fn otp_verify_sixth_attempt_invalidates_code_until_resend(db: PgPool) {
-    let store = RedisEphemeralStore::new(common::test_redis().await);
+    let store = InMemoryEphemeralStore::new();
     let (server, sms) = twilio_sms().await;
     let email = format!("otp-attempts-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(&db, &email, "Password!234").await;

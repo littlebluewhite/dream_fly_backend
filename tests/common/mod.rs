@@ -75,11 +75,13 @@ pub fn studio_now_utc(now: chrono::DateTime<Utc>) -> StudioNow {
     }
 }
 
-/// Build a Redis connection for tests. Expects a locally running Redis
-/// (docker-compose up) — override via `TEST_REDIS_URL` if needed.
+/// Build a Redis connection for tests (db 15, clear of the dev db 0).
+/// Expects a locally running Redis (docker-compose up) — override via
+/// `TEST_REDIS_URL` if needed. Only the Redis adapter tests use it
+/// (`service_access`, `service_ephemeral`, `http_health`).
 pub async fn test_redis() -> redis::aio::ConnectionManager {
-    let url = std::env::var("TEST_REDIS_URL")
-        .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let url =
+        std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/15".to_string());
     let client = redis::Client::open(url).expect("build redis client");
     redis::aio::ConnectionManager::new(client)
         .await
