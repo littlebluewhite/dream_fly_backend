@@ -1146,3 +1146,187 @@ async fn makeup_cancelled_enrolment_returns_409(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 409, "body={}", resp.text());
 }
+
+// ---------------------------------------------------------------------------
+// Pin: write responses equal the read projection, field-for-field (task 5a)
+// ---------------------------------------------------------------------------
+//
+// `create`/`decide`/`makeup`'s responses and `GET /leave-requests/me`'s rows
+// are meant to be the exact same shape — these lock that invariant with
+// `serde_json::Value` equality before task 5b gives the projection a single
+// owner, so the refactor can't quietly drift a write response away from the
+// read side it's supposed to mirror.
+
+#[sqlx::test]
+async fn create_response_matches_me_row(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-pin-create@example.com", "Password!234").await;
+    let course_id = seed_course(&app.db, "Leave Pin Create Course", None).await;
+    let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
+    seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+
+    let create_resp = app
+        .post("/api/v1/leave-requests")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": session_id, "reason": "感冒"}))
+        .await;
+    assert_eq!(create_resp.status_code(), 200, "body={}", create_resp.text());
+    let created: serde_json::Value = create_resp.json();
+
+    let me_resp = app
+        .get("/api/v1/leave-requests/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    let me_rows: serde_json::Value = me_resp.json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == created["id"])
+        .expect("created row present in /me");
+
+    assert_eq!(&created, me_row, "create response must equal its /me row");
+}
+
+#[sqlx::test]
+async fn decide_approve_response_matches_me_row(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (coach_user_id, coach_token) =
+        app.seed_user_with_roles("leave-pin-approve-coach@example.com", &["coach"]).await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "Pin Approve Coach").await;
+    let course_id = seed_course(&app.db, "Leave Pin Approve Course", Some(coach_id)).await;
+    let member = app.register_member("leave-pin-approve-member@example.com", "Password!234").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
+
+    let decide_resp = app
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
+        .authorization_bearer(&coach_token)
+        .json(&json!({"status": "approved"}))
+        .await;
+    assert_eq!(decide_resp.status_code(), 200, "body={}", decide_resp.text());
+    let decided: serde_json::Value = decide_resp.json();
+
+    let me_resp = app
+        .get("/api/v1/leave-requests/me")
+        .authorization_bearer(&member.access_token)
+        .await;
+    let me_rows: serde_json::Value = me_resp.json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == decided["id"])
+        .expect("decided row present in /me");
+
+    assert_eq!(&decided, me_row, "approve response must equal its /me row");
+}
+
+#[sqlx::test]
+async fn decide_reject_response_matches_me_row(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Leave Pin Reject Course", None).await;
+    let member = app.register_member("leave-pin-reject-member@example.com", "Password!234").await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
+
+    let decide_resp = app
+        .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
+        .authorization_bearer(&admin_token)
+        .json(&json!({"status": "rejected"}))
+        .await;
+    assert_eq!(decide_resp.status_code(), 200, "body={}", decide_resp.text());
+    let decided: serde_json::Value = decide_resp.json();
+
+    let me_resp = app
+        .get("/api/v1/leave-requests/me")
+        .authorization_bearer(&member.access_token)
+        .await;
+    let me_rows: serde_json::Value = me_resp.json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == decided["id"])
+        .expect("decided row present in /me");
+
+    assert_eq!(&decided, me_row, "reject response must equal its /me row");
+}
+
+#[sqlx::test]
+async fn makeup_response_matches_me_row(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("leave-pin-makeup@example.com", "Password!234").await;
+    let course_id = seed_course_with_capacity(&app.db, "Leave Pin Makeup Course", None, 10).await;
+    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_session_id =
+        seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
+
+    let makeup_resp = app
+        .post(&format!("/api/v1/leave-requests/{leave_id}/makeup"))
+        .authorization_bearer(&user.access_token)
+        .json(&json!({"session_id": target_session_id}))
+        .await;
+    assert_eq!(makeup_resp.status_code(), 200, "body={}", makeup_resp.text());
+    let booked: serde_json::Value = makeup_resp.json();
+
+    let me_resp = app
+        .get("/api/v1/leave-requests/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    let me_rows: serde_json::Value = me_resp.json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == booked["id"])
+        .expect("booked row present in /me");
+
+    assert_eq!(&booked, me_row, "makeup response must equal its /me row");
+}
+
+#[sqlx::test]
+async fn admin_list_row_matches_me_row_minus_user_fields(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let member = app.register_member("leave-pin-admin-list@example.com", "Password!234").await;
+    let course_id = seed_course(&app.db, "Leave Pin Admin List Course", None).await;
+    let scene = seed_leave_scene(&app.db, member.user_id, course_id, "pending", None).await;
+
+    let list_resp = app
+        .get(&format!("/api/v1/leave-requests?course_id={course_id}"))
+        .authorization_bearer(&admin_token)
+        .await;
+    assert_eq!(list_resp.status_code(), 200, "body={}", list_resp.text());
+    let list_body: serde_json::Value = list_resp.json();
+    let mut admin_row = list_body["leave_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == scene.leave.to_string())
+        .expect("row present in admin list")
+        .clone();
+    let admin_obj = admin_row.as_object_mut().unwrap();
+    admin_obj.remove("user_id");
+    admin_obj.remove("user_name");
+
+    let me_resp = app
+        .get("/api/v1/leave-requests/me")
+        .authorization_bearer(&member.access_token)
+        .await;
+    let me_rows: serde_json::Value = me_resp.json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == admin_row["id"])
+        .expect("row present in /me");
+
+    assert_eq!(
+        &admin_row, me_row,
+        "admin list row minus user_id/user_name must equal its /me row"
+    );
+}
