@@ -32,3 +32,10 @@ module 現階段只有一個真實使用者,是**假設的 seam**——為尚不
      歷史訂單資料,而不只是像 `seed_coach` 這樣造「當下狀態」。
   2. seed 需要走真實結帳(改成呼叫 `orders::service::checkout` 而非直接寫入歷史列),屆時「歷史寫入」這
      個 seam 的必要性由結帳路徑本身取代或重新定義。
+
+## Addendum (2026-09-28)
+
+R15 Phase 2 把 `bin/seed.rs` 改成目錄 bin(`bin/seed/main.rs` 入口 + `bin/seed/dataset.rs::run(db,
+at: StudioNow) -> SeedReport`),只是路徑搬遷與型別化取樣時鐘,不是重開本 ADR:`run` 依舊直寫歷史列、不
+經 `orders::service::checkout`。兩個重開條件都未成立——沒有出現第二個需要造「歷史訂單」的測試族群
+(`tests/common::fixtures` 仍只造「當下狀態」),`dataset::run` 也沒有改走真實結帳。
