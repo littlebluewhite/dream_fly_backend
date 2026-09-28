@@ -35,10 +35,12 @@ struct MakeupInfo {
 
 impl MakeupInfo {
     /// Zip a leave-request row's three nullable makeup columns into
-    /// `Option<MakeupInfo>`. The `/me` and admin-list queries LEFT JOIN the
-    /// makeup session, so the three are always all-`Some` (booked) or
-    /// all-`None` (not booked); a mixed row would be a query bug and collapses
-    /// to `None` here rather than emitting a half-set response.
+    /// `Option<MakeupInfo>`. The `/me`/admin-list reads and the three write
+    /// CTEs (`insert`/`decide_tx`/`set_makeup_session_tx`) all LEFT JOIN the
+    /// makeup session via `repository::VIEW_JOINS`, so the three are always
+    /// all-`Some` (booked) or all-`None` (not booked); a mixed row would be a
+    /// query bug and collapses to `None` here rather than emitting a
+    /// half-set response.
     fn from_columns(
         session_id: Option<Uuid>,
         session_date: Option<NaiveDate>,
@@ -79,8 +81,11 @@ impl From<LeaveRequestView> for LeaveRequestResponse {
     /// place, so "all-set or all-null" is guaranteed by the `Option`
     /// rather than re-checked by hand each time.
     fn from(r: LeaveRequestView) -> Self {
-        let makeup =
-            MakeupInfo::from_columns(r.makeup_session_id, r.makeup_session_date, r.makeup_start_time);
+        let makeup = MakeupInfo::from_columns(
+            r.makeup_session_id,
+            r.makeup_session_date,
+            r.makeup_start_time,
+        );
         Self {
             id: r.id,
             course_id: r.course_id,

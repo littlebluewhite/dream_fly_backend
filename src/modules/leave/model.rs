@@ -74,10 +74,12 @@ pub struct SessionContext {
 /// rows. Field names mirror `LeaveRequestResponse` 1:1 (see `dto.rs`). Single
 /// owner of the projection's column list: `repository::VIEW_COLUMNS`/
 /// `VIEW_JOINS` assemble it for every read (`find_my_leave_requests`,
-/// `find_admin_list`) and every write that changes it (`insert`, `decide_tx`,
-/// `set_makeup_session_tx`, via a data-modifying CTE's `RETURNING` re-joined
-/// through the same two consts) — a write's response is this same row, not a
-/// hand-copied echo of it.
+/// `find_admin_list`) and every write that responds with it (`insert`,
+/// `decide_tx`, `set_makeup_session_tx`, via a data-modifying CTE's
+/// `RETURNING` re-joined through the same two consts) — a write's response is
+/// this same row, not a hand-copied echo of it. `cancel_if_pending_tx`/
+/// `cancel_pending_for_enrolments_tx` also change the row but return the bare
+/// `LeaveRequest`, not this view — `DELETE` has no response body to project.
 #[derive(Debug, sqlx::FromRow)]
 pub struct LeaveRequestView {
     pub id: Uuid,
