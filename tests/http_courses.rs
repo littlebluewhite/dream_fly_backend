@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::fixtures::{seed_coach, seed_course, seed_course_schedule_slot};
+use common::fixtures::{seed_course, seed_course_schedule_slot};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -407,10 +407,7 @@ async fn patch_course_schedule_slots_end_before_start_returns_422(db: PgPool) {
 async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
-    let (coach_user_id, _coach_token) = app
-        .seed_user_with_roles("be22-coach@example.com", &["coach"])
-        .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "BE22 Coach").await;
+    let coach = app.seed_coach_user().await;
 
     // Create a course with all five nullable fields populated.
     let created: serde_json::Value = app
@@ -424,7 +421,7 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
             "max_students": 10,
             "min_age": 6,
             "max_age": 12,
-            "coach_id": coach_id,
+            "coach_id": coach.coach_id,
             "category": "體操",
             "schedule_text": "週一 18:00-19:00",
         }))
@@ -433,7 +430,7 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     let id = created["id"].as_str().unwrap();
     assert_eq!(created["min_age"], 6);
     assert_eq!(created["max_age"], 12);
-    assert_eq!(created["coach_id"], coach_id.to_string());
+    assert_eq!(created["coach_id"], coach.coach_id.to_string());
     assert_eq!(created["category"], "體操");
     assert_eq!(created["schedule_text"], "週一 18:00-19:00");
 
@@ -495,7 +492,7 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
         .json(&json!({
             "min_age": 8,
             "max_age": 14,
-            "coach_id": coach_id,
+            "coach_id": coach.coach_id,
             "category": "韻律",
             "schedule_text": "週三 19:00-20:00",
         }))
@@ -511,7 +508,7 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     let body4: serde_json::Value = resp4.json();
     assert_eq!(body4["min_age"], 8);
     assert_eq!(body4["max_age"], 14);
-    assert_eq!(body4["coach_id"], coach_id.to_string());
+    assert_eq!(body4["coach_id"], coach.coach_id.to_string());
     assert_eq!(body4["category"], "韻律");
     assert_eq!(body4["schedule_text"], "週三 19:00-20:00");
 }

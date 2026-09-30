@@ -4,7 +4,6 @@
 
 mod common;
 
-use common::fixtures::seed_coach;
 use common::http::spawn_test_app;
 use sqlx::PgPool;
 
@@ -127,14 +126,9 @@ async fn coach_report_role_but_no_coach_row_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn coach_report_as_coach_returns_200_with_shape(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (user_id, token) =
-        app.seed_user_with_roles("reports-coach-ok@example.com", &["coach"]).await;
-    seed_coach(&app.db, user_id, "Report Coach").await;
+    let user = app.seed_coach_user().await;
 
-    let resp = app
-        .get("/api/v1/reports/coach")
-        .authorization_bearer(&token)
-        .await;
+    let resp = app.get("/api/v1/reports/coach").authorization_bearer(&user.token).await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert!(body["today_sessions"].is_number());

@@ -45,10 +45,8 @@ async fn create_report_card_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) =
-        app.seed_user_with_roles("rc-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "RC Coach").await;
-    let course_id = seed_course(&app.db, "RC Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "RC Course", Some(coach.coach_id)).await;
     let member = app.register_member("rc-student@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
@@ -56,7 +54,7 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
 
     let resp = app
         .post("/api/v1/report-cards")
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({
             "enrolment_id": enrolment_id,
             "term_label": "2026 Spring",
@@ -78,9 +76,7 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn create_report_card_by_non_owning_coach_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (other_coach_user, other_coach_token) =
-        app.seed_user_with_roles("rc-other-coach@example.com", &["coach"]).await;
-    seed_coach(&app.db, other_coach_user, "RC Other Coach").await;
+    let other_coach = app.seed_coach_user().await;
 
     // Course has no coach assigned at all (distinct from `other_coach`).
     let course_id = seed_course(&app.db, "RC Unowned Course", None).await;
@@ -91,7 +87,7 @@ async fn create_report_card_by_non_owning_coach_returns_403(db: PgPool) {
 
     let resp = app
         .post("/api/v1/report-cards")
-        .authorization_bearer(&other_coach_token)
+        .authorization_bearer(&other_coach.token)
         .json(&json!({"enrolment_id": enrolment_id, "term_label": "2026 Spring"}))
         .await;
     assert_eq!(resp.status_code(), 403, "body={}", resp.text());
@@ -103,14 +99,10 @@ async fn create_report_card_by_a_different_coachs_course_returns_403(db: PgPool)
     // just not the caller — exercising the `coach.id == course_coach_id`
     // comparison branch rather than the `course_coach_id.is_none()` fallback.
     let app = spawn_test_app(db).await;
-    let (coach_a_user, _coach_a_token) =
-        app.seed_user_with_roles("rc-coach-a@example.com", &["coach"]).await;
-    let coach_a_id = seed_coach(&app.db, coach_a_user, "RC Coach A").await;
-    let course_id = seed_course(&app.db, "RC Coach A Course", Some(coach_a_id)).await;
+    let coach_a = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "RC Coach A Course", Some(coach_a.coach_id)).await;
 
-    let (coach_b_user, coach_b_token) =
-        app.seed_user_with_roles("rc-coach-b@example.com", &["coach"]).await;
-    seed_coach(&app.db, coach_b_user, "RC Coach B").await;
+    let coach_b = app.seed_coach_user().await;
 
     let member = app.register_member("rc-student3@example.com", "Password!234").await;
     let enrolment_id =
@@ -119,7 +111,7 @@ async fn create_report_card_by_a_different_coachs_course_returns_403(db: PgPool)
 
     let resp = app
         .post("/api/v1/report-cards")
-        .authorization_bearer(&coach_b_token)
+        .authorization_bearer(&coach_b.token)
         .json(&json!({"enrolment_id": enrolment_id, "term_label": "2026 Spring"}))
         .await;
     assert_eq!(resp.status_code(), 403, "body={}", resp.text());
@@ -296,16 +288,14 @@ async fn create_certificate_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn create_certificate_for_own_active_student_succeeds_and_notifies(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) =
-        app.seed_user_with_roles("cert-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Cert Coach").await;
-    let course_id = seed_course(&app.db, "Cert Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Cert Course", Some(coach.coach_id)).await;
     let member = app.register_member("cert-student@example.com", "Password!234").await;
     seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .post("/api/v1/certificates")
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({
             "user_id": member.user_id,
             "course_id": course_id,
@@ -340,17 +330,15 @@ async fn create_certificate_for_cancelled_enrolment_student_succeeds(db: PgPool)
     // Historical students (cancelled enrolment) can still be certified —
     // contract §3.22 explicit semantics.
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) =
-        app.seed_user_with_roles("cert-hist-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Cert Hist Coach").await;
-    let course_id = seed_course(&app.db, "Cert Hist Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Cert Hist Course", Some(coach.coach_id)).await;
     let member = app.register_member("cert-hist-student@example.com", "Password!234").await;
     seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
         .await;
 
     let resp = app
         .post("/api/v1/certificates")
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({
             "user_id": member.user_id, "title": "結業證書", "issued_on": "2026-07-01"
         }))
@@ -361,17 +349,15 @@ async fn create_certificate_for_cancelled_enrolment_student_succeeds(db: PgPool)
 #[sqlx::test]
 async fn create_certificate_for_non_student_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) =
-        app.seed_user_with_roles("cert-cross-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Cert Cross Coach").await;
-    seed_course(&app.db, "Cert Cross Coach Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    seed_course(&app.db, "Cert Cross Coach Course", Some(coach.coach_id)).await;
 
     // This member has never enrolled in any of the coach's courses.
     let member = app.register_member("cert-cross-student@example.com", "Password!234").await;
 
     let resp = app
         .post("/api/v1/certificates")
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({
             "user_id": member.user_id, "title": "體操初級證書", "issued_on": "2026-07-01"
         }))
@@ -382,9 +368,7 @@ async fn create_certificate_for_non_student_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn create_certificate_for_other_coachs_student_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_a_user, coach_a_token) =
-        app.seed_user_with_roles("cert-coach-a@example.com", &["coach"]).await;
-    seed_coach(&app.db, coach_a_user, "Cert Coach A").await;
+    let coach_a = app.seed_coach_user().await;
     let coach_b_user =
         common::seed_member(&app.db, "cert-coach-b@example.com", "Password!234").await;
     let coach_b_id = seed_coach(&app.db, coach_b_user, "Cert Coach B").await;
@@ -395,7 +379,7 @@ async fn create_certificate_for_other_coachs_student_returns_403(db: PgPool) {
 
     let resp = app
         .post("/api/v1/certificates")
-        .authorization_bearer(&coach_a_token)
+        .authorization_bearer(&coach_a.token)
         .json(&json!({
             "user_id": member.user_id, "title": "體操初級證書", "issued_on": "2026-07-01"
         }))
@@ -472,10 +456,8 @@ async fn my_certificates_only_shows_own(db: PgPool) {
 #[sqlx::test]
 async fn create_report_card_response_matches_me_row(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) =
-        app.seed_user_with_roles("rc-pin-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "RC Pin Coach").await;
-    let course_id = seed_course(&app.db, "RC Pin Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "RC Pin Course", Some(coach.coach_id)).await;
     let member = app.register_member("rc-pin-student@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
@@ -483,7 +465,7 @@ async fn create_report_card_response_matches_me_row(db: PgPool) {
 
     let create_resp = app
         .post("/api/v1/report-cards")
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({
             "enrolment_id": enrolment_id,
             "term_label": "2026 Spring",

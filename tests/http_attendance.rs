@@ -6,8 +6,7 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
-    seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment,
-    seed_leave_request,
+    seed_attendance, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
 };
 use common::http::spawn_test_app;
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
@@ -73,22 +72,16 @@ async fn roster_unknown_session_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn roster_as_non_course_coach_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (owner_user_id, _owner_token) = app
-        .seed_user_with_roles("att-roster-owner@example.com", &["coach"])
-        .await;
-    let owner_coach_id = seed_coach(&app.db, owner_user_id, "Owner Coach").await;
-    let course_id = seed_course(&app.db, "Roster Owned Course", Some(owner_coach_id)).await;
+    let owner = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Roster Owned Course", Some(owner.coach_id)).await;
     let session_id =
         seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
 
-    let (other_user_id, other_token) = app
-        .seed_user_with_roles("att-roster-other@example.com", &["coach"])
-        .await;
-    seed_coach(&app.db, other_user_id, "Other Coach").await;
+    let other = app.seed_coach_user().await;
 
     let resp = app
         .get(&format!("/api/v1/sessions/{session_id}/roster"))
-        .authorization_bearer(&other_token)
+        .authorization_bearer(&other.token)
         .await;
     assert_eq!(resp.status_code(), 403, "body={}", resp.text());
 }
@@ -96,11 +89,8 @@ async fn roster_as_non_course_coach_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn roster_as_course_coach_shows_active_enrolments_with_null_status(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) = app
-        .seed_user_with_roles("att-roster-coach@example.com", &["coach"])
-        .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Roster Coach").await;
-    let course_id = seed_course(&app.db, "Roster Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Roster Course", Some(coach.coach_id)).await;
     let session_id =
         seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
 
@@ -125,7 +115,7 @@ async fn roster_as_course_coach_shows_active_enrolments_with_null_status(db: PgP
 
     let resp = app
         .get(&format!("/api/v1/sessions/{session_id}/roster"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
@@ -201,11 +191,8 @@ async fn attendance_put_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn attendance_put_as_non_course_coach_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (owner_user_id, _owner_token) = app
-        .seed_user_with_roles("att-put-owner@example.com", &["coach"])
-        .await;
-    let owner_coach_id = seed_coach(&app.db, owner_user_id, "Put Owner Coach").await;
-    let course_id = seed_course(&app.db, "Put Owned Course", Some(owner_coach_id)).await;
+    let owner = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Put Owned Course", Some(owner.coach_id)).await;
     let session_id =
         seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-put-member@example.com", "Password!234").await;
@@ -213,14 +200,11 @@ async fn attendance_put_as_non_course_coach_returns_403(db: PgPool) {
         seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
             .await;
 
-    let (other_user_id, other_token) = app
-        .seed_user_with_roles("att-put-other@example.com", &["coach"])
-        .await;
-    seed_coach(&app.db, other_user_id, "Put Other Coach").await;
+    let other = app.seed_coach_user().await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
-        .authorization_bearer(&other_token)
+        .authorization_bearer(&other.token)
         .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "present"}]}))
         .await;
     assert_eq!(resp.status_code(), 403, "body={}", resp.text());
@@ -321,11 +305,8 @@ async fn attendance_put_unknown_session_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) = app
-        .seed_user_with_roles("att-idem-coach@example.com", &["coach"])
-        .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Idem Coach").await;
-    let course_id = seed_course(&app.db, "Idempotent Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Idempotent Course", Some(coach.coach_id)).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
 
     let member_a = app.register_member("att-idem-a@example.com", "Password!234").await;
@@ -340,7 +321,7 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
     // First call: mark A present, B absent.
     let resp1 = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({"records": [
             {"enrolment_id": enrolment_a, "status": "present"},
             {"enrolment_id": enrolment_b, "status": "absent"},
@@ -364,7 +345,7 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
     // Second call with the exact same body: idempotent, still 2 rows.
     let resp2 = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({"records": [
             {"enrolment_id": enrolment_a, "status": "present"},
             {"enrolment_id": enrolment_b, "status": "absent"},
@@ -376,7 +357,7 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
     // Third call overwrites both statuses — still 2 rows, new values.
     let resp3 = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({"records": [
             {"enrolment_id": enrolment_a, "status": "leave"},
             {"enrolment_id": enrolment_b, "status": "present"},
@@ -554,18 +535,13 @@ async fn my_students_as_coach_with_no_coach_row_returns_empty(db: PgPool) {
 #[sqlx::test]
 async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) = app
-        .seed_user_with_roles("att-students-coach@example.com", &["coach"])
-        .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Students Coach").await;
-    let course_a = seed_course(&app.db, "Students Course A", Some(coach_id)).await;
-    let course_b = seed_course(&app.db, "Students Course B", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_a = seed_course(&app.db, "Students Course A", Some(coach.coach_id)).await;
+    let course_b = seed_course(&app.db, "Students Course B", Some(coach.coach_id)).await;
 
-    let (other_coach_user_id, _) = app
-        .seed_user_with_roles("att-students-othercoach@example.com", &["coach"])
-        .await;
-    let other_coach_id = seed_coach(&app.db, other_coach_user_id, "Other Students Coach").await;
-    let other_course = seed_course(&app.db, "Students Other Course", Some(other_coach_id)).await;
+    let other_coach = app.seed_coach_user().await;
+    let other_course =
+        seed_course(&app.db, "Students Other Course", Some(other_coach.coach_id)).await;
 
     // student_x is enrolled in both of this coach's courses -> one distinct
     // entry with two courses.
@@ -587,10 +563,7 @@ async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: P
     seed_enrolment(&app.db, student_z.user_id, other_course, EnrolmentStatus::Active, Utc::now())
         .await;
 
-    let resp = app
-        .get("/api/v1/coaches/me/students")
-        .authorization_bearer(&coach_token)
-        .await;
+    let resp = app.get("/api/v1/coaches/me/students").authorization_bearer(&coach.token).await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().expect("plain array, not an envelope");
@@ -627,11 +600,8 @@ async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: P
 #[sqlx::test]
 async fn my_students_includes_delisted_course(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) = app
-        .seed_user_with_roles("att-students-delisted@example.com", &["coach"])
-        .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Delisted Course Coach").await;
-    let course_id = seed_course(&app.db, "Soon Delisted Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "Soon Delisted Course", Some(coach.coach_id)).await;
     let student = app.register_member("att-students-delisted-s@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&app.db, student.user_id, course_id, EnrolmentStatus::Active, Utc::now())
@@ -643,10 +613,7 @@ async fn my_students_includes_delisted_course(db: PgPool) {
         .await
         .expect("delist course");
 
-    let resp = app
-        .get("/api/v1/coaches/me/students")
-        .authorization_bearer(&coach_token)
-        .await;
+    let resp = app.get("/api/v1/coaches/me/students").authorization_bearer(&coach.token).await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().expect("plain array, not an envelope");

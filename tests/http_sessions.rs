@@ -171,11 +171,8 @@ async fn today_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn today_as_coach_returns_own_course_with_enrolled_count(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (coach_user_id, coach_token) = app
-        .seed_user_with_roles("sess-today-coach@example.com", &["coach"])
-        .await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Today Coach").await;
-    let own_course = seed_course(&app.db, "HTTP Today Own Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let own_course = seed_course(&app.db, "HTTP Today Own Course", Some(coach.coach_id)).await;
     let other_course = seed_course(&app.db, "HTTP Today Other Course", None).await;
 
     let today = Utc::now().date_naive();
@@ -186,10 +183,7 @@ async fn today_as_coach_returns_own_course_with_enrolled_count(db: PgPool) {
     let member = app.register_member("sess-today-member2@example.com", "Password!234").await;
     seed_enrolment(&app.db, member.user_id, own_course, EnrolmentStatus::Active, Utc::now()).await;
 
-    let resp = app
-        .get("/api/v1/sessions/today")
-        .authorization_bearer(&coach_token)
-        .await;
+    let resp = app.get("/api/v1/sessions/today").authorization_bearer(&coach.token).await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().expect("plain array");
@@ -244,12 +238,12 @@ async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
-    let (coach_user_id, _coach_token) =
-        app.seed_user_with_roles("sess-today-admin-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "Today Admin Coach").await;
+    let coach = app.seed_coach_user().await;
 
-    let course_with_coach = seed_course(&app.db, "HTTP Today Coach Venue Course", Some(coach_id)).await;
-    let course_without_coach = seed_course(&app.db, "HTTP Today No Coach No Venue Course", None).await;
+    let course_with_coach =
+        seed_course(&app.db, "HTTP Today Coach Venue Course", Some(coach.coach_id)).await;
+    let course_without_coach =
+        seed_course(&app.db, "HTTP Today No Coach No Venue Course", None).await;
 
     let today = Utc::now().date_naive();
     let dow = dow_of(today);

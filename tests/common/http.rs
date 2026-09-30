@@ -253,6 +253,17 @@ impl TestApp {
         self.seed_user_with_roles(&email, &["admin"]).await
     }
 
+    /// Seed a ready-to-use coach: a user with the `coach` role, its coach
+    /// profile (`seed_coach`), and an access token — the three things a
+    /// coach-scoped HTTP test needs. Email and title are generated; tests
+    /// that assert on either should keep seeding them explicitly.
+    pub async fn seed_coach_user(&self) -> SeededCoach {
+        let email = format!("coach-{}@test.local", Uuid::now_v7());
+        let (user_id, token) = self.seed_user_with_roles(&email, &["coach"]).await;
+        let coach_id = super::fixtures::seed_coach(&self.db, user_id, "Test Coach").await;
+        SeededCoach { user_id, coach_id, token }
+    }
+
     /// Deterministically wait for every background task spawned so far
     /// (e.g. the password-reset email send in `auth::service::
     /// forgot_password`) to finish, replacing a fixed `sleep` + poll.
@@ -272,6 +283,13 @@ impl TestApp {
         self.background.wait().await;
         self.background.reopen();
     }
+}
+
+/// A coach created via [`TestApp::seed_coach_user`].
+pub struct SeededCoach {
+    pub user_id: Uuid,
+    pub coach_id: Uuid,
+    pub token: String,
 }
 
 /// Identifying metadata for a user created via `register_member`.

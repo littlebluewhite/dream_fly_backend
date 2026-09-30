@@ -7,7 +7,7 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
-    TimeSlotSeed, seed_coach, seed_coupon, seed_course, seed_course_session, seed_enrolment,
+    TimeSlotSeed, seed_coupon, seed_course, seed_course_session, seed_enrolment,
 };
 use common::http::spawn_test_app;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
@@ -394,10 +394,8 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     // leave from, and a later makeup target) — course/session creation isn't
     // the point of this flow, so seeded via fixtures like the other e2e
     // journeys' catalog setup.
-    let (coach_user_id, coach_token) =
-        app.seed_user_with_roles("e2e-leave-coach@example.com", &["coach"]).await;
-    let coach_id = seed_coach(&app.db, coach_user_id, "E2E Leave Coach").await;
-    let course_id = seed_course(&app.db, "E2E Leave Course", Some(coach_id)).await;
+    let coach = app.seed_coach_user().await;
+    let course_id = seed_course(&app.db, "E2E Leave Course", Some(coach.coach_id)).await;
     let original_date = (Utc::now() + Duration::days(1)).date_naive();
     let original_session_id = seed_course_session(
         &app.db,
@@ -438,7 +436,7 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     // --- 核准: the course's coach approves it. ---
     let decide_resp = app
         .patch(&format!("/api/v1/leave-requests/{leave_id}"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({"status": "approved"}))
         .await;
     assert_eq!(decide_resp.status_code(), 200, "body={}", decide_resp.text());
@@ -448,7 +446,7 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     // original session's roster as `leave`.
     let roster_resp = app
         .get(&format!("/api/v1/sessions/{original_session_id}/roster"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .await;
     assert_eq!(roster_resp.status_code(), 200, "body={}", roster_resp.text());
     let roster_body: serde_json::Value = roster_resp.json();
@@ -499,7 +497,7 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     app.clock.set(original_date.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()).and_utc());
     let guard_resp = app
         .put(&format!("/api/v1/sessions/{original_session_id}/attendance"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "present"}]}))
         .await;
     assert_eq!(guard_resp.status_code(), 422, "body={}", guard_resp.text());
@@ -511,7 +509,7 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     // The rejected batch must leave the leave projection untouched.
     let roster_after_resp = app
         .get(&format!("/api/v1/sessions/{original_session_id}/roster"))
-        .authorization_bearer(&coach_token)
+        .authorization_bearer(&coach.token)
         .await;
     assert_eq!(roster_after_resp.status_code(), 200, "body={}", roster_after_resp.text());
     let roster_after_body: serde_json::Value = roster_after_resp.json();
