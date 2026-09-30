@@ -168,7 +168,7 @@ pub async fn start_consumer(
 
 /// One consumed record, copied out of the broker's borrowed message so the
 /// loop owns it across retries and awaits.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SourceMessage {
     topic: String,
     partition: i32,

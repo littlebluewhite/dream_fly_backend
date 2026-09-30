@@ -21,9 +21,11 @@ pub fn create_producer(brokers: &str) -> Result<FutureProducer, KafkaError> {
         .set("retry.backoff.ms", "500")
         .set("queue.buffering.max.messages", "100000")
         .set("queue.buffering.max.ms", "5")
-        // Same deadline as the outbox dispatcher's per-batch budget, so
-        // librdkafka stops retrying a message no later than the dispatcher
-        // stops waiting for it.
+        // Caps each individual send at the same 15 s as the dispatcher's
+        // batch budget. The timeout counts per message from enqueue while
+        // the budget covers the whole batch, so a send the batch deadline
+        // cuts off may still be delivered afterwards and is then re-sent on
+        // re-claim (at-least-once; the consumer is idempotent).
         .set("message.timeout.ms", PUBLISH_BUDGET.as_millis().to_string())
         .create()
 }
@@ -61,5 +63,17 @@ impl EventPublisher for KafkaPublisher {
                 Err(err)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_producer;
+
+    /// Creating the client does not connect, so this validates the config
+    /// (e.g. `message.timeout.ms` with idempotence) offline.
+    #[test]
+    fn create_producer_accepts_its_config() {
+        assert!(create_producer("localhost:9092").is_ok());
     }
 }

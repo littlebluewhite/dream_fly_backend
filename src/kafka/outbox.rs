@@ -70,8 +70,10 @@ const BATCH_SIZE: i64 = 100;
 const LEASE: Duration = Duration::from_secs(60);
 
 /// Wall-clock budget for publishing one claimed batch. Also set as the
-/// producer's `message.timeout.ms` (see `producer::create_producer`) so
-/// librdkafka gives up on a message no later than the dispatcher does.
+/// producer's `message.timeout.ms` (see `producer::create_producer`), which
+/// caps each individual send at the same 15 s. A send the batch deadline cuts
+/// off may still be delivered afterwards and is then re-sent on re-claim
+/// (at-least-once; the consumer is idempotent, so the duplicate is harmless).
 pub(crate) const PUBLISH_BUDGET: Duration = Duration::from_secs(15);
 
 /// Upper bound on the retry backoff of a failing row.
