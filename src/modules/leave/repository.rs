@@ -19,12 +19,11 @@ const VIEW_COLUMNS: &str = "lr.id, e.course_id, c.name AS course_name, lr.sessio
 const VIEW_JOINS: &str = "JOIN enrolments e ON e.id = lr.enrolment_id JOIN courses c ON c.id = e.course_id \
     JOIN course_sessions cs ON cs.id = lr.session_id LEFT JOIN course_sessions mcs ON mcs.id = lr.makeup_session_id";
 
-/// `course_sessions` JOINed with its course's `name` — used both by
-/// `POST /leave-requests` (plain pool read) and the makeup endpoint's
-/// target-session validation (called through the open transaction that
-/// holds the leave-request row lock).
+/// `course_sessions` JOINed with its course's `name` — used by
+/// `POST /leave-requests` (plain pool read). The makeup endpoint reads its
+/// target session through `courses::seats::lock_session_tx` instead.
 pub async fn find_session_context(
-    executor: impl sqlx::PgExecutor<'_>,
+    db: &PgPool,
     session_id: Uuid,
 ) -> Result<Option<SessionContext>, sqlx::Error> {
     sqlx::query_as::<_, SessionContext>(
@@ -34,7 +33,7 @@ pub async fn find_session_context(
          WHERE cs.id = $1",
     )
     .bind(session_id)
-    .fetch_optional(executor)
+    .fetch_optional(db)
     .await
 }
 

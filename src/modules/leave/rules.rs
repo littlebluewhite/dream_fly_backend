@@ -10,19 +10,20 @@
 //! leave is still allowed, task 3), [`check_makeup_source`] checks a locked
 //! leave request is eligible to receive a makeup booking (409 if not
 //! `approved`, 409 if it already has one, 409 if its enrolment has since
-//! been cancelled), and [`check_makeup_target`] checks the caller-resolved
+//! been cancelled), and [`check_makeup_target`] checks the locked
 //! target session against that leave request (422 if it's a different
 //! course, 422/400 if it has already started or its start time is
 //! DST-ambiguous). Same
 //! shape as `orders::pricing`/`orders::fulfilment`: pure function, zero DB,
 //! zero async — `service::book_makeup` still owns everything genuinely
 //! transactional: the two row locks (`repository::find_for_makeup_tx`,
-//! `courses::seats::lock_session_tx`), the target-session DB read, the seat
-//! count, and the write.
+//! `courses::seats::lock_session_tx`, which also yields the target
+//! session's row), the seat check (`courses::seats::require_room_tx`), and
+//! the write.
 //!
 //! **[`check_makeup_source`] and [`check_makeup_target`] are split in two
-//! because a DB read for the target session sits between them, and error
-//! ordering is load-bearing.** `service::book_makeup` must reject a
+//! because a DB read for the target session (its row lock) sits between
+//! them, and error ordering is load-bearing.** `service::book_makeup` must reject a
 //! not-approved or already-made-up leave request (409) *before* ever
 //! looking up the target session (which can itself 404) — a client
 //! forgetting to check its own leave request's status shouldn't get a 404
@@ -33,9 +34,10 @@
 //! it in a pure function here would just be dead code alongside it.
 
 use crate::error::AppError;
+use crate::modules::sessions::model::CourseSession;
 use crate::utils::studio_clock::{self, StudioNow};
 
-use super::model::{LeaveDecisionContext, LeaveRequestForMakeup, LeaveStatus, SessionContext};
+use super::model::{LeaveDecisionContext, LeaveRequestForMakeup, LeaveStatus};
 
 /// `僅待審核假單可審核` — shared between [`check_decidable`]'s not-pending
 /// check and `repository::decide_tx`'s race fallback (moved here from
@@ -105,8 +107,9 @@ pub fn check_makeup_source(leave: &LeaveRequestForMakeup) -> Result<(), AppError
     Ok(())
 }
 
-/// Check the caller-resolved target session against a leave request already
-/// passed through [`check_makeup_source`]: the target must belong to the
+/// Check the locked target session (`courses::seats::SessionLock::session`)
+/// against a leave request already passed through [`check_makeup_source`]:
+/// the target must belong to the
 /// same course as the original leave (422 otherwise — no cross-course
 /// makeups), must not be the very session the leave was taken for (422
 /// `補課場次不可為請假場次` — a makeup into the leave's own session would
@@ -117,7 +120,7 @@ pub fn check_makeup_source(leave: &LeaveRequestForMakeup) -> Result<(), AppError
 /// then already-started.
 pub fn check_makeup_target(
     leave: &LeaveRequestForMakeup,
-    target: &SessionContext,
+    target: &CourseSession,
     at: StudioNow,
 ) -> Result<(), AppError> {
     let StudioNow { tz, now } = at;
@@ -190,13 +193,18 @@ mod tests {
         }
     }
 
-    fn session_context(course_id: Uuid, session_date: NaiveDate, start_time: NaiveTime) -> SessionContext {
-        SessionContext {
+    fn session_context(
+        course_id: Uuid,
+        session_date: NaiveDate,
+        start_time: NaiveTime,
+    ) -> CourseSession {
+        CourseSession {
             id: Uuid::now_v7(),
             course_id,
-            course_name: "Course".into(),
             session_date,
             start_time,
+            end_time: start_time + chrono::Duration::hours(1),
+            created_at: Utc::now(),
         }
     }
 

@@ -22,8 +22,8 @@ use super::rules;
 /// and `book_makeup`'s initial leave-request lookup.
 const LEAVE_NOT_FOUND: &str = "請假申請不存在";
 
-/// `場次不存在` — shared by `create_leave_request`'s and `book_makeup`'s
-/// session-context/seat-lock lookups.
+/// `場次不存在` — shared by `create_leave_request`'s session-context lookup
+/// and `book_makeup`'s target-session lock.
 const SESSION_NOT_FOUND: &str = "場次不存在";
 
 /// `POST /leave-requests`. Resolves the caller's active enrolment from
@@ -232,7 +232,11 @@ pub async fn decide_leave_request(
 /// one, and every makeup already booked into it takes one back:
 /// `max_students - active_count + approved_leave_count - makeup_count > 0`.
 /// Both counts consider only still-active enrolments (see
-/// `seats::session_seats_tx`).
+/// `seats::require_room_tx`, which owns the formula and its 409).
+///
+/// Error precedence: leave request 404 → owner 403 → source 409 → target
+/// session 404 → target rules 422/400 → seats 409. The target session is
+/// read once, by its row lock (`SessionLock::session`).
 pub async fn book_makeup(
     db: &PgPool,
     at: StudioNow,
@@ -249,12 +253,6 @@ pub async fn book_makeup(
     auth.owner_only(leave.user_id, "僅本人可預約補課")?;
     rules::check_makeup_source(&leave)?;
 
-    let target = repository::find_session_context(&mut *tx, req.session_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(SESSION_NOT_FOUND.into()))?;
-
-    rules::check_makeup_target(&leave, &target, at)?;
-
     // Serialize concurrent makeups into the same target session across
     // *different* leave requests before counting seats — the leave-request
     // row lock above only defends re-booking of the same request.
@@ -262,15 +260,9 @@ pub async fn book_makeup(
         .await?
         .ok_or_else(|| AppError::NotFound(SESSION_NOT_FOUND.into()))?;
 
-    let session_seats = seats::session_seats_tx(&mut tx, &lock)
-        .await?
-        .ok_or_else(|| AppError::NotFound("課程不存在".into()))?;
+    rules::check_makeup_target(&leave, lock.session(), at)?;
 
-    // Physical seat model: leave for the target frees a seat, an existing
-    // makeup into it occupies one (controller ruling 2026-07-06).
-    if session_seats.remaining() <= 0 {
-        return Err(AppError::Conflict("該場次名額已滿".into()));
-    }
+    seats::require_room_tx(&mut tx, &lock).await?;
 
     let updated = repository::set_makeup_session_tx(&mut tx, id, req.session_id)
         .await?
@@ -281,6 +273,6 @@ pub async fn book_makeup(
     // `updated`'s makeup columns now resolve against the just-written
     // `makeup_session_id` (the write and this read share the data-modifying
     // CTE's one statement), so the booked target's date/time need no
-    // separate assembly from `target` here.
+    // separate assembly from `lock.session()` here.
     Ok(updated.into())
 }

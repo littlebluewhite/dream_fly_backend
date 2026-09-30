@@ -20,7 +20,7 @@
 //! - `&PgPool`、無前綴(`course_seats`)= 無鎖快照,stale 可接受;
 //! - `&mut Transaction` + `lock_` 前綴(`lock_courses_tx`、
 //!   `lock_session_tx`)= 在呼叫端交易內取 `FOR UPDATE` 列鎖;
-//! - `_tx` 後綴、無 `lock_` 前綴(`course_seats_tx`、`session_seats_tx`)=
+//! - `_tx` 後綴、無 `lock_` 前綴(`course_seats_tx`、`require_room_tx`)=
 //!   交易內讀取,呼叫前必須已持對應列鎖——由 witness 型別擔保
 //!   ([`CourseLocks`] 唯一建構點 `lock_courses_tx`、[`SessionLock`] 唯一建構點
 //!   `lock_session_tx`,欄位皆私有),不再只靠 doc 前綴宣示。
@@ -29,6 +29,10 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::sessions::model::CourseSession;
+
+/// `該場次名額已滿`——[`require_room_tx`] 持有的 409 文案。
+const SESSION_FULL: &str = "該場次名額已滿";
 
 /// 課程層座位快照:容量與 active 報名數。
 #[derive(Debug)]
@@ -175,87 +179,88 @@ pub async fn course_seats(
     }))
 }
 
-/// 場次層座位快照——實體座位模型(契約 §3.20 名額公式)的四個輸入。
+/// 場次層座位快照——實體座位模型(契約 §3.20 名額公式)的四個輸入。私有:
+/// 對外只回答「還有沒有位子」([`require_room_tx`]),不外露計數。
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct SessionSeats {
-    pub max_students: i32,
-    pub active_count: i64,
-    pub approved_leave_count: i64,
-    pub makeup_count: i64,
+struct SessionSeats {
+    max_students: i32,
+    active_count: i64,
+    approved_leave_count: i64,
+    makeup_count: i64,
 }
 
 impl SessionSeats {
     /// 目標場次剩餘座位 = `max_students - active + 該場次核准請假 - 已補進
     /// 該場次的補課`——請假釋出座位、補課佔用座位(controller ruling
     /// 2026-07-06,契約 §3.20)。
-    pub fn remaining(&self) -> i64 {
+    fn remaining(&self) -> i64 {
         self.max_students as i64 - self.active_count + self.approved_leave_count
             - self.makeup_count
+    }
+
+    /// 還有空位:剩餘座位嚴格 `> 0`。
+    fn has_room(&self) -> bool {
+        self.remaining() > 0
     }
 }
 
 /// 見證 `lock_session_tx` 已在呼叫端仍開啟的交易內,對此場次列取得
-/// `FOR UPDATE` 鎖——把「呼叫 [`session_seats_tx`] 前必須已持場次列鎖」這條
+/// `FOR UPDATE` 鎖——把「呼叫 [`require_room_tx`] 前必須已持場次列鎖」這條
 /// 原本只靠該函式 doc 前綴宣示的呼叫順序 invariant,收進型別系統:
-/// [`session_seats_tx`] 改收 `&SessionLock`,不再收裸 `session_id`。
+/// [`require_room_tx`] 收 `&SessionLock`,不收裸 `session_id`。
 ///
-/// 欄位私有,僅 `lock_session_tx` 能建構;唯讀存取 `session_id()`/
-/// `course_id()`。兩個欄位取自同一列 `SELECT`,故持有此值同時擔保兩件事:
-/// 「已持有該場次列鎖」與「session↔course 為同一列讀出的配對」——原設計
-/// `session_seats_tx` 另外收一個呼叫端自由傳入的 `course_id` 參數,傳錯
-/// 配對沒有型別防護。
+/// 欄位私有,僅 `lock_session_tx` 能建構;唯讀存取 `session()`——鎖定當下
+/// 讀出的整筆 [`CourseSession`]。整筆取自同一列 `SELECT ... FOR UPDATE`,
+/// 故持有此值同時擔保兩件事:「已持有該場次列鎖」與「session↔course、
+/// 日期時間皆為鎖定列本身的值」——呼叫端(`leave::service::book_makeup`)
+/// 直接拿它驗補課目標,不必再另讀一次場次;原設計另收呼叫端自由傳入的
+/// `course_id` 參數,傳錯配對沒有型別防護。
 #[derive(Debug, Clone)]
 pub struct SessionLock {
-    session_id: Uuid,
-    course_id: Uuid,
+    session: CourseSession,
 }
 
 impl SessionLock {
-    pub fn session_id(&self) -> Uuid {
-        self.session_id
-    }
-
-    pub fn course_id(&self) -> Uuid {
-        self.course_id
+    pub fn session(&self) -> &CourseSession {
+        &self.session
     }
 }
 
 /// 【course_sessions 列 FOR UPDATE】makeup 前置鎖(自
-/// `leave::repository::lock_session_tx` 原樣搬入):在 [`session_seats_tx`]
+/// `leave::repository::lock_session_tx` 原樣搬入):在 [`require_room_tx`]
 /// 計數前鎖住目標場次列,序列化**不同**假單搶同一場次名額(controller
 /// ruling 2026-07-06)——假單自身的列鎖只擋同一張假單的重複預約。回傳
-/// [`SessionLock`] witness,一併帶出鎖定列自身的 `course_id`,供
-/// [`session_seats_tx`] 使用。`None` = 場次不存在。
+/// [`SessionLock`] witness,帶出鎖定列整筆 [`CourseSession`]。`None` =
+/// 場次不存在。
 pub async fn lock_session_tx(
     tx: &mut Transaction<'_, Postgres>,
     session_id: Uuid,
 ) -> Result<Option<SessionLock>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid)>(
-        "SELECT id, course_id FROM course_sessions WHERE id = $1 FOR UPDATE",
+    let session = sqlx::query_as::<_, CourseSession>(
+        "SELECT id, course_id, session_date, start_time, end_time, created_at \
+         FROM course_sessions WHERE id = $1 FOR UPDATE",
     )
     .bind(session_id)
     .fetch_optional(&mut **tx)
     .await?;
 
-    Ok(row.map(|(session_id, course_id)| SessionLock {
-        session_id,
-        course_id,
-    }))
+    Ok(session.map(|session| SessionLock { session }))
 }
 
-/// 【`&SessionLock` 見證場次列鎖已持有】四數單查詢(自
-/// `leave::repository::find_makeup_capacity_tx` 原樣搬入),把課程的
-/// `max_students` 與三個 correlated count 一次讀齊。`course_id`/
-/// `target_session_id` 皆取自 `lock`(`lock.course_id()`/
-/// `lock.session_id()`),不再是呼叫端另傳的裸參數——見 [`SessionLock`]。
-/// 兩個請假/補課計數皆只計 enrolment 仍為 `active` 者(controller ruling
-/// 2026-07-06):請假後退課的人不釋出幽靈座位,補課後退課的人不繼續佔位。
-/// `None` = 課程不存在。
-pub async fn session_seats_tx(
+/// 【`&SessionLock` 見證場次列鎖已持有】場次還有沒有位子,一次回答:沒位子
+/// → 409 `該場次名額已滿`(文案由本模組持有)。四數單查詢(自
+/// `leave::repository::find_makeup_capacity_tx` 原樣搬入)把課程的
+/// `max_students` 與三個 correlated count 一次讀齊;`course_id`/
+/// `target_session_id` 皆取自 `lock.session()`,不是呼叫端另傳的裸參數——
+/// 見 [`SessionLock`]。兩個請假/補課計數皆只計 enrolment 仍為 `active` 者
+/// (controller ruling 2026-07-06):請假後退課的人不釋出幽靈座位,補課後
+/// 退課的人不繼續佔位。`fetch_one`:場次列已被鎖住,其 `course_id` 外鍵
+/// 指向的課程必然存在,「課程不存在」到不了。
+pub async fn require_room_tx(
     tx: &mut Transaction<'_, Postgres>,
     lock: &SessionLock,
-) -> Result<Option<SessionSeats>, sqlx::Error> {
-    sqlx::query_as::<_, SessionSeats>(
+) -> Result<(), AppError> {
+    let seats = sqlx::query_as::<_, SessionSeats>(
         "SELECT c.max_students, \
                 (SELECT COUNT(*) FROM active_enrolments \
                   WHERE course_id = c.id) AS active_count, \
@@ -267,10 +272,15 @@ pub async fn session_seats_tx(
                   WHERE lr.makeup_session_id = $2) AS makeup_count \
          FROM courses c WHERE c.id = $1",
     )
-    .bind(lock.course_id())
-    .bind(lock.session_id())
-    .fetch_optional(&mut **tx)
-    .await
+    .bind(lock.session().course_id)
+    .bind(lock.session().id)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    if !seats.has_room() {
+        return Err(AppError::Conflict(SESSION_FULL.into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -360,11 +370,10 @@ mod tests {
                 approved_leave_count,
                 makeup_count,
             };
-            assert_eq!(
-                seats.remaining(),
-                expected,
-                "({max_students},{active_count},{approved_leave_count},{makeup_count})"
-            );
+            let case =
+                format!("({max_students},{active_count},{approved_leave_count},{makeup_count})");
+            assert_eq!(seats.remaining(), expected, "{case}");
+            assert_eq!(seats.has_room(), expected > 0, "{case}");
         }
     }
 }

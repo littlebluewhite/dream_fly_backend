@@ -79,7 +79,7 @@ pub async fn apply_delta_tx(
 /// input, `balance` is read under the very `FOR UPDATE` this witness
 /// attests to, so holding one backs both "this user's row is locked" and
 /// "this is that user's balance at lock time" (the same pairing guarantee
-/// `courses::seats`'s `SessionLock` gives `session_id`/`course_id`).
+/// `courses::seats`'s `SessionLock` gives its locked session's `id`/`course_id`).
 ///
 /// Lives flat in this module rather than behind a private `tx_witness`
 /// module (contrast `orders::tx_witness`'s `TxReleased`): that extra layer
