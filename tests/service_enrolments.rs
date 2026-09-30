@@ -29,6 +29,7 @@ use dream_fly_backend::modules::courses::seats;
 use dream_fly_backend::modules::enrolments::model::{Enrolment, EnrolmentStatus};
 use dream_fly_backend::modules::enrolments::repository as enrolments_repo;
 use dream_fly_backend::modules::enrolments::service;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::repository as orders_repo;
 
 /// `enrolments.order_id` is a real FK into `orders`, so tests need an actual
@@ -349,7 +350,7 @@ async fn cancel_enrolment_vs_in_flight_approval_does_not_deadlock(db: PgPool) {
     let member = common::seed_member(&db, "cancel-race-member@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    let leave_id = seed_leave_request(&db, enrolment_id, session_id, "pending").await;
+    let leave_id = seed_leave_request(&db, enrolment_id, session_id, LeaveStatus::Pending).await;
 
     let mut t1 = db.begin().await.expect("begin t1");
     sqlx::query(

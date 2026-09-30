@@ -15,6 +15,7 @@ use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::coaches::repository as coaches_repository;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 
@@ -839,13 +840,13 @@ pub async fn seed_leave_request(
     db: &PgPool,
     enrolment_id: Uuid,
     session_id: Uuid,
-    status: &str,
+    status: LeaveStatus,
 ) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
         INSERT INTO leave_requests (id, enrolment_id, session_id, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::leave_status, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, NOW(), NOW())
         "#,
     )
     .bind(id)
@@ -1057,7 +1058,7 @@ pub async fn seed_leave_scene(
     db: &PgPool,
     user_id: Uuid,
     course_id: Uuid,
-    status: &str,
+    status: LeaveStatus,
     makeup_session_id: Option<Uuid>,
 ) -> LeaveScene {
     let tomorrow = (Utc::now() + Duration::days(1)).date_naive();

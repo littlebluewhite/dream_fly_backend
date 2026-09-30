@@ -30,6 +30,7 @@ use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
 use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::courses::seats as courses_seats;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
@@ -1978,11 +1979,13 @@ async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
     let nine = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
     let ten = chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap();
     let session = seed_course_session(&db, course, tomorrow, nine, ten).await;
-    let leave = seed_leave_request(&db, order.enrolments[0].id, session, "pending").await;
+    let leave =
+        seed_leave_request(&db, order.enrolments[0].id, session, LeaveStatus::Pending).await;
     let day_after = tomorrow + chrono::Duration::days(1);
     let approved_session = seed_course_session(&db, course, day_after, nine, ten).await;
     let approved_leave =
-        seed_leave_request(&db, order.enrolments[0].id, approved_session, "approved").await;
+        seed_leave_request(&db, order.enrolments[0].id, approved_session, LeaveStatus::Approved)
+            .await;
 
     service::update_order_status(&db, order.id, "refunded", None)
         .await

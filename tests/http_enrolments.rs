@@ -10,6 +10,7 @@ use common::fixtures::{
 use common::http::spawn_test_app;
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -199,10 +200,10 @@ async fn cancel_enrolment_cancels_only_its_pending_leave_requests(db: PgPool) {
     let e_makeup = seed_course_session(&app.db, course_e, day(3), t(9, 0), t(10, 0)).await;
     let f_s1 = seed_course_session(&app.db, course_f, day(1), t(9, 0), t(10, 0)).await;
 
-    let e_pending = seed_leave_request(&app.db, enrolment_e, e_s1, "pending").await;
-    let e_approved = seed_leave_request(&app.db, enrolment_e, e_s2, "approved").await;
+    let e_pending = seed_leave_request(&app.db, enrolment_e, e_s1, LeaveStatus::Pending).await;
+    let e_approved = seed_leave_request(&app.db, enrolment_e, e_s2, LeaveStatus::Approved).await;
     set_makeup_session(&app.db, e_approved, e_makeup).await;
-    let f_pending = seed_leave_request(&app.db, enrolment_f, f_s1, "pending").await;
+    let f_pending = seed_leave_request(&app.db, enrolment_f, f_s1, LeaveStatus::Pending).await;
 
     let resp = app
         .patch(&format!("/api/v1/enrolments/{enrolment_e}/cancel"))

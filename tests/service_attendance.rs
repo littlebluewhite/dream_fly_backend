@@ -16,6 +16,7 @@ use dream_fly_backend::modules::attendance::dto::AttendanceRecordEntry;
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
 
 use common::fixtures::{
@@ -70,7 +71,7 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
         seed_enrolment(&db, member_a, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let enrolment_b =
         seed_enrolment(&db, member_b, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    let leave_b = seed_leave_request(&db, enrolment_b, session_id, "pending").await;
+    let leave_b = seed_leave_request(&db, enrolment_b, session_id, LeaveStatus::Pending).await;
 
     let mut t_block = db.begin().await.expect("begin t_block");
     sqlx::query(

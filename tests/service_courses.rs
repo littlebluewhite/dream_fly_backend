@@ -31,6 +31,7 @@ use dream_fly_backend::modules::courses::dto::{
 };
 use dream_fly_backend::modules::courses::service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 
 use common::fixtures::{
     SessionSeed, SlotSeed, seed_attendance, seed_course, seed_course_schedule_slot,
@@ -538,13 +539,14 @@ async fn update_course_slot_edit_keeps_referenced_future_orphans(db: PgPool) {
     // tripped — each is still unmatched by the sole 09:00 slot.
     let cancelled_leave_orphan_id =
         seed_course_session(&db, course_id, future_date, t(9, 0), t(10, 0)).await;
-    seed_leave_request(&db, enrolment_id, cancelled_leave_orphan_id, "cancelled").await;
+    seed_leave_request(&db, enrolment_id, cancelled_leave_orphan_id, LeaveStatus::Cancelled).await;
 
     // Case 2: approved leave request whose makeup target is the orphan
     // (referenced via `makeup_session_id`, not `session_id`).
     let makeup_target_orphan_id =
         seed_course_session(&db, course_id, future_date, t(11, 0), t(12, 0)).await;
-    let makeup_leave_id = seed_leave_request(&db, enrolment_id, origin_session_id, "approved").await;
+    let makeup_leave_id =
+        seed_leave_request(&db, enrolment_id, origin_session_id, LeaveStatus::Approved).await;
     set_makeup_session(&db, makeup_leave_id, makeup_target_orphan_id).await;
 
     // Case 3: attendance record referencing the orphan.

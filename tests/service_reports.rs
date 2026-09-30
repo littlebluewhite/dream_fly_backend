@@ -32,6 +32,7 @@ use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::PointsTier;
@@ -1771,7 +1772,7 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
 
     let today = Utc::now().date_naive();
     let session_y_today = seed_course_session(&db, course_y, today, t(9, 0), t(10, 0)).await;
-    seed_leave_request(&db, enrolment_s2_y, session_y_today, "pending").await;
+    seed_leave_request(&db, enrolment_s2_y, session_y_today, LeaveStatus::Pending).await;
 
     // Y is delisted only after its roster/session/leave request are all in
     // place — delisting must not retroactively erase any of this.

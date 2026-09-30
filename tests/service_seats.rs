@@ -19,6 +19,7 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::courses::seats;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 
 use common::fixtures::{
     CourseSeed, seed_course_session, seed_enrolment, seed_leave_request, set_makeup_session,
@@ -87,7 +88,7 @@ async fn approved_leave_frees_seats_in_full_class(db: PgPool) {
     let (course_id, _original, target) = course_with_sessions(&db, "Seat Leave Frees", 10).await;
     let active = enrolments(&db, course_id, EnrolmentStatus::Active, 10).await;
     for enrolment in &active[..3] {
-        seed_leave_request(&db, *enrolment, target, "approved").await;
+        seed_leave_request(&db, *enrolment, target, LeaveStatus::Approved).await;
     }
 
     room_at(&db, target)
@@ -103,7 +104,7 @@ async fn prior_makeups_fill_remaining_seats(db: PgPool) {
     let (course_id, original, target) = course_with_sessions(&db, "Seat Makeups Fill", 10).await;
     let active = enrolments(&db, course_id, EnrolmentStatus::Active, 8).await;
     for enrolment in &active[..2] {
-        let leave = seed_leave_request(&db, *enrolment, original, "approved").await;
+        let leave = seed_leave_request(&db, *enrolment, original, LeaveStatus::Approved).await;
         set_makeup_session(&db, leave, target).await;
     }
 
@@ -118,7 +119,7 @@ async fn leave_by_cancelled_enrolment_frees_no_ghost_seat(db: PgPool) {
     let (course_id, _original, target) = course_with_sessions(&db, "Seat Ghost", 1).await;
     enrolments(&db, course_id, EnrolmentStatus::Active, 1).await;
     let quitter = enrolments(&db, course_id, EnrolmentStatus::Cancelled, 1).await;
-    seed_leave_request(&db, quitter[0], target, "approved").await;
+    seed_leave_request(&db, quitter[0], target, LeaveStatus::Approved).await;
 
     assert_full(room_at(&db, target).await);
 }
@@ -131,7 +132,7 @@ async fn makeup_by_cancelled_enrolment_occupies_no_seat(db: PgPool) {
     let (course_id, original, target) = course_with_sessions(&db, "Seat Freed", 2).await;
     enrolments(&db, course_id, EnrolmentStatus::Active, 1).await;
     let quitter = enrolments(&db, course_id, EnrolmentStatus::Cancelled, 1).await;
-    let leave = seed_leave_request(&db, quitter[0], original, "approved").await;
+    let leave = seed_leave_request(&db, quitter[0], original, LeaveStatus::Approved).await;
     set_makeup_session(&db, leave, target).await;
 
     room_at(&db, target)

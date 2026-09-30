@@ -18,6 +18,7 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::dto::MakeupRequest;
+use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::leave::service;
 
 use common::fixtures::{CourseSeed, seed_course_session, seed_enrolment, seed_leave_request};
@@ -60,7 +61,7 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     let target_date = (Utc::now() + Duration::days(3)).date_naive();
     let target_session_id = seed_course_session(&db, course_id, target_date, t(14, 0), t(15, 0)).await;
 
-    let leave_id = seed_leave_request(&db, enrolment_id, session_id, "approved").await;
+    let leave_id = seed_leave_request(&db, enrolment_id, session_id, LeaveStatus::Approved).await;
 
     let (res_a, res_b) = tokio::join!(
         tokio::spawn(attempt_makeup(
@@ -113,8 +114,8 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
     let target_session_id =
         seed_course_session(&db, course_id, target_date, t(14, 0), t(15, 0)).await;
 
-    let leave_a = seed_leave_request(&db, enrolment_a, session_id, "approved").await;
-    let leave_b = seed_leave_request(&db, enrolment_b, session_id, "approved").await;
+    let leave_a = seed_leave_request(&db, enrolment_a, session_id, LeaveStatus::Approved).await;
+    let leave_b = seed_leave_request(&db, enrolment_b, session_id, LeaveStatus::Approved).await;
 
     let (res_a, res_b) = tokio::join!(
         tokio::spawn(attempt_makeup(
@@ -181,7 +182,7 @@ async fn approved_leave(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uu
         seed_enrolment(db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(db, course_id, original, t(9, 0), t(10, 0)).await;
-    let leave_id = seed_leave_request(db, enrolment_id, session_id, "approved").await;
+    let leave_id = seed_leave_request(db, enrolment_id, session_id, LeaveStatus::Approved).await;
     (course_id, user_id, leave_id)
 }
 
@@ -207,7 +208,7 @@ async fn makeup_source_conflict_precedes_unknown_target_404(db: PgPool) {
         seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(&db, course_id, original, t(9, 0), t(10, 0)).await;
-    let leave_id = seed_leave_request(&db, enrolment_id, session_id, "pending").await;
+    let leave_id = seed_leave_request(&db, enrolment_id, session_id, LeaveStatus::Pending).await;
 
     let err = makeup(&db, user_id, leave_id, Uuid::now_v7())
         .await
