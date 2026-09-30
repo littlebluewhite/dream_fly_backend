@@ -42,16 +42,10 @@ pub async fn join_waitlist(
         return Err(AppError::Conflict("already on waitlist".into()));
     }
 
-    let entry = repository::insert(db, user_id, course_id)
+    let row = repository::insert(db, user_id, course_id)
         .await
         .map_err(|e| AppError::conflict_on_unique(e, "already on waitlist"))?;
-    Ok(WaitlistResponse {
-        id: entry.id,
-        course_id: entry.course_id,
-        course_name: course.name,
-        status: entry.status.as_str().to_string(),
-        created_at: entry.created_at,
-    })
+    Ok(WaitlistResponse::from(row))
 }
 
 /// This user's waitlist entries, newest first (includes cancelled ones).

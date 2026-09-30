@@ -29,11 +29,16 @@ pub struct WaitlistEntry {
     pub updated_at: DateTime<Utc>,
 }
 
-/// `waitlist_entries` JOINed with `courses` for the `course_name` field
-/// every response needs. Kept as its own flat row type (rather than
-/// nesting a [`WaitlistEntry`] inside it) because sqlx's derived `FromRow`
-/// maps one column per field and has no support for nested structs
-/// (mirrors `enrolments::model::EnrolmentWithCourse`).
+/// The waitlist read projection's one row shape — a `waitlist_entries` row
+/// JOINed with its course's `name`. Field names mirror `WaitlistResponse`
+/// 1:1 (see `dto.rs`). Single owner of the projection's column list:
+/// `repository::VIEW_COLUMNS`/`VIEW_JOINS` assemble it for every read
+/// (`find_by_user_with_course` over the table, `find_by_course_waiting` over
+/// the `waiting_entries` view) and for `insert`, whose data-modifying CTE
+/// re-joins its own `RETURNING` through the same two consts — the join
+/// response is this same row, not a hand-copied echo of it.
+/// `cancel_if_waiting_tx` changes the row but returns the bare
+/// [`WaitlistEntry`] — `DELETE` has no response body to project.
 #[derive(Debug, sqlx::FromRow)]
 pub struct WaitlistEntryWithCourse {
     pub id: Uuid,
