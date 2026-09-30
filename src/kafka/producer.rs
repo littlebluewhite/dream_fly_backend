@@ -5,6 +5,8 @@ use rdkafka::config::ClientConfig;
 use rdkafka::error::KafkaError;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
+use super::outbox::PUBLISH_BUDGET;
+
 pub fn create_producer(brokers: &str) -> Result<FutureProducer, KafkaError> {
     ClientConfig::new()
         .set("bootstrap.servers", brokers)
@@ -19,6 +21,10 @@ pub fn create_producer(brokers: &str) -> Result<FutureProducer, KafkaError> {
         .set("retry.backoff.ms", "500")
         .set("queue.buffering.max.messages", "100000")
         .set("queue.buffering.max.ms", "5")
+        // Same deadline as the outbox dispatcher's per-batch budget, so
+        // librdkafka stops retrying a message no later than the dispatcher
+        // stops waiting for it.
+        .set("message.timeout.ms", PUBLISH_BUDGET.as_millis().to_string())
         .create()
 }
 

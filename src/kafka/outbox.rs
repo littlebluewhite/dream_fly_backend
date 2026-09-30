@@ -12,8 +12,8 @@
 //! transaction as the business write: either both are durable or neither
 //! is. A background dispatcher then drains the outbox to Kafka and marks
 //! each row published on broker ack. A crash before ack simply leaves the
-//! row unpublished — the dispatcher picks it up on the next tick (or after
-//! a restart) and retries. This is at-least-once: consumers must still be
+//! row unpublished — the dispatcher re-claims it once its claim lease
+//! expires (see [`drain_once`]) and retries. This is at-least-once: consumers must still be
 //! idempotent, but no events are lost.
 //!
 //! ## How to use
@@ -44,9 +44,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 use tokio::sync::watch;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::events::{DomainEvent, KafkaEvent};
@@ -57,10 +59,23 @@ use super::producer::EventPublisher;
 /// enough to avoid hammering Postgres when there's no work.
 const DISPATCHER_TICK: Duration = Duration::from_millis(500);
 
-/// Maximum number of outbox rows claimed per dispatcher tick. Prevents a
-/// backlog (after a Kafka outage, say) from saturating a single tick's DB
-/// transaction for so long that it blocks other writers.
+/// Maximum number of outbox rows claimed per dispatcher tick, so a backlog
+/// (after a Kafka outage, say) is worked off in bounded bites.
 const BATCH_SIZE: i64 = 100;
+
+/// How long a claim keeps a row away from other drains. Longer than
+/// [`PUBLISH_BUDGET`] plus the bookkeeping transaction, so a row is only
+/// re-claimed when its drain died (or stopped at the deadline before
+/// reaching it) — never while it is still being published.
+const LEASE: Duration = Duration::from_secs(60);
+
+/// Wall-clock budget for publishing one claimed batch. Also set as the
+/// producer's `message.timeout.ms` (see `producer::create_producer`) so
+/// librdkafka gives up on a message no later than the dispatcher does.
+pub(crate) const PUBLISH_BUDGET: Duration = Duration::from_secs(15);
+
+/// Upper bound on the retry backoff of a failing row.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60 * 60);
 
 /// Insert a KafkaEvent envelope into the outbox inside the caller's
 /// transaction. The event is guaranteed to be published at least once
@@ -159,88 +174,245 @@ pub async fn start_dispatcher(
     }
 }
 
-/// Drain up to [`BATCH_SIZE`] pending rows. Each row is claimed with
-/// `FOR UPDATE SKIP LOCKED` so running multiple dispatchers (for
-/// horizontal scale) produces disjoint work partitions without conflict.
+/// Drain up to [`BATCH_SIZE`] due rows in three steps, none of which holds a
+/// transaction open across a Kafka round-trip:
+///
+/// 1. **Claim** — one autocommit `UPDATE … WHERE id IN (SELECT … FOR UPDATE
+///    SKIP LOCKED) RETURNING …` pushes each due row's `next_attempt_at` out
+///    by [`LEASE`], so concurrent dispatchers (horizontal scale) and later
+///    ticks skip it while it is in flight.
+/// 2. **Publish** — outside any transaction, oldest `created_at` first,
+///    within [`PUBLISH_BUDGET`] (see [`publish_batch`]).
+/// 3. **Bookkeeping** — one short transaction: published rows get
+///    `published_at`; failed rows get `attempts + 1`, `last_error`, and
+///    `next_attempt_at = NOW() + retry_delay(attempts)`. Rows the deadline
+///    cut off are left alone and come back when their lease expires.
+///
+/// ## Poison rows
+///
+/// There is no terminal state: a row that keeps failing is retried forever,
+/// its backoff capped at [`MAX_RETRY_DELAY`], and every failure is logged at
+/// ERROR (ADR-0013). The outbox is the only copy of the event, so giving up
+/// would lose it.
+///
+/// ## Ordering
+///
+/// No per-key ordering guarantee: a failed row backs off while later rows
+/// with the same `kafka_key` are published.
 ///
 /// `pub` so integration tests can drive it directly against a
 /// [`super::producer::EventPublisher`] fake, exercising the retry/bookkeeping
 /// logic (attempts, last_error, published_at) without a Kafka broker.
 pub async fn drain_once(db: &PgPool, publisher: &dyn EventPublisher) -> Result<(), sqlx::Error> {
-    // Phase 1: claim a batch of unpublished rows with row locks held for
-    // the duration of the transaction. `SKIP LOCKED` lets concurrent
-    // dispatchers pick different rows rather than blocking on each other.
-    let mut tx = db.begin().await?;
-
-    let rows: Vec<(Uuid, String, String, serde_json::Value)> = sqlx::query_as(
-        "SELECT id, topic, kafka_key, payload \
-         FROM events_outbox \
-         WHERE published_at IS NULL \
-         ORDER BY created_at \
-         LIMIT $1 \
-         FOR UPDATE SKIP LOCKED",
+    let mut rows: Vec<ClaimedRow> = sqlx::query_as(
+        "UPDATE events_outbox SET next_attempt_at = NOW() + $2 \
+         WHERE id IN ( \
+             SELECT id FROM events_outbox \
+             WHERE published_at IS NULL AND next_attempt_at <= NOW() \
+             ORDER BY next_attempt_at \
+             LIMIT $1 \
+             FOR UPDATE SKIP LOCKED \
+         ) \
+         RETURNING id, topic, kafka_key, payload, attempts, created_at",
     )
     .bind(BATCH_SIZE)
-    .fetch_all(&mut *tx)
+    .bind(LEASE)
+    .fetch_all(db)
     .await?;
 
     if rows.is_empty() {
-        // No work — commit to release the snapshot and move on.
-        tx.commit().await?;
         return Ok(());
     }
+    rows.sort_by_key(|row| row.created_at);
 
-    // Phase 2: attempt to publish each claimed row to Kafka. Track outcomes
-    // in memory; we apply them to the DB at the end of the same tx so
-    // successful rows are marked published and failed rows keep their
-    // position for the next tick.
-    let mut successes: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut failures: Vec<(Uuid, String)> = Vec::new();
+    let deadline = Instant::now() + PUBLISH_BUDGET;
+    let outcome = publish_batch(publisher, &rows, deadline).await;
 
-    for (id, topic, key, payload) in rows {
-        // Skip payloads that somehow serialized to a non-string (shouldn't
-        // happen but guard so one bad row doesn't stall the batch).
-        let body = match serde_json::to_string(&payload) {
-            Ok(s) => s,
-            Err(e) => {
-                failures.push((id, format!("payload re-serialize error: {e}")));
-                continue;
-            }
-        };
-
-        match publisher.publish(&topic, &key, &body).await {
-            Ok(()) => successes.push(id),
-            Err(e) => failures.push((id, format!("kafka: {e}"))),
-        }
-    }
-
-    // Phase 3: apply outcomes.
-    if !successes.is_empty() {
+    let mut tx = db.begin().await?;
+    if !outcome.published.is_empty() {
         sqlx::query("UPDATE events_outbox SET published_at = NOW() WHERE id = ANY($1)")
-            .bind(&successes)
+            .bind(&outcome.published)
             .execute(&mut *tx)
             .await?;
     }
-
-    for (id, reason) in failures.iter() {
+    for failure in &outcome.failed {
+        let attempts = failure.attempts_before.saturating_add(1);
+        let delay = retry_delay(u32::try_from(attempts).unwrap_or(u32::MAX));
+        tracing::error!(
+            id = %failure.id,
+            attempts,
+            retry_in_secs = delay.as_secs(),
+            error = %failure.reason,
+            "outbox publish failed"
+        );
         sqlx::query(
-            "UPDATE events_outbox SET attempts = attempts + 1, last_error = $2 WHERE id = $1",
+            "UPDATE events_outbox \
+             SET attempts = attempts + 1, last_error = $2, next_attempt_at = NOW() + $3 \
+             WHERE id = $1",
         )
-        .bind(id)
-        .bind(reason)
+        .bind(failure.id)
+        .bind(&failure.reason)
+        .bind(delay)
         .execute(&mut *tx)
         .await?;
     }
-
     tx.commit().await?;
 
-    if !successes.is_empty() || !failures.is_empty() {
-        tracing::debug!(
-            published = successes.len(),
-            failed = failures.len(),
-            "outbox drain tick"
-        );
-    }
+    tracing::debug!(
+        claimed = rows.len(),
+        published = outcome.published.len(),
+        failed = outcome.failed.len(),
+        "outbox drain tick"
+    );
 
     Ok(())
+}
+
+/// A row claimed by [`drain_once`].
+#[derive(sqlx::FromRow)]
+struct ClaimedRow {
+    id: Uuid,
+    topic: String,
+    kafka_key: String,
+    payload: serde_json::Value,
+    attempts: i32,
+    created_at: DateTime<Utc>,
+}
+
+struct FailedPublish {
+    id: Uuid,
+    /// `attempts` as claimed, before this failure is counted.
+    attempts_before: i32,
+    reason: String,
+}
+
+#[derive(Default)]
+struct BatchOutcome {
+    published: Vec<Uuid>,
+    failed: Vec<FailedPublish>,
+}
+
+/// Publish `rows` in order until done or `deadline`. A publish still pending
+/// at the deadline counts as failed and ends the batch: later rows are not
+/// attempted and appear in neither list, keeping their lease.
+async fn publish_batch(
+    publisher: &dyn EventPublisher,
+    rows: &[ClaimedRow],
+    deadline: Instant,
+) -> BatchOutcome {
+    let mut outcome = BatchOutcome::default();
+    for row in rows {
+        let fail = |reason: String| FailedPublish {
+            id: row.id,
+            attempts_before: row.attempts,
+            reason,
+        };
+        let body = match serde_json::to_string(&row.payload) {
+            Ok(s) => s,
+            Err(e) => {
+                outcome
+                    .failed
+                    .push(fail(format!("payload re-serialize error: {e}")));
+                continue;
+            }
+        };
+        match tokio::time::timeout_at(
+            deadline,
+            publisher.publish(&row.topic, &row.kafka_key, &body),
+        )
+        .await
+        {
+            Ok(Ok(())) => outcome.published.push(row.id),
+            Ok(Err(e)) => outcome.failed.push(fail(format!("kafka: {e}"))),
+            Err(_) => {
+                outcome.failed.push(fail(format!(
+                    "publish exceeded the {}s batch budget",
+                    PUBLISH_BUDGET.as_secs()
+                )));
+                break;
+            }
+        }
+    }
+    outcome
+}
+
+/// Backoff before retrying a row that has now failed `attempts` times:
+/// `min(2^attempts s, 1 h)`.
+fn retry_delay(attempts: u32) -> Duration {
+    let secs = 1u64.checked_shl(attempts).unwrap_or(u64::MAX);
+    Duration::from_secs(secs).min(MAX_RETRY_DELAY)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use rdkafka::error::KafkaError;
+
+    use super::*;
+
+    #[test]
+    fn retry_delay_doubles_and_caps_at_one_hour() {
+        assert_eq!(retry_delay(1), Duration::from_secs(2));
+        assert_eq!(retry_delay(2), Duration::from_secs(4));
+        assert_eq!(retry_delay(3), Duration::from_secs(8));
+        assert_eq!(retry_delay(11), Duration::from_secs(2048));
+        assert_eq!(retry_delay(12), MAX_RETRY_DELAY, "2^12 s exceeds 1 h");
+        assert_eq!(
+            retry_delay(64),
+            MAX_RETRY_DELAY,
+            "shift overflow still caps"
+        );
+        assert_eq!(retry_delay(u32::MAX), MAX_RETRY_DELAY);
+    }
+
+    /// The second call never completes; every other call succeeds at once.
+    struct HangsOnSecond {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EventPublisher for HangsOnSecond {
+        async fn publish(&self, _: &str, _: &str, _: &str) -> Result<(), KafkaError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+    }
+
+    fn row(attempts: i32) -> ClaimedRow {
+        ClaimedRow {
+            id: Uuid::now_v7(),
+            topic: "dreamfly.orders.created".into(),
+            kafka_key: "k".into(),
+            payload: serde_json::json!({}),
+            attempts,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publish_batch_stops_at_deadline() {
+        let rows = [row(0), row(3), row(0)];
+        let publisher = HangsOnSecond {
+            calls: AtomicUsize::new(0),
+        };
+        let start = Instant::now();
+
+        let outcome = publish_batch(&publisher, &rows, start + PUBLISH_BUDGET).await;
+
+        assert_eq!(Instant::now() - start, PUBLISH_BUDGET);
+        assert_eq!(outcome.published, vec![rows[0].id]);
+        assert_eq!(outcome.failed.len(), 1);
+        assert_eq!(outcome.failed[0].id, rows[1].id);
+        assert_eq!(outcome.failed[0].attempts_before, 3);
+        assert!(outcome.failed[0].reason.contains("budget"));
+        assert_eq!(
+            publisher.calls.load(Ordering::SeqCst),
+            2,
+            "rows after the timed-out one are not attempted (they keep their lease)"
+        );
+    }
 }

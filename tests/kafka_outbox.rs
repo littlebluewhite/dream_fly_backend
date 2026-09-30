@@ -45,9 +45,10 @@ impl EventPublisher for FakePublisher {
 
 /// Insert a row directly into `events_outbox` (schema: `id`, `topic`,
 /// `kafka_key`, `payload`, `created_at`, `published_at`, `attempts`,
-/// `last_error` — see `migrations/20260410000001_init.sql`), bypassing
-/// `insert_event_tx` so `created_at` can be pinned for deterministic
-/// `ORDER BY created_at` draining.
+/// `last_error` — see `migrations/20260410000001_init.sql` — plus
+/// `next_attempt_at`, defaulting to `NOW()` so the row is due at once),
+/// bypassing `insert_event_tx` so `created_at` can be pinned for
+/// deterministic oldest-first publishing.
 async fn insert_outbox_row(db: &PgPool, id: Uuid, created_at: DateTime<Utc>) {
     sqlx::query(
         "INSERT INTO events_outbox (id, topic, kafka_key, payload, created_at) \
@@ -79,10 +80,18 @@ async fn outbox_row_state(db: &PgPool, id: Uuid) -> OutboxRowState {
     OutboxRowState { published_at, attempts, last_error }
 }
 
+async fn next_attempt_at(db: &PgPool, id: Uuid) -> DateTime<Utc> {
+    sqlx::query_scalar("SELECT next_attempt_at FROM events_outbox WHERE id = $1")
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .expect("events_outbox row")
+}
+
 // ---------------------------------------------------------------------------
 
 #[sqlx::test]
-async fn drain_once_publishes_first_row_and_records_failed_attempt_on_second(db: PgPool) {
+async fn drain_once_publishes_first_row_and_backs_off_failed_second(db: PgPool) {
     let row1 = Uuid::now_v7();
     let row2 = Uuid::now_v7();
     let t0 = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
@@ -113,12 +122,35 @@ async fn drain_once_publishes_first_row_and_records_failed_attempt_on_second(db:
     assert_eq!(state2.attempts, 1);
     assert!(state2.last_error.is_some());
 
-    // Re-drain with the same fake instance: only row2 is still pending, and
-    // the fake only fails its second-ever call — so this retry (the fake's
-    // 3rd call overall) succeeds and the previously-failed row is published.
+    let retry_at = next_attempt_at(&db, row2).await;
+    assert!(
+        retry_at > Utc::now(),
+        "a failed row backs off: next_attempt_at is pushed into the future"
+    );
+
+    // Re-drain immediately: row2 is backing off, so it must not be re-sent.
     drain_once(&db, &fake)
         .await
-        .expect("re-drain should succeed once the fake stops failing");
+        .expect("immediate re-drain should succeed");
+    assert_eq!(
+        fake.call_count(),
+        2,
+        "a row still in backoff must not be published again"
+    );
+    let state2_backing_off = outbox_row_state(&db, row2).await;
+    assert!(state2_backing_off.published_at.is_none());
+    assert_eq!(state2_backing_off.attempts, 1);
+
+    // Once its backoff is over, the retry (the fake's 3rd call overall)
+    // succeeds and the previously-failed row is published.
+    sqlx::query("UPDATE events_outbox SET next_attempt_at = NOW() WHERE id = $1")
+        .bind(row2)
+        .execute(&db)
+        .await
+        .expect("expire row2's backoff");
+    drain_once(&db, &fake)
+        .await
+        .expect("re-drain after backoff should succeed");
 
     let state2_after = outbox_row_state(&db, row2).await;
     assert!(
@@ -229,4 +261,50 @@ async fn concurrent_drain_does_not_reclaim_a_row_being_published(db: PgPool) {
         .expect("first drain should succeed");
     assert_eq!(gated.calls.load(Ordering::SeqCst), 1);
     assert!(outbox_row_state(&db, id).await.published_at.is_some());
+}
+
+/// Takes longer to publish than the test pool's
+/// `idle_in_transaction_session_timeout`.
+struct SlowPublisher;
+
+#[async_trait]
+impl EventPublisher for SlowPublisher {
+    async fn publish(&self, _topic: &str, _key: &str, _payload: &str) -> Result<(), KafkaError> {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        Ok(())
+    }
+}
+
+/// Production pins `idle_in_transaction_session_timeout = '30s'`
+/// (`main.rs`); a publish outliving it must not cost the bookkeeping. The
+/// hand-built pool is not owned by `#[sqlx::test]`, so it is closed
+/// explicitly (see `tests/service_orders.rs`).
+#[sqlx::test]
+async fn bookkeeping_lands_when_publish_outlives_idle_in_transaction_timeout(db: PgPool) {
+    let id = Uuid::now_v7();
+    insert_outbox_row(&db, id, Utc::now()).await;
+
+    let connect_opts = db.connect_options().as_ref().clone();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                use sqlx::Executor;
+                conn.execute("SET idle_in_transaction_session_timeout = '1s'")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_with(connect_opts)
+        .await
+        .expect("build pool with a 1s idle-in-transaction timeout");
+
+    let result = drain_once(&pool, &SlowPublisher).await;
+    pool.close().await;
+
+    assert!(result.is_ok(), "drain_once failed: {result:?}");
+    assert!(
+        outbox_row_state(&db, id).await.published_at.is_some(),
+        "a publish slower than idle_in_transaction_session_timeout must still get marked published"
+    );
 }
