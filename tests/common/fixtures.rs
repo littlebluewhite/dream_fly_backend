@@ -18,6 +18,7 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
+use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
@@ -734,17 +735,15 @@ pub async fn seed_waitlist_entry(
 
 /// Insert a point_ledger row directly (bypassing `points::service::apply_delta_tx`)
 /// so tests can control `created_at` ordering and exact `reason`/`order_id`
-/// combinations without a real balance mutation. `reason` is a snake_case
-/// string (`"checkout_earn"`, `"checkout_redeem"`, `"admin_adjust"`) cast to
-/// `point_reason` in the query. Returns the entry id. Does not touch
-/// `users.points_balance` — pair with `set_points_balance` when a test also
-/// needs the balance to agree with the seeded ledger history.
+/// combinations without a real balance mutation. Returns the entry id. Does
+/// not touch `users.points_balance` — pair with `set_points_balance` when a
+/// test also needs the balance to agree with the seeded ledger history.
 pub async fn seed_point_ledger_entry(
     db: &PgPool,
     user_id: Uuid,
     delta: i64,
     balance_after: i64,
-    reason: &str,
+    reason: PointReason,
     order_id: Option<Uuid>,
     created_at: DateTime<Utc>,
 ) -> Uuid {
@@ -752,7 +751,7 @@ pub async fn seed_point_ledger_entry(
     sqlx::query(
         r#"
         INSERT INTO point_ledger (id, user_id, delta, balance_after, reason, order_id, created_at)
-        VALUES ($1, $2, $3, $4, $5::point_reason, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
     )
     .bind(id)

@@ -5,6 +5,7 @@ mod common;
 use chrono::{Duration, Utc};
 use common::fixtures::{seed_point_ledger_entry, set_points_balance};
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::points::model::PointReason;
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -33,7 +34,7 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
         user_b.user_id,
         10,
         10,
-        "checkout_earn",
+        PointReason::CheckoutEarn,
         None,
         Utc::now(),
     )
@@ -44,7 +45,7 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
         user_a.user_id,
         200,
         200,
-        "checkout_earn",
+        PointReason::CheckoutEarn,
         None,
         Utc::now() - Duration::days(1),
     )
@@ -54,7 +55,7 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
         user_a.user_id,
         -50,
         150,
-        "checkout_redeem",
+        PointReason::CheckoutRedeem,
         None,
         Utc::now(),
     )
@@ -104,7 +105,7 @@ async fn me_paginates_newest_first(db: PgPool) {
             user.user_id,
             10,
             10 * (i + 1),
-            "checkout_earn",
+            PointReason::CheckoutEarn,
             None,
             Utc::now() - Duration::hours(3 - i),
         )

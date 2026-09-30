@@ -229,7 +229,8 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
     // Seed ledger noise so the redemptions list isn't accidentally reading
     // from point_ledger instead of reward_redemptions.
     set_points_balance(&db, user_id, 100).await;
-    seed_point_ledger_entry(&db, user_id, -15, 85, "redeem", None, chrono::Utc::now()).await;
+    seed_point_ledger_entry(&db, user_id, -15, 85, PointReason::Redeem, None, chrono::Utc::now())
+        .await;
 
     for _ in 0..3 {
         service::redeem(&db, user_id, reward_id).await.expect("redeem");
