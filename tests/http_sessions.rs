@@ -5,8 +5,7 @@ mod common;
 
 use chrono::{Datelike, Duration, NaiveTime, Utc};
 use common::fixtures::{
-    seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_enrolment,
+    SlotSeed, seed_coach, seed_course, seed_course_schedule_slot, seed_enrolment,
 };
 use common::http::spawn_test_app;
 use sqlx::PgPool;
@@ -253,15 +252,10 @@ async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
 
     let today = Utc::now().date_naive();
     let dow = dow_of(today);
-    seed_course_schedule_slot_with_venue(
-        &app.db,
-        course_with_coach,
-        dow,
-        t(9, 0),
-        t(10, 0),
-        "Studio A",
-    )
-    .await;
+    SlotSeed::new(course_with_coach, dow, t(9, 0), t(10, 0))
+        .venue("Studio A")
+        .insert(&app.db)
+        .await;
     seed_course_schedule_slot(&app.db, course_without_coach, dow, t(14, 0), t(15, 0)).await;
 
     let resp = app

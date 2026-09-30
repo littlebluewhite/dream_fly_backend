@@ -28,8 +28,8 @@ use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{calendar, service};
 
 use common::fixtures::{
-    seed_coach, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_course_session, seed_course_session_with_venue, seed_enrolment, seed_session_scene,
+    SessionSeed, SlotSeed, seed_coach, seed_course, seed_course_schedule_slot, seed_course_session,
+    seed_enrolment, seed_session_scene,
 };
 
 /// PostgreSQL `EXTRACT(DOW)` / this module's `day_of_week` convention:
@@ -78,15 +78,10 @@ async fn materialize_range_is_idempotent(db: PgPool) {
 async fn materialize_snapshots_slot_venue(db: PgPool) {
     let course_id = seed_course(&db, "Venue Snapshot Course", None).await;
     let today = Utc::now().date_naive();
-    let slot_id = seed_course_schedule_slot_with_venue(
-        &db,
-        course_id,
-        dow_of(today),
-        t(9, 0),
-        t(10, 0),
-        "Main Hall",
-    )
-    .await;
+    let slot_id = SlotSeed::new(course_id, dow_of(today), t(9, 0), t(10, 0))
+        .venue("Main Hall")
+        .insert(&db)
+        .await;
 
     calendar::materialize_range(&db, today, &[course_id], today, today)
         .await
@@ -254,8 +249,8 @@ async fn list_course_sessions_past_from_returns_existing_rows_only(db: PgPool) {
     let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap());
     let d = |day: u32| NaiveDate::from_ymd_opt(2026, 9, day).unwrap();
     let course_id = seed_course(&db, "Past From Course", None).await;
-    seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "A").await;
-    seed_course_session_with_venue(&db, course_id, d(7), t(9, 0), t(10, 0), "A").await;
+    SlotSeed::new(course_id, 1, t(9, 0), t(10, 0)).venue("A").insert(&db).await;
+    SessionSeed::new(course_id, d(7), t(9, 0), t(10, 0)).venue("A").insert(&db).await;
 
     let sessions = service::list_course_sessions(
         &db,

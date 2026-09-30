@@ -31,9 +31,8 @@ use dream_fly_backend::modules::courses::dto::{
 use dream_fly_backend::modules::courses::service;
 
 use common::fixtures::{
-    seed_attendance, seed_course, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_course_session, seed_course_session_with_venue, seed_enrolment, seed_leave_request,
-    set_makeup_session,
+    SessionSeed, SlotSeed, seed_attendance, seed_course, seed_course_schedule_slot,
+    seed_course_session, seed_enrolment, seed_leave_request, set_makeup_session,
 };
 
 fn t(h: u32, m: u32) -> NaiveTime {
@@ -628,14 +627,15 @@ async fn update_course_slot_venue_change_syncs_future_sessions_only(db: PgPool) 
     // also matches the today-dated fixture.
     let future_date = today + Duration::days(7);
     let dow = future_date.weekday().num_days_from_sunday() as i16;
-    seed_course_schedule_slot_with_venue(&db, course_id, dow, t(9, 0), t(10, 0), "Old Hall").await;
-    let future_id =
-        seed_course_session_with_venue(&db, course_id, future_date, t(9, 0), t(10, 0), "Old Hall")
-            .await;
+    SlotSeed::new(course_id, dow, t(9, 0), t(10, 0)).venue("Old Hall").insert(&db).await;
+    let future_id = SessionSeed::new(course_id, future_date, t(9, 0), t(10, 0))
+        .venue("Old Hall")
+        .insert(&db)
+        .await;
     // Same slot match, dated today — the `session_date > today` boundary
     // keeps its venue snapshot as-is.
     let today_id =
-        seed_course_session_with_venue(&db, course_id, today, t(9, 0), t(10, 0), "Old Hall").await;
+        SessionSeed::new(course_id, today, t(9, 0), t(10, 0)).venue("Old Hall").insert(&db).await;
 
     // Venue-only edit: same (day_of_week, start_time, end_time).
     service::update_course(

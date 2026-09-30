@@ -116,7 +116,7 @@ impl<'a> CourseSeed<'a> {
 /// up a course's weekly pattern without going through the courses HTTP/service
 /// layer. `day_of_week` is 0=Sunday..6=Saturday (PostgreSQL `EXTRACT(DOW)`
 /// convention — matches `sessions::calendar::materialize_range`). Returns
-/// the slot id.
+/// the slot id. Shorthand for [`SlotSeed`] with no venue.
 pub async fn seed_course_schedule_slot(
     db: &PgPool,
     course_id: Uuid,
@@ -124,58 +124,60 @@ pub async fn seed_course_schedule_slot(
     start_time: NaiveTime,
     end_time: NaiveTime,
 ) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO course_schedule_slots (id, course_id, day_of_week, start_time, end_time, venue, created_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(course_id)
-    .bind(day_of_week)
-    .bind(start_time)
-    .bind(end_time)
-    .execute(db)
-    .await
-    .expect("insert course_schedule_slot");
-    id
+    SlotSeed::new(course_id, day_of_week, start_time, end_time).insert(db).await
 }
 
-/// Same as [`seed_course_schedule_slot`] but with a caller-supplied `venue`
-/// (that fixture hardcodes `NULL`). Additive variant for `GET /sessions/
-/// today`'s `venue` field tests (Round 4 Task B8), which need a slot that
-/// actually resolves to a non-null venue.
-pub async fn seed_course_schedule_slot_with_venue(
-    db: &PgPool,
+/// Builder for a `course_schedule_slots` row (see
+/// [`seed_course_schedule_slot`] for the `day_of_week` convention). `venue`
+/// defaults to NULL; set it for tests of venue resolution/snapshots.
+pub struct SlotSeed<'a> {
     course_id: Uuid,
     day_of_week: i16,
     start_time: NaiveTime,
     end_time: NaiveTime,
-    venue: &str,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO course_schedule_slots (id, course_id, day_of_week, start_time, end_time, venue, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(course_id)
-    .bind(day_of_week)
-    .bind(start_time)
-    .bind(end_time)
-    .bind(venue)
-    .execute(db)
-    .await
-    .expect("insert course_schedule_slot with venue");
-    id
+    venue: Option<&'a str>,
+}
+
+impl<'a> SlotSeed<'a> {
+    pub fn new(
+        course_id: Uuid,
+        day_of_week: i16,
+        start_time: NaiveTime,
+        end_time: NaiveTime,
+    ) -> Self {
+        Self { course_id, day_of_week, start_time, end_time, venue: None }
+    }
+
+    pub fn venue(self, venue: &'a str) -> Self {
+        Self { venue: Some(venue), ..self }
+    }
+
+    /// Returns the slot id.
+    pub async fn insert(self, db: &PgPool) -> Uuid {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            r#"
+            INSERT INTO course_schedule_slots (id, course_id, day_of_week, start_time, end_time, venue, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            "#,
+        )
+        .bind(id)
+        .bind(self.course_id)
+        .bind(self.day_of_week)
+        .bind(self.start_time)
+        .bind(self.end_time)
+        .bind(self.venue)
+        .execute(db)
+        .await
+        .expect("insert course_schedule_slot");
+        id
+    }
 }
 
 /// Insert a `course_sessions` row directly (bypassing
 /// `sessions::calendar::materialize_range`), so attendance tests get a
 /// concrete session id without first setting up a weekly schedule slot.
+/// Shorthand for [`SessionSeed`] with no venue snapshot.
 pub async fn seed_course_session(
     db: &PgPool,
     course_id: Uuid,
@@ -183,52 +185,54 @@ pub async fn seed_course_session(
     start_time: NaiveTime,
     end_time: NaiveTime,
 ) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, created_at)
-        VALUES ($1, $2, $3, $4, $5, NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(course_id)
-    .bind(session_date)
-    .bind(start_time)
-    .bind(end_time)
-    .execute(db)
-    .await
-    .expect("insert course_session");
-    id
+    SessionSeed::new(course_id, session_date, start_time, end_time).insert(db).await
 }
 
-/// Same as [`seed_course_session`] but with a caller-supplied `venue`
-/// snapshot (that fixture leaves the column `NULL`) — mirrors what
-/// `calendar::materialize_range` writes for a slot that has a venue.
-pub async fn seed_course_session_with_venue(
-    db: &PgPool,
+/// Builder for a `course_sessions` row. `venue` (the snapshot column)
+/// defaults to NULL; setting it mirrors what `calendar::materialize_range`
+/// writes for a slot that has a venue.
+pub struct SessionSeed<'a> {
     course_id: Uuid,
     session_date: NaiveDate,
     start_time: NaiveTime,
     end_time: NaiveTime,
-    venue: &str,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, venue, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(course_id)
-    .bind(session_date)
-    .bind(start_time)
-    .bind(end_time)
-    .bind(venue)
-    .execute(db)
-    .await
-    .expect("insert course_session with venue");
-    id
+    venue: Option<&'a str>,
+}
+
+impl<'a> SessionSeed<'a> {
+    pub fn new(
+        course_id: Uuid,
+        session_date: NaiveDate,
+        start_time: NaiveTime,
+        end_time: NaiveTime,
+    ) -> Self {
+        Self { course_id, session_date, start_time, end_time, venue: None }
+    }
+
+    pub fn venue(self, venue: &'a str) -> Self {
+        Self { venue: Some(venue), ..self }
+    }
+
+    /// Returns the session id.
+    pub async fn insert(self, db: &PgPool) -> Uuid {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            r#"
+            INSERT INTO course_sessions (id, course_id, session_date, start_time, end_time, venue, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            "#,
+        )
+        .bind(id)
+        .bind(self.course_id)
+        .bind(self.session_date)
+        .bind(self.start_time)
+        .bind(self.end_time)
+        .bind(self.venue)
+        .execute(db)
+        .await
+        .expect("insert course_session");
+        id
+    }
 }
 
 pub async fn seed_venue_category(db: &PgPool, name: &str) -> Uuid {
@@ -1175,18 +1179,13 @@ pub async fn seed_session_scene(
     let course = seed_course(db, name, coach_id).await;
     let day_of_week = session_date.weekday().num_days_from_sunday() as i16;
     let end_time = start_time + Duration::hours(1);
-    let slot = match venue {
-        Some(v) => {
-            seed_course_schedule_slot_with_venue(db, course, day_of_week, start_time, end_time, v)
-                .await
-        }
-        None => seed_course_schedule_slot(db, course, day_of_week, start_time, end_time).await,
-    };
-    let session = match venue {
-        Some(v) => {
-            seed_course_session_with_venue(db, course, session_date, start_time, end_time, v).await
-        }
-        None => seed_course_session(db, course, session_date, start_time, end_time).await,
-    };
+    let mut slot = SlotSeed::new(course, day_of_week, start_time, end_time);
+    let mut session = SessionSeed::new(course, session_date, start_time, end_time);
+    if let Some(v) = venue {
+        slot = slot.venue(v);
+        session = session.venue(v);
+    }
+    let slot = slot.insert(db).await;
+    let session = session.insert(db).await;
     SessionScene { course, slot, session }
 }

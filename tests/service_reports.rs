@@ -39,9 +39,8 @@ use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use common::fixtures::{
-    CourseSeed, SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach,
-    seed_course, seed_course_revenue, seed_course_schedule_slot,
-    seed_course_schedule_slot_with_venue, seed_course_session, seed_course_session_with_venue,
+    CourseSeed, SeedOrderLine, SessionSeed, SlotSeed, backdate_user, seed_attendance, seed_booking,
+    seed_coach, seed_course, seed_course_revenue, seed_course_schedule_slot, seed_course_session,
     seed_enrolment, seed_entitlement_product, seed_leave_request, seed_marked_attendance,
     seed_member_created_at, seed_message, seed_order_bare, seed_order_with_items,
     seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
@@ -888,8 +887,8 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
     let course_d = seed_course(&db, "Venue D Course", None).await;
 
     // A館: 09:00–11:00 = 120 min; B教室: 14:00–15:00 = 60 min.
-    seed_course_schedule_slot_with_venue(&db, course_a, 1, t(9, 0), t(11, 0), "A 訓練館").await;
-    seed_course_schedule_slot_with_venue(&db, course_b, 2, t(14, 0), t(15, 0), "B 教室").await;
+    SlotSeed::new(course_a, 1, t(9, 0), t(11, 0)).venue("A 訓練館").insert(&db).await;
+    SlotSeed::new(course_b, 2, t(14, 0), t(15, 0)).venue("B 教室").insert(&db).await;
     // NULL venue -> excluded.
     seed_course_schedule_slot(&db, course_c, 3, t(10, 0), t(11, 0)).await;
 
@@ -917,8 +916,7 @@ async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
     // later slot venue edit (without a reconcile) must not re-label them.
     let course_id = seed_course(&db, "Venue Edit Course", None).await;
     let slot_id =
-        seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "Old Hall")
-            .await;
+        SlotSeed::new(course_id, 1, t(9, 0), t(10, 0)).venue("Old Hall").insert(&db).await;
     // First report (2026-09-01, 1st of the month) materializes all four
     // September Mondays (7/14/21/28) with "Old Hall".
     let first_at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap());
@@ -957,9 +955,9 @@ async fn admin_report_does_not_materialize_past_days(db: PgPool) {
     // phantom 09-14 row: 3 sessions × 60 min.
     let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap());
     let course_id = seed_course(&db, "Forward Only Course", None).await;
-    seed_course_schedule_slot_with_venue(&db, course_id, 1, t(9, 0), t(10, 0), "A").await;
+    SlotSeed::new(course_id, 1, t(9, 0), t(10, 0)).venue("A").insert(&db).await;
     let sep_7 = NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
-    seed_course_session_with_venue(&db, course_id, sep_7, t(9, 0), t(10, 0), "A").await;
+    SessionSeed::new(course_id, sep_7, t(9, 0), t(10, 0)).venue("A").insert(&db).await;
 
     let report = service::admin_report(&db, at).await.expect("admin_report");
 
