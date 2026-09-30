@@ -171,3 +171,62 @@ async fn drain_once_does_not_republish_already_published_rows(db: PgPool) {
     let state = outbox_row_state(&db, id).await;
     assert_eq!(state.attempts, 0, "a row the dispatcher never touched keeps attempts at 0");
 }
+
+/// Blocks inside `publish` until released, so a test can hold a drain
+/// mid-publish and observe what a concurrent drain does meanwhile.
+struct GatedPublisher {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl EventPublisher for GatedPublisher {
+    async fn publish(&self, _topic: &str, _key: &str, _payload: &str) -> Result<(), KafkaError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(())
+    }
+}
+
+#[sqlx::test]
+async fn concurrent_drain_does_not_reclaim_a_row_being_published(db: PgPool) {
+    let id = Uuid::now_v7();
+    insert_outbox_row(&db, id, Utc::now()).await;
+
+    let gated = std::sync::Arc::new(GatedPublisher {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        calls: AtomicUsize::new(0),
+    });
+    let first = {
+        let db = db.clone();
+        let gated = gated.clone();
+        tokio::spawn(async move { drain_once(&db, gated.as_ref()).await })
+    };
+    gated.entered.notified().await;
+
+    // The first drain is mid-publish on the only row; a second drain must
+    // not claim it.
+    let other = FakePublisher {
+        fail_second: false,
+        calls: AtomicUsize::new(0),
+    };
+    drain_once(&db, &other)
+        .await
+        .expect("concurrent drain should succeed");
+    assert_eq!(
+        other.call_count(),
+        0,
+        "a row claimed by an in-flight drain must not be published again by a concurrent drain"
+    );
+
+    gated.release.notify_one();
+    first
+        .await
+        .expect("first drain task")
+        .expect("first drain should succeed");
+    assert_eq!(gated.calls.load(Ordering::SeqCst), 1);
+    assert!(outbox_row_state(&db, id).await.published_at.is_some());
+}
