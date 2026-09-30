@@ -133,7 +133,7 @@ pub async fn coach_report(
     let day = calendar::materialize_today(db, &course_ids, today).await?;
 
     let (today_sessions, pending_attendance) =
-        repository::coach_today_and_pending(db, coach.id, &day).await?;
+        repository::coach_today_and_pending(db, &day).await?;
     let unread_messages = messages_repository::count_unread_for_user(db, auth.user_id).await?;
     let student_count = attendance_repository::find_my_students(db, coach.id)
         .await?

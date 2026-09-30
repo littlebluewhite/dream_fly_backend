@@ -621,15 +621,16 @@ pub async fn venue_usage(
 // GET /reports/coach
 // ---------------------------------------------------------------------------
 
-/// `(today_sessions, pending_attendance)` for `coach_id`'s courses on
-/// `day` — this only counts already-existing `course_sessions` rows. `day`
-/// 收 [`MaterializedDay`]——單日前提已在型別層成立,`session_date =
+/// `(today_sessions, pending_attendance)` for `day.course_ids()` on
+/// `day.date()` — this only counts already-existing `course_sessions` rows.
+/// `day` 收 [`MaterializedDay`]——單日前提已在型別層成立,`session_date =
 /// day.date()` 直接以等值查詢表達「今天」,不必再靠 `BETWEEN` 加斷言。
-/// Coach scope comes from the `coach_id` JOIN, not from `day.course_ids()`
-/// (unused here).
+/// Coach scope comes from the witness's own `course_ids()` (the caller
+/// materialized exactly the coach's courses), the same set
+/// `sessions::find_today_sessions_in` binds — one scope, not a second
+/// `coach_id` JOIN restating it.
 pub async fn coach_today_and_pending(
     db: &PgPool,
-    coach_id: Uuid,
     day: &MaterializedDay,
 ) -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64)>(
@@ -638,10 +639,9 @@ pub async fn coach_today_and_pending(
                   SELECT 1 FROM attendance_records ar WHERE ar.session_id = cs.id \
                 )) \
          FROM course_sessions cs \
-         JOIN courses c ON c.id = cs.course_id \
-         WHERE c.coach_id = $1 AND cs.session_date = $2",
+         WHERE cs.course_id = ANY($1) AND cs.session_date = $2",
     )
-    .bind(coach_id)
+    .bind(day.course_ids())
     .bind(day.date())
     .fetch_one(db)
     .await
