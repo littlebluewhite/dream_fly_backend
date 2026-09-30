@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::bookings::dto::CreateBookingRequest;
+use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::bookings::service;
 
 #[sqlx::test]
@@ -495,6 +496,27 @@ async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
     service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect("cancel on closed slot should still succeed");
+
+    assert_eq!(common::slot_booked(&db, slot).await, 0);
+}
+
+#[sqlx::test]
+async fn seeded_confirmed_booking_occupies_seat_so_cancel_frees_it(db: PgPool) {
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let slot = common::seed_time_slot(&db, 5).await;
+    let auth = common::member_auth(user);
+    let booking =
+        common::fixtures::seed_booking(&db, user, slot, BookingStatus::Confirmed, 1_000).await;
+    assert_eq!(
+        common::slot_booked(&db, slot).await,
+        1,
+        "seeded booking occupies a seat"
+    );
+
+    let now = common::studio_now_utc(Utc::now());
+    service::cancel_booking(&db, now, &auth, booking, None)
+        .await
+        .expect("cancel seeded booking");
 
     assert_eq!(common::slot_booked(&db, slot).await, 0);
 }

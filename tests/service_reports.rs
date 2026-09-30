@@ -28,6 +28,7 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::attendance::service as attendance_service;
+use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::points::model::PointsTier;
@@ -464,7 +465,7 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
     // A venue booking this month must show up in revenue_breakdown but stay
     // out of category_split (order-line 毛額 only) and its ratios.
     let slot_id = seed_time_slot_on(&db, 10, months_ago(now, 0).date_naive()).await;
-    seed_booking(&db, buyer, slot_id, "confirmed", 100_000).await;
+    seed_booking(&db, buyer, slot_id, BookingStatus::Confirmed, 100_000).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -504,16 +505,16 @@ async fn admin_report_venue_rental_counts_only_confirmed_completed(db: PgPool) {
         &db,
         this_month_date,
         &[
-            ("confirmed", 5_000),
-            ("completed", 3_000),
-            ("cancelled", 99_999),
-            ("no_show", 99_999),
-            ("pending", 99_999),
+            (BookingStatus::Confirmed, 5_000),
+            (BookingStatus::Completed, 3_000),
+            (BookingStatus::Cancelled, 99_999),
+            (BookingStatus::NoShow, 99_999),
+            (BookingStatus::Pending, 99_999),
         ],
     )
     .await;
     // Booked *now*, but the slot's use date is last month — 歸屬 slot 使用日.
-    seed_venue_rentals(&db, last_month_date, &[("confirmed", 7_000)]).await;
+    seed_venue_rentals(&db, last_month_date, &[(BookingStatus::Confirmed, 7_000)]).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await

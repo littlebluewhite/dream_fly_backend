@@ -11,6 +11,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::coaches::repository as coaches_repository;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 
@@ -301,7 +302,7 @@ pub async fn seed_notification(db: &PgPool, user_id: Uuid, title: &str, is_read:
     id
 }
 
-/// Insert a time slot for a given course/venue on tomorrow at 10:00.
+/// Insert a time slot for a given course/venue on the day after tomorrow (+2 days) at 10:00.
 pub async fn seed_time_slot_full(
     db: &PgPool,
     course_id: Option<Uuid>,
@@ -544,19 +545,24 @@ pub async fn seed_order_bare(
 /// venue-rental report tests can set an exact `status` — including
 /// `cancelled`/`no_show`, which must NOT count as venue income — and an
 /// exact `price_cents` snapshot independent of the slot's live price.
+/// Keeps the `time_slots.booked` read cache consistent: a status that
+/// `occupies_seat()` bumps the slot's `booked` in the same tx, so a later
+/// cancel through the service decrements it back to where it started.
 /// Returns the booking id.
 pub async fn seed_booking(
     db: &PgPool,
     user_id: Uuid,
     time_slot_id: Uuid,
-    status: &str,
+    status: BookingStatus,
     price_cents: i64,
 ) -> Uuid {
     let id = Uuid::now_v7();
+    let occupies_seat = status.occupies_seat();
+    let mut tx = db.begin().await.expect("begin tx");
     sqlx::query(
         r#"
         INSERT INTO bookings (id, user_id, time_slot_id, status, price_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::booking_status, $5, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
         "#,
     )
     .bind(id)
@@ -564,9 +570,17 @@ pub async fn seed_booking(
     .bind(time_slot_id)
     .bind(status)
     .bind(price_cents)
-    .execute(db)
+    .execute(&mut *tx)
     .await
     .expect("insert booking");
+    if occupies_seat {
+        sqlx::query("UPDATE time_slots SET booked = booked + 1 WHERE id = $1")
+            .bind(time_slot_id)
+            .execute(&mut *tx)
+            .await
+            .expect("bump time_slot booked");
+    }
+    tx.commit().await.expect("commit seed_booking");
     id
 }
 
@@ -997,14 +1011,14 @@ pub async fn seed_course_revenue(
 pub async fn seed_venue_rentals(
     db: &PgPool,
     slot_date: NaiveDate,
-    rentals: &[(&str, i64)],
+    rentals: &[(BookingStatus, i64)],
 ) -> Vec<Uuid> {
     let slot_id = seed_time_slot_on(db, rentals.len() as i32, slot_date).await;
     let mut booking_ids = Vec::with_capacity(rentals.len());
-    for &(status, price_cents) in rentals {
+    for (status, price_cents) in rentals {
         let email = format!("venue-rental-{}@example.com", Uuid::now_v7());
         let member = seed_member(db, &email, "Password!234").await;
-        booking_ids.push(seed_booking(db, member, slot_id, status, price_cents).await);
+        booking_ids.push(seed_booking(db, member, slot_id, status.clone(), *price_cents).await);
     }
     booking_ids
 }

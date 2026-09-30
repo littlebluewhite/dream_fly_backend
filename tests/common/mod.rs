@@ -160,7 +160,7 @@ pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> 
     user.id
 }
 
-/// Insert a time slot scheduled for tomorrow at 10:00–11:00.
+/// Insert a time slot scheduled for the day after tomorrow (+2 days) at 10:00–11:00.
 /// Returns the slot id. Used by bookings tests.
 pub async fn seed_time_slot(db: &PgPool, capacity: i32) -> Uuid {
     seed_time_slot_on(db, capacity, (Utc::now() + Duration::days(2)).date_naive()).await
