@@ -8,6 +8,7 @@ use common::fixtures::{
     set_makeup_session,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
@@ -325,10 +326,13 @@ async fn me_attendance_stats_present_2_absent_1_leave_1_excludes_leave_from_tota
     let session_leave =
         seed_course_session(&app.db, course_id, today + Duration::days(3), t(9, 0), t(10, 0)).await;
 
-    seed_attendance(&app.db, session_present_1, enrolment_id, "present", admin_id).await;
-    seed_attendance(&app.db, session_present_2, enrolment_id, "present", admin_id).await;
-    seed_attendance(&app.db, session_absent, enrolment_id, "absent", admin_id).await;
-    seed_attendance(&app.db, session_leave, enrolment_id, "leave", admin_id).await;
+    seed_attendance(&app.db, session_present_1, enrolment_id, AttendanceStatus::Present, admin_id)
+        .await;
+    seed_attendance(&app.db, session_present_2, enrolment_id, AttendanceStatus::Present, admin_id)
+        .await;
+    seed_attendance(&app.db, session_absent, enrolment_id, AttendanceStatus::Absent, admin_id)
+        .await;
+    seed_attendance(&app.db, session_leave, enrolment_id, AttendanceStatus::Leave, admin_id).await;
 
     let resp = app
         .get("/api/v1/enrolments/me")

@@ -10,6 +10,7 @@ use common::fixtures::{
     seed_leave_request,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
@@ -427,7 +428,7 @@ async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPo
             .await;
     // A holds an approved leave, already projected to an attendance `leave` row.
     seed_leave_request(&app.db, enrolment_a, session_id, "approved").await;
-    seed_attendance(&app.db, session_id, enrolment_a, "leave", admin_id).await;
+    seed_attendance(&app.db, session_id, enrolment_a, AttendanceStatus::Leave, admin_id).await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
@@ -475,7 +476,7 @@ async fn attendance_put_leave_over_approved_leave_is_idempotent(db: PgPool) {
         seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
             .await;
     seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
-    seed_attendance(&app.db, session_id, enrolment_id, "leave", admin_id).await;
+    seed_attendance(&app.db, session_id, enrolment_id, AttendanceStatus::Leave, admin_id).await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))

@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::courses::dto::{
     CourseScheduleSlotEntry, CreateCourseRequest, UpdateCourseRequest,
 };
@@ -549,7 +550,8 @@ async fn update_course_slot_edit_keeps_referenced_future_orphans(db: PgPool) {
     // Case 3: attendance record referencing the orphan.
     let attendance_orphan_id =
         seed_course_session(&db, course_id, future_date, t(13, 0), t(14, 0)).await;
-    seed_attendance(&db, attendance_orphan_id, enrolment_id, "present", user_id).await;
+    seed_attendance(&db, attendance_orphan_id, enrolment_id, AttendanceStatus::Present, user_id)
+        .await;
 
     // Wholesale slot replacement (empty set) orphans all three sessions —
     // none should be deleted since each is referenced.

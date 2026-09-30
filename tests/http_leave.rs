@@ -21,6 +21,7 @@ use common::fixtures::{
     seed_leave_request, seed_leave_scene,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
@@ -495,7 +496,8 @@ async fn decide_approve_overwrites_existing_present_attendance(db: PgPool) {
     let enrolment_id =
         seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
             .await;
-    seed_attendance(&app.db, session_id, enrolment_id, "present", coach_user_id).await;
+    seed_attendance(&app.db, session_id, enrolment_id, AttendanceStatus::Present, coach_user_id)
+        .await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
 
     let resp = app

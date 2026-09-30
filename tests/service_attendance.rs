@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::attendance::dto::AttendanceRecordEntry;
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
@@ -143,7 +144,7 @@ async fn bulk_present_over_verbal_leave_overwrites(db: PgPool) {
     let member = seed_member(&db, "att-bulk-verbal@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    seed_attendance(&db, session_id, enrolment_id, "leave", admin).await;
+    seed_attendance(&db, session_id, enrolment_id, AttendanceStatus::Leave, admin).await;
 
     attendance_service::bulk_upsert_attendance(
         &db,

@@ -11,6 +11,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::coaches::repository as coaches_repository;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
@@ -807,14 +808,14 @@ pub async fn seed_attendance(
     db: &PgPool,
     session_id: Uuid,
     enrolment_id: Uuid,
-    status: &str,
+    status: AttendanceStatus,
     marked_by: Uuid,
 ) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
         INSERT INTO attendance_records (id, session_id, enrolment_id, status, marked_by, marked_at, created_at)
-        VALUES ($1, $2, $3, $4::attendance_status, $5, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
         "#,
     )
     .bind(id)
@@ -981,7 +982,7 @@ pub async fn seed_marked_attendance(
     course_id: Uuid,
     session_date: NaiveDate,
     start_time: NaiveTime,
-    status: &str,
+    status: AttendanceStatus,
 ) -> AttendanceScene {
     let email = format!("attendance-{}@example.com", Uuid::now_v7());
     let member = seed_member(db, &email, "Password!234").await;

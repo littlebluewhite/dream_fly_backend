@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
@@ -406,9 +407,9 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
     let s1 = seed_course_session(&db, course_a, first_of_this_month, t(9, 0), t(10, 0)).await;
     let s2 = seed_course_session(&db, course_b, first_of_this_month, t(9, 0), t(10, 0)).await;
     let s3 = seed_course_session(&db, course_c, first_of_this_month, t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, s1, enrolment_a, "present", student).await;
-    seed_attendance(&db, s2, enrolment_b, "absent", student).await;
-    seed_attendance(&db, s3, enrolment_c, "leave", student).await;
+    seed_attendance(&db, s1, enrolment_a, AttendanceStatus::Present, student).await;
+    seed_attendance(&db, s2, enrolment_b, AttendanceStatus::Absent, student).await;
+    seed_attendance(&db, s3, enrolment_c, AttendanceStatus::Leave, student).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -739,9 +740,23 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
     let today = Utc::now().date_naive();
 
     // A member marked present once -> rate 1.0 -> gte_95.
-    seed_marked_attendance(&db, course_id, today - Duration::days(5), t(9, 0), "present").await;
+    seed_marked_attendance(
+        &db,
+        course_id,
+        today - Duration::days(5),
+        t(9, 0),
+        AttendanceStatus::Present,
+    )
+    .await;
     // A member marked only `leave` -> denominator 0 -> excluded.
-    seed_marked_attendance(&db, course_id, today - Duration::days(5), t(10, 0), "leave").await;
+    seed_marked_attendance(
+        &db,
+        course_id,
+        today - Duration::days(5),
+        t(10, 0),
+        AttendanceStatus::Leave,
+    )
+    .await;
 
     // A member present once + absent once -> 0.5 -> lt_75. Same member across
     // two sessions — can't be expressed by `seed_marked_attendance`, which
@@ -750,8 +765,8 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
     let e_low = seed_enrolment(&db, m_low, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let s1 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
     let s2 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, s1, e_low, "present", m_low).await;
-    seed_attendance(&db, s2, e_low, "absent", m_low).await;
+    seed_attendance(&db, s1, e_low, AttendanceStatus::Present, m_low).await;
+    seed_attendance(&db, s2, e_low, AttendanceStatus::Absent, m_low).await;
 
     // A member enrolled but never marked -> excluded.
     let _m_unmarked = seed_member(&db, "attdist-unmarked@example.com", "Password!234").await;
@@ -786,8 +801,8 @@ async fn admin_report_retention_new_returning_and_null_rate(db: PgPool) {
     // boundary.
     let s_last = seed_course_session(&db, course_id, months_ago(now, 1).date_naive(), t(9, 0), t(10, 0)).await;
     let s_this = seed_course_session(&db, course_id, months_ago(now, 0).date_naive(), t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, s_last, enrolment_id, "present", user_id).await;
-    seed_attendance(&db, s_this, enrolment_id, "present", user_id).await;
+    seed_attendance(&db, s_last, enrolment_id, AttendanceStatus::Present, user_id).await;
+    seed_attendance(&db, s_this, enrolment_id, AttendanceStatus::Present, user_id).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -887,9 +902,9 @@ async fn admin_report_weekday_load_indexes_sunday_as_zero(db: PgPool) {
     let s_sun = seed_course_session(&db, course_id, sunday, t(9, 0), t(10, 0)).await;
     let s_wed = seed_course_session(&db, course_id, wednesday, t(11, 0), t(12, 0)).await;
     // 2 present on Sunday, 1 present on Wednesday.
-    seed_attendance(&db, s_sun, e1, "present", u1).await;
-    seed_attendance(&db, s_sun, e2, "present", u2).await;
-    seed_attendance(&db, s_wed, e3, "present", u3).await;
+    seed_attendance(&db, s_sun, e1, AttendanceStatus::Present, u1).await;
+    seed_attendance(&db, s_sun, e2, AttendanceStatus::Present, u2).await;
+    seed_attendance(&db, s_wed, e3, AttendanceStatus::Present, u3).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
@@ -1047,9 +1062,9 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
     let s1 = seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
     let s2 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
     let s3 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, s1, enrolment_id, "present", coach_user).await;
-    seed_attendance(&db, s2, enrolment_id, "absent", coach_user).await;
-    seed_attendance(&db, s3, enrolment_id, "leave", coach_user).await;
+    seed_attendance(&db, s1, enrolment_id, AttendanceStatus::Present, coach_user).await;
+    seed_attendance(&db, s2, enrolment_id, AttendanceStatus::Absent, coach_user).await;
+    seed_attendance(&db, s3, enrolment_id, AttendanceStatus::Leave, coach_user).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
@@ -1134,7 +1149,7 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
             .fetch_one(&db)
             .await
             .unwrap();
-    seed_attendance(&db, session_id, enrolment_id, "present", coach_user).await;
+    seed_attendance(&db, session_id, enrolment_id, AttendanceStatus::Present, coach_user).await;
 
     let report_after = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
@@ -1168,11 +1183,11 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
 
     // Within the 30-day window: 1 present, 1 absent, 1 leave — leave must
     // count toward neither the numerator nor the denominator.
-    seed_attendance(&db, session_in, enrolment_a, "present", coach_user).await;
-    seed_attendance(&db, session_in, enrolment_b, "absent", coach_user).await;
-    seed_attendance(&db, session_in, enrolment_c, "leave", coach_user).await;
+    seed_attendance(&db, session_in, enrolment_a, AttendanceStatus::Present, coach_user).await;
+    seed_attendance(&db, session_in, enrolment_b, AttendanceStatus::Absent, coach_user).await;
+    seed_attendance(&db, session_in, enrolment_c, AttendanceStatus::Leave, coach_user).await;
     // Outside the window: a present record that must not be counted.
-    seed_attendance(&db, session_out, enrolment_a, "present", coach_user).await;
+    seed_attendance(&db, session_out, enrolment_a, AttendanceStatus::Present, coach_user).await;
 
     let auth = common::coach_auth(coach_user);
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
@@ -1281,9 +1296,9 @@ async fn member_report_attendance_rate_excludes_leave(db: PgPool) {
     let session_2 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
     let session_3 = seed_course_session(&db, course_id, today - Duration::days(1), t(9, 0), t(10, 0)).await;
 
-    seed_attendance(&db, session_1, enrolment_id, "present", user_id).await;
-    seed_attendance(&db, session_2, enrolment_id, "present", user_id).await;
-    seed_attendance(&db, session_3, enrolment_id, "leave", user_id).await;
+    seed_attendance(&db, session_1, enrolment_id, AttendanceStatus::Present, user_id).await;
+    seed_attendance(&db, session_2, enrolment_id, AttendanceStatus::Present, user_id).await;
+    seed_attendance(&db, session_3, enrolment_id, AttendanceStatus::Leave, user_id).await;
 
     let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
@@ -1557,8 +1572,10 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
         t(10, 0),
     )
     .await;
-    seed_attendance(&db, session_this_month, enrolment_x, "present", member_x).await;
-    seed_attendance(&db, session_last_month, enrolment_y, "present", member_y).await;
+    seed_attendance(&db, session_this_month, enrolment_x, AttendanceStatus::Present, member_x)
+        .await;
+    seed_attendance(&db, session_last_month, enrolment_y, AttendanceStatus::Present, member_y)
+        .await;
 
     let report = service::admin_report(&db, at).await.expect("admin_report");
 
