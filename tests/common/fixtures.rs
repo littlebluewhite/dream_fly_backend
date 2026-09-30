@@ -18,6 +18,7 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
+use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 
 use super::{add_course_to_cart, add_to_cart, seed_member};
@@ -641,7 +642,7 @@ pub async fn seed_subscription(
     db: &PgPool,
     user_id: Uuid,
     product_id: Uuid,
-    status: &str,
+    status: SubscriptionStatus,
     expires_at: Option<DateTime<Utc>>,
     total_sessions: Option<i32>,
     remaining_sessions: Option<i32>,
@@ -655,7 +656,7 @@ pub async fn seed_subscription(
             id, user_id, product_id, status, started_at, expires_at,
             total_sessions, remaining_sessions, price_cents, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4::subscription_status, $9, $5, $6, $7, $8, $9, $9)
+        VALUES ($1, $2, $3, $4, $9, $5, $6, $7, $8, $9, $9)
         "#,
     )
     .bind(id)

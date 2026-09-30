@@ -128,7 +128,15 @@ async fn redeem_decrements_remaining_sessions(db: PgPool) {
     let product_id =
         seed_entitlement_product(&db, "ticket-redeem-a", "ticket", 5_000, None, Some(10)).await;
     let sub_id = seed_subscription(
-        &db, user_id, product_id, "active", None, Some(3), Some(3), 5_000, Utc::now(),
+        &db,
+        user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(3),
+        Some(3),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -145,7 +153,15 @@ async fn redeem_with_zero_remaining_returns_conflict(db: PgPool) {
     let product_id =
         seed_entitlement_product(&db, "ticket-redeem-b", "ticket", 5_000, None, Some(10)).await;
     let sub_id = seed_subscription(
-        &db, user_id, product_id, "active", None, Some(3), Some(0), 5_000, Utc::now(),
+        &db,
+        user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(3),
+        Some(0),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -164,7 +180,7 @@ async fn redeem_expired_by_date_returns_conflict(db: PgPool) {
         &db,
         user_id,
         product_id,
-        "active",
+        SubscriptionStatus::Active,
         Some(Utc::now() - Duration::days(1)),
         Some(3),
         Some(3),
@@ -192,7 +208,7 @@ async fn redeem_with_no_session_quota_returns_specific_conflict_message(db: PgPo
     )
     .await;
     let sub_id = seed_subscription(
-        &db, user_id, product_id, "active", None, None, None, 20_000, Utc::now(),
+        &db, user_id, product_id, SubscriptionStatus::Active, None, None, None, 20_000, Utc::now(),
     )
     .await;
 
@@ -211,7 +227,15 @@ async fn redeem_cancelled_returns_conflict(db: PgPool) {
     let product_id =
         seed_entitlement_product(&db, "ticket-redeem-e", "ticket", 5_000, None, Some(10)).await;
     let sub_id = seed_subscription(
-        &db, user_id, product_id, "cancelled", None, Some(3), Some(3), 5_000, Utc::now(),
+        &db,
+        user_id,
+        product_id,
+        SubscriptionStatus::Cancelled,
+        None,
+        Some(3),
+        Some(3),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -241,7 +265,15 @@ async fn concurrent_redeems_each_report_their_own_decrement(db: PgPool) {
     let product_id =
         seed_entitlement_product(&db, "ticket-redeem-f", "ticket", 5_000, None, Some(5)).await;
     let sub_id = seed_subscription(
-        &db, user_id, product_id, "active", None, Some(5), Some(5), 5_000, Utc::now(),
+        &db,
+        user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(5),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -292,7 +324,7 @@ async fn concurrent_redeems_each_report_their_own_decrement(db: PgPool) {
 async fn derived_status_matches_expected_shape(db: PgPool) {
     struct Case {
         name: &'static str,
-        status: &'static str,
+        status: SubscriptionStatus,
         expires_at: Option<chrono::DateTime<Utc>>,
         remaining_sessions: Option<i32>,
         expected: SubscriptionStatus,
@@ -305,56 +337,56 @@ async fn derived_status_matches_expected_shape(db: PgPool) {
     let cases = [
         Case {
             name: "active unlimited: expires_at NULL, remaining_sessions NULL",
-            status: "active",
+            status: SubscriptionStatus::Active,
             expires_at: None,
             remaining_sessions: None,
             expected: SubscriptionStatus::Active,
         },
         Case {
             name: "active: unexpired validity with sessions remaining",
-            status: "active",
+            status: SubscriptionStatus::Active,
             expires_at: Some(future),
             remaining_sessions: Some(5),
             expected: SubscriptionStatus::Active,
         },
         Case {
             name: "expired: past expires_at",
-            status: "active",
+            status: SubscriptionStatus::Active,
             expires_at: Some(past),
             remaining_sessions: Some(5),
             expected: SubscriptionStatus::Expired,
         },
         Case {
             name: "expired: remaining_sessions hit zero",
-            status: "active",
+            status: SubscriptionStatus::Active,
             expires_at: None,
             remaining_sessions: Some(0),
             expected: SubscriptionStatus::Expired,
         },
         Case {
             name: "expired: zero remaining_sessions takes priority over future expires_at",
-            status: "active",
+            status: SubscriptionStatus::Active,
             expires_at: Some(future),
             remaining_sessions: Some(0),
             expected: SubscriptionStatus::Expired,
         },
         Case {
             name: "expired: past expires_at alone (remaining_sessions NULL)",
-            status: "active",
+            status: SubscriptionStatus::Active,
             expires_at: Some(past),
             remaining_sessions: None,
             expected: SubscriptionStatus::Expired,
         },
         Case {
             name: "cancelled overrides an active-looking row",
-            status: "cancelled",
+            status: SubscriptionStatus::Cancelled,
             expires_at: Some(future),
             remaining_sessions: Some(5),
             expected: SubscriptionStatus::Cancelled,
         },
         Case {
             name: "cancelled overrides an expired-looking row",
-            status: "cancelled",
+            status: SubscriptionStatus::Cancelled,
             expires_at: Some(past),
             remaining_sessions: Some(5),
             expected: SubscriptionStatus::Cancelled,

@@ -5,6 +5,7 @@ mod common;
 use chrono::{Duration, Utc};
 use common::fixtures::{seed_entitlement_product, seed_subscription};
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -24,11 +25,27 @@ async fn me_returns_only_callers_subscriptions(db: PgPool) {
     let product_id =
         seed_entitlement_product(&app.db, "ticket-me-a", "ticket", 5_000, None, Some(5)).await;
     seed_subscription(
-        &app.db, user_a.user_id, product_id, "active", None, Some(5), Some(5), 5_000, Utc::now(),
+        &app.db,
+        user_a.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(5),
+        5_000,
+        Utc::now(),
     )
     .await;
     seed_subscription(
-        &app.db, user_b.user_id, product_id, "active", None, Some(5), Some(5), 5_000, Utc::now(),
+        &app.db,
+        user_b.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(5),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -53,7 +70,7 @@ async fn me_orders_newest_first_with_full_response_shape(db: PgPool) {
         &app.db,
         user.user_id,
         product_id,
-        "active",
+        SubscriptionStatus::Active,
         None,
         Some(8),
         Some(8),
@@ -62,7 +79,15 @@ async fn me_orders_newest_first_with_full_response_shape(db: PgPool) {
     )
     .await;
     let newer_id = seed_subscription(
-        &app.db, user.user_id, product_id, "active", None, Some(8), Some(8), 7_500, Utc::now(),
+        &app.db,
+        user.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(8),
+        Some(8),
+        7_500,
+        Utc::now(),
     )
     .await;
 
@@ -99,7 +124,7 @@ async fn me_status_derives_expired_for_past_expiry(db: PgPool) {
         &app.db,
         user.user_id,
         product_id,
-        "active",
+        SubscriptionStatus::Active,
         Some(Utc::now() - Duration::days(1)),
         None,
         None,
@@ -133,7 +158,15 @@ async fn redeem_as_member_returns_403(db: PgPool) {
     let product_id =
         seed_entitlement_product(&app.db, "ticket-redeem-a", "ticket", 5_000, None, Some(5)).await;
     let sub_id = seed_subscription(
-        &app.db, user.user_id, product_id, "active", None, Some(5), Some(5), 5_000, Utc::now(),
+        &app.db,
+        user.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(5),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -152,7 +185,15 @@ async fn redeem_as_admin_decrements_and_returns_200(db: PgPool) {
     let product_id =
         seed_entitlement_product(&app.db, "ticket-redeem-b", "ticket", 5_000, None, Some(5)).await;
     let sub_id = seed_subscription(
-        &app.db, owner.user_id, product_id, "active", None, Some(5), Some(3), 5_000, Utc::now(),
+        &app.db,
+        owner.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(3),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -174,7 +215,15 @@ async fn redeem_as_coach_succeeds(db: PgPool) {
     let product_id =
         seed_entitlement_product(&app.db, "ticket-redeem-c", "ticket", 5_000, None, Some(5)).await;
     let sub_id = seed_subscription(
-        &app.db, owner.user_id, product_id, "active", None, Some(5), Some(1), 5_000, Utc::now(),
+        &app.db,
+        owner.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(1),
+        5_000,
+        Utc::now(),
     )
     .await;
 
@@ -208,7 +257,15 @@ async fn redeem_exhausted_returns_409(db: PgPool) {
     let product_id =
         seed_entitlement_product(&app.db, "ticket-redeem-d", "ticket", 5_000, None, Some(5)).await;
     let sub_id = seed_subscription(
-        &app.db, owner.user_id, product_id, "active", None, Some(5), Some(0), 5_000, Utc::now(),
+        &app.db,
+        owner.user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        Some(5),
+        Some(0),
+        5_000,
+        Utc::now(),
     )
     .await;
 
