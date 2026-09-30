@@ -1,35 +1,22 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+How the engineering skills consume this repo's domain documentation. This is a **single-context**
+repo: one `CONTEXT.md` (the domain glossary) and one `docs/adr/` at the repo root.
 
-This is a **single-context** repo: one `CONTEXT.md` and one `docs/adr/` at the repo root.
+## Before exploring
 
-## Before exploring, read these
-
-- **`CONTEXT.md`** at the repo root — the project's domain glossary.
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in.
-
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The producer skill (`/grill-with-docs`) creates them lazily when terms or decisions actually get resolved.
-
-## File structure
-
-```
-/
-├── CONTEXT.md
-├── docs/adr/
-│   ├── 0001-example-decision.md
-│   └── 0002-another-decision.md
-└── src/
-```
+Read `CONTEXT.md` and the ADRs in `docs/adr/` that touch the area you're about to work in.
 
 ## Use the glossary's vocabulary
 
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
+When your output names a domain concept (an issue title, a refactor proposal, a hypothesis, a test
+name), use the term exactly as `CONTEXT.md` defines it.
 
-If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/grill-with-docs`).
+A concept missing from the glossary is a signal: either the language is invented (reconsider it) or
+the glossary has a real gap (note it for `/grill-with-docs`).
 
 ## Flag ADR conflicts
 
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
+When your output contradicts an existing ADR, say so explicitly and give the reason to reopen it:
 
 > _Contradicts ADR-0002 — but worth reopening because…_
