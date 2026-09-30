@@ -20,8 +20,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::courses::seats;
 
 use common::fixtures::{
-    seed_course_session, seed_course_with_capacity, seed_enrolment, seed_leave_request,
-    set_makeup_session,
+    CourseSeed, seed_course_session, seed_enrolment, seed_leave_request, set_makeup_session,
 };
 
 fn t(h: u32, m: u32) -> NaiveTime {
@@ -32,7 +31,7 @@ fn t(h: u32, m: u32) -> NaiveTime {
 /// that get made up elsewhere) and a future target session. Returns
 /// (course_id, original_session_id, target_session_id).
 async fn course_with_sessions(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uuid, Uuid) {
-    let course_id = seed_course_with_capacity(db, name, None, max_students).await;
+    let course_id = CourseSeed::new(name).max_students(max_students).insert(db).await;
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let original_session = seed_course_session(db, course_id, original, t(9, 0), t(10, 0)).await;
     let target = (Utc::now() + Duration::days(3)).date_naive();

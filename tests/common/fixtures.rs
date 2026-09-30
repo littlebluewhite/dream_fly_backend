@@ -53,53 +53,62 @@ pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
     coach.id
 }
 
-/// Insert a published course with a unique slug derived from `name`.
+/// Insert a published course with a unique slug derived from `name`
+/// (`max_students = 12`, `schedule_text` NULL). Shorthand for
+/// [`CourseSeed`] with only the coach set.
 pub async fn seed_course(db: &PgPool, name: &str, coach_id: Option<Uuid>) -> Uuid {
-    let id = Uuid::now_v7();
-    let slug = format!("{}-{}", slugify(name), &id.to_string()[..8]);
-    sqlx::query(
-        r#"
-        INSERT INTO courses (id, name, slug, level, description, duration_minutes, price_cents, max_students, features, is_active, coach_id, created_at, updated_at)
-        VALUES ($1, $2, $3, 'beginner'::course_level, 'Test course', 60, 50000, 12, ARRAY['drop-in'], true, $4, NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(name)
-    .bind(slug)
-    .bind(coach_id)
-    .execute(db)
-    .await
-    .expect("insert course");
-    id
+    CourseSeed { coach_id, ..CourseSeed::new(name) }.insert(db).await
 }
 
-/// Insert a published course with a unique slug, a caller-chosen
-/// `max_students` capacity, and a non-null `schedule_text`. Additive variant
-/// of `seed_course` (which hardcodes `max_students = 12` and leaves
-/// `schedule_text` NULL) for capacity-guard and enrolment-response tests.
-pub async fn seed_course_with_capacity(
-    db: &PgPool,
-    name: &str,
+/// Builder for a published `courses` row with a unique slug derived from
+/// `name`. Defaults: no coach, `max_students = 12`, `schedule_text` NULL —
+/// set only what the test is about, e.g.
+/// `CourseSeed::new("Full").max_students(1).insert(db)`.
+pub struct CourseSeed<'a> {
+    name: &'a str,
     coach_id: Option<Uuid>,
     max_students: i32,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    let slug = format!("{}-{}", slugify(name), &id.to_string()[..8]);
-    sqlx::query(
-        r#"
-        INSERT INTO courses (id, name, slug, level, description, duration_minutes, price_cents, max_students, features, is_active, coach_id, schedule_text, created_at, updated_at)
-        VALUES ($1, $2, $3, 'beginner'::course_level, 'Test course', 60, 50000, $5, ARRAY['drop-in'], true, $4, 'Mon/Wed 19:00', NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(name)
-    .bind(slug)
-    .bind(coach_id)
-    .bind(max_students)
-    .execute(db)
-    .await
-    .expect("insert course");
-    id
+    schedule_text: Option<&'a str>,
+}
+
+impl<'a> CourseSeed<'a> {
+    pub fn new(name: &'a str) -> Self {
+        Self { name, coach_id: None, max_students: 12, schedule_text: None }
+    }
+
+    pub fn coach(self, coach_id: Uuid) -> Self {
+        Self { coach_id: Some(coach_id), ..self }
+    }
+
+    pub fn max_students(self, max_students: i32) -> Self {
+        Self { max_students, ..self }
+    }
+
+    pub fn schedule_text(self, schedule_text: &'a str) -> Self {
+        Self { schedule_text: Some(schedule_text), ..self }
+    }
+
+    /// Returns the course id.
+    pub async fn insert(self, db: &PgPool) -> Uuid {
+        let id = Uuid::now_v7();
+        let slug = format!("{}-{}", slugify(self.name), &id.to_string()[..8]);
+        sqlx::query(
+            r#"
+            INSERT INTO courses (id, name, slug, level, description, duration_minutes, price_cents, max_students, features, is_active, coach_id, schedule_text, created_at, updated_at)
+            VALUES ($1, $2, $3, 'beginner'::course_level, 'Test course', 60, 50000, $4, ARRAY['drop-in'], true, $5, $6, NOW(), NOW())
+            "#,
+        )
+        .bind(id)
+        .bind(self.name)
+        .bind(slug)
+        .bind(self.max_students)
+        .bind(self.coach_id)
+        .bind(self.schedule_text)
+        .execute(db)
+        .await
+        .expect("insert course");
+        id
+    }
 }
 
 /// Insert a course weekly schedule slot directly (bypassing the
@@ -1041,7 +1050,7 @@ pub struct LeaveScene {
 /// 請假測試常要「以請假本人的身分」打 owner-only 端點,呼叫端得自行決定用
 /// `app.register_member`(需要 token)或 `common::seed_member`(純資料列)
 /// 造這個人,composite 沒辦法代猜;`course_id` 同理,容量/coach 指派等變異
-/// 呼叫端已有 `seed_course`/`seed_course_with_capacity` 可選。
+/// 呼叫端已有 `seed_course`/`CourseSeed` 可選。
 /// `makeup_session_id` 給 `Some` 時,額外把它寫回
 /// `leave_requests.makeup_session_id`——回補場次本身仍由呼叫端以
 /// `seed_course_session` 建立,composite 只負責串接這最後一步。Returns the
@@ -1071,14 +1080,14 @@ pub struct FullCourse {
     pub occupants: Vec<Uuid>,
 }
 
-/// 「某課程剛好坐滿」:`seed_course_with_capacity`(max_students,不掛
+/// 「某課程剛好坐滿」:`CourseSeed`(max_students,不掛
 /// coach)+ 等量的 `seed_member`/`seed_enrolment`(active, now)各造一位占位
 /// 會員填滿座位,取代「建課、逐一造會員、逐一造 active enrolment」的多段式
 /// inline 序列。參數名沿用 `courses` 表欄位 `max_students`(CONTEXT.md 座位
 /// 詞條——_Avoid_: capacity)。Returns the new course id and its occupants'
 /// member ids, in creation order.
 pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> FullCourse {
-    let course = seed_course_with_capacity(db, name, None, max_students).await;
+    let course = CourseSeed::new(name).max_students(max_students).insert(db).await;
     let mut occupants = Vec::with_capacity(max_students as usize);
     for _ in 0..max_students {
         let email = format!("occupant-{}@example.com", Uuid::now_v7());

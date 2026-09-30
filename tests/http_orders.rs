@@ -3,7 +3,7 @@
 mod common;
 
 use chrono::{Duration, TimeZone, Utc};
-use common::fixtures::{seed_course_with_capacity, seed_entitlement_product};
+use common::fixtures::{CourseSeed, seed_entitlement_product};
 use common::http::{spawn_test_app, spawn_test_app_with, TestApp};
 use serde_json::json;
 use sqlx::PgPool;
@@ -487,7 +487,7 @@ async fn update_status_refund_via_http_returns_cancelled_artifacts(db: PgPool) {
     let user = app
         .register_member("refund-http@example.com", "Password!234")
         .await;
-    let course = seed_course_with_capacity(&app.db, "HTTP Refund Course", None, 12).await;
+    let course = CourseSeed::new("HTTP Refund Course").max_students(12).insert(&app.db).await;
     let membership =
         seed_entitlement_product(&app.db, "http-refund-membership", "membership", 8_000, None, None)
             .await;

@@ -39,12 +39,12 @@ use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use common::fixtures::{
-    SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach, seed_course,
-    seed_course_revenue, seed_course_schedule_slot, seed_course_schedule_slot_with_venue,
-    seed_course_session, seed_course_session_with_venue, seed_course_with_capacity, seed_enrolment,
-    seed_entitlement_product, seed_leave_request, seed_marked_attendance, seed_member_created_at,
-    seed_message, seed_order_bare, seed_order_with_items, seed_venue_rentals, seed_waitlist_entry,
-    set_birth_date, set_points_balance,
+    CourseSeed, SeedOrderLine, backdate_user, seed_attendance, seed_booking, seed_coach,
+    seed_course, seed_course_revenue, seed_course_schedule_slot,
+    seed_course_schedule_slot_with_venue, seed_course_session, seed_course_session_with_venue,
+    seed_enrolment, seed_entitlement_product, seed_leave_request, seed_marked_attendance,
+    seed_member_created_at, seed_message, seed_order_bare, seed_order_with_items,
+    seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on};
 
@@ -276,7 +276,7 @@ async fn admin_report_members_total_new_and_active(db: PgPool) {
 
 #[sqlx::test]
 async fn admin_report_course_fill_rate_and_waitlist(db: PgPool) {
-    let course_id = seed_course_with_capacity(&db, "Fill Rate Course", None, 4).await;
+    let course_id = CourseSeed::new("Fill Rate Course").max_students(4).insert(&db).await;
     let u1 = seed_member(&db, "fill-1@example.com", "Password!234").await;
     let u2 = seed_member(&db, "fill-2@example.com", "Password!234").await;
     let u3 = seed_member(&db, "fill-3@example.com", "Password!234").await;

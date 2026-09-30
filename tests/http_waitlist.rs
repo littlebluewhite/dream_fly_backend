@@ -3,7 +3,7 @@
 mod common;
 
 use chrono::{Duration, Utc};
-use common::fixtures::{seed_course_with_capacity, seed_enrolment, seed_waitlist_entry};
+use common::fixtures::{CourseSeed, seed_enrolment, seed_waitlist_entry};
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -22,7 +22,7 @@ async fn join_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn join_full_course_returns_200_with_waitlist_response(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let course_id = seed_course_with_capacity(&app.db, "HTTP Full Join Course", None, 1).await;
+    let course_id = CourseSeed::new("HTTP Full Join Course").max_students(1).insert(&app.db).await;
     let filler = app
         .register_member("wl-http-filler@example.com", "Password!234")
         .await;
@@ -63,8 +63,8 @@ async fn me_returns_only_callers_entries_newest_first(db: PgPool) {
         .register_member("wl-me-b@example.com", "Password!234")
         .await;
 
-    let course_a = seed_course_with_capacity(&app.db, "HTTP WL Me Course A", None, 10).await;
-    let course_b = seed_course_with_capacity(&app.db, "HTTP WL Me Course B", None, 10).await;
+    let course_a = CourseSeed::new("HTTP WL Me Course A").max_students(10).insert(&app.db).await;
+    let course_b = CourseSeed::new("HTTP WL Me Course B").max_students(10).insert(&app.db).await;
 
     // Someone else's entry must not leak into user_a's list.
     seed_waitlist_entry(&app.db, user_b.user_id, course_a, "waiting", Utc::now()).await;
@@ -113,7 +113,8 @@ async fn cancel_owner_succeeds_204(db: PgPool) {
     let user = app
         .register_member("wl-cancel-owner@example.com", "Password!234")
         .await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Cancel Owner Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("WL Cancel Owner Course").max_students(10).insert(&app.db).await;
     let entry_id =
         seed_waitlist_entry(&app.db, user.user_id, course_id, "waiting", Utc::now()).await;
 
@@ -133,7 +134,8 @@ async fn cancel_as_non_owner_returns_403(db: PgPool) {
     let other = app
         .register_member("wl-cancel-other@example.com", "Password!234")
         .await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Cancel Other Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("WL Cancel Other Course").max_students(10).insert(&app.db).await;
     let entry_id =
         seed_waitlist_entry(&app.db, owner.user_id, course_id, "waiting", Utc::now()).await;
 
@@ -151,7 +153,8 @@ async fn cancel_as_admin_succeeds_204(db: PgPool) {
     let owner = app
         .register_member("wl-cancel-owner3@example.com", "Password!234")
         .await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Cancel Admin Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("WL Cancel Admin Course").max_students(10).insert(&app.db).await;
     let entry_id =
         seed_waitlist_entry(&app.db, owner.user_id, course_id, "waiting", Utc::now()).await;
 
@@ -172,7 +175,8 @@ async fn cancel_already_cancelled_returns_404(db: PgPool) {
     let user = app
         .register_member("wl-cancel-twice@example.com", "Password!234")
         .await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Cancel Twice Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("WL Cancel Twice Course").max_students(10).insert(&app.db).await;
     let entry_id =
         seed_waitlist_entry(&app.db, user.user_id, course_id, "cancelled", Utc::now()).await;
 
@@ -200,7 +204,8 @@ async fn cancel_nonexistent_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn admin_list_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Admin No Auth Course", None, 5).await;
+    let course_id =
+        CourseSeed::new("WL Admin No Auth Course").max_students(5).insert(&app.db).await;
 
     let resp = app
         .get(&format!("/api/v1/waitlist?course_id={course_id}"))
@@ -226,7 +231,7 @@ async fn admin_list_as_non_admin_returns_403(db: PgPool) {
     let user = app
         .register_member("wl-admin-list-member@example.com", "Password!234")
         .await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Admin Member Course", None, 5).await;
+    let course_id = CourseSeed::new("WL Admin Member Course").max_students(5).insert(&app.db).await;
 
     let resp = app
         .get(&format!("/api/v1/waitlist?course_id={course_id}"))
@@ -240,8 +245,8 @@ async fn admin_list_returns_waiting_only_oldest_first_for_course(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, token) = app.seed_admin().await;
 
-    let course_x = seed_course_with_capacity(&app.db, "Admin Queue Course X", None, 1).await;
-    let course_y = seed_course_with_capacity(&app.db, "Admin Queue Course Y", None, 1).await;
+    let course_x = CourseSeed::new("Admin Queue Course X").max_students(1).insert(&app.db).await;
+    let course_y = CourseSeed::new("Admin Queue Course Y").max_students(1).insert(&app.db).await;
 
     let user_a = app
         .register_member("wl-admin-a@example.com", "Password!234")
@@ -312,7 +317,7 @@ async fn admin_list_returns_waiting_only_oldest_first_for_course(db: PgPool) {
 async fn join_response_matches_me_and_admin_rows(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
-    let course_id = seed_course_with_capacity(&app.db, "WL Pin Course", None, 1).await;
+    let course_id = CourseSeed::new("WL Pin Course").max_students(1).insert(&app.db).await;
     let filler = app
         .register_member("wl-pin-filler@example.com", "Password!234")
         .await;

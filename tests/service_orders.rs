@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use common::add_course_to_cart;
 use common::fixtures::{
-    SeedCartLine, seed_carted_member, seed_coupon, seed_course_session, seed_course_with_capacity,
+    CourseSeed, SeedCartLine, seed_carted_member, seed_coupon, seed_course_session,
     seed_entitlement_product, seed_full_course, seed_leave_request, seed_order_with_item,
     set_points_balance,
 };
@@ -204,7 +204,7 @@ async fn checkout_fully_inactive_cart_returns_422_not_cart_is_empty(db: PgPool) 
 
 #[sqlx::test]
 async fn checkout_mixed_cart_inactive_course_rejects_whole_batch_and_keeps_cart(db: PgPool) {
-    let course = seed_course_with_capacity(&db, "Mixed Gate Course", None, 12).await;
+    let course = CourseSeed::new("Mixed Gate Course").max_students(12).insert(&db).await;
     let product = common::seed_product(&db, "still-active-mix", 1000, Some(5)).await;
     let user = common::seed_member(&db, "mixed-gate@example.com", "passw0rd!").await;
     common::add_to_cart(&db, user, product, 1).await;
@@ -245,7 +245,7 @@ async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
     // course) exercises all three outcomes in one checkout. The response
     // DTO deliberately doesn't expose this column (wire safety), so this
     // reads `order_items` directly.
-    let course = seed_course_with_capacity(&db, "Snapshot Course", None, 12).await;
+    let course = CourseSeed::new("Snapshot Course").max_students(12).insert(&db).await;
     let limited = common::seed_product(&db, "snapshot-limited", 1000, Some(5)).await;
     let unlimited = common::seed_product(&db, "snapshot-unlimited", 500, None).await;
     let user = seed_carted_member(
@@ -305,7 +305,7 @@ async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
 
 #[sqlx::test]
 async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
-    let course = seed_course_with_capacity(&db, "Mixed Cart Course", None, 12).await;
+    let course = CourseSeed::new("Mixed Cart Course").max_students(12).insert(&db).await;
     let product = seed_entitlement_product(&db, "membership-mix", "membership", 8000, None, None).await;
     let user = seed_carted_member(
         &db,
@@ -711,7 +711,7 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_4
 #[sqlx::test]
 async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool) {
     let user = common::seed_member(&db, "replay-buyer@example.com", "passw0rd!").await;
-    let course = seed_course_with_capacity(&db, "Replay Course", None, 12).await;
+    let course = CourseSeed::new("Replay Course").max_students(12).insert(&db).await;
     add_course_to_cart(&db, user, course).await;
 
     let key = Some(IdempotencyKey::parse("idempotency-key-1").unwrap());
@@ -1093,7 +1093,7 @@ async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool
     // SHARE to upgrade to UPDATE — PostgreSQL aborted one (SQLSTATE 40P01 →
     // 500). The order lock protocol now takes `FOR UPDATE` up front
     // (`seats::lock_courses_tx`), so the second buyer queues instead.
-    let course = seed_course_with_capacity(&db, "same-row-course", None, 5).await;
+    let course = CourseSeed::new("same-row-course").max_students(5).insert(&db).await;
     let first = seed_carted_member(
         &db,
         "same-row-course-first@example.com",
@@ -1434,7 +1434,7 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
 /// `seed_*` fixtures never write `order_id`, so a directly-built order carries
 /// no traces to compensate). Returns `(user, order, finite_product_id)`.
 async fn checkout_mixed_with_points(db: &PgPool, email: &str) -> (Uuid, OrderResponse, Uuid) {
-    let course = seed_course_with_capacity(db, "Compensation Course", None, 12).await;
+    let course = CourseSeed::new("Compensation Course").max_students(12).insert(db).await;
     let limited = common::seed_product(db, "comp-limited", 10_000, Some(5)).await;
     let membership =
         seed_entitlement_product(db, "comp-membership", "membership", 8_000, None, None).await;
@@ -1594,7 +1594,7 @@ async fn cancel_compensates_identically_to_refund(db: PgPool) {
 /// stock, enrolment, subscription untouched; no refund ledger row).
 #[sqlx::test]
 async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: PgPool) {
-    let course = seed_course_with_capacity(&db, "Clawback Course", None, 12).await;
+    let course = CourseSeed::new("Clawback Course").max_students(12).insert(&db).await;
     let limited = common::seed_product(&db, "clawback-limited", 10_000, Some(5)).await;
     let membership =
         seed_entitlement_product(&db, "clawback-membership", "membership", 8_000, None, None).await;
@@ -1880,7 +1880,7 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
 /// in FULL — whole-order semantics don't depend on the enrolment's state.
 #[sqlx::test]
 async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
-    let course = seed_course_with_capacity(&db, "Self-Cancel Course", None, 12).await;
+    let course = CourseSeed::new("Self-Cancel Course").max_students(12).insert(&db).await;
     let limited = common::seed_product(&db, "self-cancel-limited", 10_000, Some(5)).await;
     let user = seed_carted_member(
         &db,
@@ -1951,7 +1951,7 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
 /// 已核准的假單維持 `approved`(ADR-0008 gap 1)。
 #[sqlx::test]
 async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
-    let course = seed_course_with_capacity(&db, "Refund Leave Course", None, 12).await;
+    let course = CourseSeed::new("Refund Leave Course").max_students(12).insert(&db).await;
     let user = seed_carted_member(
         &db,
         "refund-leave-buyer@example.com",

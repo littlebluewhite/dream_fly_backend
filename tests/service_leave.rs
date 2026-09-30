@@ -19,7 +19,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::leave::dto::MakeupRequest;
 use dream_fly_backend::modules::leave::service;
 
-use common::fixtures::{seed_course_session, seed_course_with_capacity, seed_enrolment, seed_leave_request};
+use common::fixtures::{CourseSeed, seed_course_session, seed_enrolment, seed_leave_request};
 
 fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -49,7 +49,7 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     // request, both targeting the same (roomy-capacity) session. The
     // `FOR UPDATE OF lr` lock in `find_for_makeup_tx` must serialize them so
     // only the first can observe `makeup_session_id IS NULL` and win.
-    let course_id = seed_course_with_capacity(&db, "Makeup Race Course", None, 10).await;
+    let course_id = CourseSeed::new("Makeup Race Course").max_students(10).insert(&db).await;
     let user_id = common::seed_member(&db, "makeup-race@example.com", "Password!234").await;
     let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
 
@@ -97,7 +97,7 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
     // lock (`lock_session_tx`, controller ruling 2026-07-06) must serialize
     // the two capacity checks: the loser recounts after the winner's commit,
     // sees remaining = 3 - 2 + 0 - 1 = 0, and gets the capacity 409.
-    let course_id = seed_course_with_capacity(&db, "Makeup Last Seat Course", None, 3).await;
+    let course_id = CourseSeed::new("Makeup Last Seat Course").max_students(3).insert(&db).await;
     let user_a = common::seed_member(&db, "makeup-last-seat-a@example.com", "Password!234").await;
     let user_b = common::seed_member(&db, "makeup-last-seat-b@example.com", "Password!234").await;
     let enrolment_a = seed_enrolment(&db, user_a, course_id, "active", Utc::now()).await;
@@ -170,7 +170,7 @@ async fn makeup(
 /// 已核准、可補課的假單(課程 `max_students`,申請人是唯一 active 報名)。
 /// 回傳 (course_id, user_id, leave_id)。
 async fn approved_leave(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uuid, Uuid) {
-    let course_id = seed_course_with_capacity(db, name, None, max_students).await;
+    let course_id = CourseSeed::new(name).max_students(max_students).insert(db).await;
     let email = format!("makeup-pin-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(db, &email, "Password!234").await;
     let enrolment_id = seed_enrolment(db, user_id, course_id, "active", Utc::now()).await;
@@ -196,7 +196,7 @@ async fn makeup_unknown_target_session_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn makeup_source_conflict_precedes_unknown_target_404(db: PgPool) {
     // 假單還是 pending(source 409),目標場次又不存在(404)——source 先。
-    let course_id = seed_course_with_capacity(&db, "Makeup Pin Source", None, 10).await;
+    let course_id = CourseSeed::new("Makeup Pin Source").max_students(10).insert(&db).await;
     let user_id = common::seed_member(&db, "makeup-pin-source@example.com", "Password!234").await;
     let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
     let original = (Utc::now() - Duration::days(1)).date_naive();

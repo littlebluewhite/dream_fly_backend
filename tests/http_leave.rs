@@ -17,8 +17,8 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
-    seed_attendance, seed_coach, seed_course, seed_course_session, seed_course_with_capacity,
-    seed_enrolment, seed_leave_request, seed_leave_scene,
+    CourseSeed, seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment,
+    seed_leave_request, seed_leave_scene,
 };
 use common::http::spawn_test_app;
 use serde_json::json;
@@ -770,7 +770,7 @@ async fn makeup_without_auth_returns_401(db: PgPool) {
 async fn makeup_same_course_future_session_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-makeup-ok@example.com", "Password!234").await;
-    let course_id = seed_course_with_capacity(&app.db, "Leave Makeup Course", None, 10).await;
+    let course_id = CourseSeed::new("Leave Makeup Course").max_students(10).insert(&app.db).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let target_date = (Utc::now() + Duration::days(3)).date_naive();
     let target_session_id =
@@ -803,7 +803,8 @@ async fn makeup_same_course_future_session_succeeds(db: PgPool) {
 async fn makeup_target_session_already_started_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("leave-makeup-started@example.com", "Password!234").await;
-    let course_id = seed_course_with_capacity(&app.db, "Leave Makeup Started Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("Leave Makeup Started Course").max_students(10).insert(&app.db).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let target_session_id =
         seed_course_session(&app.db, course_id, yesterday(), t(14, 0), t(15, 0)).await;
@@ -824,7 +825,8 @@ async fn makeup_by_non_owner_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let owner = app.register_member("leave-makeup-owner@example.com", "Password!234").await;
     let other = app.register_member("leave-makeup-other@example.com", "Password!234").await;
-    let course_id = seed_course_with_capacity(&app.db, "Leave Makeup Owner Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("Leave Makeup Owner Course").max_students(10).insert(&app.db).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let target_date = (Utc::now() + Duration::days(3)).date_naive();
     let target_session_id =
@@ -1011,7 +1013,8 @@ async fn makeup_response_matches_me_row(db: PgPool) {
     let user = app
         .register_member("leave-pin-makeup@example.com", "Password!234")
         .await;
-    let course_id = seed_course_with_capacity(&app.db, "Leave Pin Makeup Course", None, 10).await;
+    let course_id =
+        CourseSeed::new("Leave Pin Makeup Course").max_students(10).insert(&app.db).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let target_date = (Utc::now() + Duration::days(3)).date_naive();
     let target_session_id =

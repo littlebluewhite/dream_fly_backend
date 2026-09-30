@@ -22,7 +22,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use common::fixtures::{
-    seed_course, seed_course_session, seed_course_with_capacity, seed_enrolment, seed_leave_request,
+    CourseSeed, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::courses::seats;
@@ -92,7 +92,7 @@ async fn enrol_from_purchase_creates_active_enrolment(db: PgPool) {
 
 #[sqlx::test]
 async fn enrol_full_course_returns_course_is_full_conflict(db: PgPool) {
-    let course_id = seed_course_with_capacity(&db, "Full Course", None, 1).await;
+    let course_id = CourseSeed::new("Full Course").max_students(1).insert(&db).await;
     let user_a = common::seed_member(&db, "enrol-full-a@example.com", "Password!234").await;
     let user_b = common::seed_member(&db, "enrol-full-b@example.com", "Password!234").await;
 
