@@ -5,18 +5,6 @@ use uuid::Uuid;
 // report_cards
 // ---------------------------------------------------------------------------
 
-/// Bare `report_cards` table row.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct ReportCard {
-    pub id: Uuid,
-    pub enrolment_id: Uuid,
-    pub term_label: String,
-    pub comment: Option<String>,
-    pub rating: Option<i16>,
-    pub created_by: Uuid,
-    pub created_at: DateTime<Utc>,
-}
-
 /// The target enrolment's `course_id` plus that course's `coach_id` —
 /// everything `POST /report-cards`'s coach-ownership check needs (mirrors
 /// `leave::model::SessionContext`'s narrow-context shape). `None`
@@ -28,8 +16,9 @@ pub struct EnrolmentCourseCoach {
 }
 
 /// One `report_cards` row JOINed with its enrolment's course name and the
-/// issuing user's name — the shape `GET /report-cards/me` and the
-/// `POST /report-cards` response share (see `dto::ReportCardResponse`).
+/// issuing user's name — the report-card read projection, shared by
+/// `GET /report-cards/me` and the `POST /report-cards` response (see
+/// `repository::REPORT_CARD_VIEW_COLUMNS`, `dto::ReportCardResponse`).
 #[derive(Debug, sqlx::FromRow)]
 pub struct ReportCardRow {
     pub id: Uuid,
@@ -46,23 +35,10 @@ pub struct ReportCardRow {
 // certificates
 // ---------------------------------------------------------------------------
 
-/// Bare `certificates` table row.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct Certificate {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub course_id: Option<Uuid>,
-    pub title: String,
-    pub level: Option<String>,
-    pub issued_on: NaiveDate,
-    pub issued_by: Uuid,
-    pub note: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
-
 /// One `certificates` row JOINed with its (optional) course's name — the
-/// shape `GET /certificates/me` and the `POST /certificates` response share
-/// (see `dto::CertificateResponse`).
+/// certificate read projection, shared by `GET /certificates/me` and the
+/// `POST /certificates` response (see
+/// `repository::CERTIFICATE_VIEW_COLUMNS`, `dto::CertificateResponse`).
 #[derive(Debug, sqlx::FromRow)]
 pub struct CertificateRow {
     pub id: Uuid,
