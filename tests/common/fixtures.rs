@@ -18,6 +18,7 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
+use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 
@@ -605,7 +606,7 @@ pub async fn seed_booking(
 pub async fn seed_entitlement_product(
     db: &PgPool,
     slug: &str,
-    product_type: &str,
+    product_type: ProductType,
     price_cents: i64,
     valid_days: Option<i32>,
     session_count: Option<i32>,
@@ -617,7 +618,7 @@ pub async fn seed_entitlement_product(
             id, name, slug, product_type, price_cents, features,
             is_highlighted, valid_days, session_count, is_active, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4::product_type, $5, '{}'::text[], false, $6, $7, true, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, '{}'::text[], false, $6, $7, true, NOW(), NOW())
         "#,
     )
     .bind(id)

@@ -36,6 +36,7 @@ use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::PointsTier;
+use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
 use dream_fly_backend::modules::sessions::service as sessions_service;
@@ -478,8 +479,15 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
     let now = Utc::now();
     let buyer = seed_member(&db, "split-buyer@example.com", "Password!234").await;
     let course_id = seed_course(&db, "Split Course", None).await;
-    let ticket_id =
-        seed_entitlement_product(&db, "split-ticket", "ticket", 10_000, Some(30), Some(10)).await;
+    let ticket_id = seed_entitlement_product(
+        &db,
+        "split-ticket",
+        ProductType::Ticket,
+        10_000,
+        Some(30),
+        Some(10),
+    )
+    .await;
     let merch_id = seed_product(&db, "split-merch", 5_000, Some(10)).await;
 
     // Gross this month: ticket 20_000 + merchandise 5_000 + course 25_000
@@ -685,9 +693,15 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
     let course_a = seed_course(&db, "Coach Rev Course A", Some(coach_a)).await;
     let course_b = seed_course(&db, "Coach Rev Course B", Some(coach_b)).await;
     let course_orphan = seed_course(&db, "Coach Rev Orphan Course", None).await;
-    let ticket_id =
-        seed_entitlement_product(&db, "coachrev-ticket", "ticket", 20_000, Some(30), Some(10))
-            .await;
+    let ticket_id = seed_entitlement_product(
+        &db,
+        "coachrev-ticket",
+        ProductType::Ticket,
+        20_000,
+        Some(30),
+        Some(10),
+    )
+    .await;
 
     // Mixed order: the course line goes to coach A, the ticket line goes to
     // no coach at all.

@@ -5,6 +5,7 @@ mod common;
 use chrono::{Duration, TimeZone, Utc};
 use common::fixtures::{CourseSeed, seed_entitlement_product};
 use common::http::{spawn_test_app, spawn_test_app_with, TestApp};
+use dream_fly_backend::modules::products::model::ProductType;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -488,9 +489,15 @@ async fn update_status_refund_via_http_returns_cancelled_artifacts(db: PgPool) {
         .register_member("refund-http@example.com", "Password!234")
         .await;
     let course = CourseSeed::new("HTTP Refund Course").max_students(12).insert(&app.db).await;
-    let membership =
-        seed_entitlement_product(&app.db, "http-refund-membership", "membership", 8_000, None, None)
-            .await;
+    let membership = seed_entitlement_product(
+        &app.db,
+        "http-refund-membership",
+        ProductType::Membership,
+        8_000,
+        None,
+        None,
+    )
+    .await;
 
     // Build a cart with a course (→ enrolment) and a membership (→ subscription).
     app.post("/api/v1/cart/items")

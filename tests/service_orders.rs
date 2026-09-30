@@ -36,6 +36,7 @@ use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service;
+use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::products::service as product_service;
 
 #[sqlx::test]
@@ -308,7 +309,9 @@ async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
 #[sqlx::test]
 async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
     let course = CourseSeed::new("Mixed Cart Course").max_students(12).insert(&db).await;
-    let product = seed_entitlement_product(&db, "membership-mix", "membership", 8000, None, None).await;
+    let product =
+        seed_entitlement_product(&db, "membership-mix", ProductType::Membership, 8000, None, None)
+            .await;
     let user = seed_carted_member(
         &db,
         "mixed-buyer@example.com",
@@ -626,8 +629,15 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_4
     // — `entitlement::plan` (reached via `grant_from_purchase_tx`) rejects
     // it with 422, and checkout rolls back with zero writes: no order, no
     // subscription, cart untouched.
-    let membership =
-        seed_entitlement_product(&db, "quantity-guard", "membership", 5000, Some(30), None).await;
+    let membership = seed_entitlement_product(
+        &db,
+        "quantity-guard",
+        ProductType::Membership,
+        5000,
+        Some(30),
+        None,
+    )
+    .await;
     let user = seed_carted_member(
         &db,
         "entitlement-qty@example.com",
@@ -677,8 +687,15 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_4
     // reached, so this must come back 409, not 422 — pinning the doc's
     // priority order (course 409 before the entitlement 422).
     let full_course = seed_full_course(&db, "Entitlement Priority Course", 1).await;
-    let membership_2 =
-        seed_entitlement_product(&db, "quantity-guard-2", "membership", 5000, Some(30), None).await;
+    let membership_2 = seed_entitlement_product(
+        &db,
+        "quantity-guard-2",
+        ProductType::Membership,
+        5000,
+        Some(30),
+        None,
+    )
+    .await;
     let user_2 = seed_carted_member(
         &db,
         "entitlement-qty-course@example.com",
@@ -1439,7 +1456,8 @@ async fn checkout_mixed_with_points(db: &PgPool, email: &str) -> (Uuid, OrderRes
     let course = CourseSeed::new("Compensation Course").max_students(12).insert(db).await;
     let limited = common::seed_product(db, "comp-limited", 10_000, Some(5)).await;
     let membership =
-        seed_entitlement_product(db, "comp-membership", "membership", 8_000, None, None).await;
+        seed_entitlement_product(db, "comp-membership", ProductType::Membership, 8_000, None, None)
+            .await;
     let user = seed_carted_member(
         db,
         email,
@@ -1598,8 +1616,15 @@ async fn cancel_compensates_identically_to_refund(db: PgPool) {
 async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: PgPool) {
     let course = CourseSeed::new("Clawback Course").max_students(12).insert(&db).await;
     let limited = common::seed_product(&db, "clawback-limited", 10_000, Some(5)).await;
-    let membership =
-        seed_entitlement_product(&db, "clawback-membership", "membership", 8_000, None, None).await;
+    let membership = seed_entitlement_product(
+        &db,
+        "clawback-membership",
+        ProductType::Membership,
+        8_000,
+        None,
+        None,
+    )
+    .await;
     // No points balance → no redeem, only an earn ledger row; restore will be
     // 0, so it can't cover the clawback.
     let user = seed_carted_member(

@@ -30,6 +30,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::repository as orders_repo;
 use dream_fly_backend::modules::orders::service as orders_service;
+use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::products::repository as products_repo;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::subscriptions::repository as subscriptions_repo;
@@ -68,8 +69,15 @@ async fn seed_order(
 #[sqlx::test]
 async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
     let user_id = common::seed_member(&db, "grant-b@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-combo", "ticket", 8_000, Some(90), Some(5)).await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-combo",
+        ProductType::Ticket,
+        8_000,
+        Some(90),
+        Some(5),
+    )
+    .await;
     let product = products_repo::find_by_id(&db, product_id)
         .await
         .expect("query product")
@@ -125,8 +133,15 @@ async fn grant_non_entitlement_product_type_returns_none(db: PgPool) {
 #[sqlx::test]
 async fn redeem_decrements_remaining_sessions(db: PgPool) {
     let user_id = common::seed_member(&db, "redeem-a@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-redeem-a", "ticket", 5_000, None, Some(10)).await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-redeem-a",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(10),
+    )
+    .await;
     let sub_id = seed_subscription(
         &db,
         user_id,
@@ -150,8 +165,15 @@ async fn redeem_decrements_remaining_sessions(db: PgPool) {
 #[sqlx::test]
 async fn redeem_with_zero_remaining_returns_conflict(db: PgPool) {
     let user_id = common::seed_member(&db, "redeem-b@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-redeem-b", "ticket", 5_000, None, Some(10)).await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-redeem-b",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(10),
+    )
+    .await;
     let sub_id = seed_subscription(
         &db,
         user_id,
@@ -174,8 +196,15 @@ async fn redeem_with_zero_remaining_returns_conflict(db: PgPool) {
 #[sqlx::test]
 async fn redeem_expired_by_date_returns_conflict(db: PgPool) {
     let user_id = common::seed_member(&db, "redeem-c@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-redeem-c", "ticket", 5_000, None, Some(10)).await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-redeem-c",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(10),
+    )
+    .await;
     let sub_id = seed_subscription(
         &db,
         user_id,
@@ -201,7 +230,7 @@ async fn redeem_with_no_session_quota_returns_specific_conflict_message(db: PgPo
     let product_id = seed_entitlement_product(
         &db,
         "membership-redeem-d",
-        "membership",
+        ProductType::Membership,
         20_000,
         None,
         None,
@@ -224,8 +253,15 @@ async fn redeem_with_no_session_quota_returns_specific_conflict_message(db: PgPo
 #[sqlx::test]
 async fn redeem_cancelled_returns_conflict(db: PgPool) {
     let user_id = common::seed_member(&db, "redeem-e@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-redeem-e", "ticket", 5_000, None, Some(10)).await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-redeem-e",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(10),
+    )
+    .await;
     let sub_id = seed_subscription(
         &db,
         user_id,
@@ -263,7 +299,8 @@ async fn concurrent_redeems_each_report_their_own_decrement(db: PgPool) {
     // could leak into the response (duplicate/missing values here).
     let user_id = common::seed_member(&db, "redeem-f@example.com", "Password!234").await;
     let product_id =
-        seed_entitlement_product(&db, "ticket-redeem-f", "ticket", 5_000, None, Some(5)).await;
+        seed_entitlement_product(&db, "ticket-redeem-f", ProductType::Ticket, 5_000, None, Some(5))
+            .await;
     let sub_id = seed_subscription(
         &db,
         user_id,
@@ -403,7 +440,7 @@ async fn derived_status_matches_expected_shape(db: PgPool) {
         let product_id = seed_entitlement_product(
             &db,
             &format!("ticket-derived-status-{i}"),
-            "ticket",
+            ProductType::Ticket,
             5_000,
             None,
             Some(10),
@@ -443,8 +480,15 @@ async fn derived_status_matches_expected_shape(db: PgPool) {
 
 #[sqlx::test]
 async fn redeem_after_refund_is_conflict(db: PgPool) {
-    let ticket =
-        seed_entitlement_product(&db, "refund-redeem-ticket", "ticket", 5_000, None, Some(5)).await;
+    let ticket = seed_entitlement_product(
+        &db,
+        "refund-redeem-ticket",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(5),
+    )
+    .await;
     let user = seed_carted_member(
         &db,
         "refund-redeem@example.com",
