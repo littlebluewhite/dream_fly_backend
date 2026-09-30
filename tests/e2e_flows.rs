@@ -7,7 +7,7 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
-    seed_coach, seed_coupon, seed_course, seed_course_session, seed_enrolment, seed_time_slot_full,
+    TimeSlotSeed, seed_coach, seed_coupon, seed_course, seed_course_session, seed_enrolment,
 };
 use common::http::spawn_test_app;
 use serde_json::json;
@@ -83,7 +83,7 @@ async fn e2e_booking_flow(db: PgPool) {
             "description": "Primary training hall",
         }))
         .await;
-    let slot_id = seed_time_slot_full(&app.db, None, None, 3).await;
+    let slot_id = TimeSlotSeed::new(3).insert(&app.db).await;
 
     // Member lists schedule availability for tomorrow + 2d.
     let date = (chrono::Utc::now() + chrono::Duration::days(2)).date_naive();

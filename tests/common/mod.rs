@@ -21,7 +21,7 @@ pub mod twilio;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-use chrono::{Duration, NaiveDate, NaiveTime, Utc};
+use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -158,61 +158,6 @@ pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> 
     tx.commit().await.expect("commit seed_member");
 
     user.id
-}
-
-/// Insert a time slot scheduled for the day after tomorrow (+2 days) at 10:00–11:00.
-/// Returns the slot id. Used by bookings tests.
-pub async fn seed_time_slot(db: &PgPool, capacity: i32) -> Uuid {
-    seed_time_slot_on(db, capacity, (Utc::now() + Duration::days(2)).date_naive()).await
-}
-
-/// Insert a time slot on the given date. Lets callers control whether a slot
-/// falls inside or outside the 24-hour cancellation window.
-pub async fn seed_time_slot_on(db: &PgPool, capacity: i32, date: NaiveDate) -> Uuid {
-    let start = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
-    seed_time_slot_on_with_start(db, capacity, date, start).await
-}
-
-/// Insert a time slot on an exact (date, start_time). Used by tests that
-/// need to place the slot at a very specific offset from `now()` — e.g.
-/// the 24-hour cancellation test needs the slot strictly in the future
-/// but strictly inside the 24h window.
-pub async fn seed_time_slot_on_with_start(
-    db: &PgPool,
-    capacity: i32,
-    date: NaiveDate,
-    start: NaiveTime,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    // `overflowing_add_signed` wraps at midnight, which would violate the
-    // `time_slots_time_order CHECK (end_time > start_time)` whenever `start`
-    // lands in the last hour of the day (callers pass wall-clock-derived
-    // starts, so any test run between 20:00 and 21:00 UTC used to hit this)
-    // — clamp to end-of-day instead of wrapping. Tests only compare against
-    // `start_time`, so the exact clamped end value is inconsequential.
-    let (end, carry) = start.overflowing_add_signed(chrono::Duration::hours(1));
-    let end = if carry != 0 {
-        NaiveTime::from_hms_micro_opt(23, 59, 59, 999_999).unwrap()
-    } else {
-        end
-    };
-
-    sqlx::query(
-        r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, capacity, booked, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(date)
-    .bind(start)
-    .bind(end)
-    .bind(capacity)
-    .execute(db)
-    .await
-    .expect("insert time_slot");
-
-    id
 }
 
 /// Insert a product. `stock = None` means unlimited (tickets/memberships);

@@ -16,7 +16,7 @@ use dream_fly_backend::modules::coaches::repository as coaches_repository;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 
-use super::{add_course_to_cart, add_to_cart, seed_member, seed_time_slot_on};
+use super::{add_course_to_cart, add_to_cart, seed_member};
 
 /// Insert a coach profile linked to the given user and attach the `coach`
 /// role, in the same transaction. Returns the coach id.
@@ -316,34 +316,81 @@ pub async fn seed_notification(db: &PgPool, user_id: Uuid, title: &str, is_read:
     id
 }
 
-/// Insert a time slot for a given course/venue on the day after tomorrow (+2 days) at 10:00.
-pub async fn seed_time_slot_full(
-    db: &PgPool,
+/// Builder for a `time_slots` row inserted directly (bypassing the schedule
+/// service). Defaults: the day after tomorrow (+2 days — safely outside the
+/// 24-hour cancellation window), 10:00–11:00, no course/venue, `booked = 0`.
+/// `on`/`start` place the slot at an exact (date, start_time), e.g. inside
+/// or outside the cancellation window. The end is start + 1 hour, clamped
+/// to end-of-day instead of wrapping past midnight.
+pub struct TimeSlotSeed {
+    capacity: i32,
+    date: NaiveDate,
+    start: NaiveTime,
     course_id: Option<Uuid>,
     venue_id: Option<Uuid>,
-    capacity: i32,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    let date = (Utc::now() + Duration::days(2)).date_naive();
-    let start = chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap();
-    let end = chrono::NaiveTime::from_hms_opt(11, 0, 0).unwrap();
-    sqlx::query(
-        r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, booked, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(date)
-    .bind(start)
-    .bind(end)
-    .bind(venue_id)
-    .bind(course_id)
-    .bind(capacity)
-    .execute(db)
-    .await
-    .expect("insert time_slot");
-    id
+}
+
+impl TimeSlotSeed {
+    pub fn new(capacity: i32) -> Self {
+        Self {
+            capacity,
+            date: (Utc::now() + Duration::days(2)).date_naive(),
+            start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
+            course_id: None,
+            venue_id: None,
+        }
+    }
+
+    pub fn on(self, date: NaiveDate) -> Self {
+        Self { date, ..self }
+    }
+
+    pub fn start(self, start: NaiveTime) -> Self {
+        Self { start, ..self }
+    }
+
+    pub fn course(self, course_id: Uuid) -> Self {
+        Self { course_id: Some(course_id), ..self }
+    }
+
+    pub fn venue(self, venue_id: Uuid) -> Self {
+        Self { venue_id: Some(venue_id), ..self }
+    }
+
+    /// Returns the slot id.
+    pub async fn insert(self, db: &PgPool) -> Uuid {
+        let id = Uuid::now_v7();
+        // `overflowing_add_signed` wraps at midnight, which would violate the
+        // `time_slots_time_order CHECK (end_time > start_time)` whenever
+        // `start` lands in the last hour of the day (callers pass
+        // wall-clock-derived starts, so any test run between 20:00 and 21:00
+        // UTC used to hit this) — clamp to end-of-day instead of wrapping.
+        // Tests only compare against `start_time`, so the exact clamped end
+        // value is inconsequential.
+        let (end, carry) = self.start.overflowing_add_signed(Duration::hours(1));
+        let end = if carry != 0 {
+            NaiveTime::from_hms_micro_opt(23, 59, 59, 999_999).unwrap()
+        } else {
+            end
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, booked, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW(), NOW())
+            "#,
+        )
+        .bind(id)
+        .bind(self.date)
+        .bind(self.start)
+        .bind(end)
+        .bind(self.venue_id)
+        .bind(self.course_id)
+        .bind(self.capacity)
+        .execute(db)
+        .await
+        .expect("insert time_slot");
+        id
+    }
 }
 
 /// Insert a coupon row directly, bypassing the service layer so tests can
@@ -961,7 +1008,7 @@ pub async fn seed_course_revenue(
     order.line(SeedOrderLine::Course { course_id, unit_price_cents }).insert(db).await
 }
 
-/// 「某日一個時段被多筆不同狀態的預訂占用」:`seed_time_slot_on` 建一個
+/// 「某日一個時段被多筆不同狀態的預訂占用」:`TimeSlotSeed` 建一個
 /// slot,`rentals` 每筆 (status, price_cents) 各自造一個新 member 再
 /// `seed_booking`,取代「一個 slot + 逐筆各自 seed_member/seed_booking」的
 /// inline 序列。Returns the new booking ids, in `rentals` order.
@@ -970,7 +1017,7 @@ pub async fn seed_venue_rentals(
     slot_date: NaiveDate,
     rentals: &[(BookingStatus, i64)],
 ) -> Vec<Uuid> {
-    let slot_id = seed_time_slot_on(db, rentals.len() as i32, slot_date).await;
+    let slot_id = TimeSlotSeed::new(rentals.len() as i32).on(slot_date).insert(db).await;
     let mut booking_ids = Vec::with_capacity(rentals.len());
     for (status, price_cents) in rentals {
         let email = format!("venue-rental-{}@example.com", Uuid::now_v7());

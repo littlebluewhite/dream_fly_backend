@@ -40,13 +40,13 @@ use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use common::fixtures::{
-    CourseSeed, OrderSeed, SeedOrderLine, SessionSeed, SlotSeed, backdate_user, seed_attendance,
-    seed_booking, seed_coach, seed_course, seed_course_revenue, seed_course_schedule_slot,
-    seed_course_session, seed_enrolment, seed_entitlement_product, seed_leave_request,
-    seed_marked_attendance, seed_member_created_at, seed_message, seed_venue_rentals,
-    seed_waitlist_entry, set_birth_date, set_points_balance,
+    CourseSeed, OrderSeed, SeedOrderLine, SessionSeed, SlotSeed, TimeSlotSeed, backdate_user,
+    seed_attendance, seed_booking, seed_coach, seed_course, seed_course_revenue,
+    seed_course_schedule_slot, seed_course_session, seed_enrolment, seed_entitlement_product,
+    seed_leave_request, seed_marked_attendance, seed_member_created_at, seed_message,
+    seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
 };
-use common::{seed_member, seed_product, seed_time_slot_on};
+use common::{seed_member, seed_product};
 
 fn t(h: u32, m: u32) -> chrono::NaiveTime {
     chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -494,7 +494,7 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
 
     // A venue booking this month must show up in revenue_breakdown but stay
     // out of category_split (order-line 毛額 only) and its ratios.
-    let slot_id = seed_time_slot_on(&db, 10, months_ago(now, 0).date_naive()).await;
+    let slot_id = TimeSlotSeed::new(10).on(months_ago(now, 0).date_naive()).insert(&db).await;
     seed_booking(&db, buyer, slot_id, BookingStatus::Confirmed, 100_000).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))

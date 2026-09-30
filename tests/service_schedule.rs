@@ -8,7 +8,7 @@
 mod common;
 
 use chrono::{Datelike, Duration, Utc};
-use common::fixtures::seed_time_slot_full;
+use common::fixtures::TimeSlotSeed;
 use sqlx::PgPool;
 
 use dream_fly_backend::error::AppError;
@@ -129,9 +129,9 @@ async fn get_monthly_schedule_validates_month_range(db: PgPool) {
 
 #[sqlx::test]
 async fn get_monthly_schedule_returns_seeded_slot(db: PgPool) {
-    let _slot_id = seed_time_slot_full(&db, None, None, 5).await;
+    let _slot_id = TimeSlotSeed::new(5).insert(&db).await;
     let now = Utc::now();
-    // `seed_time_slot_full` inserts 2 days from now, which is usually the
+    // `TimeSlotSeed` defaults to 2 days from now, which is usually the
     // same month — if we've rolled into a new month, query that one.
     let target_date = now + Duration::days(2);
     let resp = service::get_monthly_schedule(
