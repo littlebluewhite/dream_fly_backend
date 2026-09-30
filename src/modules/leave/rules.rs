@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn check_decidable_allows_reject_with_cancelled_enrolment() {
-        // decide_reject_cancelled_enrolment_succeeds (tests/http_leave.rs): a
+        // decide_reject_pending_on_cancelled_enrolment_succeeds (tests/http_leave.rs): a
         // cancelled enrolment blocks approval but not rejection.
         let ctx = decision_ctx(LeaveStatus::Pending, false);
         assert!(check_decidable(&ctx, LeaveStatus::Rejected).is_ok());
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn check_decidable_rejects_non_pending_as_409() {
-        // decide_non_pending_returns_409 (tests/http_leave.rs)
+        // decide_reject_after_enrolment_cancel_is_409_not_pending (tests/http_leave.rs)
         let ctx = decision_ctx(LeaveStatus::Approved, true);
         let err = check_decidable(&ctx, LeaveStatus::Rejected).expect_err("must reject");
         assert!(
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn check_decidable_rejects_approve_with_cancelled_enrolment_as_409() {
-        // decide_approve_cancelled_enrolment_returns_409 (tests/http_leave.rs)
+        // decide_approve_pending_on_cancelled_enrolment_returns_409 (tests/http_leave.rs)
         let ctx = decision_ctx(LeaveStatus::Pending, false);
         let err = check_decidable(&ctx, LeaveStatus::Approved).expect_err("must reject");
         assert!(
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn check_makeup_source_rejects_non_approved_status_as_409() {
-        // makeup_requires_approved_status_returns_409 (tests/http_leave.rs)
+        // makeup_source_conflict_precedes_unknown_target_404 (tests/service_leave.rs)
         let err = check_makeup_source(&leave(LeaveStatus::Pending, None)).expect_err("must reject");
         assert!(
             matches!(err, AppError::Conflict(ref m) if m == "僅已核准的假單可預約補課"),
@@ -337,7 +337,6 @@ mod tests {
 
     #[test]
     fn check_makeup_source_rejects_already_booked_as_409() {
-        // makeup_already_booked_returns_409 (tests/http_leave.rs)
         let err = check_makeup_source(&leave(LeaveStatus::Approved, Some(Uuid::now_v7())))
             .expect_err("must reject");
         assert!(
@@ -375,7 +374,6 @@ mod tests {
 
     #[test]
     fn check_makeup_target_rejects_different_course_as_422() {
-        // makeup_target_session_different_course_returns_422 (tests/http_leave.rs)
         let leave = leave(LeaveStatus::Approved, None);
         let target = session_context(Uuid::now_v7(), d(2026, 7, 10), t(14, 0));
         let now = Utc.with_ymd_and_hms(2026, 7, 5, 0, 0, 0).unwrap();
@@ -426,7 +424,6 @@ mod tests {
 
     #[test]
     fn check_makeup_target_rejects_own_leave_session_as_422() {
-        // makeup_into_own_leave_session_returns_422 (tests/http_leave.rs)
         let course_id = Uuid::now_v7();
         let leave = leave(LeaveStatus::Approved, None);
         let leave = LeaveRequestForMakeup { course_id, ..leave };
