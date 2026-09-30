@@ -26,7 +26,7 @@ use common::fixtures::{
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::courses::seats;
-use dream_fly_backend::modules::enrolments::model::Enrolment;
+use dream_fly_backend::modules::enrolments::model::{Enrolment, EnrolmentStatus};
 use dream_fly_backend::modules::enrolments::repository as enrolments_repo;
 use dream_fly_backend::modules::enrolments::service;
 use dream_fly_backend::modules::orders::repository as orders_repo;
@@ -253,7 +253,7 @@ async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
 
     // Commit the conflicting active enrolment from outside the transaction.
-    seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let err = enrol(&mut tx, user_id, course_id, order_id)
         .await
@@ -347,7 +347,8 @@ async fn cancel_enrolment_vs_in_flight_approval_does_not_deadlock(db: PgPool) {
     let session_id = seed_course_session(&db, course_id, tomorrow, nine, ten).await;
     let admin = common::seed_member(&db, "cancel-race-admin@example.com", "Password!234").await;
     let member = common::seed_member(&db, "cancel-race-member@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let leave_id = seed_leave_request(&db, enrolment_id, session_id, "pending").await;
 
     let mut t1 = db.begin().await.expect("begin t1");

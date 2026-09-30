@@ -23,6 +23,7 @@ use sqlx::PgPool;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::certificates::dto::{CreateCertificateRequest, CreateReportCardRequest};
 use dream_fly_backend::modules::certificates::service;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 
 use common::fixtures::{seed_coach, seed_course, seed_enrolment};
 use common::{admin_auth, coach_auth, seed_member};
@@ -41,7 +42,7 @@ async fn create_certificate_by_owning_coach_succeeds_and_notifies(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user_id, "Cert Svc Coach").await;
     let course_id = seed_course(&db, "Cert Svc Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "cert-svc-student@example.com", "Password!234").await;
-    seed_enrolment(&db, member_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let auth = coach_auth(coach_user_id);
     let req = CreateCertificateRequest {
@@ -77,7 +78,7 @@ async fn create_certificate_for_cancelled_enrolment_student_succeeds(db: PgPool)
     let coach_id = seed_coach(&db, coach_user_id, "Cert Svc Hist Coach").await;
     let course_id = seed_course(&db, "Cert Svc Hist Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "cert-svc-hist-student@example.com", "Password!234").await;
-    seed_enrolment(&db, member_id, course_id, "cancelled", Utc::now()).await;
+    seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Cancelled, Utc::now()).await;
 
     let auth = coach_auth(coach_user_id);
     let req = CreateCertificateRequest {
@@ -185,7 +186,8 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user_id, "RC Svc Coach").await;
     let course_id = seed_course(&db, "RC Svc Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "rc-svc-student@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let auth = coach_auth(coach_user_id);
     let req = CreateReportCardRequest {
@@ -216,7 +218,8 @@ async fn create_report_card_duplicate_term_returns_409_leaves_one_row(db: PgPool
     let coach_id = seed_coach(&db, coach_user_id, "RC Svc Dup Coach").await;
     let course_id = seed_course(&db, "RC Svc Dup Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "rc-svc-dup-student@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let auth = coach_auth(coach_user_id);
     let first = CreateReportCardRequest {

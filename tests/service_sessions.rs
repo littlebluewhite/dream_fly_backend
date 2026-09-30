@@ -24,6 +24,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{calendar, service};
 
@@ -384,8 +385,8 @@ async fn my_weekly_schedule_only_includes_active_enrolments(db: PgPool) {
     seed_course_schedule_slot(&db, cancelled_course, 2, t(9, 0), t(10, 0)).await;
     seed_course_schedule_slot(&db, not_enrolled_course, 3, t(9, 0), t(10, 0)).await;
 
-    seed_enrolment(&db, user_id, active_course, "active", Utc::now()).await;
-    seed_enrolment(&db, user_id, cancelled_course, "cancelled", Utc::now()).await;
+    seed_enrolment(&db, user_id, active_course, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, user_id, cancelled_course, EnrolmentStatus::Cancelled, Utc::now()).await;
 
     let schedule = service::my_weekly_schedule(&db, user_id)
         .await
@@ -420,9 +421,9 @@ async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPo
     let m1 = common::seed_member(&db, "m1-today@example.com", "hunter22-secret").await;
     let m2 = common::seed_member(&db, "m2-today@example.com", "hunter22-secret").await;
     let m3 = common::seed_member(&db, "m3-today@example.com", "hunter22-secret").await;
-    seed_enrolment(&db, m1, own_course, "active", Utc::now()).await;
-    seed_enrolment(&db, m2, own_course, "active", Utc::now()).await;
-    seed_enrolment(&db, m3, own_course, "cancelled", Utc::now()).await;
+    seed_enrolment(&db, m1, own_course, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, m2, own_course, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, m3, own_course, EnrolmentStatus::Cancelled, Utc::now()).await;
 
     let auth = common::coach_auth(coach_user);
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)

@@ -29,6 +29,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
@@ -280,8 +281,8 @@ async fn admin_report_members_total_new_and_active(db: PgPool) {
     backdate_user(&db, old_user, months_ago(Utc::now(), 3)).await;
 
     let course_id = seed_course(&db, "Members Stats Course", None).await;
-    seed_enrolment(&db, old_user, course_id, "active", Utc::now()).await;
-    seed_enrolment(&db, new_active_user, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, old_user, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, new_active_user, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
@@ -306,9 +307,9 @@ async fn admin_report_course_fill_rate_and_waitlist(db: PgPool) {
     let u3 = seed_member(&db, "fill-3@example.com", "Password!234").await;
     let w1 = seed_member(&db, "fill-wait-1@example.com", "Password!234").await;
 
-    seed_enrolment(&db, u1, course_id, "active", Utc::now()).await;
-    seed_enrolment(&db, u2, course_id, "active", Utc::now()).await;
-    seed_enrolment(&db, u3, course_id, "cancelled", Utc::now()).await; // must not count
+    seed_enrolment(&db, u1, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, u2, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, u3, course_id, EnrolmentStatus::Cancelled, Utc::now()).await; // must not count
     seed_waitlist_entry(&db, w1, course_id, "waiting", Utc::now()).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
@@ -339,11 +340,11 @@ async fn admin_report_coach_course_and_student_count_scoped_per_coach(db: PgPool
 
     let student_1 = seed_member(&db, "admin-student-1@example.com", "Password!234").await;
     let student_2 = seed_member(&db, "admin-student-2@example.com", "Password!234").await;
-    seed_enrolment(&db, student_1, course_a1, "active", Utc::now()).await;
+    seed_enrolment(&db, student_1, course_a1, EnrolmentStatus::Active, Utc::now()).await;
     // Same student in 2 of coach A's courses -> distinct student_count is
     // still 1, not 2.
-    seed_enrolment(&db, student_1, course_a2, "active", Utc::now()).await;
-    seed_enrolment(&db, student_2, course_b1, "active", Utc::now()).await;
+    seed_enrolment(&db, student_1, course_a2, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, student_2, course_b1, EnrolmentStatus::Active, Utc::now()).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
@@ -381,9 +382,10 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
     let course_a = seed_course(&db, "KPI Course A", None).await;
     let course_b = seed_course(&db, "KPI Course B", None).await;
     let course_c = seed_course(&db, "KPI Course C", None).await;
-    let enrolment_a = seed_enrolment(&db, student, course_a, "active", now).await;
-    let enrolment_b = seed_enrolment(&db, student, course_b, "cancelled", now).await;
-    let enrolment_c = seed_enrolment(&db, student, course_c, "active", last_month).await;
+    let enrolment_a = seed_enrolment(&db, student, course_a, EnrolmentStatus::Active, now).await;
+    let enrolment_b = seed_enrolment(&db, student, course_b, EnrolmentStatus::Cancelled, now).await;
+    let enrolment_c =
+        seed_enrolment(&db, student, course_c, EnrolmentStatus::Active, last_month).await;
 
     // paid_orders_count: refunded/pending never count, even with the same
     // month's `paid_at`.
@@ -745,7 +747,7 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
     // two sessions — can't be expressed by `seed_marked_attendance`, which
     // always mints a brand-new member per call — stays inline.
     let m_low = seed_member(&db, "attdist-low@example.com", "Password!234").await;
-    let e_low = seed_enrolment(&db, m_low, course_id, "active", Utc::now()).await;
+    let e_low = seed_enrolment(&db, m_low, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let s1 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
     let s2 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
     seed_attendance(&db, s1, e_low, "present", m_low).await;
@@ -777,7 +779,7 @@ async fn admin_report_retention_new_returning_and_null_rate(db: PgPool) {
     let now = Utc::now();
     let course_id = seed_course(&db, "Retention Course", None).await;
     let user_id = seed_member(&db, "retention-user@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", now).await;
+    let enrolment_id = seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, now).await;
 
     // Present in last month (first-ever active month) and again this month.
     // Sessions pinned to the 1st of each month so bucketing can't straddle a
@@ -846,9 +848,9 @@ async fn admin_report_funnel_honest_two_stages_90_day_window(db: PgPool) {
     let c1 = seed_course(&db, "Funnel Course 1", None).await;
     let c2 = seed_course(&db, "Funnel Course 2", None).await;
     let c3 = seed_course(&db, "Funnel Course 3", None).await;
-    seed_enrolment(&db, user_id, c1, "active", now - Duration::days(5)).await;
-    seed_enrolment(&db, user_id, c2, "cancelled", now - Duration::days(5)).await; // excluded
-    seed_enrolment(&db, user_id, c3, "active", now - Duration::days(91)).await; // out of window
+    seed_enrolment(&db, user_id, c1, EnrolmentStatus::Active, now - Duration::days(5)).await;
+    seed_enrolment(&db, user_id, c2, EnrolmentStatus::Cancelled, now - Duration::days(5)).await; // excluded
+    seed_enrolment(&db, user_id, c3, EnrolmentStatus::Active, now - Duration::days(91)).await; // out of window
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -870,9 +872,9 @@ async fn admin_report_weekday_load_indexes_sunday_as_zero(db: PgPool) {
     let u1 = seed_member(&db, "weekday-1@example.com", "Password!234").await;
     let u2 = seed_member(&db, "weekday-2@example.com", "Password!234").await;
     let u3 = seed_member(&db, "weekday-3@example.com", "Password!234").await;
-    let e1 = seed_enrolment(&db, u1, course_id, "active", Utc::now()).await;
-    let e2 = seed_enrolment(&db, u2, course_id, "active", Utc::now()).await;
-    let e3 = seed_enrolment(&db, u3, course_id, "active", Utc::now()).await;
+    let e1 = seed_enrolment(&db, u1, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let e2 = seed_enrolment(&db, u2, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let e3 = seed_enrolment(&db, u3, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     // The most recent Sunday (index 0) and Wednesday (index 3) on/before today
@@ -1033,7 +1035,8 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user, "Coach Att").await;
     let course_id = seed_course(&db, "Coach Att Course", Some(coach_id)).await;
     let student = seed_member(&db, "coachatt-student@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, student, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, student, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     // A second coach with a course but no attendance at all -> rate null.
     let coach_b_user = seed_member(&db, "coachatt-b@example.com", "Password!234").await;
@@ -1106,7 +1109,7 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
     seed_course_schedule_slot(&db, course_id, dow, t(9, 0), t(10, 0)).await;
 
     let student = seed_member(&db, "today-student@example.com", "Password!234").await;
-    seed_enrolment(&db, student, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, student, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let auth = common::coach_auth(coach_user);
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
@@ -1149,9 +1152,12 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
     let student_a = seed_member(&db, "rate-student-a@example.com", "Password!234").await;
     let student_b = seed_member(&db, "rate-student-b@example.com", "Password!234").await;
     let student_c = seed_member(&db, "rate-student-c@example.com", "Password!234").await;
-    let enrolment_a = seed_enrolment(&db, student_a, course_id, "active", Utc::now()).await;
-    let enrolment_b = seed_enrolment(&db, student_b, course_id, "active", Utc::now()).await;
-    let enrolment_c = seed_enrolment(&db, student_c, course_id, "active", Utc::now()).await;
+    let enrolment_a =
+        seed_enrolment(&db, student_a, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_b =
+        seed_enrolment(&db, student_b, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_c =
+        seed_enrolment(&db, student_c, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     let within_window = today - Duration::days(10);
@@ -1197,8 +1203,8 @@ async fn coach_report_scoped_to_own_domain(db: PgPool) {
 
     let student_a = seed_member(&db, "scope-student-a@example.com", "Password!234").await;
     let student_b = seed_member(&db, "scope-student-b@example.com", "Password!234").await;
-    seed_enrolment(&db, student_a, course_a, "active", Utc::now()).await;
-    seed_enrolment(&db, student_b, course_b, "active", Utc::now()).await;
+    seed_enrolment(&db, student_a, course_a, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, student_b, course_b, EnrolmentStatus::Active, Utc::now()).await;
 
     let auth_a = common::coach_auth(coach_a_user);
     let report_a = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth_a)
@@ -1267,7 +1273,8 @@ async fn member_report_empty_is_all_zero_or_null(db: PgPool) {
 async fn member_report_attendance_rate_excludes_leave(db: PgPool) {
     let user_id = seed_member(&db, "rate-member@example.com", "Password!234").await;
     let course_id = seed_course(&db, "Member Rate Course", None).await;
-    let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     let session_1 = seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
@@ -1307,8 +1314,8 @@ async fn member_report_active_enrolments_excludes_cancelled(db: PgPool) {
     let user_id = seed_member(&db, "enrol-member@example.com", "Password!234").await;
     let course_1 = seed_course(&db, "Active Enrol Course 1", None).await;
     let course_2 = seed_course(&db, "Active Enrol Course 2", None).await;
-    seed_enrolment(&db, user_id, course_1, "active", Utc::now()).await;
-    seed_enrolment(&db, user_id, course_2, "cancelled", Utc::now()).await;
+    seed_enrolment(&db, user_id, course_1, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, user_id, course_2, EnrolmentStatus::Cancelled, Utc::now()).await;
 
     let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
@@ -1321,7 +1328,7 @@ async fn member_report_active_enrolments_excludes_cancelled(db: PgPool) {
 async fn member_report_upcoming_sessions_7d_materializes_and_respects_window(db: PgPool) {
     let user_id = seed_member(&db, "upcoming-member@example.com", "Password!234").await;
     let course_id = seed_course(&db, "Upcoming Sessions Course", None).await;
-    seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     let dow_today = today.weekday().num_days_from_sunday() as i16;
@@ -1386,7 +1393,14 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
     // A course + enrolment (kind=enrolment).
     let course_id = seed_course(&db, "Activity Feed Course", None).await;
     let student_id = seed_member(&db, "activity-student@example.com", "Password!234").await;
-    seed_enrolment(&db, student_id, course_id, "active", now - Duration::minutes(20)).await;
+    seed_enrolment(
+        &db,
+        student_id,
+        course_id,
+        EnrolmentStatus::Active,
+        now - Duration::minutes(20),
+    )
+    .await;
 
     // A contact inquiry (kind=inquiry) — newest of the four.
     seed_inquiry(&db, "Activity Asker", "課程諮詢", "general", now - Duration::minutes(10)).await;
@@ -1525,8 +1539,8 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
     // present。`session_date` 已是 studio-local 裸日期(contract §3.18),
     // 直接指定目標月份即可,不必再經過 UTC 換算。
     let course_id = seed_course(&db, "TZ Light Course", None).await;
-    let enrolment_x = seed_enrolment(&db, member_x, course_id, "active", now).await;
-    let enrolment_y = seed_enrolment(&db, member_y, course_id, "active", now).await;
+    let enrolment_x = seed_enrolment(&db, member_x, course_id, EnrolmentStatus::Active, now).await;
+    let enrolment_y = seed_enrolment(&db, member_y, course_id, EnrolmentStatus::Active, now).await;
     let session_this_month = seed_course_session(
         &db,
         course_id,
@@ -1731,11 +1745,12 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     let s3 = seed_member(&db, "delisted-s3@example.com", "Password!234").await;
     let s4 = seed_member(&db, "delisted-s4@example.com", "Password!234").await;
 
-    seed_enrolment(&db, s1, course_x, "active", Utc::now()).await;
-    let enrolment_s2_y = seed_enrolment(&db, s2, course_y, "active", Utc::now()).await;
-    seed_enrolment(&db, s3, course_x, "active", Utc::now()).await;
-    seed_enrolment(&db, s3, course_y, "active", Utc::now()).await;
-    seed_enrolment(&db, s4, course_y, "cancelled", Utc::now()).await;
+    seed_enrolment(&db, s1, course_x, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_s2_y =
+        seed_enrolment(&db, s2, course_y, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, s3, course_x, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, s3, course_y, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, s4, course_y, EnrolmentStatus::Cancelled, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     let session_y_today = seed_course_session(&db, course_y, today, t(9, 0), t(10, 0)).await;

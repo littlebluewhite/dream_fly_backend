@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use common::fixtures::{CourseSeed, seed_enrolment};
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::waitlist::repository as waitlist_repo;
 use dream_fly_backend::modules::waitlist::service;
 
@@ -28,7 +29,7 @@ async fn join_full_course_creates_waiting_entry(db: PgPool) {
     // max_students = 1, one active enrolment fills the only seat.
     let course_id = CourseSeed::new("Full Join Course").max_students(1).insert(&db).await;
     let filler = common::seed_member(&db, "wl-filler-a@example.com", "Password!234").await;
-    seed_enrolment(&db, filler, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, filler, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let joiner = common::seed_member(&db, "wl-joiner-a@example.com", "Password!234").await;
 
@@ -60,7 +61,7 @@ async fn join_course_not_full_returns_conflict(db: PgPool) {
 async fn join_duplicate_waiting_returns_conflict(db: PgPool) {
     let course_id = CourseSeed::new("Dup Waitlist Course").max_students(1).insert(&db).await;
     let filler = common::seed_member(&db, "wl-filler-b@example.com", "Password!234").await;
-    seed_enrolment(&db, filler, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, filler, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let joiner = common::seed_member(&db, "wl-dup@example.com", "Password!234").await;
 
     service::join_waitlist(&db, joiner, course_id)
@@ -112,7 +113,7 @@ async fn join_inactive_course_returns_400(db: PgPool) {
 async fn cancel_then_rejoin_succeeds(db: PgPool) {
     let course_id = CourseSeed::new("Rejoin Waitlist Course").max_students(1).insert(&db).await;
     let filler = common::seed_member(&db, "wl-filler-c@example.com", "Password!234").await;
-    seed_enrolment(&db, filler, course_id, "active", Utc::now()).await;
+    seed_enrolment(&db, filler, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let joiner = common::seed_member(&db, "wl-rejoin@example.com", "Password!234").await;
 
     let first = service::join_waitlist(&db, joiner, course_id)

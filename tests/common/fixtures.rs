@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::coaches::repository as coaches_repository;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 
@@ -677,14 +678,14 @@ pub async fn seed_enrolment(
     db: &PgPool,
     user_id: Uuid,
     course_id: Uuid,
-    status: &str,
+    status: EnrolmentStatus,
     enrolled_at: DateTime<Utc>,
 ) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
         INSERT INTO enrolments (id, user_id, course_id, order_id, status, enrolled_at, created_at, updated_at)
-        VALUES ($1, $2, $3, NULL, $4::enrolment_status, $5, $5, $5)
+        VALUES ($1, $2, $3, NULL, $4, $5, $5, $5)
         "#,
     )
     .bind(id)
@@ -984,7 +985,8 @@ pub async fn seed_marked_attendance(
 ) -> AttendanceScene {
     let email = format!("attendance-{}@example.com", Uuid::now_v7());
     let member = seed_member(db, &email, "Password!234").await;
-    let enrolment = seed_enrolment(db, member, course_id, "active", Utc::now()).await;
+    let enrolment =
+        seed_enrolment(db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let end_time = start_time + Duration::hours(1);
     let session = seed_course_session(db, course_id, session_date, start_time, end_time).await;
     let attendance = seed_attendance(db, session, enrolment, status, member).await;
@@ -1061,7 +1063,8 @@ pub async fn seed_leave_scene(
     let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
     let end = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
     let session = seed_course_session(db, course_id, tomorrow, start, end).await;
-    let enrolment = seed_enrolment(db, user_id, course_id, "active", Utc::now()).await;
+    let enrolment =
+        seed_enrolment(db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let leave = seed_leave_request(db, enrolment, session, status).await;
     if let Some(makeup_id) = makeup_session_id {
         set_makeup_session(db, leave, makeup_id).await;
@@ -1087,7 +1090,7 @@ pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> Ful
     for _ in 0..max_students {
         let email = format!("occupant-{}@example.com", Uuid::now_v7());
         let member = seed_member(db, &email, "Password!234").await;
-        seed_enrolment(db, member, course, "active", Utc::now()).await;
+        seed_enrolment(db, member, course, EnrolmentStatus::Active, Utc::now()).await;
         occupants.push(member);
     }
     FullCourse { course, occupants }

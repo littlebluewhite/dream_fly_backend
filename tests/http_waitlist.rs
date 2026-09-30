@@ -5,6 +5,7 @@ mod common;
 use chrono::{Duration, Utc};
 use common::fixtures::{CourseSeed, seed_enrolment, seed_waitlist_entry};
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -26,7 +27,7 @@ async fn join_full_course_returns_200_with_waitlist_response(db: PgPool) {
     let filler = app
         .register_member("wl-http-filler@example.com", "Password!234")
         .await;
-    seed_enrolment(&app.db, filler.user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&app.db, filler.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let joiner = app
         .register_member("wl-http-joiner@example.com", "Password!234")
@@ -321,7 +322,7 @@ async fn join_response_matches_me_and_admin_rows(db: PgPool) {
     let filler = app
         .register_member("wl-pin-filler@example.com", "Password!234")
         .await;
-    seed_enrolment(&app.db, filler.user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&app.db, filler.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let joiner = app
         .register_member("wl-pin-joiner@example.com", "Password!234")
         .await;

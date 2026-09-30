@@ -21,6 +21,7 @@ use common::fixtures::{
     seed_leave_request, seed_leave_scene,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -57,7 +58,7 @@ async fn create_success_for_future_session(db: PgPool) {
     let user = app.register_member("leave-create-ok@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Create Course", None).await;
     let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -110,7 +111,7 @@ async fn create_session_already_started_returns_422(db: PgPool) {
     let user = app.register_member("leave-started@example.com", "Password!234").await;
     let course_id = seed_course(&app.db, "Leave Started Course", None).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
-    seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -492,7 +493,8 @@ async fn decide_approve_overwrites_existing_present_attendance(db: PgPool) {
     // has no time gate, so a late approval still applies.
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     seed_attendance(&app.db, session_id, enrolment_id, "present", coach_user_id).await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "pending").await;
 
@@ -713,7 +715,8 @@ async fn decide_approve_pending_on_cancelled_enrolment_returns_409(db: PgPool) {
         .await;
     let session = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let enrolment =
-        seed_enrolment(&app.db, member.user_id, course_id, "cancelled", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
+            .await;
     let leave = seed_leave_request(&app.db, enrolment, session, "pending").await;
 
     let resp = app
@@ -740,7 +743,8 @@ async fn decide_reject_pending_on_cancelled_enrolment_succeeds(db: PgPool) {
         .await;
     let session = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let enrolment =
-        seed_enrolment(&app.db, member.user_id, course_id, "cancelled", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
+            .await;
     let leave = seed_leave_request(&app.db, enrolment, session, "pending").await;
 
     let resp = app
@@ -776,7 +780,7 @@ async fn makeup_same_course_future_session_succeeds(db: PgPool) {
     let target_session_id =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
 
     let resp = app
@@ -809,7 +813,7 @@ async fn makeup_target_session_already_started_returns_422(db: PgPool) {
     let target_session_id =
         seed_course_session(&app.db, course_id, yesterday(), t(14, 0), t(15, 0)).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
 
     let resp = app
@@ -832,7 +836,8 @@ async fn makeup_by_non_owner_returns_403(db: PgPool) {
     let target_session_id =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
     let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, owner.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
 
     let resp = app
@@ -898,7 +903,7 @@ async fn create_response_matches_me_row(db: PgPool) {
         .await;
     let course_id = seed_course(&app.db, "Leave Pin Create Course", None).await;
     let session_id = seed_course_session(&app.db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let create_resp = app
         .post("/api/v1/leave-requests")
@@ -1019,7 +1024,8 @@ async fn makeup_response_matches_me_row(db: PgPool) {
     let target_date = (Utc::now() + Duration::days(3)).date_naive();
     let target_session_id =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
-    let enrolment_id = seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let leave_id = seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
 
     let makeup_resp = app

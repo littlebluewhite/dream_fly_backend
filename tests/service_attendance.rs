@@ -14,6 +14,7 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::attendance::dto::AttendanceRecordEntry;
 use dream_fly_backend::modules::attendance::service as attendance_service;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
 
 use common::fixtures::{
@@ -64,8 +65,10 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
     let admin = seed_member(&db, "att-race-admin@example.com", "Password!234").await;
     let member_a = seed_member(&db, "att-race-a@example.com", "Password!234").await;
     let member_b = seed_member(&db, "att-race-b@example.com", "Password!234").await;
-    let enrolment_a = seed_enrolment(&db, member_a, course_id, "active", Utc::now()).await;
-    let enrolment_b = seed_enrolment(&db, member_b, course_id, "active", Utc::now()).await;
+    let enrolment_a =
+        seed_enrolment(&db, member_a, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_b =
+        seed_enrolment(&db, member_b, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let leave_b = seed_leave_request(&db, enrolment_b, session_id, "pending").await;
 
     let mut t_block = db.begin().await.expect("begin t_block");
@@ -138,7 +141,8 @@ async fn bulk_present_over_verbal_leave_overwrites(db: PgPool) {
     let session_id = seed_course_session(&db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let admin = seed_member(&db, "att-bulk-verbal-admin@example.com", "Password!234").await;
     let member = seed_member(&db, "att-bulk-verbal@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
     seed_attendance(&db, session_id, enrolment_id, "leave", admin).await;
 
     attendance_service::bulk_upsert_attendance(
@@ -172,7 +176,8 @@ async fn bulk_upsert_forbidden_precedes_not_started(db: PgPool) {
     let session_id = seed_course_session(&db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let outsider = seed_member(&db, "att-pin-outsider@example.com", "Password!234").await;
     let member = seed_member(&db, "att-pin-forbidden-member@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let err = attendance_service::bulk_upsert_attendance(
         &db,
@@ -196,7 +201,8 @@ async fn bulk_upsert_not_started_precedes_invalid_status(db: PgPool) {
     let session_id = seed_course_session(&db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
     let admin = seed_member(&db, "att-pin-admin@example.com", "Password!234").await;
     let member = seed_member(&db, "att-pin-status-member@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let err = attendance_service::bulk_upsert_attendance(
         &db,

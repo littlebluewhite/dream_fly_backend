@@ -8,6 +8,7 @@ use common::fixtures::{
     set_makeup_session,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -44,18 +45,19 @@ async fn me_returns_only_callers_enrolments_with_course_fields_newest_first(db: 
         .await;
 
     // Someone else's enrolment must not leak into user_a's list.
-    seed_enrolment(&app.db, user_b.user_id, course_a, "active", Utc::now()).await;
+    seed_enrolment(&app.db, user_b.user_id, course_a, EnrolmentStatus::Active, Utc::now()).await;
 
     let older_id = seed_enrolment(
         &app.db,
         user_a.user_id,
         course_a,
-        "active",
+        EnrolmentStatus::Active,
         Utc::now() - Duration::days(2),
     )
     .await;
     let newer_id =
-        seed_enrolment(&app.db, user_a.user_id, course_b, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user_a.user_id, course_b, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .get("/api/v1/enrolments/me")
@@ -92,7 +94,7 @@ async fn cancel_owner_succeeds(db: PgPool) {
     let user = app.register_member("enr-cancel-owner@example.com", "Password!234").await;
     let course_id = CourseSeed::new("Cancel Owner Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .patch(&format!("/api/v1/enrolments/{enrolment_id}/cancel"))
@@ -111,7 +113,8 @@ async fn cancel_as_non_owner_returns_403(db: PgPool) {
     let other = app.register_member("enr-cancel-other@example.com", "Password!234").await;
     let course_id = CourseSeed::new("Cancel Other Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, owner.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .patch(&format!("/api/v1/enrolments/{enrolment_id}/cancel"))
@@ -127,7 +130,8 @@ async fn cancel_as_admin_succeeds(db: PgPool) {
     let owner = app.register_member("enr-cancel-owner3@example.com", "Password!234").await;
     let course_id = CourseSeed::new("Cancel Admin Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, owner.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .patch(&format!("/api/v1/enrolments/{enrolment_id}/cancel"))
@@ -143,7 +147,8 @@ async fn cancel_already_cancelled_returns_409(db: PgPool) {
     let user = app.register_member("enr-cancel-twice@example.com", "Password!234").await;
     let course_id = CourseSeed::new("Cancel Twice Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "cancelled", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
+            .await;
 
     let resp = app
         .patch(&format!("/api/v1/enrolments/{enrolment_id}/cancel"))
@@ -182,8 +187,10 @@ async fn cancel_enrolment_cancels_only_its_pending_leave_requests(db: PgPool) {
         .await;
     let course_e = CourseSeed::new("Cancel Leaves Course E").max_students(10).insert(&app.db).await;
     let course_f = CourseSeed::new("Cancel Leaves Course F").max_students(10).insert(&app.db).await;
-    let enrolment_e = seed_enrolment(&app.db, user.user_id, course_e, "active", Utc::now()).await;
-    let enrolment_f = seed_enrolment(&app.db, user.user_id, course_f, "active", Utc::now()).await;
+    let enrolment_e =
+        seed_enrolment(&app.db, user.user_id, course_e, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_f =
+        seed_enrolment(&app.db, user.user_id, course_f, EnrolmentStatus::Active, Utc::now()).await;
 
     let day = |n| (Utc::now() + Duration::days(n)).date_naive();
     let e_s1 = seed_course_session(&app.db, course_e, day(1), t(9, 0), t(10, 0)).await;
@@ -230,7 +237,7 @@ async fn me_attendance_stats_present_2_absent_1_gives_attended_2_total_3(db: PgP
     let course_id =
         CourseSeed::new("Attendance Stats Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     // Seeded in the past (-3/-2/-1 days): `PUT .../attendance` now gates on
     // the session having already started, so a `today`/future seed here
@@ -275,7 +282,7 @@ async fn me_attendance_stats_with_no_marks_is_zero_zero(db: PgPool) {
     let user = app.register_member("enr-me-noattend@example.com", "Password!234").await;
     let course_id = CourseSeed::new("No Attendance Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .get("/api/v1/enrolments/me")
@@ -307,7 +314,7 @@ async fn me_attendance_stats_present_2_absent_1_leave_1_excludes_leave_from_tota
     let course_id =
         CourseSeed::new("Attendance Leave Excl Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     let session_present_1 = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
@@ -363,7 +370,8 @@ async fn attendance_as_non_owner_member_returns_404(db: PgPool) {
     let course_id =
         CourseSeed::new("Attendance Owner Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, owner.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .get(&format!("/api/v1/enrolments/{enrolment_id}/attendance"))
@@ -396,7 +404,7 @@ async fn attendance_owner_with_no_marks_returns_200_empty_array(db: PgPool) {
     let course_id =
         CourseSeed::new("Attendance Empty Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .get(&format!("/api/v1/enrolments/{enrolment_id}/attendance"))
@@ -415,7 +423,7 @@ async fn attendance_owner_sees_marked_sessions_oldest_to_newest_with_full_fields
     let course_id =
         CourseSeed::new("Attendance Timeline Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
     // Seed/mark out of chronological order to prove the endpoint sorts by
@@ -480,7 +488,8 @@ async fn attendance_as_admin_can_view_any_enrolment(db: PgPool) {
     let course_id =
         CourseSeed::new("Attendance Admin Course").max_students(10).insert(&app.db).await;
     let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, owner.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .get(&format!("/api/v1/enrolments/{enrolment_id}/attendance"))

@@ -8,6 +8,7 @@ use common::fixtures::{
     SlotSeed, seed_coach, seed_course, seed_course_schedule_slot, seed_enrolment,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -183,7 +184,7 @@ async fn today_as_coach_returns_own_course_with_enrolled_count(db: PgPool) {
     seed_course_schedule_slot(&app.db, other_course, dow, t(9, 0), t(10, 0)).await;
 
     let member = app.register_member("sess-today-member2@example.com", "Password!234").await;
-    seed_enrolment(&app.db, member.user_id, own_course, "active", Utc::now()).await;
+    seed_enrolment(&app.db, member.user_id, own_course, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .get("/api/v1/sessions/today")
@@ -308,12 +309,12 @@ async fn schedule_me_returns_only_active_enrolment_courses(db: PgPool) {
     seed_course_schedule_slot(&app.db, active_course, 1, t(19, 0), t(20, 0)).await;
     seed_course_schedule_slot(&app.db, cancelled_course, 2, t(19, 0), t(20, 0)).await;
 
-    seed_enrolment(&app.db, user.user_id, active_course, "active", Utc::now()).await;
+    seed_enrolment(&app.db, user.user_id, active_course, EnrolmentStatus::Active, Utc::now()).await;
     seed_enrolment(
         &app.db,
         user.user_id,
         cancelled_course,
-        "cancelled",
+        EnrolmentStatus::Cancelled,
         Utc::now() - Duration::days(1),
     )
     .await;

@@ -10,6 +10,7 @@ use common::fixtures::{
     TimeSlotSeed, seed_coach, seed_coupon, seed_course, seed_course_session, seed_enrolment,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -419,7 +420,8 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     // Register the member and give them an active enrolment.
     let member = app.register_member("e2e-leave-member@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     // --- 請假: the member requests leave for the original session. ---
     let leave_resp = app

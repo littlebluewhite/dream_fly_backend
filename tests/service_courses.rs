@@ -29,6 +29,7 @@ use dream_fly_backend::modules::courses::dto::{
     CourseScheduleSlotEntry, CreateCourseRequest, UpdateCourseRequest,
 };
 use dream_fly_backend::modules::courses::service;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 
 use common::fixtures::{
     SessionSeed, SlotSeed, seed_attendance, seed_course, seed_course_schedule_slot,
@@ -522,7 +523,8 @@ async fn update_course_slot_edit_keeps_referenced_future_orphans(db: PgPool) {
     seed_course_schedule_slot(&db, course_id, dow, t(9, 0), t(10, 0)).await;
 
     let user_id = common::seed_member(&db, "orphan-keep@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     // A past session, unaffected by reconciliation, used only as the
     // `leave_requests.session_id` NOT NULL anchor for the makeup-target
     // case below.

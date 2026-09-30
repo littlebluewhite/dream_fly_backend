@@ -16,6 +16,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::dto::MakeupRequest;
 use dream_fly_backend::modules::leave::service;
 
@@ -51,7 +52,8 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     // only the first can observe `makeup_session_id IS NULL` and win.
     let course_id = CourseSeed::new("Makeup Race Course").max_students(10).insert(&db).await;
     let user_id = common::seed_member(&db, "makeup-race@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(&db, course_id, original, t(9, 0), t(10, 0)).await;
@@ -100,8 +102,10 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
     let course_id = CourseSeed::new("Makeup Last Seat Course").max_students(3).insert(&db).await;
     let user_a = common::seed_member(&db, "makeup-last-seat-a@example.com", "Password!234").await;
     let user_b = common::seed_member(&db, "makeup-last-seat-b@example.com", "Password!234").await;
-    let enrolment_a = seed_enrolment(&db, user_a, course_id, "active", Utc::now()).await;
-    let enrolment_b = seed_enrolment(&db, user_b, course_id, "active", Utc::now()).await;
+    let enrolment_a =
+        seed_enrolment(&db, user_a, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_b =
+        seed_enrolment(&db, user_b, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(&db, course_id, original, t(9, 0), t(10, 0)).await;
@@ -173,7 +177,8 @@ async fn approved_leave(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uu
     let course_id = CourseSeed::new(name).max_students(max_students).insert(db).await;
     let email = format!("makeup-pin-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(db, &email, "Password!234").await;
-    let enrolment_id = seed_enrolment(db, user_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(db, course_id, original, t(9, 0), t(10, 0)).await;
     let leave_id = seed_leave_request(db, enrolment_id, session_id, "approved").await;
@@ -198,7 +203,8 @@ async fn makeup_source_conflict_precedes_unknown_target_404(db: PgPool) {
     // 假單還是 pending(source 409),目標場次又不存在(404)——source 先。
     let course_id = CourseSeed::new("Makeup Pin Source").max_students(10).insert(&db).await;
     let user_id = common::seed_member(&db, "makeup-pin-source@example.com", "Password!234").await;
-    let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    let enrolment_id =
+        seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(&db, course_id, original, t(9, 0), t(10, 0)).await;
     let leave_id = seed_leave_request(&db, enrolment_id, session_id, "pending").await;

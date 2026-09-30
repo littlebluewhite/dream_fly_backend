@@ -10,6 +10,7 @@ use common::fixtures::{
     seed_leave_request,
 };
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -106,10 +107,19 @@ async fn roster_as_course_coach_shows_active_enrolments_with_null_status(db: PgP
     let member_cancelled =
         app.register_member("att-roster-cancelled@example.com", "Password!234").await;
     let enrolment_a =
-        seed_enrolment(&app.db, member_a.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member_a.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     let _enrolment_b =
-        seed_enrolment(&app.db, member_b.user_id, course_id, "active", Utc::now()).await;
-    seed_enrolment(&app.db, member_cancelled.user_id, course_id, "cancelled", Utc::now()).await;
+        seed_enrolment(&app.db, member_b.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
+    seed_enrolment(
+        &app.db,
+        member_cancelled.user_id,
+        course_id,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .get(&format!("/api/v1/sessions/{session_id}/roster"))
@@ -140,7 +150,7 @@ async fn roster_as_admin_works_for_any_course(db: PgPool) {
     let session_id =
         seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-roster-admin-member@example.com", "Password!234").await;
-    seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+    seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let resp = app
         .get(&format!("/api/v1/sessions/{session_id}/roster"))
@@ -198,7 +208,8 @@ async fn attendance_put_as_non_course_coach_returns_403(db: PgPool) {
         seed_course_session(&app.db, course_id, Utc::now().date_naive(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-put-member@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let (other_user_id, other_token) = app
         .seed_user_with_roles("att-put-other@example.com", &["coach"])
@@ -225,9 +236,16 @@ async fn attendance_put_cross_course_enrolment_rejects_whole_batch_with_no_write
     let member_in = app.register_member("att-cross-in@example.com", "Password!234").await;
     let member_out = app.register_member("att-cross-out@example.com", "Password!234").await;
     let enrolment_in =
-        seed_enrolment(&app.db, member_in.user_id, course_id, "active", Utc::now()).await;
-    let enrolment_out =
-        seed_enrolment(&app.db, member_out.user_id, other_course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member_in.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
+    let enrolment_out = seed_enrolment(
+        &app.db,
+        member_out.user_id,
+        other_course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
@@ -253,7 +271,8 @@ async fn attendance_put_cancelled_enrolment_rejects_whole_batch(db: PgPool) {
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-cancelled-member@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "cancelled", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
+            .await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
@@ -272,7 +291,8 @@ async fn attendance_put_invalid_status_returns_422(db: PgPool) {
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-invalid-status@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
@@ -309,9 +329,11 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
     let member_a = app.register_member("att-idem-a@example.com", "Password!234").await;
     let member_b = app.register_member("att-idem-b@example.com", "Password!234").await;
     let enrolment_a =
-        seed_enrolment(&app.db, member_a.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member_a.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     let enrolment_b =
-        seed_enrolment(&app.db, member_b.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member_b.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     // First call: mark A present, B absent.
     let resp1 = app
@@ -398,9 +420,11 @@ async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPo
     let member_a = app.register_member("att-approved-leave-a@example.com", "Password!234").await;
     let member_b = app.register_member("att-approved-leave-b@example.com", "Password!234").await;
     let enrolment_a =
-        seed_enrolment(&app.db, member_a.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member_a.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     let enrolment_b =
-        seed_enrolment(&app.db, member_b.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member_b.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     // A holds an approved leave, already projected to an attendance `leave` row.
     seed_leave_request(&app.db, enrolment_a, session_id, "approved").await;
     seed_attendance(&app.db, session_id, enrolment_a, "leave", admin_id).await;
@@ -448,7 +472,8 @@ async fn attendance_put_leave_over_approved_leave_is_idempotent(db: PgPool) {
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-approved-leave-idem@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
     seed_leave_request(&app.db, enrolment_id, session_id, "approved").await;
     seed_attendance(&app.db, session_id, enrolment_id, "leave", admin_id).await;
 
@@ -544,17 +569,21 @@ async fn my_students_as_coach_returns_distinct_students_with_their_courses(db: P
     // entry with two courses.
     let student_x = app.register_member("att-students-x@example.com", "Password!234").await;
     let enrolment_x_a =
-        seed_enrolment(&app.db, student_x.user_id, course_a, "active", Utc::now()).await;
+        seed_enrolment(&app.db, student_x.user_id, course_a, EnrolmentStatus::Active, Utc::now())
+            .await;
     let enrolment_x_b =
-        seed_enrolment(&app.db, student_x.user_id, course_b, "active", Utc::now()).await;
+        seed_enrolment(&app.db, student_x.user_id, course_b, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     // student_y is cancelled in course_a -> must not appear.
     let student_y = app.register_member("att-students-y@example.com", "Password!234").await;
-    seed_enrolment(&app.db, student_y.user_id, course_a, "cancelled", Utc::now()).await;
+    seed_enrolment(&app.db, student_y.user_id, course_a, EnrolmentStatus::Cancelled, Utc::now())
+        .await;
 
     // student_z is enrolled only in the other coach's course -> must not appear.
     let student_z = app.register_member("att-students-z@example.com", "Password!234").await;
-    seed_enrolment(&app.db, student_z.user_id, other_course, "active", Utc::now()).await;
+    seed_enrolment(&app.db, student_z.user_id, other_course, EnrolmentStatus::Active, Utc::now())
+        .await;
 
     let resp = app
         .get("/api/v1/coaches/me/students")
@@ -603,7 +632,8 @@ async fn my_students_includes_delisted_course(db: PgPool) {
     let course_id = seed_course(&app.db, "Soon Delisted Course", Some(coach_id)).await;
     let student = app.register_member("att-students-delisted-s@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, student.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, student.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
         .bind(course_id)
@@ -673,7 +703,8 @@ async fn attendance_put_future_session_returns_422_and_writes_nothing(db: PgPool
     .await;
     let member = app.register_member("att-future-member@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
@@ -693,7 +724,8 @@ async fn attendance_put_at_exact_start_boundary_returns_200(db: PgPool) {
     let session_id = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-boundary-member@example.com", "Password!234").await;
     let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
+            .await;
 
     // studio_timezone is pinned to UTC in the test harness (see
     // common::http::test_app_config), so "today 09:00 studio-local" is
