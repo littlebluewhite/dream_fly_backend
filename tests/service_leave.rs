@@ -6,6 +6,8 @@
 //! - same leave request booked twice (leave-request row lock), and
 //! - two different leave requests racing for a target session's last free
 //!   seat (target-session row lock, controller ruling 2026-07-06).
+//!
+//! Plus `book_makeup`'s error-precedence pins (404/409/422 ordering).
 
 mod common;
 
@@ -13,6 +15,7 @@ use chrono::{Duration, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::leave::dto::MakeupRequest;
 use dream_fly_backend::modules::leave::service;
 
@@ -139,4 +142,105 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
             .await
             .expect("count makeups into target");
     assert_eq!(booked_into_target, 1, "the target session must not be overbooked");
+}
+
+// ---------------------------------------------------------------------------
+// 補課錯誤優先序釘住(`book_makeup`):404 → 403 → source 409 → 場次 404 →
+// target 422/400 → 座位 409。重排 `book_makeup` 的讀取順序時,這些測試守住
+// 對外可見的錯誤優先序不變。
+// ---------------------------------------------------------------------------
+
+async fn makeup(
+    db: &PgPool,
+    user_id: Uuid,
+    leave_id: Uuid,
+    target_session_id: Uuid,
+) -> Result<(), AppError> {
+    service::book_makeup(
+        db,
+        common::studio_now_utc(Utc::now()),
+        &common::member_auth(user_id),
+        leave_id,
+        MakeupRequest { session_id: target_session_id },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// 已核准、可補課的假單(課程 `max_students`,申請人是唯一 active 報名)。
+/// 回傳 (course_id, user_id, leave_id)。
+async fn approved_leave(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uuid, Uuid) {
+    let course_id = seed_course_with_capacity(db, name, None, max_students).await;
+    let email = format!("makeup-pin-{}@example.com", Uuid::now_v7());
+    let user_id = common::seed_member(db, &email, "Password!234").await;
+    let enrolment_id = seed_enrolment(db, user_id, course_id, "active", Utc::now()).await;
+    let original = (Utc::now() - Duration::days(1)).date_naive();
+    let session_id = seed_course_session(db, course_id, original, t(9, 0), t(10, 0)).await;
+    let leave_id = seed_leave_request(db, enrolment_id, session_id, "approved").await;
+    (course_id, user_id, leave_id)
+}
+
+#[sqlx::test]
+async fn makeup_unknown_target_session_returns_404(db: PgPool) {
+    let (_course_id, user_id, leave_id) = approved_leave(&db, "Makeup Pin 404", 10).await;
+
+    let err = makeup(&db, user_id, leave_id, Uuid::now_v7())
+        .await
+        .expect_err("unknown target session must be rejected");
+    assert!(
+        matches!(err, AppError::NotFound(ref m) if m == "場次不存在"),
+        "got: {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn makeup_source_conflict_precedes_unknown_target_404(db: PgPool) {
+    // 假單還是 pending(source 409),目標場次又不存在(404)——source 先。
+    let course_id = seed_course_with_capacity(&db, "Makeup Pin Source", None, 10).await;
+    let user_id = common::seed_member(&db, "makeup-pin-source@example.com", "Password!234").await;
+    let enrolment_id = seed_enrolment(&db, user_id, course_id, "active", Utc::now()).await;
+    let original = (Utc::now() - Duration::days(1)).date_naive();
+    let session_id = seed_course_session(&db, course_id, original, t(9, 0), t(10, 0)).await;
+    let leave_id = seed_leave_request(&db, enrolment_id, session_id, "pending").await;
+
+    let err = makeup(&db, user_id, leave_id, Uuid::now_v7())
+        .await
+        .expect_err("pending leave must be rejected");
+    assert!(
+        matches!(err, AppError::Conflict(ref m) if m == "僅已核准的假單可預約補課"),
+        "got: {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn makeup_target_rule_precedes_seat_count(db: PgPool) {
+    // max=1、申請人是唯一 active 報名 → 座位 1 - 1 + 0 - 0 = 0(會 409);
+    // 目標場次又已開始(422)——target 規則先於座位。
+    let (course_id, user_id, leave_id) = approved_leave(&db, "Makeup Pin Target", 1).await;
+    let started = (Utc::now() - Duration::days(1)).date_naive();
+    let target = seed_course_session(&db, course_id, started, t(14, 0), t(15, 0)).await;
+
+    let err = makeup(&db, user_id, leave_id, target)
+        .await
+        .expect_err("already-started target must be rejected");
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "補課場次已開始"),
+        "got: {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn makeup_into_full_session_returns_409(db: PgPool) {
+    // max=1、申請人是唯一 active 報名 → 1 - 1 + 0 - 0 = 0 → 409。
+    let (course_id, user_id, leave_id) = approved_leave(&db, "Makeup Pin Full", 1).await;
+    let future = (Utc::now() + Duration::days(3)).date_naive();
+    let target = seed_course_session(&db, course_id, future, t(14, 0), t(15, 0)).await;
+
+    let err = makeup(&db, user_id, leave_id, target)
+        .await
+        .expect_err("full target session must be rejected");
+    assert!(
+        matches!(err, AppError::Conflict(ref m) if m == "該場次名額已滿"),
+        "got: {err:?}"
+    );
 }

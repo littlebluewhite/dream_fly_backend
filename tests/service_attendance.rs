@@ -2,7 +2,8 @@
 //! driven through `attendance::service::bulk_upsert_attendance`: a genuine
 //! concurrent witness that the write-point guard's zero-row block surfaces as
 //! the same batch-wide 422 as the pre-check, and the guard's verbal-leave
-//! branch.
+//! branch; plus the batch's 403 → not-started → status-parse error-precedence
+//! pins.
 
 mod common;
 
@@ -15,8 +16,10 @@ use dream_fly_backend::modules::attendance::dto::AttendanceRecordEntry;
 use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::leave::service as leave_service;
 
-use common::fixtures::{seed_attendance, seed_course, seed_course_session, seed_enrolment, seed_leave_request};
-use common::{admin_auth, seed_member, studio_now_utc};
+use common::fixtures::{
+    seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
+};
+use common::{admin_auth, coach_auth, seed_member, studio_now_utc};
 
 fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -153,5 +156,62 @@ async fn bulk_present_over_verbal_leave_overwrites(db: PgPool) {
             .await
             .as_deref(),
         Some("present")
+    );
+}
+
+fn tomorrow() -> chrono::NaiveDate {
+    (Utc::now() + Duration::days(1)).date_naive()
+}
+
+/// 錯誤優先序:不是本課教練(403)先於場次尚未開始(422)。
+#[sqlx::test]
+async fn bulk_upsert_forbidden_precedes_not_started(db: PgPool) {
+    let coach_user = seed_member(&db, "att-pin-coach@example.com", "Password!234").await;
+    let coach_id = seed_coach(&db, coach_user, "Head Coach").await;
+    let course_id = seed_course(&db, "Bulk Forbidden Pin Course", Some(coach_id)).await;
+    let session_id = seed_course_session(&db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
+    let outsider = seed_member(&db, "att-pin-outsider@example.com", "Password!234").await;
+    let member = seed_member(&db, "att-pin-forbidden-member@example.com", "Password!234").await;
+    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+
+    let err = attendance_service::bulk_upsert_attendance(
+        &db,
+        studio_now_utc(Utc::now()),
+        &coach_auth(outsider),
+        session_id,
+        vec![present(enrolment_id)],
+    )
+    .await
+    .expect_err("non-owning coach must be rejected");
+    assert!(
+        matches!(err, AppError::Forbidden(ref m) if m == "not the coach for this course"),
+        "got: {err:?}"
+    );
+}
+
+/// 錯誤優先序:場次尚未開始(422)先於 status 解析錯誤(422,不同文案)。
+#[sqlx::test]
+async fn bulk_upsert_not_started_precedes_invalid_status(db: PgPool) {
+    let course_id = seed_course(&db, "Bulk Not Started Pin Course", None).await;
+    let session_id = seed_course_session(&db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
+    let admin = seed_member(&db, "att-pin-admin@example.com", "Password!234").await;
+    let member = seed_member(&db, "att-pin-status-member@example.com", "Password!234").await;
+    let enrolment_id = seed_enrolment(&db, member, course_id, "active", Utc::now()).await;
+
+    let err = attendance_service::bulk_upsert_attendance(
+        &db,
+        studio_now_utc(Utc::now()),
+        &admin_auth(admin),
+        session_id,
+        vec![AttendanceRecordEntry {
+            enrolment_id,
+            status: "bogus".into(),
+        }],
+    )
+    .await
+    .expect_err("not-started session must be rejected");
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "場次尚未開始，無法點名"),
+        "got: {err:?}"
     );
 }
