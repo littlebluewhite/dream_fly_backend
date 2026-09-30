@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::coaches::repository as coaches_repository;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 
 use super::{add_course_to_cart, add_to_cart, seed_member, seed_time_slot_on};
@@ -372,185 +373,132 @@ pub async fn seed_coupon(
     id
 }
 
-/// Insert an order with a single product line item directly via SQL,
-/// bypassing `orders::service::checkout` entirely, so tests can set an
-/// exact `status` — including `pending`/`cancelled`/`refunded`, which
-/// checkout itself never produces (every order it creates starts `paid`).
-/// Used by the products `sold` aggregate tests to prove only "paid-class"
-/// statuses (`paid`/`processing`/`completed`) count toward `sold`. Returns
-/// the order id.
-#[allow(clippy::too_many_arguments)]
-pub async fn seed_order_with_item(
-    db: &PgPool,
-    user_id: Uuid,
-    product_id: Uuid,
-    item_name: &str,
-    quantity: i32,
-    unit_price_cents: i64,
-    status: &str,
-) -> Uuid {
-    let order_id = Uuid::now_v7();
-    // Uses the full UUID, not a truncated prefix: UUIDv7's leading hex
-    // chars are a millisecond-granularity timestamp, so multiple calls
-    // within the same test (well within the same millisecond) would
-    // otherwise collide on `orders.order_number`'s UNIQUE constraint.
-    let order_number = format!("TEST-{order_id}");
-    sqlx::query(
-        r#"
-        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::order_status, $5, 0, NOW(), NOW())
-        "#,
-    )
-    .bind(order_id)
-    .bind(user_id)
-    .bind(&order_number)
-    .bind(status)
-    .bind(unit_price_cents * quantity as i64)
-    .execute(db)
-    .await
-    .expect("insert order");
-
-    sqlx::query(
-        r#"
-        INSERT INTO order_items (id, order_id, item_type, product_id, quantity, unit_price_cents, name, created_at)
-        VALUES ($1, $2, 'product'::cart_item_type, $3, $4, $5, $6, NOW())
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(order_id)
-    .bind(product_id)
-    .bind(quantity)
-    .bind(unit_price_cents)
-    .bind(item_name)
-    .execute(db)
-    .await
-    .expect("insert order_item");
-
-    order_id
-}
-
-/// One line of a [`seed_order_with_items`] order — either a product line
+/// One line of an [`OrderSeed`] order — either a product line
 /// (quantity × unit price) or a course line (always quantity 1, mirroring
 /// the `cart_items_course_qty` CHECK the real checkout flow inherits).
+#[derive(Clone, Copy)]
 pub enum SeedOrderLine {
     Product { product_id: Uuid, quantity: i32, unit_price_cents: i64 },
     Course { course_id: Uuid, unit_price_cents: i64 },
 }
 
-/// Insert an order with any mix of product/course line items and full
-/// control over the revenue-report dimensions (`status`, `payment_method`,
-/// `paid_at`) — the Round 4 Phase 4 reports tests need to place orders in
-/// exact studio-month buckets and payment-method groups, which the older
-/// single-product-line `seed_order_with_item` (hardcoded `paid_at = NULL`,
-/// no `payment_method`) cannot do. `total_cents` is the pre-discount sum of
-/// line subtotals (`discount_cents = 0`), matching the reports' gross line
-/// income 口徑. `created_at` is pinned to `paid_at` when present so the two
-/// timestamps never straddle a month boundary. Returns the order id.
-pub async fn seed_order_with_items(
-    db: &PgPool,
+impl SeedOrderLine {
+    fn subtotal_cents(&self) -> i64 {
+        match self {
+            Self::Product { quantity, unit_price_cents, .. } => unit_price_cents * *quantity as i64,
+            Self::Course { unit_price_cents, .. } => *unit_price_cents,
+        }
+    }
+}
+
+/// Builder for an `orders` row plus its `order_items`, inserted directly via
+/// SQL (bypassing `orders::service::checkout`) so tests can set an exact
+/// `status` — including `pending`/`cancelled`/`refunded`, which checkout
+/// never produces — and the revenue-report dimensions (`payment_method`,
+/// `paid_at`). Defaults: no lines, `paid_at`/`payment_method` NULL,
+/// `discount_cents = 0`. `total_cents` defaults to the pre-discount sum of
+/// line subtotals (the reports' gross line income 口徑); set it explicitly
+/// for a line-less order that only needs `orders.total_cents`.
+/// `created_at = paid_at.unwrap_or(now)` so the two timestamps never
+/// straddle a month boundary. `order_number` embeds the full UUID, not a
+/// truncated prefix: UUIDv7's leading hex chars are a millisecond
+/// timestamp, so same-millisecond seeds would otherwise collide on its
+/// UNIQUE constraint.
+pub struct OrderSeed<'a> {
     user_id: Uuid,
-    status: &str,
-    payment_method: Option<&str>,
+    status: OrderStatus,
     paid_at: Option<DateTime<Utc>>,
-    lines: &[SeedOrderLine],
-) -> Uuid {
-    let order_id = Uuid::now_v7();
-    // Full UUID, not a truncated prefix — see `seed_order_with_item`.
-    let order_number = format!("TEST-{order_id}");
-    let total_cents: i64 = lines
-        .iter()
-        .map(|l| match l {
-            SeedOrderLine::Product { quantity, unit_price_cents, .. } => {
-                unit_price_cents * *quantity as i64
-            }
-            SeedOrderLine::Course { unit_price_cents, .. } => *unit_price_cents,
-        })
-        .sum();
-    let created_at = paid_at.unwrap_or_else(Utc::now);
+    payment_method: Option<&'a str>,
+    lines: Vec<SeedOrderLine>,
+    total_cents: Option<i64>,
+}
 
-    sqlx::query(
-        r#"
-        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, payment_method, paid_at, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::order_status, $5, 0, $6, $7, $8, $8)
-        "#,
-    )
-    .bind(order_id)
-    .bind(user_id)
-    .bind(&order_number)
-    .bind(status)
-    .bind(total_cents)
-    .bind(payment_method)
-    .bind(paid_at)
-    .bind(created_at)
-    .execute(db)
-    .await
-    .expect("insert order");
+impl<'a> OrderSeed<'a> {
+    pub fn new(user_id: Uuid, status: OrderStatus) -> Self {
+        Self {
+            user_id,
+            status,
+            paid_at: None,
+            payment_method: None,
+            lines: Vec::new(),
+            total_cents: None,
+        }
+    }
 
-    for line in lines {
-        let (item_type, product_id, course_id, quantity, unit_price_cents) = match line {
-            SeedOrderLine::Product { product_id, quantity, unit_price_cents } => {
-                ("product", Some(*product_id), None, *quantity, *unit_price_cents)
-            }
-            SeedOrderLine::Course { course_id, unit_price_cents } => {
-                ("course", None, Some(*course_id), 1, *unit_price_cents)
-            }
-        };
+    pub fn paid_at(self, paid_at: DateTime<Utc>) -> Self {
+        Self { paid_at: Some(paid_at), ..self }
+    }
+
+    pub fn payment_method(self, payment_method: &'a str) -> Self {
+        Self { payment_method: Some(payment_method), ..self }
+    }
+
+    pub fn line(mut self, line: SeedOrderLine) -> Self {
+        self.lines.push(line);
+        self
+    }
+
+    pub fn total_cents(self, total_cents: i64) -> Self {
+        Self { total_cents: Some(total_cents), ..self }
+    }
+
+    /// Returns the order id.
+    pub async fn insert(self, db: &PgPool) -> Uuid {
+        let order_id = Uuid::now_v7();
+        let order_number = format!("TEST-{order_id}");
+        let total_cents = self
+            .total_cents
+            .unwrap_or_else(|| self.lines.iter().map(SeedOrderLine::subtotal_cents).sum());
+        let created_at = self.paid_at.unwrap_or_else(Utc::now);
+
         sqlx::query(
             r#"
-            INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, name, created_at)
-            VALUES ($1, $2, $3::cart_item_type, $4, $5, $6, $7, 'Test Line', $8)
+            INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, payment_method, paid_at, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $8)
             "#,
         )
-        .bind(Uuid::now_v7())
         .bind(order_id)
-        .bind(item_type)
-        .bind(product_id)
-        .bind(course_id)
-        .bind(quantity)
-        .bind(unit_price_cents)
+        .bind(self.user_id)
+        .bind(&order_number)
+        .bind(self.status)
+        .bind(total_cents)
+        .bind(self.payment_method)
+        .bind(self.paid_at)
         .bind(created_at)
         .execute(db)
         .await
-        .expect("insert order_item");
+        .expect("insert order");
+
+        for line in &self.lines {
+            let (item_type, product_id, course_id, quantity, unit_price_cents) = match *line {
+                SeedOrderLine::Product { product_id, quantity, unit_price_cents } => {
+                    ("product", Some(product_id), None, quantity, unit_price_cents)
+                }
+                SeedOrderLine::Course { course_id, unit_price_cents } => {
+                    ("course", None, Some(course_id), 1, unit_price_cents)
+                }
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, name, created_at)
+                VALUES ($1, $2, $3::cart_item_type, $4, $5, $6, $7, 'Test Line', $8)
+                "#,
+            )
+            .bind(Uuid::now_v7())
+            .bind(order_id)
+            .bind(item_type)
+            .bind(product_id)
+            .bind(course_id)
+            .bind(quantity)
+            .bind(unit_price_cents)
+            .bind(created_at)
+            .execute(db)
+            .await
+            .expect("insert order_item");
+        }
+
+        order_id
     }
-
-    order_id
-}
-
-/// Insert an order directly with an explicit `status` and `paid_at`
-/// (bypassing `orders::service::checkout`, and leaner than
-/// `seed_order_with_item`/`seed_order_with_items` — these tests only ever
-/// read `orders.total_cents`/`status`/`paid_at`, never `order_items`).
-/// Named `_bare` — no `order_items` row is inserted at all — to stay
-/// distinct from `seed_order_with_items`, which always inserts at least one
-/// line. Mirrors `seed_order_with_item`'s UUID-based `order_number` (avoids
-/// a same-millisecond UUIDv7-prefix collision across repeated calls in one
-/// test). Returns the order id.
-pub async fn seed_order_bare(
-    db: &PgPool,
-    user_id: Uuid,
-    status: &str,
-    total_cents: i64,
-    paid_at: Option<DateTime<Utc>>,
-) -> Uuid {
-    let id = Uuid::now_v7();
-    let order_number = format!("RPT-{id}");
-    sqlx::query(
-        r#"
-        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, paid_at, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::order_status, $5, 0, $6, NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(&order_number)
-    .bind(status)
-    .bind(total_cents)
-    .bind(paid_at)
-    .execute(db)
-    .await
-    .expect("insert order");
-    id
 }
 
 /// Insert a booking row directly (bypassing `bookings::service::create`,
@@ -996,25 +944,21 @@ pub async fn seed_marked_attendance(
     AttendanceScene { member, enrolment, session, attendance }
 }
 
-/// 一行式課程營收:`seed_order_with_items` 包一層,只塞一筆
+/// 一行式課程營收:[`OrderSeed`] 包一層,只塞一筆
 /// `SeedOrderLine::Course`,消掉呼叫端重複的樣板。Returns the order id.
 pub async fn seed_course_revenue(
     db: &PgPool,
     buyer: Uuid,
     course_id: Uuid,
     unit_price_cents: i64,
-    status: &str,
+    status: OrderStatus,
     paid_at: Option<DateTime<Utc>>,
 ) -> Uuid {
-    seed_order_with_items(
-        db,
-        buyer,
-        status,
-        None,
-        paid_at,
-        &[SeedOrderLine::Course { course_id, unit_price_cents }],
-    )
-    .await
+    let mut order = OrderSeed::new(buyer, status);
+    if let Some(paid_at) = paid_at {
+        order = order.paid_at(paid_at);
+    }
+    order.line(SeedOrderLine::Course { course_id, unit_price_cents }).insert(db).await
 }
 
 /// 「某日一個時段被多筆不同狀態的預訂占用」:`seed_time_slot_on` 建一個

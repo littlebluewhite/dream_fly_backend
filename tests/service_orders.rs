@@ -18,8 +18,8 @@ use uuid::Uuid;
 
 use common::add_course_to_cart;
 use common::fixtures::{
-    CourseSeed, SeedCartLine, seed_carted_member, seed_coupon, seed_course_session,
-    seed_entitlement_product, seed_full_course, seed_leave_request, seed_order_with_item,
+    CourseSeed, OrderSeed, SeedCartLine, SeedOrderLine, seed_carted_member, seed_coupon,
+    seed_course_session, seed_entitlement_product, seed_full_course, seed_leave_request,
     set_points_balance,
 };
 use dream_fly_backend::error::AppError;
@@ -33,6 +33,7 @@ use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service;
 use dream_fly_backend::modules::products::service as product_service;
 
@@ -1847,8 +1848,10 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
     let user = common::seed_member(&db, "direct-paid@example.com", "Password!234").await;
     set_points_balance(&db, user, 100).await;
     let product = common::seed_product(&db, "direct-paid-prod", 1_000, Some(5)).await;
-    let order_id =
-        seed_order_with_item(&db, user, product, "Direct Paid", 2, 1_000, "paid").await;
+    let order_id = OrderSeed::new(user, OrderStatus::Paid)
+        .line(SeedOrderLine::Product { product_id: product, quantity: 2, unit_price_cents: 1_000 })
+        .insert(&db)
+        .await;
 
     let resp = service::update_order_status(&db, order_id, "refunded", None)
         .await
@@ -2130,7 +2133,10 @@ async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
     let user = common::seed_member(&db, "twin-buyer@example.com", "passw0rd!").await;
     let product = common::seed_product(&db, "twin-prod", 1000, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
-    let o_twin = seed_order_with_item(&db, user, product, "twin-prod", 1, 1000, "paid").await;
+    let o_twin = OrderSeed::new(user, OrderStatus::Paid)
+        .line(SeedOrderLine::Product { product_id: product, quantity: 1, unit_price_cents: 1000 })
+        .insert(&db)
+        .await;
 
     // T0: the twin's idempotency row, inserted but NOT committed yet.
     let mut t0 = db.begin().await.unwrap();

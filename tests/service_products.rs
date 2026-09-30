@@ -22,9 +22,10 @@ mod common;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use common::fixtures::seed_order_with_item;
+use common::fixtures::{OrderSeed, SeedOrderLine};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::products::dto::{
     CreateProductRequest, UpdateProductRequest,
 };
@@ -346,13 +347,55 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .await
         .expect("create");
 
-    seed_order_with_item(&db, user, product.id, &product.name, 2, 1000, "paid").await;
-    seed_order_with_item(&db, user, product.id, &product.name, 1, 1000, "processing").await;
-    seed_order_with_item(&db, user, product.id, &product.name, 3, 1000, "completed").await;
+    OrderSeed::new(user, OrderStatus::Paid)
+        .line(SeedOrderLine::Product {
+            product_id: product.id,
+            quantity: 2,
+            unit_price_cents: 1000,
+        })
+        .insert(&db)
+        .await;
+    OrderSeed::new(user, OrderStatus::Processing)
+        .line(SeedOrderLine::Product {
+            product_id: product.id,
+            quantity: 1,
+            unit_price_cents: 1000,
+        })
+        .insert(&db)
+        .await;
+    OrderSeed::new(user, OrderStatus::Completed)
+        .line(SeedOrderLine::Product {
+            product_id: product.id,
+            quantity: 3,
+            unit_price_cents: 1000,
+        })
+        .insert(&db)
+        .await;
     // These must NOT count:
-    seed_order_with_item(&db, user, product.id, &product.name, 5, 1000, "pending").await;
-    seed_order_with_item(&db, user, product.id, &product.name, 7, 1000, "cancelled").await;
-    seed_order_with_item(&db, user, product.id, &product.name, 9, 1000, "refunded").await;
+    OrderSeed::new(user, OrderStatus::Pending)
+        .line(SeedOrderLine::Product {
+            product_id: product.id,
+            quantity: 5,
+            unit_price_cents: 1000,
+        })
+        .insert(&db)
+        .await;
+    OrderSeed::new(user, OrderStatus::Cancelled)
+        .line(SeedOrderLine::Product {
+            product_id: product.id,
+            quantity: 7,
+            unit_price_cents: 1000,
+        })
+        .insert(&db)
+        .await;
+    OrderSeed::new(user, OrderStatus::Refunded)
+        .line(SeedOrderLine::Product {
+            product_id: product.id,
+            quantity: 9,
+            unit_price_cents: 1000,
+        })
+        .insert(&db)
+        .await;
 
     let resp = service::get_by_id(&db, product.id).await.expect("get_by_id");
     assert_eq!(resp.sold, 6, "only paid+processing+completed (2+1+3) should count");
@@ -375,8 +418,14 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
         .await
         .expect("create b");
 
-    seed_order_with_item(&db, user, a.id, &a.name, 4, 1000, "paid").await;
-    seed_order_with_item(&db, user, b.id, &b.name, 9, 1000, "completed").await;
+    OrderSeed::new(user, OrderStatus::Paid)
+        .line(SeedOrderLine::Product { product_id: a.id, quantity: 4, unit_price_cents: 1000 })
+        .insert(&db)
+        .await;
+    OrderSeed::new(user, OrderStatus::Completed)
+        .line(SeedOrderLine::Product { product_id: b.id, quantity: 9, unit_price_cents: 1000 })
+        .insert(&db)
+        .await;
 
     let list = service::list(&db, None, &PaginationParams { page: 1, per_page: 100 })
         .await

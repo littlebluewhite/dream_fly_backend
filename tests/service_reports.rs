@@ -31,6 +31,7 @@ use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
 use dream_fly_backend::modules::leave::service as leave_service;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
@@ -39,11 +40,11 @@ use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use common::fixtures::{
-    CourseSeed, SeedOrderLine, SessionSeed, SlotSeed, backdate_user, seed_attendance, seed_booking,
-    seed_coach, seed_course, seed_course_revenue, seed_course_schedule_slot, seed_course_session,
-    seed_enrolment, seed_entitlement_product, seed_leave_request, seed_marked_attendance,
-    seed_member_created_at, seed_message, seed_order_bare, seed_order_with_items,
-    seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
+    CourseSeed, OrderSeed, SeedOrderLine, SessionSeed, SlotSeed, backdate_user, seed_attendance,
+    seed_booking, seed_coach, seed_course, seed_course_revenue, seed_course_schedule_slot,
+    seed_course_session, seed_enrolment, seed_entitlement_product, seed_leave_request,
+    seed_marked_attendance, seed_member_created_at, seed_message, seed_venue_rentals,
+    seed_waitlist_entry, set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_time_slot_on};
 
@@ -70,7 +71,7 @@ fn months_ago(now: DateTime<Utc>, n: i32) -> DateTime<Utc> {
 /// Insert a `contact_inquiries` row directly (no shared fixture exists for
 /// this table), so the activity tests can control `created_at`/
 /// `inquiry_type`/`subject`/`name` precisely. Unlike `seed_order` (now
-/// `seed_order_bare`), `seed_attendance`, and `backdate_user` — which
+/// `OrderSeed`), `seed_attendance`, and `backdate_user` — which
 /// graduated to `tests/common/fixtures.rs` once other reports tests needed
 /// them too — this one stays local: no other test file touches
 /// `contact_inquiries`.
@@ -201,16 +202,32 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
     let user_id = seed_member(&db, "revenue-buyer@example.com", "Password!234").await;
     let now = Utc::now();
 
-    seed_order_bare(&db, user_id, "paid", 10_000, Some(now)).await;
-    seed_order_bare(&db, user_id, "processing", 20_000, Some(now)).await;
-    seed_order_bare(&db, user_id, "completed", 30_000, Some(now)).await;
+    OrderSeed::new(user_id, OrderStatus::Paid).total_cents(10_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(user_id, OrderStatus::Processing)
+        .total_cents(20_000)
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(user_id, OrderStatus::Completed)
+        .total_cents(30_000)
+        .paid_at(now)
+        .insert(&db)
+        .await;
     // None of these should count, even though each has a real `paid_at` in
     // the current month — a refunded order keeps its original `paid_at`
     // (see `orders::repository::update_status_and_paid_at_tx`), so the
     // filter must be on `status`, not `paid_at IS NOT NULL`.
-    seed_order_bare(&db, user_id, "refunded", 999_999, Some(now)).await;
-    seed_order_bare(&db, user_id, "cancelled", 999_999, Some(now)).await;
-    seed_order_bare(&db, user_id, "pending", 999_999, None).await;
+    OrderSeed::new(user_id, OrderStatus::Refunded)
+        .total_cents(999_999)
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(user_id, OrderStatus::Cancelled)
+        .total_cents(999_999)
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(user_id, OrderStatus::Pending).total_cents(999_999).insert(&db).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -227,9 +244,17 @@ async fn admin_report_revenue_trend_buckets_by_month(db: PgPool) {
     let last_month = months_ago(now, 1);
     let oldest_month = months_ago(now, 11);
 
-    seed_order_bare(&db, user_id, "paid", 1_000, Some(now)).await;
-    seed_order_bare(&db, user_id, "paid", 2_000, Some(last_month)).await;
-    seed_order_bare(&db, user_id, "paid", 3_000, Some(oldest_month)).await;
+    OrderSeed::new(user_id, OrderStatus::Paid).total_cents(1_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(user_id, OrderStatus::Paid)
+        .total_cents(2_000)
+        .paid_at(last_month)
+        .insert(&db)
+        .await;
+    OrderSeed::new(user_id, OrderStatus::Paid)
+        .total_cents(3_000)
+        .paid_at(oldest_month)
+        .insert(&db)
+        .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -362,10 +387,14 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
 
     // paid_orders_count: refunded/pending never count, even with the same
     // month's `paid_at`.
-    seed_order_bare(&db, buyer, "paid", 1_000, Some(now)).await;
-    seed_order_bare(&db, buyer, "completed", 2_000, Some(last_month)).await;
-    seed_order_bare(&db, buyer, "refunded", 3_000, Some(now)).await;
-    seed_order_bare(&db, buyer, "pending", 4_000, None).await;
+    OrderSeed::new(buyer, OrderStatus::Paid).total_cents(1_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(buyer, OrderStatus::Completed)
+        .total_cents(2_000)
+        .paid_at(last_month)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Refunded).total_cents(3_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(buyer, OrderStatus::Pending).total_cents(4_000).insert(&db).await;
 
     // attendance_rate this month: 1 present / (1 present + 1 absent) = 0.5,
     // leave in neither numerator nor denominator; last month has no records
@@ -400,24 +429,28 @@ async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
     let course_id = seed_course(&db, "Breakdown Course", None).await;
     let merch_id = seed_product(&db, "breakdown-merch", 5_000, Some(10)).await;
 
-    let excluded_lines = [
-        SeedOrderLine::Course { course_id, unit_price_cents: 50_000 },
-        SeedOrderLine::Product { product_id: merch_id, quantity: 2, unit_price_cents: 5_000 },
-    ];
+    let excluded_course = SeedOrderLine::Course { course_id, unit_price_cents: 50_000 };
+    let excluded_merch =
+        SeedOrderLine::Product { product_id: merch_id, quantity: 2, unit_price_cents: 5_000 };
     // `refunded` keeps its real `paid_at` — exclusion must come from the
     // status filter, not from `paid_at IS NULL`.
-    seed_order_with_items(&db, buyer, "refunded", None, Some(now), &excluded_lines).await;
-    seed_order_with_items(&db, buyer, "pending", None, None, &excluded_lines).await;
+    OrderSeed::new(buyer, OrderStatus::Refunded)
+        .paid_at(now)
+        .line(excluded_course)
+        .line(excluded_merch)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Pending)
+        .line(excluded_course)
+        .line(excluded_merch)
+        .insert(&db)
+        .await;
 
-    seed_order_with_items(
-        &db,
-        buyer,
-        "paid",
-        None,
-        Some(now),
-        &[SeedOrderLine::Course { course_id, unit_price_cents: 10_000 }],
-    )
-    .await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(now)
+        .line(SeedOrderLine::Course { course_id, unit_price_cents: 10_000 })
+        .insert(&db)
+        .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -447,19 +480,17 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
     // Gross this month: ticket 20_000 + merchandise 5_000 + course 25_000
     // = 50_000. A single order carrying all three lines proves per-line
     // (not per-order) bucketing.
-    seed_order_with_items(
-        &db,
-        buyer,
-        "paid",
-        None,
-        Some(now),
-        &[
-            SeedOrderLine::Product { product_id: ticket_id, quantity: 2, unit_price_cents: 10_000 },
-            SeedOrderLine::Product { product_id: merch_id, quantity: 1, unit_price_cents: 5_000 },
-            SeedOrderLine::Course { course_id, unit_price_cents: 25_000 },
-        ],
-    )
-    .await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(now)
+        .line(SeedOrderLine::Product {
+            product_id: ticket_id,
+            quantity: 2,
+            unit_price_cents: 10_000,
+        })
+        .line(SeedOrderLine::Product { product_id: merch_id, quantity: 1, unit_price_cents: 5_000 })
+        .line(SeedOrderLine::Course { course_id, unit_price_cents: 25_000 })
+        .insert(&db)
+        .await;
 
     // A venue booking this month must show up in revenue_breakdown but stay
     // out of category_split (order-line 毛額 only) and its ratios.
@@ -546,11 +577,19 @@ async fn admin_report_income_sources_12m_buckets_by_paid_month(db: PgPool) {
     let buyer = seed_member(&db, "sources-12m@example.com", "Password!234").await;
     let course_id = seed_course(&db, "Sources 12m Course", None).await;
 
-    let line = [SeedOrderLine::Course { course_id, unit_price_cents: 1_000 }];
-    seed_order_with_items(&db, buyer, "paid", None, Some(now), &line).await;
-    seed_order_with_items(&db, buyer, "paid", None, Some(months_ago(now, 1)), &line).await;
+    let line = SeedOrderLine::Course { course_id, unit_price_cents: 1_000 };
+    OrderSeed::new(buyer, OrderStatus::Paid).paid_at(now).line(line).insert(&db).await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(months_ago(now, 1))
+        .line(line)
+        .insert(&db)
+        .await;
     // 12 months back = outside the 12-slot window (current + 11 previous).
-    seed_order_with_items(&db, buyer, "paid", None, Some(months_ago(now, 12)), &line).await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(months_ago(now, 12))
+        .line(line)
+        .insert(&db)
+        .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -583,13 +622,32 @@ async fn admin_report_payment_split_null_method_is_unknown(db: PgPool) {
     let buyer = seed_member(&db, "paysplit-buyer@example.com", "Password!234").await;
 
     // payment_split counts orders, not lines — no items needed.
-    seed_order_with_items(&db, buyer, "paid", Some("credit_card"), Some(now), &[]).await;
-    seed_order_with_items(&db, buyer, "completed", Some("credit_card"), Some(now), &[]).await;
-    seed_order_with_items(&db, buyer, "processing", Some("line_pay"), Some(now), &[]).await;
-    seed_order_with_items(&db, buyer, "paid", None, Some(now), &[]).await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .payment_method("credit_card")
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Completed)
+        .payment_method("credit_card")
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Processing)
+        .payment_method("line_pay")
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Paid).paid_at(now).insert(&db).await;
     // Excluded: wrong status / wrong month.
-    seed_order_with_items(&db, buyer, "refunded", Some("credit_card"), Some(now), &[]).await;
-    seed_order_with_items(&db, buyer, "paid", Some("line_pay"), Some(months_ago(now, 1)), &[])
+    OrderSeed::new(buyer, OrderStatus::Refunded)
+        .payment_method("credit_card")
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .payment_method("line_pay")
+        .paid_at(months_ago(now, 1))
+        .insert(&db)
         .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
@@ -628,25 +686,25 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
 
     // Mixed order: the course line goes to coach A, the ticket line goes to
     // no coach at all.
-    seed_order_with_items(
-        &db,
-        buyer,
-        "paid",
-        None,
-        Some(now),
-        &[
-            SeedOrderLine::Course { course_id: course_a, unit_price_cents: 50_000 },
-            SeedOrderLine::Product { product_id: ticket_id, quantity: 1, unit_price_cents: 20_000 },
-        ],
-    )
-    .await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(now)
+        .line(SeedOrderLine::Course { course_id: course_a, unit_price_cents: 50_000 })
+        .line(SeedOrderLine::Product {
+            product_id: ticket_id,
+            quantity: 1,
+            unit_price_cents: 20_000,
+        })
+        .insert(&db)
+        .await;
     // Oldest in-window month (11 months back) still counts for coach B…
-    seed_course_revenue(&db, buyer, course_b, 30_000, "paid", Some(months_ago(now, 11))).await;
+    seed_course_revenue(&db, buyer, course_b, 30_000, OrderStatus::Paid, Some(months_ago(now, 11)))
+        .await;
     // …but 12 months back is outside the window, and refunded never counts.
-    seed_course_revenue(&db, buyer, course_a, 99_999, "paid", Some(months_ago(now, 12))).await;
-    seed_course_revenue(&db, buyer, course_a, 88_888, "refunded", Some(now)).await;
+    seed_course_revenue(&db, buyer, course_a, 99_999, OrderStatus::Paid, Some(months_ago(now, 12)))
+        .await;
+    seed_course_revenue(&db, buyer, course_a, 88_888, OrderStatus::Refunded, Some(now)).await;
     // A coachless course's line is attributed to nobody (and must not 500).
-    seed_course_revenue(&db, buyer, course_orphan, 7_777, "paid", Some(now)).await;
+    seed_course_revenue(&db, buyer, course_orphan, 7_777, OrderStatus::Paid, Some(now)).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -1319,7 +1377,11 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
 
     // A buyer + paid order (kind=order).
     let buyer_id = seed_member(&db, "activity-buyer@example.com", "Password!234").await;
-    seed_order_bare(&db, buyer_id, "paid", 50_000, Some(now - Duration::minutes(30))).await;
+    OrderSeed::new(buyer_id, OrderStatus::Paid)
+        .total_cents(50_000)
+        .paid_at(now - Duration::minutes(30))
+        .insert(&db)
+        .await;
 
     // A course + enrolment (kind=enrolment).
     let course_id = seed_course(&db, "Activity Feed Course", None).await;
@@ -1357,7 +1419,7 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
     let inquiry_item =
         report.items.iter().find(|i| i.kind == "inquiry").expect("inquiry activity present");
 
-    assert!(order_item.label.starts_with("訂單 RPT-"), "got label={}", order_item.label);
+    assert!(order_item.label.starts_with("訂單 TEST-"), "got label={}", order_item.label);
     assert!(order_item.label.contains("已付款:NT$500"), "got label={}", order_item.label);
     assert_eq!(enrolment_item.label, "新報名:Activity Feed Course");
     assert_eq!(inquiry_item.label, "新洽詢(general):課程諮詢");
@@ -1441,8 +1503,16 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
     // 污染 members.new_this_month。
     let buyer = seed_member(&db, "tz-light-buyer@example.com", "Password!234").await;
     backdate_user(&db, buyer, before_midnight).await;
-    seed_order_bare(&db, buyer, "paid", 10_000, Some(before_midnight)).await; // 訂單 A
-    seed_order_bare(&db, buyer, "paid", 3_000, Some(after_midnight)).await; // 訂單 B
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .total_cents(10_000)
+        .paid_at(before_midnight)
+        .insert(&db)
+        .await; // 訂單 A
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .total_cents(3_000)
+        .paid_at(after_midnight)
+        .insert(&db)
+        .await; // 訂單 B
 
     // 會員 X(backdate 到本月瞬間)/ Y(backdate 到上月瞬間)。兩人同時充當
     // 出勤場景的當事人,省下再造兩個新帳號、還要各自 backdate 的重複。
