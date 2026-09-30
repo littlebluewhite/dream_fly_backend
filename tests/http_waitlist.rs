@@ -298,3 +298,60 @@ async fn admin_list_returns_waiting_only_oldest_first_for_course(db: PgPool) {
     );
     assert_eq!(arr[1]["id"], newer_id.to_string());
 }
+
+// ---------------------------------------------------------------------------
+// Pin: join response equals the read projection, field-for-field
+// ---------------------------------------------------------------------------
+//
+// `POST /waitlist`'s response, the joiner's `GET /waitlist/me` row and the
+// admin `GET /waitlist?course_id=` row are meant to be the exact same shape —
+// `serde_json::Value` equality locks that before the read projection gets a
+// single owner (mirrors `http_leave.rs`'s `*_response_matches_me_row` pins).
+
+#[sqlx::test]
+async fn join_response_matches_me_and_admin_rows(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course_with_capacity(&app.db, "WL Pin Course", None, 1).await;
+    let filler = app
+        .register_member("wl-pin-filler@example.com", "Password!234")
+        .await;
+    seed_enrolment(&app.db, filler.user_id, course_id, "active", Utc::now()).await;
+    let joiner = app
+        .register_member("wl-pin-joiner@example.com", "Password!234")
+        .await;
+
+    let join_resp = app
+        .post("/api/v1/waitlist")
+        .authorization_bearer(&joiner.access_token)
+        .json(&json!({ "course_id": course_id }))
+        .await;
+    assert_eq!(join_resp.status_code(), 200, "body={}", join_resp.text());
+    let joined: serde_json::Value = join_resp.json();
+
+    let me_rows: serde_json::Value = app
+        .get("/api/v1/waitlist/me")
+        .authorization_bearer(&joiner.access_token)
+        .await
+        .json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == joined["id"])
+        .expect("joined row present in /me");
+    assert_eq!(&joined, me_row, "join response must equal its /me row");
+
+    let admin_rows: serde_json::Value = app
+        .get(&format!("/api/v1/waitlist?course_id={course_id}"))
+        .authorization_bearer(&admin_token)
+        .await
+        .json();
+    let admin_row = admin_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == joined["id"])
+        .expect("joined row present in admin list");
+    assert_eq!(&joined, admin_row, "join response must equal its admin list row");
+}

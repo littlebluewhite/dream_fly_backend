@@ -447,3 +447,88 @@ async fn my_certificates_only_shows_own(db: PgPool) {
     assert_eq!(arr.len(), 1, "member must only see their own certificate");
     assert_eq!(arr[0]["title"], "證書 A");
 }
+
+// ---------------------------------------------------------------------------
+// Pin: write responses equal the read projection, field-for-field
+// ---------------------------------------------------------------------------
+//
+// `POST /report-cards` / `POST /certificates` responses and their `/me` rows
+// are meant to be the exact same shape — `serde_json::Value` equality locks
+// that before the read projection gets a single owner (mirrors
+// `http_leave.rs`'s `*_response_matches_me_row` pins).
+
+#[sqlx::test]
+async fn create_report_card_response_matches_me_row(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (coach_user_id, coach_token) =
+        app.seed_user_with_roles("rc-pin-coach@example.com", &["coach"]).await;
+    let coach_id = seed_coach(&app.db, coach_user_id, "RC Pin Coach").await;
+    let course_id = seed_course(&app.db, "RC Pin Course", Some(coach_id)).await;
+    let member = app.register_member("rc-pin-student@example.com", "Password!234").await;
+    let enrolment_id =
+        seed_enrolment(&app.db, member.user_id, course_id, "active", Utc::now()).await;
+
+    let create_resp = app
+        .post("/api/v1/report-cards")
+        .authorization_bearer(&coach_token)
+        .json(&json!({
+            "enrolment_id": enrolment_id,
+            "term_label": "2026 Spring",
+            "comment": "進步很多",
+            "rating": 4
+        }))
+        .await;
+    assert_eq!(create_resp.status_code(), 200, "body={}", create_resp.text());
+    let created: serde_json::Value = create_resp.json();
+
+    let me_rows: serde_json::Value = app
+        .get("/api/v1/report-cards/me")
+        .authorization_bearer(&member.access_token)
+        .await
+        .json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == created["id"])
+        .expect("created row present in /me");
+
+    assert_eq!(&created, me_row, "create response must equal its /me row");
+}
+
+#[sqlx::test]
+async fn create_certificate_response_matches_me_row(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let course_id = seed_course(&app.db, "Cert Pin Course", None).await;
+    let member = app.register_member("cert-pin-student@example.com", "Password!234").await;
+
+    let create_resp = app
+        .post("/api/v1/certificates")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "user_id": member.user_id,
+            "course_id": course_id,
+            "title": "體操初級證書",
+            "level": "初級",
+            "issued_on": "2026-07-01",
+            "note": "表現優異"
+        }))
+        .await;
+    assert_eq!(create_resp.status_code(), 200, "body={}", create_resp.text());
+    let created: serde_json::Value = create_resp.json();
+
+    let me_rows: serde_json::Value = app
+        .get("/api/v1/certificates/me")
+        .authorization_bearer(&member.access_token)
+        .await
+        .json();
+    let me_row = me_rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == created["id"])
+        .expect("created row present in /me");
+
+    assert_eq!(&created, me_row, "create response must equal its /me row");
+}
