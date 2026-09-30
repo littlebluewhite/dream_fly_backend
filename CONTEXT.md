@@ -21,15 +21,17 @@ _Avoid_: 把這條關係 gate 與單課 gate `require_course_coach` 混同
 
 **教練範圍(Coach Scope)**:
 「教練名下的課程/學員」= `courses.coach_id` 指向該教練的**全部**課程,不論 `is_active`;範圍下的學員 = 這些
-課程 `active_enrolments` 去重後的 distinct 使用者集合。六個讀取端(`GET /coaches/me/students`、
+課程 `active_enrolments` 去重後的 distinct 使用者集合。七個讀取端(`GET /coaches/me/students`、
 `GET /reports/coach` 的 `student_count`/`today_sessions`/`pending_attendance`、`GET /reports/admin` 的
-`coaches[].course_count`/`student_count`、教練身分呼叫 `GET /leave-requests`)一律同一口徑,由跨面交叉測試
+`coaches[].course_count`/`student_count`、教練身分呼叫 `GET /leave-requests`、教練身分呼叫
+`GET /sessions/today`(`sessions::service::today_sessions`))一律同一口徑,由跨面交叉測試
 (`tests/service_reports.rs::coach_scope_includes_delisted_courses_on_every_surface`)錨定,不靠共用 view/SQL
-片段——`attendance::repository` 曾在其中兩處多帶 `AND c.is_active = true`,是漂移點,已刪(ADR-0012)。與「課
+片段(`/reports/coach` 的 `today_sessions`/`pending_attendance` 與 `/sessions/today` 例外地共用同一份範圍:
+兩者都綁 `materialize_today` 回傳的 `MaterializedDay::course_ids()`,即 `find_course_ids_by_coach` 的結果)——`attendance::repository` 曾在其中兩處多帶 `AND c.is_active = true`,是漂移點,已刪(ADR-0012)。與「課
 程教練所有權」不同維度(那是單資源 403 gate,這裡是名下範圍列表);與「上架可見性」也不同維度(下架只影響
 訪客/會員瀏覽端看不看得到、買不買得到,不影響教練自己或 admin 代管視角看到的範圍)。
 _Avoid_: 把某堂課下架當成把它從教練名下移除的手段(要移除得取消報名或改派 `courses.coach_id`);替單一讀取
-端加回 `is_active` 過濾去「修正」跟其他讀取端對不上的數字(六處本就該同口徑)。
+端加回 `is_active` 過濾去「修正」跟其他讀取端對不上的數字(七處本就該同口徑)。
 
 **訂單定價(Order Pricing)**:
 `orders::pricing::price → PricingOutcome`,純函式,交易編排留 checkout。`PricingOutcome::ledger_deltas(order_id) → Vec<LedgerDelta>` 是結帳點數帳的單一 owner:`checkout_redeem` 先、`checkout_earn` 後,幅度 0 的方向跳過;checkout 只剩一個迴圈逐筆 `apply_delta_tx`。退款側的對稱件不在 orders:`points::model::OrderPointsFlow::reversal_deltas(order_id)`(`refund_restore` 先、`refund_clawback` 後,幅度 0 跳過),由 `points::service::reverse_order_tx` 套用(見「退款」)。請求端不需 DB 的檢查(付款方式值域 422、coupon trim、`use_points` 預設)由 `orders::service` 私有的 `parse_request → CheckoutIntent` 吸收;`price` 直接收 `BalanceLock` 鎖到的餘額,只在 `use_points` 時讀它。
@@ -114,7 +116,7 @@ _Avoid_: 把這裡跟「請假規則(Leave Rules)」的 `find_decision_context`/
 _Avoid_: 寫入後同 tx 再 `find_*_row_tx` 讀回、從請求欄位 + 另查的顯示欄手拼回應(會與 `/me` 漂移);在寫入 CTE 裡讀 view。
 
 **場次物化(Session Materialization)**:
-「先物化、再讀取」呼叫順序 invariant 的單一 owner:`sessions::calendar::materialize_range(db, today, ids, from, to)` 回傳 `MaterializedRange` witness(欄位私有,僅該函式能建構;唯讀存取 `course_ids()`/`from_date()`/`to_date()`),每個 early-return 路徑也回傳 witness。**物化只往前**(ADR-0011):只插入 `[max(from, today), to]`,witness 仍帶請求的 `[from, to]`——過去日期只讀已存在的列,讀取端不必分辨;seed 回填過去改走具名的 `calendar::backfill_for_seed`(runtime 不可呼叫)。讀取端(`sessions::find_sessions_in`、`reports::venue_usage`/`upcoming_session_count`)改收 `&MaterializedRange`,不再各自靠 doc 前置條件維繫呼叫順序。witness 只擔保「此範圍已物化」,**不**擔保每個讀取端都按 `course_ids` 過濾——`venue_usage` 只用其日期窗(全場館聚合由查詢本身表達),`find_sessions_in`/`upcoming_session_count` 才綁 `course_ids`。日期軸再分一支:`sessions::find_today_sessions_in`/`reports::coach_today_and_pending` 額外要求單日(`TodaySessionRow` 無日期欄、「今天」本身無多日語意),這個前提由姊妹型別 `MaterializedDay` 在建構點一次成立——`materialize_today` 是唯一建構點,內部呼叫 `materialize_range(db, today, ids, today, today)` 重用同一套冪等/早退邏輯,兩個消費端改收 `&MaterializedDay`,原本各自的 `mat.from_date() == mat.to_date()` debug_assert 已退役。物化只加不減(`ON CONFLICT DO NOTHING` 的單向 INSERT);週課表變動後的反向清理由 `sessions::calendar::replace_weekly_schedule_tx` 承接——`courses::service::update_course` 在同一 tx 內呼叫,換完 slot 後接著對該課程 `session_date > today` 的未來場次同步 `end_time` 與 `venue`,並刪除不再對應任何 slot、且無請假單(`session_id`/`makeup_session_id`,任何狀態)或點名紀錄引用的孤兒場次,今天以前(含今天)的場次不動,也不在此預先物化新時段。**場次記住場地**:`materialize_range` 物化時把 slot 的 `venue` 快照進 `course_sessions.venue`(migration `20260927000001`,既有列以當時的 DOW + `start_time` 對應規則 backfill,部署當下讀取結果不變);之後只有上述 reconcile 會對未來場次改寫它。讀取端(`find_today_sessions_in`、`reports::venue_usage`)直接讀 `cs.venue`,不再回頭 join `course_schedule_slots`——slot 事後改開課時間不會讓今天/過去場次的場地變 NULL,改場地也不會把過去場次改名。**幻影場次(已收掉,ADR-0011)**:以前 `admin_report` 物化整個本月、含已過去的日期,月中改開課時間後本月過去日期會多出新時間的「幻影場次」(那天實際沒上)。物化只往前之後不再產生;DB 裡既有的幻影列無從分辨,不清。代價:某天變成過去之前若從未被任何讀取端物化過,就不計入 `venue_usage`(這種日子本來就不可能點名)。
+「先物化、再讀取」呼叫順序 invariant 的單一 owner:`sessions::calendar::materialize_range(db, today, ids, from, to)` 回傳 `MaterializedRange` witness(欄位私有,僅該函式能建構;唯讀存取 `course_ids()`/`from_date()`/`to_date()`),每個 early-return 路徑也回傳 witness。**物化只往前**(ADR-0011):只插入 `[max(from, today), to]`,witness 仍帶請求的 `[from, to]`——過去日期只讀已存在的列,讀取端不必分辨;seed 回填過去改走具名的 `calendar::backfill_for_seed`(runtime 不可呼叫)。讀取端(`sessions::find_sessions_in`、`reports::venue_usage`/`upcoming_session_count`)改收 `&MaterializedRange`,不再各自靠 doc 前置條件維繫呼叫順序。witness 只擔保「此範圍已物化」,**不**擔保每個讀取端都按 `course_ids` 過濾——`venue_usage` 只用其日期窗(全場館聚合由查詢本身表達),`find_sessions_in`/`upcoming_session_count`/`find_today_sessions_in`/`coach_today_and_pending` 才綁 `course_ids`(`coach_today_and_pending` 以前另用 `coach_id` JOIN 重述教練範圍、不讀 witness 的 `course_ids()`,現改綁 `day.course_ids()`,與 `/sessions/today` 同一份範圍)。日期軸再分一支:`sessions::find_today_sessions_in`/`reports::coach_today_and_pending` 額外要求單日(`TodaySessionRow` 無日期欄、「今天」本身無多日語意),這個前提由姊妹型別 `MaterializedDay` 在建構點一次成立——`materialize_today` 是唯一建構點,內部呼叫 `materialize_range(db, today, ids, today, today)` 重用同一套冪等/早退邏輯,兩個消費端改收 `&MaterializedDay`,原本各自的 `mat.from_date() == mat.to_date()` debug_assert 已退役。物化只加不減(`ON CONFLICT DO NOTHING` 的單向 INSERT);週課表變動後的反向清理由 `sessions::calendar::replace_weekly_schedule_tx` 承接——`courses::service::update_course` 在同一 tx 內呼叫,換完 slot 後接著對該課程 `session_date > today` 的未來場次同步 `end_time` 與 `venue`,並刪除不再對應任何 slot、且無請假單(`session_id`/`makeup_session_id`,任何狀態)或點名紀錄引用的孤兒場次,今天以前(含今天)的場次不動,也不在此預先物化新時段。**場次記住場地**:`materialize_range` 物化時把 slot 的 `venue` 快照進 `course_sessions.venue`(migration `20260927000001`,既有列以當時的 DOW + `start_time` 對應規則 backfill,部署當下讀取結果不變);之後只有上述 reconcile 會對未來場次改寫它。讀取端(`find_today_sessions_in`、`reports::venue_usage`)直接讀 `cs.venue`,不再回頭 join `course_schedule_slots`——slot 事後改開課時間不會讓今天/過去場次的場地變 NULL,改場地也不會把過去場次改名。**幻影場次(已收掉,ADR-0011)**:以前 `admin_report` 物化整個本月、含已過去的日期,月中改開課時間後本月過去日期會多出新時間的「幻影場次」(那天實際沒上)。物化只往前之後不再產生;DB 裡既有的幻影列無從分辨,不清。代價:某天變成過去之前若從未被任何讀取端物化過,就不計入 `venue_usage`(這種日子本來就不可能點名)。
 _Avoid_: 把 witness 當作 course 範圍過濾的保證(它只保證「已物化」)、materialize_range 呼叫順序仍是文件慣例(已收進型別系統)
 
 **有效報名(Active Enrolments)**:
