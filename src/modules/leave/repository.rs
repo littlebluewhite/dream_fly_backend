@@ -19,6 +19,15 @@ const VIEW_COLUMNS: &str = "lr.id, e.course_id, c.name AS course_name, lr.sessio
 const VIEW_JOINS: &str = "JOIN enrolments e ON e.id = lr.enrolment_id JOIN courses c ON c.id = e.course_id \
     JOIN course_sessions cs ON cs.id = lr.session_id LEFT JOIN course_sessions mcs ON mcs.id = lr.makeup_session_id";
 
+/// The coach/admin list's filter clause — single owner shared by
+/// [`find_admin_list`] and [`count_admin_list`] so `total` always counts the
+/// exact row set the page is cut from. Binds `$1` status, `$2` course_id,
+/// `$3` coach scope (each `NULL` = no restriction); assumes `lr` and `c`
+/// (the enrolment's course) in scope.
+const ADMIN_LIST_FILTER: &str = "WHERE ($1 IS NULL OR lr.status = $1) \
+    AND ($2::uuid IS NULL OR c.id = $2) \
+    AND ($3::uuid IS NULL OR c.coach_id = $3)";
+
 /// `course_sessions` JOINed with its course's `name` — used by
 /// `POST /leave-requests` (plain pool read). The makeup endpoint reads its
 /// target session through `courses::seats::lock_session_tx` instead.
@@ -177,9 +186,7 @@ pub async fn find_admin_list(
          FROM leave_requests lr \
          {VIEW_JOINS} \
          JOIN users u ON u.id = e.user_id \
-         WHERE ($1 IS NULL OR lr.status = $1) \
-           AND ($2::uuid IS NULL OR c.id = $2) \
-           AND ($3::uuid IS NULL OR c.coach_id = $3) \
+         {ADMIN_LIST_FILTER} \
          ORDER BY lr.created_at DESC \
          LIMIT $4 OFFSET $5"
     )))
@@ -192,22 +199,21 @@ pub async fn find_admin_list(
     .await
 }
 
-/// Count counterpart of [`find_admin_list`] — same filters, no LIMIT/OFFSET.
+/// Count counterpart of [`find_admin_list`] — same [`ADMIN_LIST_FILTER`], no
+/// LIMIT/OFFSET.
 pub async fn count_admin_list(
     db: &PgPool,
     status_filter: Option<LeaveStatus>,
     course_id_filter: Option<Uuid>,
     coach_scope: Option<Uuid>,
 ) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
+    sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
         "SELECT COUNT(*) \
          FROM leave_requests lr \
          JOIN enrolments e ON e.id = lr.enrolment_id \
          JOIN courses c ON c.id = e.course_id \
-         WHERE ($1 IS NULL OR lr.status = $1) \
-           AND ($2::uuid IS NULL OR c.id = $2) \
-           AND ($3::uuid IS NULL OR c.coach_id = $3)",
-    )
+         {ADMIN_LIST_FILTER}"
+    )))
     .bind(status_filter)
     .bind(course_id_filter)
     .bind(coach_scope)
