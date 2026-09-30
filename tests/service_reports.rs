@@ -33,6 +33,7 @@ use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
+use dream_fly_backend::modules::sessions::service as sessions_service;
 use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -1644,8 +1645,8 @@ async fn points_tier_matches_sql_tier_distribution_case(db: PgPool) {
 /// Cross-surface lock: a coach's scope is *all* courses pointing at their
 /// `coach_id`, delisted (`is_active = false`) or not (下架＝停售不是停課,
 /// `sessions/service.rs:44`) — `/coaches/me/students`, `/reports/coach`,
-/// `/reports/admin`'s `coaches` rows, and `/leave-requests` (coach identity)
-/// must all agree. Coach A has course X (listed) and course Y (delisted
+/// `/sessions/today` (coach identity), `/reports/admin`'s `coaches` rows,
+/// and `/leave-requests` (coach identity) must all agree. Coach A has course X (listed) and course Y (delisted
 /// after setup); s1 is only in X, s2 is only in Y, s3 is in both (counted
 /// once), s4's Y enrolment is cancelled (never counted). Y has one
 /// today-session with no attendance recorded and one pending leave request.
@@ -1707,6 +1708,20 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     assert_eq!(
         coach_report.pending_attendance, 1,
         "Y's today session is unmarked"
+    );
+
+    // GET /sessions/today as this coach — Y's today session still surfaces.
+    let today_sessions =
+        sessions_service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
+            .await
+            .expect("today_sessions");
+    assert_eq!(
+        today_sessions
+            .iter()
+            .map(|s| (s.id, s.course_id))
+            .collect::<Vec<_>>(),
+        vec![(session_y_today, course_y)],
+        "coach's today sessions must include delisted Y's session"
     );
 
     // GET /reports/admin — coaches[A] also counts Y.

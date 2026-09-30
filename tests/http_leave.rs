@@ -313,6 +313,7 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
     let body: serde_json::Value = resp.json();
     let arr = body["leave_requests"].as_array().unwrap();
     assert_eq!(arr.len(), 1, "status filter must narrow to the approved one");
+    assert_eq!(body["total"], 1, "total must count the same filtered set");
     assert_eq!(arr[0]["course_id"], course_b.to_string());
     assert_eq!(arr[0]["user_name"], "Test Member");
 
@@ -324,6 +325,20 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
     let body: serde_json::Value = resp.json();
     let arr = body["leave_requests"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
+    assert_eq!(body["total"], 1, "total must count the same filtered set");
+    assert_eq!(arr[0]["course_id"], course_a.to_string());
+
+    // Both filters together.
+    let resp = app
+        .get(&format!(
+            "/api/v1/leave-requests?status=pending&course_id={course_a}"
+        ))
+        .authorization_bearer(&admin_token)
+        .await;
+    let body: serde_json::Value = resp.json();
+    let arr = body["leave_requests"].as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(body["total"], 1, "total must count the same filtered set");
     assert_eq!(arr[0]["course_id"], course_a.to_string());
 }
 
