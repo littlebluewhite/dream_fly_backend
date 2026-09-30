@@ -56,11 +56,11 @@
 //! - **A user deleted before its event is consumed**: `audit_log.user_id`
 //!   has a foreign key to `users`. If the referenced row is gone by the
 //!   time the event is processed, the insert fails with a FK violation,
-//!   which `From<sqlx::Error>` classifies as `Transient` and retries up to
-//!   [`MAX_TRANSIENT_RETRIES`] times before being dropped loudly. This
+//!   which `From<sqlx::Error>` classifies as `Transient` and retries in
+//!   place up to [`MAX_ATTEMPTS`] attempts before being dropped loudly. This
 //!   existing error classification is not changed here.
 
-use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
@@ -76,8 +76,9 @@ use super::events::{ALL_SPECS, spec_for_event_type, topics};
 /// retry (`Transient`) or give up and commit the offset (`Poison`).
 ///
 /// - `Transient`: likely to succeed on retry (DB connection blip, Redis
-///   timeout, transient network error). The consumer keeps the offset so
-///   the message is redelivered after a restart or rebalance.
+///   timeout, transient network error). The consumer retries the same
+///   message in place with backoff, committing nothing past it until it
+///   resolves.
 /// - `Poison`: deterministic failure that retries cannot fix (malformed
 ///   JSON, missing required field, impossible payload). The consumer logs
 ///   at ERROR and commits past the message so the consumer group is not
@@ -109,11 +110,12 @@ impl From<sqlx::Error> for ProcessingError {
     }
 }
 
-/// Ceiling on transient retries for a single message before we give up and
-/// commit the offset. Set high enough that real transient errors recover
-/// naturally (Postgres reconnect, Redis flush) but low enough that a truly
+/// Handler calls per message before a still-`Transient` failure is given up
+/// on and its offset committed. With 1/2/4/8 s backoff between calls that is
+/// ~15 s of in-place retrying: long enough for real transient errors to
+/// recover (Postgres reconnect, Redis flush), short enough that a truly
 /// poison record doesn't wedge the partition forever.
-const MAX_TRANSIENT_RETRIES: u32 = 5;
+const MAX_ATTEMPTS: u32 = 5;
 
 /// Build a Kafka consumer configured for at-least-once processing:
 /// `enable.auto.commit=false` means we commit *after* we've successfully
@@ -242,27 +244,24 @@ impl AuditHandler for PgPool {
 enum Resolution {
     /// Commit the offset: the message is handled, or will never succeed.
     Commit,
-    /// Leave the offset uncommitted so the message is redelivered after a
-    /// restart or rebalance.
-    Skip,
+    /// Shutdown arrived while backing off: exit without committing, so the
+    /// message is redelivered after restart.
+    Shutdown,
 }
 
 /// The consumer loop: pull a message, [`resolve`] it, commit if told to.
 ///
-/// Shutdown is only checked between messages (`biased`, so it wins over new
-/// work): a SIGTERM during handler execution still lets the current message
-/// complete before the loop breaks.
+/// Messages are resolved strictly one at a time, so no later offset is ever
+/// committed past a message that hasn't resolved yet.
+///
+/// Shutdown is checked between messages (`biased`, so it wins over new work)
+/// and during retry backoff — never during a handler call, so a SIGTERM
+/// mid-handler still lets that call complete.
 async fn run<S: MessageSource, H: AuditHandler>(
     mut source: S,
     handler: H,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    // Track transient retries by (topic, partition, offset). Lets the
-    // consumer escape a truly poisoned record after `MAX_TRANSIENT_RETRIES`
-    // failed attempts rather than redelivering it forever. The map clears
-    // itself as messages are committed.
-    let mut retry_counts: HashMap<(String, i32, i64), u32> = HashMap::new();
-
     loop {
         let next = tokio::select! {
             biased;
@@ -285,32 +284,34 @@ async fn run<S: MessageSource, H: AuditHandler>(
             break;
         };
 
-        let retry_key = (msg.topic.clone(), msg.partition, msg.offset);
-        if resolve(&msg, &handler, &mut retry_counts).await == Resolution::Commit {
-            if let Err(e) = source.commit(&msg) {
-                // Logged and otherwise ignored: the offset is simply
-                // committed again with a later message.
-                tracing::error!(
-                    topic = %msg.topic,
-                    partition = msg.partition,
-                    offset = msg.offset,
-                    "commit failed: {e}"
-                );
+        match resolve(&msg, &handler, &mut shutdown_rx).await {
+            Resolution::Commit => {
+                if let Err(e) = source.commit(&msg) {
+                    // Logged and otherwise ignored: the offset is simply
+                    // committed again with a later message.
+                    tracing::error!(
+                        topic = %msg.topic,
+                        partition = msg.partition,
+                        offset = msg.offset,
+                        "commit failed: {e}"
+                    );
+                }
             }
-            retry_counts.remove(&retry_key);
+            Resolution::Shutdown => break,
         }
     }
 
     tracing::info!("Kafka consumer loop exited");
 }
 
-/// Decide one message's fate: decode the payload, call the handler, and
-/// classify the result into a [`Resolution`]. Every branch's log line lives
-/// here.
+/// Decide one message's fate: decode the payload, call the handler —
+/// retrying a `Transient` failure in place, on this same message, with
+/// backoff — and classify the outcome into a [`Resolution`]. Every branch's
+/// log line lives here.
 async fn resolve<H: AuditHandler>(
     msg: &SourceMessage,
     handler: &H,
-    retry_counts: &mut HashMap<(String, i32, i64), u32>,
+    shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Resolution {
     let (topic, partition, offset) = (&msg.topic, msg.partition, msg.offset);
 
@@ -336,49 +337,60 @@ async fn resolve<H: AuditHandler>(
 
     tracing::debug!(topic = %topic, "Received Kafka message");
 
-    match handler.handle(payload).await {
-        Ok(()) => Resolution::Commit,
-        Err(ProcessingError::Poison(reason)) => {
-            // Deterministic failure (malformed JSON, missing required
-            // fields). Retrying will not help — commit past it with a loud
-            // error so ops can alert.
-            tracing::error!(
-                topic = %topic,
-                partition,
-                offset,
-                poison = %reason,
-                "dropping poison Kafka message"
-            );
-            Resolution::Commit
-        }
-        Err(ProcessingError::Transient(reason)) => {
-            let attempts_slot = retry_counts
-                .entry((topic.clone(), partition, offset))
-                .or_insert(0);
-            *attempts_slot += 1;
-            let attempts = *attempts_slot;
-
-            if attempts >= MAX_TRANSIENT_RETRIES {
-                // Escape hatch: after N failed retries, commit and log
+    let mut attempt: u32 = 1;
+    loop {
+        match handler.handle(payload).await {
+            Ok(()) => return Resolution::Commit,
+            Err(ProcessingError::Poison(reason)) => {
+                // Deterministic failure (malformed JSON, missing required
+                // fields). Retrying will not help — commit past it with a
+                // loud error so ops can alert.
+                tracing::error!(
+                    topic = %topic,
+                    partition,
+                    offset,
+                    poison = %reason,
+                    "dropping poison Kafka message"
+                );
+                return Resolution::Commit;
+            }
+            Err(ProcessingError::Transient(reason)) if attempt >= MAX_ATTEMPTS => {
+                // Escape hatch: after the last attempt, commit and log
                 // loudly so the partition isn't stuck.
                 tracing::error!(
                     topic = %topic,
                     partition,
                     offset,
-                    attempts,
+                    attempts = attempt,
                     "transient handler failure exceeded retry cap; dropping: {reason}"
                 );
-                Resolution::Commit
-            } else {
+                return Resolution::Commit;
+            }
+            Err(ProcessingError::Transient(reason)) => {
+                // 1s, 2s, 4s, 8s after attempts 1..=4.
+                let backoff = Duration::from_secs(1 << (attempt - 1));
                 tracing::warn!(
                     topic = %topic,
                     partition,
                     offset,
-                    attempt = attempts,
-                    max = MAX_TRANSIENT_RETRIES,
-                    "transient handler failure, not committing (will retry): {reason}"
+                    attempt,
+                    max = MAX_ATTEMPTS,
+                    "transient handler failure, retrying in {backoff:?}: {reason}"
                 );
-                Resolution::Skip
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    Ok(_) = shutdown_rx.wait_for(|stop| *stop) => {
+                        tracing::info!(
+                            topic = %topic,
+                            partition,
+                            offset,
+                            "Kafka consumer received shutdown during retry backoff; \
+                             leaving message uncommitted"
+                        );
+                        return Resolution::Shutdown;
+                    }
+                }
+                attempt += 1;
             }
         }
     }
@@ -495,7 +507,7 @@ pub async fn handle_audit_event(db: &PgPool, payload: &str) -> Result<(), Proces
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -532,6 +544,7 @@ mod tests {
     enum Step {
         Ok,
         Poison,
+        Transient,
     }
 
     /// Payloads are the message's offset as text. Each offset has a script
@@ -556,6 +569,7 @@ mod tests {
             match step {
                 Step::Ok => Ok(()),
                 Step::Poison => Err(ProcessingError::poison("scripted poison")),
+                Step::Transient => Err(ProcessingError::transient("scripted transient")),
             }
         }
     }
@@ -638,5 +652,55 @@ mod tests {
     async fn source_end_exits_the_loop() {
         let events = run_to_end(vec![], vec![]).await;
         assert_eq!(events, vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_then_ok_retries_the_same_message() {
+        let events = run_to_end(
+            vec![text_msg(0)],
+            vec![(0, vec![Step::Transient, Step::Ok])],
+        )
+        .await;
+        assert_eq!(events, vec![H(0), H(0), C(0)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_message_waits_until_failed_one_resolves() {
+        let events = run_to_end(
+            vec![text_msg(0), text_msg(1)],
+            vec![(0, vec![Step::Transient, Step::Transient, Step::Ok])],
+        )
+        .await;
+        assert_eq!(events, vec![H(0), H(0), H(0), C(0), H(1), C(1)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_cap_commits_then_moves_on() {
+        let start = tokio::time::Instant::now();
+        let events = run_to_end(
+            vec![text_msg(0), text_msg(1)],
+            vec![(0, vec![Step::Transient])],
+        )
+        .await;
+        assert_eq!(events, vec![H(0), H(0), H(0), H(0), H(0), C(0), H(1), C(1)]);
+        // Backoff 1 + 2 + 4 + 8 seconds between the five attempts.
+        assert_eq!(start.elapsed(), Duration::from_secs(15));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_during_backoff_exits_without_committing() {
+        let (source, handler, events) = fixture(
+            vec![text_msg(0), text_msg(1)],
+            vec![(0, vec![Step::Transient])],
+        );
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let loop_task = tokio::spawn(run(source, handler, shutdown_rx));
+
+        // Mid-way through the first 1s backoff.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        shutdown_tx.send(true).unwrap();
+        loop_task.await.unwrap();
+
+        assert_eq!(*events.lock().unwrap(), vec![H(0)]);
     }
 }
