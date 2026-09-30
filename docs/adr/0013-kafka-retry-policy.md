@@ -43,7 +43,8 @@ Kafka 管線兩端各有一個重試迴圈,失敗時的去留要分別裁決:
   的失敗多半是 broker 端問題(broker 掛了、topic 不存在、訊息過大),運維修好之後,未放棄的列會自己送出,
   不需要人工重排。而一列失敗的成本很低:退避到頂後每小時一次 publish 嘗試加一行 error log,其他列照發。
 - **稽核消費端卡住會擋住整個 partition**:committed offset 是 per-partition 的,一則過不去的訊息會讓同
-  partition 後面所有事件都進不了 `audit_log`。`audit_log` 是衍生的紀錄(consumer 是 audit-only,見
+  partition 後面所有事件都進不了 `audit_log`。單一消費迴圈依序處理本實例分到的所有 partition(跨全部 topic),
+  原地重試期間全部暫停(每則最多約 15 s)。`audit_log` 是衍生的紀錄(consumer 是 audit-only,見
   `consumer.rs` 模組文件),丟一筆稽核紀錄的代價遠小於整個 partition 停擺;而事件本身仍留在 Kafka(retention
   內)與 `events_outbox`(不清理已發送列),要補可以重放。有限重試吸收真正的暫時性錯誤(Postgres 重連之類),
   上限避免毒訊息永久卡住 partition。
@@ -69,5 +70,8 @@ Kafka 管線兩端各有一個重試迴圈,失敗時的去留要分別裁決:
   (`audit_log.id = event_id` + `ON CONFLICT DO NOTHING`),不依賴順序。
 - 逾時(`PUBLISH_BUDGET`)的那列算一次失敗並停止這一批,沒輪到的列留著租約,60s 後重領——一列持續逾時的毒訊息
   最多讓一個 tick 停 15s,退避到頂後每小時一次。
+- Postgres 中斷超過約 15 s 時(所有 DB 錯誤都判為 `Transient`),中斷期間消費到的每一則都會在 5 次後被 commit
+  丟棄(每 15 s 一則);復原後需從 Kafka(retention 內)或 `events_outbox` 重放該時段。告警應以
+  `transient handler failure exceeded retry cap; dropping` error log 的計數為準。
 - 消費端丟棄的訊息只有 error log 留痕,沒有 DLQ;要補稽核紀錄得從 Kafka(retention 內)或 `events_outbox` 重放。
 - `events_outbox` 無限成長(不清理已發送列);清理政策留待日後另行裁決。
