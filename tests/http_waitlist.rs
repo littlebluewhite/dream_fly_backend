@@ -6,6 +6,7 @@ use chrono::{Duration, Utc};
 use common::fixtures::{CourseSeed, seed_enrolment, seed_waitlist_entry};
 use common::http::spawn_test_app;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -68,18 +69,20 @@ async fn me_returns_only_callers_entries_newest_first(db: PgPool) {
     let course_b = CourseSeed::new("HTTP WL Me Course B").max_students(10).insert(&app.db).await;
 
     // Someone else's entry must not leak into user_a's list.
-    seed_waitlist_entry(&app.db, user_b.user_id, course_a, "waiting", Utc::now()).await;
+    seed_waitlist_entry(&app.db, user_b.user_id, course_a, WaitlistStatus::Waiting, Utc::now())
+        .await;
 
     let older_id = seed_waitlist_entry(
         &app.db,
         user_a.user_id,
         course_a,
-        "waiting",
+        WaitlistStatus::Waiting,
         Utc::now() - Duration::days(2),
     )
     .await;
     let newer_id =
-        seed_waitlist_entry(&app.db, user_a.user_id, course_b, "waiting", Utc::now()).await;
+        seed_waitlist_entry(&app.db, user_a.user_id, course_b, WaitlistStatus::Waiting, Utc::now())
+            .await;
 
     let resp = app
         .get("/api/v1/waitlist/me")
@@ -117,7 +120,8 @@ async fn cancel_owner_succeeds_204(db: PgPool) {
     let course_id =
         CourseSeed::new("WL Cancel Owner Course").max_students(10).insert(&app.db).await;
     let entry_id =
-        seed_waitlist_entry(&app.db, user.user_id, course_id, "waiting", Utc::now()).await;
+        seed_waitlist_entry(&app.db, user.user_id, course_id, WaitlistStatus::Waiting, Utc::now())
+            .await;
 
     let resp = app
         .delete(&format!("/api/v1/waitlist/{entry_id}"))
@@ -138,7 +142,8 @@ async fn cancel_as_non_owner_returns_403(db: PgPool) {
     let course_id =
         CourseSeed::new("WL Cancel Other Course").max_students(10).insert(&app.db).await;
     let entry_id =
-        seed_waitlist_entry(&app.db, owner.user_id, course_id, "waiting", Utc::now()).await;
+        seed_waitlist_entry(&app.db, owner.user_id, course_id, WaitlistStatus::Waiting, Utc::now())
+            .await;
 
     let resp = app
         .delete(&format!("/api/v1/waitlist/{entry_id}"))
@@ -157,7 +162,8 @@ async fn cancel_as_admin_succeeds_204(db: PgPool) {
     let course_id =
         CourseSeed::new("WL Cancel Admin Course").max_students(10).insert(&app.db).await;
     let entry_id =
-        seed_waitlist_entry(&app.db, owner.user_id, course_id, "waiting", Utc::now()).await;
+        seed_waitlist_entry(&app.db, owner.user_id, course_id, WaitlistStatus::Waiting, Utc::now())
+            .await;
 
     let resp = app
         .delete(&format!("/api/v1/waitlist/{entry_id}"))
@@ -178,8 +184,14 @@ async fn cancel_already_cancelled_returns_404(db: PgPool) {
         .await;
     let course_id =
         CourseSeed::new("WL Cancel Twice Course").max_students(10).insert(&app.db).await;
-    let entry_id =
-        seed_waitlist_entry(&app.db, user.user_id, course_id, "cancelled", Utc::now()).await;
+    let entry_id = seed_waitlist_entry(
+        &app.db,
+        user.user_id,
+        course_id,
+        WaitlistStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .delete(&format!("/api/v1/waitlist/{entry_id}"))
@@ -267,7 +279,7 @@ async fn admin_list_returns_waiting_only_oldest_first_for_course(db: PgPool) {
         &app.db,
         user_a.user_id,
         course_x,
-        "waiting",
+        WaitlistStatus::Waiting,
         Utc::now() - Duration::hours(2),
     )
     .await;
@@ -276,14 +288,16 @@ async fn admin_list_returns_waiting_only_oldest_first_for_course(db: PgPool) {
         &app.db,
         user_b.user_id,
         course_x,
-        "waiting",
+        WaitlistStatus::Waiting,
         Utc::now() - Duration::hours(1),
     )
     .await;
     // Cancelled entry for course_x — must be excluded.
-    seed_waitlist_entry(&app.db, user_c.user_id, course_x, "cancelled", Utc::now()).await;
+    seed_waitlist_entry(&app.db, user_c.user_id, course_x, WaitlistStatus::Cancelled, Utc::now())
+        .await;
     // Waiting entry for a different course — must be excluded.
-    seed_waitlist_entry(&app.db, user_d.user_id, course_y, "waiting", Utc::now()).await;
+    seed_waitlist_entry(&app.db, user_d.user_id, course_y, WaitlistStatus::Waiting, Utc::now())
+        .await;
 
     let resp = app
         .get(&format!("/api/v1/waitlist?course_id={course_x}"))

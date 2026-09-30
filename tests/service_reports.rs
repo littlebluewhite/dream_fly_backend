@@ -39,6 +39,7 @@ use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
 use dream_fly_backend::modules::sessions::service as sessions_service;
+use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -312,7 +313,7 @@ async fn admin_report_course_fill_rate_and_waitlist(db: PgPool) {
     seed_enrolment(&db, u1, course_id, EnrolmentStatus::Active, Utc::now()).await;
     seed_enrolment(&db, u2, course_id, EnrolmentStatus::Active, Utc::now()).await;
     seed_enrolment(&db, u3, course_id, EnrolmentStatus::Cancelled, Utc::now()).await; // must not count
-    seed_waitlist_entry(&db, w1, course_id, "waiting", Utc::now()).await;
+    seed_waitlist_entry(&db, w1, course_id, WaitlistStatus::Waiting, Utc::now()).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await

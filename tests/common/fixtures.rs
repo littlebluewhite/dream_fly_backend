@@ -18,6 +18,7 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
+use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 
 use super::{add_course_to_cart, add_to_cart, seed_member};
 
@@ -708,14 +709,14 @@ pub async fn seed_waitlist_entry(
     db: &PgPool,
     user_id: Uuid,
     course_id: Uuid,
-    status: &str,
+    status: WaitlistStatus,
     created_at: DateTime<Utc>,
 ) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
         INSERT INTO waitlist_entries (id, user_id, course_id, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::waitlist_status, $5, $5)
+        VALUES ($1, $2, $3, $4, $5, $5)
         "#,
     )
     .bind(id)
