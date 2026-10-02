@@ -193,7 +193,7 @@ pub async fn find_stock_traces_by_order_tx(
     order_id: Uuid,
 ) -> Result<Vec<OrderStockTrace>, sqlx::Error> {
     sqlx::query_as::<_, OrderStockTrace>(
-        "SELECT id AS item_id, product_id, quantity, stock_decremented \
+        "SELECT item_type, product_id, course_id, quantity, stock_decremented \
          FROM order_items \
          WHERE order_id = $1 AND item_type = 'product'::cart_item_type \
          ORDER BY created_at",

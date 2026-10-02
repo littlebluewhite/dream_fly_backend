@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::cart::model::LineTarget;
 use crate::utils::slug::slugify;
 
 use super::dto::{
@@ -253,7 +254,7 @@ pub async fn lock_products_tx(
 /// transaction — `orders::service::checkout`'s stock decrement. `lines` is
 /// `(product_id, quantity, name)` tuples rather than
 /// `cart::model::CheckoutLine` so this module
-/// doesn't have to import back into `cart`; the `HashMap` return follows
+/// doesn't depend on cart's checkout snapshot shape; the `HashMap` return follows
 /// the same idiom as `repository::find_sold_counts` in this module.
 ///
 /// Takes `&ProductLocks`: every line's row must already be locked by
@@ -298,44 +299,38 @@ pub async fn reserve_stock_tx(
 }
 
 /// The `(product_id, quantity)` lines an order's refund must restock, in
-/// trace (line-creation) order: only lines whose checkout-time
+/// trace (line-creation) order: only product lines whose checkout-time
 /// `stock_decremented` snapshot is `true` — `false` (unlimited-stock
-/// product, or a legacy row) restores nothing. A trace without a
-/// `product_id` is `AppError::Internal` whether or not it would restock:
-/// unreachable under the `order_items_one_target` CHECK (a belt guard like
-/// `orders::fulfilment::plan`'s), with `order_id` woven into the message to
-/// name the offending order. Not sorted — walking in lock order is
+/// product, or a legacy row) restores nothing, and a course line never
+/// touches stock. Infallible: each trace's target was decoded at the row
+/// boundary (`LineTarget`). Not sorted — walking in lock order is
 /// [`ProductLocks::in_lock_order`]'s job.
-fn restock_lines(order_id: Uuid, traces: &[OrderStockTrace]) -> Result<Vec<(Uuid, i32)>, AppError> {
+fn restock_lines(traces: &[OrderStockTrace]) -> Vec<(Uuid, i32)> {
     let mut lines = Vec::new();
     for trace in traces {
-        let product_id = trace.product_id.ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "order {}: product line {} missing product_id",
-                order_id,
-                trace.item_id
-            ))
-        })?;
-        if trace.stock_decremented {
-            lines.push((product_id, trace.quantity));
+        match trace.target {
+            LineTarget::Product(product_id) => {
+                if trace.stock_decremented {
+                    lines.push((product_id, trace.quantity));
+                }
+            }
+            LineTarget::Course(_) => {}
         }
     }
-    Ok(lines)
+    lines
 }
 
 /// Lock the products an order's refund will restock — refund's products
 /// stage (`orders::locks::acquire_refund_locks`), taken right after the
 /// buyer's `users` row. Reads the order's own stock traces
-/// (`order_items`, ADR-0007 決策 8), so a missing `product_id` surfaces here
-/// as `AppError::Internal` — before the points reversal's 409, as before.
-/// Locks via [`lock_products_tx`] (ascending, `FOR NO KEY UPDATE`) even
+/// (`order_items`, ADR-0007 決策 8). Locks via [`lock_products_tx`] (ascending, `FOR NO KEY UPDATE`) even
 /// when nothing needs restocking.
 pub async fn lock_restock_for_order_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
 ) -> Result<ProductLocks, AppError> {
     let traces = repository::find_stock_traces_by_order_tx(tx, order_id).await?;
-    let ids: Vec<Uuid> = restock_lines(order_id, &traces)?
+    let ids: Vec<Uuid> = restock_lines(&traces)
         .into_iter()
         .map(|(product_id, _)| product_id)
         .collect();
@@ -361,9 +356,7 @@ pub async fn restore_for_order_tx(
     order_id: Uuid,
 ) -> Result<(), AppError> {
     let traces = repository::find_stock_traces_by_order_tx(tx, order_id).await?;
-    let lines = locks.in_lock_order(restock_lines(order_id, &traces)?, |(product_id, _)| {
-        *product_id
-    })?;
+    let lines = locks.in_lock_order(restock_lines(&traces), |(product_id, _)| *product_id)?;
 
     for (product_id, quantity) in lines {
         repository::restore_stock_tx(tx, product_id, quantity)
@@ -424,10 +417,9 @@ mod tests {
         assert!(matches!(err, AppError::Internal(_)), "got {err:?}");
     }
 
-    fn trace(product_id: Option<Uuid>, quantity: i32, stock_decremented: bool) -> OrderStockTrace {
+    fn trace(product_id: Uuid, quantity: i32, stock_decremented: bool) -> OrderStockTrace {
         OrderStockTrace {
-            item_id: Uuid::now_v7(),
-            product_id,
+            target: LineTarget::Product(product_id),
             quantity,
             stock_decremented,
         }
@@ -435,9 +427,8 @@ mod tests {
 
     #[test]
     fn restock_lines_restocks_line_when_stock_was_decremented() {
-        let order_id = Uuid::now_v7();
         let product_id = Uuid::now_v7();
-        let lines = restock_lines(order_id, &[trace(Some(product_id), 3, true)]).expect("plans");
+        let lines = restock_lines(&[trace(product_id, 3, true)]);
         assert_eq!(lines, vec![(product_id, 3)]);
     }
 
@@ -446,38 +437,27 @@ mod tests {
         // Unlimited-stock product at checkout time (or a legacy row) — the
         // snapshot says nothing was actually decremented, so nothing gets
         // restored.
-        let order_id = Uuid::now_v7();
-        let lines =
-            restock_lines(order_id, &[trace(Some(Uuid::now_v7()), 2, false)]).expect("plans");
+        let lines = restock_lines(&[trace(Uuid::now_v7(), 2, false)]);
         assert!(lines.is_empty(), "stock_decremented=false must not restock");
     }
 
     #[test]
     fn restock_lines_empty_traces_yield_no_lines() {
-        let lines = restock_lines(Uuid::now_v7(), &[]).expect("plans");
+        let lines = restock_lines(&[]);
         assert!(lines.is_empty());
     }
 
     #[test]
-    fn restock_lines_missing_product_id_is_internal_error() {
-        let order_id = Uuid::now_v7();
-        let err = restock_lines(order_id, &[trace(None, 1, true)]).expect_err("must be Internal");
-        assert!(
-            matches!(err, AppError::Internal(ref e)
-                if e.to_string().starts_with(&format!("order {order_id}: product line "))
-                    && e.to_string().ends_with(" missing product_id")),
-            "got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn restock_lines_missing_product_id_is_internal_even_when_stock_not_decremented() {
-        // The belt guard protects the `order_items_one_target` CHECK
-        // invariant, which has nothing to do with `stock_decremented` — a
-        // product line is missing its product_id regardless of whether it
-        // would have produced a restock.
-        let err =
-            restock_lines(Uuid::now_v7(), &[trace(None, 1, false)]).expect_err("must be Internal");
-        assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
+    fn restock_lines_skips_course_lines() {
+        // A course line never touches stock — skipped even if its trace
+        // claimed a decrement. Product lines around it keep their order.
+        let (first, last) = (Uuid::now_v7(), Uuid::now_v7());
+        let course = OrderStockTrace {
+            target: LineTarget::Course(Uuid::now_v7()),
+            quantity: 1,
+            stock_decremented: true,
+        };
+        let lines = restock_lines(&[trace(first, 2, true), course, trace(last, 1, true)]);
+        assert_eq!(lines, vec![(first, 2), (last, 1)]);
     }
 }

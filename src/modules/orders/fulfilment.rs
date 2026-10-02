@@ -3,24 +3,22 @@
 //! the cart snapshot twice with two mutually-exclusive
 //! `.filter(matches!(item.item_type, ...))` passes — one to gather product
 //! lines for stock reservation, one to gather course lines for enrolment.
-//! `plan()` replaces both with a single **exhaustive** `match` over
-//! `CartItemType`, splitting the lines into a pre-shaped
-//! [`FulfilmentPlan`] the caller consumes without ever matching on
-//! `item_type` again. Same "owned struct output" shape as
+//! `plan()` replaces both with a single **exhaustive** `match` over each
+//! line's [`LineTarget`], splitting the lines into a pre-shaped
+//! [`FulfilmentPlan`] the caller consumes without ever matching on the
+//! target again. Same "owned struct output" shape as
 //! [`super::pricing`]'s `PricingOutcome`: the fields checkout needs
 //! (`product_id`, `quantity`, `price_cents`, `name` for products;
-//! `course_id` for courses) are copied out here so no `item_type` branch —
-//! and no `Option` unwrap — survives downstream.
+//! `course_id` for courses) are copied out here so no target branch
+//! survives downstream.
 //!
-//! The match is exhaustive on purpose (no `_` arm): a future `CartItemType`
+//! The match is exhaustive on purpose (no `_` arm): a future `LineTarget`
 //! variant is a compile error *here*, at the one place that must decide how
 //! a new kind of line gets fulfilled, rather than silently falling through a
-//! wildcard into "reserved as nothing, enrolled as nothing". A `Product`
-//! line missing its `product_id`, or a `Course` line missing its
-//! `course_id`, is `AppError::Internal` — the `cart_items_one_target` CHECK
-//! (migration `20260704000001`) makes this unreachable today, so this
-//! upgrades the old `.expect()` panic to a 500 without changing any
-//! reachable behavior.
+//! wildcard into "reserved as nothing, enrolled as nothing". `plan()` cannot
+//! fail: the snapshot is decoded once (`LineTarget`'s `FromRow` rejects any
+//! row the `cart_items_one_target` CHECK forbids), and the only way to hold a
+//! [`PurchasableCart`] is through [`ensure_all_purchasable`].
 //!
 //! **Ordering is deliberately NOT this function's job.** The write-reservation
 //! order discipline (product lines by ascending `product_id` for the stock
@@ -41,11 +39,11 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::modules::cart::model::{CartItemType, CheckoutLine};
+use crate::modules::cart::model::{CheckoutLine, LineTarget};
 use crate::modules::products::model::Product;
 
-/// One product line resolved for fulfilment: `product_id` unwrapped from the
-/// cart snapshot's `Option`, plus the `quantity`/`price_cents`/`name` the
+/// One product line resolved for fulfilment: `product_id` taken from the
+/// line's `LineTarget::Product`, plus the `quantity`/`price_cents`/`name` the
 /// reservation and subscription-grant steps need. `name` is owned (`String`)
 /// rather than borrowed for the same reason `pricing` returns owned values:
 /// a borrow would infect every downstream signature with a lifetime
@@ -68,21 +66,31 @@ pub struct FulfilmentPlan {
     pub course_ids: Vec<Uuid>,
 }
 
-/// Split a checkout's cart snapshot into its fulfilment plan. `lines` is the
-/// exact slice `pricing::price` was just handed, so this runs after the
-/// coupon 422 and the subtotal-overflow 422 — an unreachable `Internal` from
-/// a target-less line can never mask those. See the module doc for why the
-/// match is exhaustive and why nothing is sorted here.
-pub fn plan(lines: &[CheckoutLine]) -> Result<FulfilmentPlan, AppError> {
+/// A checkout's cart snapshot that has passed the purchasability gate —
+/// every line active. The field is private and [`ensure_all_purchasable`]
+/// is the only constructor, so `pricing::price`, [`plan`] and
+/// [`order_lines`] cannot be handed a snapshot that skipped the gate.
+#[derive(Debug)]
+pub struct PurchasableCart(Vec<CheckoutLine>);
+
+impl PurchasableCart {
+    /// The gated lines, in the cart snapshot's own order.
+    pub fn lines(&self) -> &[CheckoutLine] {
+        &self.0
+    }
+}
+
+/// Split a purchasable cart into its fulfilment plan. Infallible: every
+/// line's target was decoded and checked at the row boundary
+/// (`LineTarget`), so there is nothing left to reject here. See the module
+/// doc for why the match is exhaustive and why nothing is sorted here.
+pub fn plan(cart: &PurchasableCart) -> FulfilmentPlan {
     let mut products = Vec::new();
     let mut course_ids = Vec::new();
 
-    for line in lines {
-        match line.item_type {
-            CartItemType::Product => {
-                let product_id = line.product_id.ok_or_else(|| {
-                    AppError::Internal(anyhow::anyhow!("product line missing product_id"))
-                })?;
+    for line in cart.lines() {
+        match line.target {
+            LineTarget::Product(product_id) => {
                 products.push(ProductFulfilment {
                     product_id,
                     quantity: line.quantity,
@@ -90,23 +98,21 @@ pub fn plan(lines: &[CheckoutLine]) -> Result<FulfilmentPlan, AppError> {
                     name: line.name.clone(),
                 });
             }
-            CartItemType::Course => {
-                let course_id = line.course_id.ok_or_else(|| {
-                    AppError::Internal(anyhow::anyhow!("course line missing course_id"))
-                })?;
+            LineTarget::Course(course_id) => {
                 course_ids.push(course_id);
             }
         }
     }
 
-    Ok(FulfilmentPlan {
+    FulfilmentPlan {
         products,
         course_ids,
-    })
+    }
 }
 
 /// Purchasability gate (甲案), run by `orders::service::checkout` on the raw
-/// cart snapshot BEFORE `plan()`/`pricing::price` ever see it. `cart::
+/// cart snapshot BEFORE `plan()`/`pricing::price` ever see it — and the only
+/// constructor of [`PurchasableCart`], which those take. `cart::
 /// repository::find_cart_items_for_checkout_tx` deliberately no longer
 /// filters its snapshot by `is_active` (see that function's doc), so a
 /// deactivated product/course line comes back like any other line instead
@@ -117,11 +123,10 @@ pub fn plan(lines: &[CheckoutLine]) -> Result<FulfilmentPlan, AppError> {
 /// blocks checkout of the entire cart, not just itself, matching this
 /// module's existing all-or-nothing posture (a full course/duplicate
 /// enrolment already rolls back the entire checkout — see `plan`'s module
-/// doc). An all-active slice (including the empty slice) is `Ok(())`; once
-/// this returns `Ok`, every line in `lines` is guaranteed active, and
-/// nothing downstream (`plan`, `pricing::price`, the `items_data` snapshot
-/// in `orders::service::checkout`) needs to look at `is_active` again.
-pub fn ensure_all_purchasable(lines: &[CheckoutLine]) -> Result<(), AppError> {
+/// doc). An all-active snapshot (including the empty one) becomes a
+/// `PurchasableCart`; nothing downstream (`plan`, `pricing::price`,
+/// `order_lines`) needs to look at `is_active` again.
+pub fn ensure_all_purchasable(lines: Vec<CheckoutLine>) -> Result<PurchasableCart, AppError> {
     let names: Vec<String> = lines
         .iter()
         .filter(|line| !line.is_active)
@@ -129,7 +134,7 @@ pub fn ensure_all_purchasable(lines: &[CheckoutLine]) -> Result<(), AppError> {
         .collect();
 
     if names.is_empty() {
-        return Ok(());
+        return Ok(PurchasableCart(lines));
     }
 
     Err(AppError::Validation(format!(
@@ -139,53 +144,51 @@ pub fn ensure_all_purchasable(lines: &[CheckoutLine]) -> Result<(), AppError> {
 }
 
 /// One order line ready for `repository::create_order_items`: the checkout
-/// snapshot's `product_id`/`course_id`/`quantity`/`price_cents`/`name`
-/// carried over verbatim, plus the `stock_decremented` bit `order_lines`
-/// derives below. Named replacement for the anonymous six-tuple
+/// snapshot's `target`/`quantity`/`price_cents`/`name` carried over
+/// verbatim, plus the `stock_decremented` bit `order_lines` derives below.
+/// Named replacement for the anonymous six-tuple
 /// `(Option<Uuid>, Option<Uuid>, i32, i64, String, bool)` `checkout` used to
-/// build inline, field-for-field in the same order.
+/// build inline.
 #[derive(Debug)]
 pub struct OrderLine {
-    pub product_id: Option<Uuid>,
-    pub course_id: Option<Uuid>,
+    pub target: LineTarget,
     pub quantity: i32,
     pub price_cents: i64,
     pub name: String,
     pub stock_decremented: bool,
 }
 
-/// Turn a checkout's cart snapshot into named order lines — `plan()`'s
-/// sister pure function, and the single owner of the `stock_decremented`
-/// derivation rule that used to live in an unnamed closure inside
-/// `service::checkout` (not unit-testable there). `lines` is the same slice
-/// `plan()` above just consumed; `reserved` is
-/// `products::service::reserve_stock_tx`'s result (called by
-/// `service::checkout`) — the post-decrement row for every product line
-/// that got reserved.
+/// Turn a purchasable cart into named order lines — `plan()`'s sister pure
+/// function, and the single owner of the `stock_decremented` derivation
+/// rule that used to live in an unnamed closure inside `service::checkout`
+/// (not unit-testable there). `cart` is the same cart `plan()` above just
+/// consumed; `reserved` is `products::service::reserve_stock_tx`'s result
+/// (called by `service::checkout`) — the post-decrement row for every
+/// product line that got reserved.
 ///
-/// `stock_decremented` is `true` only when the line is a product line
-/// (`product_id.is_some()`) *and* its id is in `reserved` *and* that row's
-/// `stock` is `Some(_)` — finite stock, so the decrement actually moved
-/// something (`None` means unlimited stock, untouched by
-/// `try_decrement_stock_tx`'s NULL-preserving CASE, `products/
-/// repository.rs`). A course line never carries a `product_id`, so it can
-/// never reach `reserved` and is always `false`; a product line whose id is
-/// missing from `reserved` (unreachable today — every product line is
-/// reserved by `reserve_stock_tx` before this runs) is also `false` — the
-/// `.unwrap_or(false)` this replaces. Output preserves `lines`' order, same
-/// "no sorting here" posture as `plan()`.
-pub fn order_lines(lines: &[CheckoutLine], reserved: &HashMap<Uuid, Product>) -> Vec<OrderLine> {
-    lines
+/// `stock_decremented` is `true` only when the line is a product line *and*
+/// its id is in `reserved` *and* that row's `stock` is `Some(_)` — finite
+/// stock, so the decrement actually moved something (`None` means unlimited
+/// stock, untouched by `try_decrement_stock_tx`'s NULL-preserving CASE,
+/// `products/repository.rs`). A course line never reaches `reserved` and is
+/// always `false`; a product line whose id is missing from `reserved`
+/// (unreachable today — every product line is reserved by
+/// `reserve_stock_tx` before this runs) is also `false` — the
+/// `.unwrap_or(false)` this replaces. Output preserves the cart's order,
+/// same "no sorting here" posture as `plan()`.
+pub fn order_lines(cart: &PurchasableCart, reserved: &HashMap<Uuid, Product>) -> Vec<OrderLine> {
+    cart.lines()
         .iter()
         .map(|line| {
-            let stock_decremented = line
-                .product_id
-                .and_then(|pid| reserved.get(&pid))
-                .map(|p| p.stock.is_some())
-                .unwrap_or(false);
+            let stock_decremented = match line.target {
+                LineTarget::Product(pid) => reserved
+                    .get(&pid)
+                    .map(|p| p.stock.is_some())
+                    .unwrap_or(false),
+                LineTarget::Course(_) => false,
+            };
             OrderLine {
-                product_id: line.product_id,
-                course_id: line.course_id,
+                target: line.target,
                 quantity: line.quantity,
                 price_cents: line.price_cents,
                 name: line.name.clone(),
@@ -203,9 +206,7 @@ mod tests {
 
     fn product_line(name: &str) -> CheckoutLine {
         CheckoutLine {
-            item_type: CartItemType::Product,
-            product_id: Some(Uuid::now_v7()),
-            course_id: None,
+            target: LineTarget::Product(Uuid::now_v7()),
             quantity: 2,
             price_cents: 1500,
             name: name.to_string(),
@@ -215,14 +216,17 @@ mod tests {
 
     fn course_line() -> CheckoutLine {
         CheckoutLine {
-            item_type: CartItemType::Course,
-            product_id: None,
-            course_id: Some(Uuid::now_v7()),
+            target: LineTarget::Course(Uuid::now_v7()),
             quantity: 1,
             price_cents: 8000,
             name: "Course".to_string(),
             is_active: true,
         }
+    }
+
+    /// An all-active snapshot through the only `PurchasableCart` constructor.
+    fn cart(lines: Vec<CheckoutLine>) -> PurchasableCart {
+        ensure_all_purchasable(lines).expect("all lines active")
     }
 
     #[test]
@@ -232,10 +236,12 @@ mod tests {
         // each in its own bucket, carrying the fields fulfilment needs.
         let p = product_line("Widget");
         let c = course_line();
-        let (want_pid, want_cid) = (p.product_id.unwrap(), c.course_id.unwrap());
-        let lines = [p, c];
+        let (want_pid, want_cid) = (
+            p.target.product_id().unwrap(),
+            c.target.course_id().unwrap(),
+        );
 
-        let plan = plan(&lines).expect("plans");
+        let plan = plan(&cart(vec![p, c]));
 
         assert_eq!(plan.products.len(), 1);
         assert_eq!(plan.products[0].product_id, want_pid);
@@ -247,16 +253,14 @@ mod tests {
 
     #[test]
     fn products_only_cart_has_no_course_ids() {
-        let lines = [product_line("A"), product_line("B")];
-        let plan = plan(&lines).expect("plans");
+        let plan = plan(&cart(vec![product_line("A"), product_line("B")]));
         assert_eq!(plan.products.len(), 2);
         assert!(plan.course_ids.is_empty());
     }
 
     #[test]
     fn courses_only_cart_has_no_products() {
-        let lines = [course_line(), course_line()];
-        let plan = plan(&lines).expect("plans");
+        let plan = plan(&cart(vec![course_line(), course_line()]));
         assert!(plan.products.is_empty());
         assert_eq!(plan.course_ids.len(), 2);
     }
@@ -270,50 +274,20 @@ mod tests {
         // in the exact slice order they went in, not sorted by product_id.
         let a = product_line("first");
         let b = product_line("second");
-        let (id_a, id_b) = (a.product_id.unwrap(), b.product_id.unwrap());
-        let lines = [a, b];
+        let (id_a, id_b) = (
+            a.target.product_id().unwrap(),
+            b.target.product_id().unwrap(),
+        );
 
-        let plan = plan(&lines).expect("plans");
+        let plan = plan(&cart(vec![a, b]));
 
         assert_eq!(plan.products[0].product_id, id_a, "first stays first");
         assert_eq!(plan.products[1].product_id, id_b, "second stays second");
     }
 
     #[test]
-    fn product_line_without_product_id_is_internal_error() {
-        // Unreachable under the `cart_items_one_target` CHECK — this is the
-        // upgrade of the old `.expect()` panic to a 500.
-        let line = CheckoutLine {
-            item_type: CartItemType::Product,
-            product_id: None,
-            course_id: None,
-            quantity: 1,
-            price_cents: 100,
-            name: "orphan".to_string(),
-            is_active: true,
-        };
-        let err = plan(&[line]).expect_err("must be Internal");
-        assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
-    }
-
-    #[test]
-    fn course_line_without_course_id_is_internal_error() {
-        let line = CheckoutLine {
-            item_type: CartItemType::Course,
-            product_id: None,
-            course_id: None,
-            quantity: 1,
-            price_cents: 100,
-            name: "orphan".to_string(),
-            is_active: true,
-        };
-        let err = plan(&[line]).expect_err("must be Internal");
-        assert!(matches!(err, AppError::Internal(_)), "got: {err:?}");
-    }
-
-    #[test]
     fn empty_cart_yields_an_empty_plan() {
-        let plan = plan(&[]).expect("plans");
+        let plan = plan(&cart(vec![]));
         assert!(plan.products.is_empty());
         assert!(plan.course_ids.is_empty());
     }
@@ -324,7 +298,7 @@ mod tests {
     fn ensure_all_purchasable_ok_when_every_line_is_active() {
         let p = product_line("Widget");
         let c = course_line();
-        assert!(ensure_all_purchasable(&[p, c]).is_ok());
+        assert!(ensure_all_purchasable(vec![p, c]).is_ok());
     }
 
     #[test]
@@ -332,7 +306,7 @@ mod tests {
         let mut line = product_line("Retired Widget");
         line.is_active = false;
 
-        let err = ensure_all_purchasable(&[line]).expect_err("must reject");
+        let err = ensure_all_purchasable(vec![line]).expect_err("must reject");
         assert!(
             matches!(
                 err,
@@ -355,7 +329,7 @@ mod tests {
         let mut last = product_line("Apple");
         last.is_active = false;
 
-        let err = ensure_all_purchasable(&[first, middle, last]).expect_err("must reject");
+        let err = ensure_all_purchasable(vec![first, middle, last]).expect_err("must reject");
         assert!(
             matches!(
                 err,
@@ -397,19 +371,18 @@ mod tests {
         // decrement actually moved something. Also pins the field-for-field
         // carry-over (name/quantity/price_cents/course_id) while we're here.
         let line = product_line("Widget");
-        let pid = line.product_id.unwrap();
+        let pid = line.target.product_id().unwrap();
         let mut reserved = HashMap::new();
         reserved.insert(pid, fixture_product(pid, Some(4)));
 
-        let lines = order_lines(&[line], &reserved);
+        let lines = order_lines(&cart(vec![line]), &reserved);
 
         assert_eq!(lines.len(), 1);
         assert!(
             lines[0].stock_decremented,
             "finite stock must count as decremented"
         );
-        assert_eq!(lines[0].product_id, Some(pid));
-        assert_eq!(lines[0].course_id, None);
+        assert_eq!(lines[0].target, LineTarget::Product(pid));
         assert_eq!(lines[0].quantity, 2);
         assert_eq!(lines[0].price_cents, 1500);
         assert_eq!(lines[0].name, "Widget");
@@ -420,11 +393,11 @@ mod tests {
         // `stock: None` means unlimited — `try_decrement_stock_tx`'s
         // NULL-preserving CASE never touches it.
         let line = product_line("Widget");
-        let pid = line.product_id.unwrap();
+        let pid = line.target.product_id().unwrap();
         let mut reserved = HashMap::new();
         reserved.insert(pid, fixture_product(pid, None));
 
-        let lines = order_lines(&[line], &reserved);
+        let lines = order_lines(&cart(vec![line]), &reserved);
 
         assert!(!lines[0].stock_decremented);
     }
@@ -435,14 +408,13 @@ mod tests {
         // `reserved` at all — always false, regardless of what `reserved`
         // contains (here, empty).
         let line = course_line();
-        let cid = line.course_id;
+        let target = line.target;
         let reserved: HashMap<Uuid, Product> = HashMap::new();
 
-        let lines = order_lines(&[line], &reserved);
+        let lines = order_lines(&cart(vec![line]), &reserved);
 
         assert!(!lines[0].stock_decremented);
-        assert_eq!(lines[0].product_id, None);
-        assert_eq!(lines[0].course_id, cid);
+        assert_eq!(lines[0].target, target);
     }
 
     #[test]
@@ -453,20 +425,32 @@ mod tests {
         let b = course_line();
         let c = product_line("second");
         let (pid_a, cid_b, pid_c) = (
-            a.product_id.unwrap(),
-            b.course_id.unwrap(),
-            c.product_id.unwrap(),
+            a.target.product_id().unwrap(),
+            b.target.course_id().unwrap(),
+            c.target.product_id().unwrap(),
         );
         let mut reserved = HashMap::new();
         reserved.insert(pid_a, fixture_product(pid_a, Some(1)));
         reserved.insert(pid_c, fixture_product(pid_c, Some(1)));
 
-        let lines = order_lines(&[a, b, c], &reserved);
+        let lines = order_lines(&cart(vec![a, b, c]), &reserved);
 
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0].product_id, Some(pid_a), "first stays first");
-        assert_eq!(lines[1].course_id, Some(cid_b), "second stays second");
-        assert_eq!(lines[2].product_id, Some(pid_c), "third stays third");
+        assert_eq!(
+            lines[0].target,
+            LineTarget::Product(pid_a),
+            "first stays first"
+        );
+        assert_eq!(
+            lines[1].target,
+            LineTarget::Course(cid_b),
+            "second stays second"
+        );
+        assert_eq!(
+            lines[2].target,
+            LineTarget::Product(pid_c),
+            "third stays third"
+        );
     }
 
     #[test]
@@ -477,7 +461,7 @@ mod tests {
         let line = product_line("Widget");
         let reserved: HashMap<Uuid, Product> = HashMap::new();
 
-        let lines = order_lines(&[line], &reserved);
+        let lines = order_lines(&cart(vec![line]), &reserved);
 
         assert!(!lines[0].stock_decremented);
     }

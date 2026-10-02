@@ -32,3 +32,20 @@
 ## Addendum（2026-07-14）：課程行排序 owner 遷至 enrolments::enrol_batch_from_purchase_tx
 
 Decision「課程行 → 呼叫 `enrolments_service::enrol_from_purchase_tx`」與 Consequences 第三條「結帳交易…需要對商品行與課程行分別排序（依 `product_id`/`course_id`）才鎖表…（見 `orders::service::checkout` 內的排序註解）」自此更新：checkout 不再自己內聯 `.filter(matches!)` 篩課程行、`.sort_by_key` 排序、逐行迴圈呼叫 `enrol_from_purchase_tx`。item_type 分派收進純函式 `orders::fulfilment::plan`（對 `CartItemType` 一處 exhaustive match），課程行的排序（`course_id` 序）連同其死鎖防護紀律遷入 `enrolments::service::enrol_batch_from_purchase_tx`——商品行早有的 `products::service::reserve_stock_tx` 對應物，課程行的批次深函式 owner，在拿寫鎖之前排序自己的副本。checkout 改為單次呼叫 `enrol_batch_from_purchase_tx`（內部複製、`sort()`、逐一委派仍 public 的 `enrol_from_purchase_tx`——座位鎖協定的文件化 owner）。此為函式體重接，wire format 與回滾語意不變。本檔其餘敘述維持決策當下狀態。（已由 ADR-0007 Addendum「鎖協定取代逐站排序與『不做共用 helper』裁決」取代：`enrol_from_purchase_tx` 降為私有 `enrol_one_tx`，座位鎖協定 owner 改為 `CourseLocks`/`lock_courses_tx`。）
+
+## Addendum（2026-10-03）：`item_type` union 在列邊界解碼一次——`LineTarget`
+
+Decision 的 DB 形狀（`item_type` + 互斥 `product_id`/`course_id`，`*_one_target` CHECK）**不變**；
+改的是程式讀它的方式。`cart::model::LineTarget { Product(Uuid), Course(Uuid) }` 以手寫 `FromRow`
+讀 `item_type`/`product_id`/`course_id` 三欄，只接受 CHECK 允許的兩種形狀，其他一律
+`sqlx::Error::Decode`；`item_type()`/`product_id()`/`course_id()` 三個 accessor 把它綁回 DB 欄位。
+`CartItem`、`CartItemJoined`、`CheckoutLine`、`orders::fulfilment::OrderLine`、
+`products::model::OrderStockTrace` 都以 `#[sqlx(flatten)] target` 攜帶它。
+
+因此消失的分支（皆在 CHECK 下不可達，對外行為零變更）：`fulfilment::plan` 的「缺
+product_id/course_id」Internal（`plan` 改為不可失敗）、`products::service::restock_lines` 的同款
+Internal（改為不可失敗、跳過課程行）、`cart::service::update_quantity` 與 `CartResponse::from_items`
+的缺 id 422。寫入端 `orders::repository::create_order_items` 與 seed 的 order_items INSERT 改綁
+`target.item_type()`，刪掉從 id 反推 `item_type` 的 SQL `CASE`。新增變體的檢查清單見
+`CartItemType::as_str` 的 doc：編譯器現在會逼出每個對 `LineTarget` 的 exhaustive match。本檔其餘
+敘述維持決策當下狀態。

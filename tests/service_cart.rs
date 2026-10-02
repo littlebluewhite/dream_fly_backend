@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
+use dream_fly_backend::modules::cart::model::LineTarget;
 use dream_fly_backend::modules::cart::service;
 use dream_fly_backend::modules::points::service as points_service;
 
@@ -310,5 +311,5 @@ async fn checkout_cart_seam_reads_only_the_locked_users_cart(db: PgPool) {
     tx.rollback().await.expect("rollback");
 
     assert_eq!(lines.len(), 1, "must read only the locked user's own cart line");
-    assert_eq!(lines[0].product_id, Some(product_a));
+    assert_eq!(lines[0].target, LineTarget::Product(product_a));
 }

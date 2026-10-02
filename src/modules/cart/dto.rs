@@ -4,7 +4,7 @@ use validator::Validate;
 
 use crate::error::AppError;
 
-use super::model::{CartItemJoined, checked_line_subtotal};
+use super::model::{CartItemJoined, LineTarget, checked_line_subtotal};
 
 #[derive(Debug, Serialize)]
 pub struct CartItemResponse {
@@ -33,9 +33,9 @@ impl CartResponse {
         let mut total_cents: i64 = 0;
 
         for item in items {
-            let item_id = item.product_id.or(item.course_id).ok_or_else(|| {
-                AppError::Validation("cart item missing product/course id".into())
-            })?;
+            let item_id = match item.target {
+                LineTarget::Product(id) | LineTarget::Course(id) => id,
+            };
             let subtotal = checked_line_subtotal(item.price_cents, item.quantity)
                 .ok_or_else(|| AppError::Validation("cart subtotal overflow".into()))?;
             total_cents = total_cents
@@ -43,7 +43,7 @@ impl CartResponse {
                 .ok_or_else(|| AppError::Validation("cart total overflow".into()))?;
             cart_items.push(CartItemResponse {
                 id: item.id,
-                item_type: item.item_type.as_str().to_string(),
+                item_type: item.target.item_type().as_str().to_string(),
                 item_id,
                 name: item.name,
                 slug: item.slug,

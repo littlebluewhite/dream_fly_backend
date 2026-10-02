@@ -663,3 +663,32 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
   上面「`paid_at` 保留不清空」的結論不變，只是現在是因為這條 UPDATE 根本不碰 `paid_at`。
 - 測試：`decide_transition` 36 組表的 `(Pending, Paid)` 改為 `None`；新增
   `update_order_status_pending_to_paid_is_400`。
+
+## Addendum（2026-10-03）：結帳快照解碼一次——`PurchasableCart` 是 gate 的型別證明；仍不是 `plan_checkout`
+
+**遷移登記**（行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序逐位元等價）：
+
+- `fulfilment::ensure_all_purchasable(Vec<CheckoutLine>) -> Result<PurchasableCart>`：位置不變（空車
+  400 之後、coupon 載入之前），422 文案不變；成功時回傳欄位私有的 `PurchasableCart`，它是唯一
+  建構點。`pricing::price(&PurchasableCart, ..)`、`fulfilment::plan(&PurchasableCart)`（**不再回
+  `Result`**）、`fulfilment::order_lines(&PurchasableCart, ..)` 只收它——「先過 gate 才可購買」由
+  型別保證。
+- 行目標由 `cart::model::LineTarget` 在讀列時解碼一次（ADR-0002 2026-10-03 Addendum）。兩支快照
+  查詢是 inner join、CHECK 保證形狀，解碼不可能失敗，所以不會在 422 之前冒出 500；原本 `plan`
+  的「缺 id」`Internal` 分支消失。
+- 決策 8（庫存）：`OrderStockTrace { target, quantity, stock_decremented }`（刪 `item_id`，它只用於
+  錯誤文案）；`restock_lines(&[OrderStockTrace]) -> Vec<(Uuid, i32)>` 不再可失敗，課程行跳過
+  （SQL 仍以 `item_type = 'product'` 過濾）。本檔 2026-09-26 Addendum 的「Internal（商品行缺
+  `product_id`）」那一格改為痕跡解碼失敗——同為對外 500、同在取鎖讀痕跡時，CHECK 下不可達；
+  「order {id}: product line {id} missing product_id」文案隨之退役。
+- `create_order_items` 綁 `target.item_type()`，刪 `CASE WHEN product_id IS NOT NULL` 推導。
+
+**仍不是 `plan_checkout`**：`PurchasableCart` 只把 gate 的結論變成型別，不把任何檢查搬出
+`checkout`。結果優先序清單仍只在 `checkout` 的 doc（本檔 2026-09-26 Addendum 的裁決不變）。
+
+**測試**（replace, don't layer）：退役 `fulfilment::product_line_without_product_id_is_internal_error`、
+`course_line_without_course_id_is_internal_error`、`products::service::restock_lines_missing_product_id_is_internal_error`、
+`restock_lines_missing_product_id_is_internal_even_when_stock_not_decremented`（四者測的狀態已無法
+建構）；新增 `products::service::restock_lines_skips_course_lines`、
+`cart::model::line_target_decode_rejects_mismatched_columns`（CHECK 禁止的六種形狀都是
+`Decode` 錯誤）。本檔其餘敘述維持決策當下狀態。

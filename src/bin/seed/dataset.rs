@@ -61,9 +61,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::modules::bookings::model::BookingStatus;
-use dream_fly_backend::modules::cart::model::{CartItemType, CheckoutLine};
+use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
 use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::coupons::repository as coupons_repository;
+use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
 use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
@@ -665,8 +666,9 @@ async fn insert_enrolment_if_absent(
     Ok(id)
 }
 
-/// A checkout-shaped order. `lines` are the same `CheckoutLine`s checkout
-/// prices, and `pricing` is `orders::pricing::price`'s outcome for them
+/// A checkout-shaped order. `lines` is the same `PurchasableCart` checkout
+/// prices (built through `fulfilment::ensure_all_purchasable`, its only
+/// constructor), and `pricing` is `orders::pricing::price`'s outcome for them
 /// (the optional coupon loaded via `coupons::repository::find_valid_by_code`,
 /// never redeeming points) — so amounts, discount, applied code and
 /// `points_earned` come from the pricing owner, not a seed-side copy of its
@@ -685,7 +687,7 @@ struct SeedOrder {
     status: OrderStatus,
     created_at: DateTime<Utc>,
     payment_method: &'static str,
-    lines: Vec<CheckoutLine>,
+    lines: PurchasableCart,
     pricing: PricingOutcome,
 }
 
@@ -767,23 +769,22 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
     .await
     .with_context(|| format!("insert order '{}'", seed.order_number))?;
 
-    for line in &seed.lines {
+    for line in seed.lines.lines() {
         sqlx::query(
             r#"
             INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, name, created_at)
-            VALUES ($1, $2,
-                    CASE WHEN $3::uuid IS NOT NULL THEN 'product'::cart_item_type ELSE 'course'::cart_item_type END,
-                    $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $9, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(Uuid::now_v7())
         .bind(order_id)
-        .bind(line.product_id)
-        .bind(line.course_id)
+        .bind(line.target.product_id())
+        .bind(line.target.course_id())
         .bind(line.quantity)
         .bind(line.price_cents)
         .bind(&line.name)
         .bind(seed.created_at)
+        .bind(line.target.item_type())
         .execute(&mut *tx)
         .await
         .with_context(|| format!("insert order_item for '{}'", seed.order_number))?;
@@ -1657,9 +1658,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             if g % 5 == 0 {
                 let k = (g / 5) % 6;
                 lines.push(CheckoutLine {
-                    item_type: CartItemType::Course,
-                    product_id: None,
-                    course_id: Some(course_ids[k]),
+                    target: LineTarget::Course(course_ids[k]),
                     quantity: 1,
                     price_cents: course_seeds[k].price_cents,
                     name: course_seeds[k].name.to_string(),
@@ -1668,9 +1667,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             } else {
                 let p = g % 7;
                 lines.push(CheckoutLine {
-                    item_type: CartItemType::Product,
-                    product_id: Some(product_ids[p]),
-                    course_id: None,
+                    target: LineTarget::Product(product_ids[p]),
                     quantity: 1,
                     price_cents: product_seeds[p].price_cents,
                     name: product_seeds[p].name.to_string(),
@@ -1679,9 +1676,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             }
             if g % 3 == 0 && (g % 5 == 0 || g % 7 != 6) {
                 lines.push(CheckoutLine {
-                    item_type: CartItemType::Product,
-                    product_id: Some(product_ids[6]),
-                    course_id: None,
+                    target: LineTarget::Product(product_ids[6]),
                     quantity: 1 + (g % 2) as i32,
                     price_cents: product_seeds[6].price_cents,
                     name: product_seeds[6].name.to_string(),
@@ -1692,6 +1687,8 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             // Amounts and points through checkout's own pricing owner —
             // seed orders never redeem points.
             let coupon = if seq == 2 { Some(&seed_coupon) } else { None };
+            let lines = fulfilment::ensure_all_purchasable(lines)
+                .with_context(|| format!("gate seed order DF-SEED-{ym}-{seq:02}"))?;
             let pricing = pricing::price(&lines, coupon, 0, false)
                 .with_context(|| format!("price seed order DF-SEED-{ym}-{seq:02}"))?;
 

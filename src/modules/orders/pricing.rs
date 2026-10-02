@@ -19,9 +19,11 @@
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::modules::cart::model::{CheckoutLine, checked_line_subtotal};
+use crate::modules::cart::model::checked_line_subtotal;
 use crate::modules::coupons::model::Coupon;
 use crate::modules::points::model::LedgerDelta;
+
+use super::fulfilment::PurchasableCart;
 
 /// Everything `checkout` needs from pricing to create the order row and
 /// drive the points ledger.
@@ -59,7 +61,8 @@ pub fn clamp_coupon_discount(coupon_cents: i64, subtotal_cents: i64) -> i64 {
     coupon_cents.min(subtotal_cents)
 }
 
-/// Price a checkout. `coupon` must already be the validated row for a
+/// Price a checkout. `cart` has already passed the purchasability gate
+/// (`fulfilment::ensure_all_purchasable`, its only constructor). `coupon` must already be the validated row for a
 /// caller-supplied code — an unknown/inactive/expired code is a
 /// checkout-time 422 at load, before this function is ever called (see
 /// `orders::service::checkout`). `points_balance` is the caller's `FOR
@@ -67,14 +70,14 @@ pub fn clamp_coupon_discount(coupon_cents: i64, subtotal_cents: i64) -> i64 {
 /// `points_used` only reads `points_balance` inside the `use_points` branch
 /// below, so `use_points = false` skips redemption whatever the balance.
 pub fn price(
-    lines: &[CheckoutLine],
+    cart: &PurchasableCart,
     coupon: Option<&Coupon>,
     points_balance: i64,
     use_points: bool,
 ) -> Result<PricingOutcome, AppError> {
     // 1. Subtotal: checked per-line multiply + checked running sum.
     let mut subtotal_cents: i64 = 0;
-    for item in lines {
+    for item in cart.lines() {
         let line = checked_line_subtotal(item.price_cents, item.quantity)
             .ok_or_else(|| AppError::Validation("order total overflow".into()))?;
         subtotal_cents = subtotal_cents
@@ -129,19 +132,23 @@ mod tests {
     use chrono::Utc;
     use uuid::Uuid;
 
-    use crate::modules::cart::model::CartItemType;
+    use crate::modules::cart::model::{CheckoutLine, LineTarget};
+    use crate::modules::orders::fulfilment::ensure_all_purchasable;
     use crate::modules::points::model::PointReason;
 
     fn line(price_cents: i64, quantity: i32) -> CheckoutLine {
         CheckoutLine {
-            item_type: CartItemType::Product,
-            product_id: Some(Uuid::now_v7()),
-            course_id: None,
+            target: LineTarget::Product(Uuid::now_v7()),
             quantity,
             price_cents,
             name: "Test Item".to_string(),
             is_active: true,
         }
+    }
+
+    /// An all-active cart through the only `PurchasableCart` constructor.
+    fn cart(lines: Vec<CheckoutLine>) -> PurchasableCart {
+        ensure_all_purchasable(lines).expect("all lines active")
     }
 
     fn coupon(discount_cents: i64) -> Coupon {
@@ -185,7 +192,7 @@ mod tests {
         // checkout_creates_order_and_clears_cart (tests/service_orders.rs:28-49):
         // price 1500 x2 = 3000, no coupon, use_points=false -> total 3000,
         // earns (30*5+50)/100 = 2.
-        let lines = [line(1500, 2)];
+        let lines = cart(vec![line(1500, 2)]);
         let outcome = price(&lines, None, 0, false).expect("prices");
         assert_eq!(outcome.subtotal_cents, 3000);
         assert_eq!(outcome.discount_cents, 0);
@@ -201,7 +208,7 @@ mod tests {
         // (tests/service_orders.rs:248-273): subtotal 5000, coupon 10000
         // (double the subtotal) -> discount clamps to 5000, total 0, and a
         // free order earns 0 points.
-        let lines = [line(5_000, 1)];
+        let lines = cart(vec![line(5_000, 1)]);
         let c = coupon(10_000);
         let outcome = price(&lines, Some(&c), 0, false).expect("prices");
         assert_eq!(outcome.subtotal_cents, 5_000);
@@ -219,7 +226,7 @@ mod tests {
         // checkout_use_points_caps_at_balance (tests/service_orders.rs:329-352):
         // subtotal 300_000, no coupon, balance 500 < max_points_by_amount
         // (3000) -> points_used caps at the balance, not the amount.
-        let lines = [line(300_000, 1)];
+        let lines = cart(vec![line(300_000, 1)]);
         let outcome = price(&lines, None, 500, true).expect("prices");
         assert_eq!(outcome.points_used, 500);
         assert_eq!(outcome.total_cents, 300_000 - 50_000);
@@ -231,7 +238,7 @@ mod tests {
         // (tests/service_orders.rs:277-303): subtotal 20_000, coupon 10_000
         // -> after_coupon 10_000, balance 100 == max_points_by_amount (100)
         // -> points_used 100, total 0, earns 0.
-        let lines = [line(20_000, 1)];
+        let lines = cart(vec![line(20_000, 1)]);
         let c = coupon(10_000);
         let outcome = price(&lines, Some(&c), 100, true).expect("prices");
         assert_eq!(outcome.discount_cents, 10_000);
@@ -248,7 +255,7 @@ mod tests {
         // (100), so the amount caps points_used, not the ample balance —
         // the mirror image of the "balance is the binding constraint" case
         // above.
-        let lines = [line(10_000, 1)];
+        let lines = cart(vec![line(10_000, 1)]);
         let outcome = price(&lines, None, 1_000, true).expect("prices");
         assert_eq!(
             outcome.points_used, 100,
@@ -262,7 +269,7 @@ mod tests {
         // `checkout` passes its locked balance even when use_points=false,
         // so this is the rule that keeps such a checkout from redeeming: a
         // nonzero balance is ignored when use_points is false.
-        let lines = [line(1000, 1)];
+        let lines = cart(vec![line(1000, 1)]);
         let outcome = price(&lines, None, 999, false).expect("prices");
         assert_eq!(outcome.points_used, 0);
         assert_eq!(outcome.total_cents, 1000);
@@ -272,7 +279,7 @@ mod tests {
 
     #[test]
     fn line_multiply_overflow_is_rejected() {
-        let lines = [line(i64::MAX, 2)];
+        let lines = cart(vec![line(i64::MAX, 2)]);
         let err = price(&lines, None, 0, false).expect_err("must overflow");
         assert!(
             matches!(err, AppError::Validation(ref m) if m == "order total overflow"),
@@ -282,7 +289,7 @@ mod tests {
 
     #[test]
     fn running_sum_overflow_is_rejected() {
-        let lines = [line(i64::MAX, 1), line(1, 1)];
+        let lines = cart(vec![line(i64::MAX, 1), line(1, 1)]);
         let err = price(&lines, None, 0, false).expect_err("must overflow");
         assert!(
             matches!(err, AppError::Validation(ref m) if m == "order total overflow"),
@@ -297,7 +304,7 @@ mod tests {
         // after_coupon = 150 -> 150/100 = 1 (integer division floors, it
         // does not round) — a sufficient balance (5) means the division is
         // the binding constraint, not the balance.
-        let lines = [line(150, 1)];
+        let lines = cart(vec![line(150, 1)]);
         let outcome = price(&lines, None, 5, true).expect("prices");
         assert_eq!(outcome.points_used, 1);
     }
@@ -309,10 +316,10 @@ mod tests {
         // (the "30" side is also covered end-to-end by the basic-case
         // golden test above; this isolates the boundary pair on the
         // formula alone).
-        let below = price(&[line(2_900, 1)], None, 0, false).expect("prices");
+        let below = price(&cart(vec![line(2_900, 1)]), None, 0, false).expect("prices");
         assert_eq!(below.points_earned, 1, "29 NT * 5% = 1.45 rounds down to 1");
 
-        let at = price(&[line(3_000, 1)], None, 0, false).expect("prices");
+        let at = price(&cart(vec![line(3_000, 1)]), None, 0, false).expect("prices");
         assert_eq!(at.points_earned, 2, "30 NT * 5% = 1.5 rounds up to 2");
     }
 
@@ -323,7 +330,7 @@ mod tests {
         // after_coupon 10_000, balance 50 -> points_used 50, total 5_000,
         // earns (50*5+50)/100 = 3.
         let order_id = Uuid::now_v7();
-        let outcome = price(&[line(10_000, 1)], None, 50, true).expect("prices");
+        let outcome = price(&cart(vec![line(10_000, 1)]), None, 50, true).expect("prices");
         let deltas = outcome.ledger_deltas(order_id);
         assert_eq!(deltas.len(), 2);
         assert_eq!(deltas[0].reason(), PointReason::CheckoutRedeem);
@@ -338,7 +345,7 @@ mod tests {
     fn ledger_deltas_skip_zero_magnitudes() {
         // use_points with a zero balance redeems nothing — no redeem delta,
         // only the earn (10 NT -> (10*5+50)/100 = 1).
-        let outcome = price(&[line(1_000, 1)], None, 0, true).expect("prices");
+        let outcome = price(&cart(vec![line(1_000, 1)]), None, 0, true).expect("prices");
         assert_eq!(outcome.points_used, 0);
         assert_eq!(outcome.total_cents, 1_000);
         let deltas = outcome.ledger_deltas(Uuid::now_v7());
@@ -347,7 +354,8 @@ mod tests {
         assert_eq!(deltas[0].delta(), 1);
 
         // A free order redeems and earns nothing — no deltas at all.
-        let free = price(&[line(5_000, 1)], Some(&coupon(5_000)), 0, false).expect("prices");
+        let free =
+            price(&cart(vec![line(5_000, 1)]), Some(&coupon(5_000)), 0, false).expect("prices");
         assert!(free.ledger_deltas(Uuid::now_v7()).is_empty());
     }
 }

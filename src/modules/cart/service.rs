@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::modules::points::service::BalanceLock;
 
 use super::dto::CartResponse;
-use super::model::{CartItemType, CheckoutLine, CheckoutTargets};
+use super::model::{CartItemType, CheckoutLine, CheckoutTargets, LineTarget};
 use super::repository;
 
 pub async fn get_cart(db: &PgPool, user_id: Uuid) -> Result<CartResponse, AppError> {
@@ -101,26 +101,23 @@ pub async fn update_quantity(
         .await?
         .ok_or_else(|| AppError::NotFound("cart item not found".into()))?;
 
-    match item.item_type {
-        CartItemType::Course => {
-            item.item_type.validate_quantity(quantity)?;
+    match item.target {
+        LineTarget::Course(_) => {
+            CartItemType::Course.validate_quantity(quantity)?;
         }
-        CartItemType::Product => {
+        LineTarget::Product(product_id) => {
             // Always `Ok` here — the inline 1..=999 guard above already
             // rejected out-of-range input — but this is still the semantic
             // owner's call site (`validate_quantity`'s `Product` arm).
             // Deliberately kept, not simplified away: removing it would
             // break the symmetry with the `Course` arm above.
-            item.item_type.validate_quantity(quantity)?;
+            CartItemType::Product.validate_quantity(quantity)?;
 
             // Re-check product active + stock on quantity updates; without
             // this, a user could ratchet a cart item past the available
             // stock after a restock/inactivation. `quantity` here is the
             // item's final value — see `Product::ensure_purchasable`'s doc
             // comment for the boundary with `reserve_stock_tx`.
-            let product_id = item
-                .product_id
-                .ok_or_else(|| AppError::Validation("cart item missing product_id".into()))?;
             let product = crate::modules::products::repository::find_by_id(db, product_id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("product not found".into()))?;

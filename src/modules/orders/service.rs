@@ -183,7 +183,7 @@ pub async fn checkout(
     //     rejection on the same footing as the coupon 422 right below it;
     //     the idempotency pre-check already run at the top of this function
     //     covers a genuine same-key replay.
-    fulfilment::ensure_all_purchasable(&cart_items)?;
+    let cart = fulfilment::ensure_all_purchasable(cart_items)?;
 
     // Coupon (optional), loaded and validated here — an unknown/
     // inactive/expired code is rejected outright — the caller should not
@@ -214,7 +214,7 @@ pub async fn checkout(
     // instead of the overflow error. This needs an astronomical cart to
     // reach; see `pricing::price` for the arithmetic itself.
     let outcome = pricing::price(
-        &cart_items,
+        &cart,
         coupon.as_ref(),
         locks.balance().balance(),
         intent.use_points,
@@ -227,14 +227,13 @@ pub async fn checkout(
     // each already locked by this transaction; the subscription grant
     // below reuses those rows instead of re-reading them.
     //
-    // `fulfilment::plan` does the item_type split (product lines to
+    // `fulfilment::plan` does the line-target split (product lines to
     // reserve, course ids to enrol) in one exhaustive match, replacing the
-    // two `.filter(matches!)` walks this body used to run. It sits in the
-    // original filter's position — right after pricing — so a coupon/
-    // overflow 422 still precedes the (today-unreachable) `Internal` a
-    // target-less line would raise. Course ids ride along in `plan` until
-    // the enrolment batch below.
-    let plan = fulfilment::plan(&cart_items)?;
+    // two `.filter(matches!)` walks this body used to run. It cannot fail:
+    // each line's target was decoded once at the snapshot read
+    // (`LineTarget`). Course ids ride along in `plan` until the enrolment
+    // batch below.
+    let plan = fulfilment::plan(&cart);
 
     let reserve_lines: Vec<(Uuid, i32, &str)> = plan
         .products
@@ -285,7 +284,7 @@ pub async fn checkout(
     // live product/course catalog; `stock_decremented` is derived from
     // `reserved`'s post-decrement rows — see that function's doc for
     // the exact rule.
-    let lines = fulfilment::order_lines(&cart_items, &reserved);
+    let lines = fulfilment::order_lines(&cart, &reserved);
     repository::create_order_items(&mut tx, order.id, &lines).await?;
 
     // Artifacts.

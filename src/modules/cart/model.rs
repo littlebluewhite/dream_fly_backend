@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -20,9 +22,10 @@ impl CartItemType {
 
     /// The SQL string literal for this variant. The Postgres `cart_item_type`
     /// enum, the `item_type` columns, and this method must all agree on these
-    /// two spellings, and — outside `fulfilment::plan` — the type system
-    /// cannot enforce that: the spellings are hand-written into SQL at a
-    /// spread of sites.
+    /// two spellings. Reads are type-checked: every row that carries the
+    /// `item_type`/`product_id`/`course_id` union decodes through
+    /// [`LineTarget`]'s `FromRow`, and every write of an order line binds
+    /// `LineTarget::item_type()` itself. What remains hand-written into SQL:
     ///
     /// SQL-literal sites, by function (each hard-codes `'product'`/`'course'`):
     /// - `cart::repository::add_product_item` — `'product'::cart_item_type` on insert
@@ -30,12 +33,8 @@ impl CartItemType {
     /// - `cart::repository::find_cart_items_for_checkout_tx` — ×4: the
     ///   `'product'`/`'course'` SELECT literal and the `item_type = '…'`
     ///   filter, once in each of the two (product, course) branch queries
-    /// - `orders::repository::create_order_items` — the `CASE WHEN
-    ///   u.product_id IS NOT NULL THEN 'product' ELSE 'course' END` derivation
     /// - `reports::repository` income-source `CASE` — maps `oi.item_type =
     ///   'course'` into the `course` revenue bucket
-    /// - `bin/seed/dataset.rs` order-line `CASE` — the same product/course derivation
-    ///   for the deterministic reporting dataset
     /// - `products::repository::find_stock_traces_by_order_tx` — `item_type =
     ///   'product'::cart_item_type` filter
     ///
@@ -46,8 +45,10 @@ impl CartItemType {
     ///    `20260704000001`, lines 34–49) — a new target column and its
     ///    exclusivity/quantity rules.
     /// 3. Every SQL-literal site listed above.
-    /// 4. `orders::fulfilment::plan`'s exhaustive `match` — the compiler forces
-    ///    this one (no `_` arm); it is the only site the type system catches.
+    /// 4. A new [`LineTarget`] variant — the compiler then forces every
+    ///    exhaustive `match` on it (its decoder and accessors,
+    ///    `orders::fulfilment::plan`, `orders::fulfilment::order_lines`,
+    ///    `products::service::restock_lines`, …; none has a `_` arm).
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Product => "product",
@@ -91,29 +92,87 @@ impl std::str::FromStr for CartItemType {
     }
 }
 
-/// Raw `cart_items` row. Exactly one of `product_id`/`course_id` is set,
-/// matching `item_type` (enforced by the `cart_items_one_target` CHECK).
+/// What one cart / order line targets — the `item_type` + `product_id` /
+/// `course_id` discriminated union (ADR-0002) decoded once, at the row
+/// boundary. The DB keeps the three-column shape; the
+/// `cart_items_one_target`/`order_items_one_target` CHECKs (migration
+/// `20260704000001`) allow exactly the two shapes this enum has, and the
+/// hand-written `FromRow` below accepts exactly those two — anything else is
+/// `sqlx::Error::Decode`, never a variant. Past the decode no caller unwraps
+/// an `Option` id or re-matches `item_type` against it. Embedded with
+/// `#[sqlx(flatten)]`; the accessors map back to the DB columns for binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineTarget {
+    Product(Uuid),
+    Course(Uuid),
+}
+
+impl LineTarget {
+    /// The `item_type` column value for this target.
+    pub fn item_type(&self) -> CartItemType {
+        match self {
+            Self::Product(_) => CartItemType::Product,
+            Self::Course(_) => CartItemType::Course,
+        }
+    }
+
+    /// The `product_id` column value: `Some` only for a product line.
+    pub fn product_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Product(id) => Some(*id),
+            Self::Course(_) => None,
+        }
+    }
+
+    /// The `course_id` column value: `Some` only for a course line.
+    pub fn course_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Product(_) => None,
+            Self::Course(id) => Some(*id),
+        }
+    }
+}
+
+impl<'r> sqlx::FromRow<'r, PgRow> for LineTarget {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        let item_type: CartItemType = row.try_get("item_type")?;
+        let product_id: Option<Uuid> = row.try_get("product_id")?;
+        let course_id: Option<Uuid> = row.try_get("course_id")?;
+        match (item_type, product_id, course_id) {
+            (CartItemType::Product, Some(id), None) => Ok(Self::Product(id)),
+            (CartItemType::Course, None, Some(id)) => Ok(Self::Course(id)),
+            (item_type, product_id, course_id) => Err(sqlx::Error::Decode(
+                format!(
+                    "line target mismatch: item_type={} product_id={product_id:?} \
+                     course_id={course_id:?}",
+                    item_type.as_str()
+                )
+                .into(),
+            )),
+        }
+    }
+}
+
+/// Raw `cart_items` row.
 #[derive(Debug, sqlx::FromRow)]
 pub struct CartItem {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub item_type: CartItemType,
-    pub product_id: Option<Uuid>,
-    pub course_id: Option<Uuid>,
+    #[sqlx(flatten)]
+    pub target: LineTarget,
     pub quantity: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// Cart row joined against whichever table `item_type` targets, to surface
+/// Cart row joined against whichever table its target points at, to surface
 /// the display name/slug/price for `CartResponse`.
 #[derive(Debug, sqlx::FromRow)]
 pub struct CartItemJoined {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub item_type: CartItemType,
-    pub product_id: Option<Uuid>,
-    pub course_id: Option<Uuid>,
+    #[sqlx(flatten)]
+    pub target: LineTarget,
     pub quantity: i32,
     pub name: String,
     pub slug: String,
@@ -123,13 +182,14 @@ pub struct CartItemJoined {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Cart line snapshot consumed by `orders::service::checkout` to build order
-/// items. Produced by `repository::find_cart_items_for_checkout_tx`.
+/// Cart line snapshot consumed by `orders::service::checkout`. Produced by
+/// `repository::find_cart_items_for_checkout_tx`; only becomes purchasable
+/// by passing `orders::fulfilment::ensure_all_purchasable`, which wraps the
+/// lines in `PurchasableCart`.
 #[derive(Debug, sqlx::FromRow)]
 pub struct CheckoutLine {
-    pub item_type: CartItemType,
-    pub product_id: Option<Uuid>,
-    pub course_id: Option<Uuid>,
+    #[sqlx(flatten)]
+    pub target: LineTarget,
     pub quantity: i32,
     pub price_cents: i64,
     pub name: String,
@@ -193,6 +253,70 @@ mod tests {
             assert!(
                 matches!(err, AppError::Validation(ref m) if m == "course quantity must be 1"),
                 "got: {err:?} for qty={qty}"
+            );
+        }
+    }
+
+    // --- LineTarget decode (the one place the item_type/id union is read) ---
+
+    #[sqlx::test]
+    async fn line_target_decode_rejects_mismatched_columns(db: sqlx::PgPool) {
+        let id = Uuid::now_v7();
+        let decode = |sql: &'static str| {
+            let db = db.clone();
+            async move {
+                sqlx::query_as::<_, LineTarget>(sql)
+                    .bind(id)
+                    .fetch_one(&db)
+                    .await
+            }
+        };
+
+        // The two shapes the `*_one_target` CHECKs allow decode to a variant.
+        let product = decode(
+            "SELECT 'product'::cart_item_type AS item_type, $1::uuid AS product_id, \
+             NULL::uuid AS course_id",
+        )
+        .await
+        .expect("product shape decodes");
+        assert_eq!(product, LineTarget::Product(id));
+        assert_eq!(product.item_type().as_str(), "product");
+        assert_eq!(
+            (product.product_id(), product.course_id()),
+            (Some(id), None)
+        );
+
+        let course = decode(
+            "SELECT 'course'::cart_item_type AS item_type, NULL::uuid AS product_id, \
+             $1::uuid AS course_id",
+        )
+        .await
+        .expect("course shape decodes");
+        assert_eq!(course, LineTarget::Course(id));
+        assert_eq!(course.item_type().as_str(), "course");
+        assert_eq!((course.product_id(), course.course_id()), (None, Some(id)));
+
+        // Every shape the CHECKs forbid is a decode error, never a variant.
+        for sql in [
+            "SELECT 'product'::cart_item_type AS item_type, NULL::uuid AS product_id, \
+             $1::uuid AS course_id",
+            "SELECT 'product'::cart_item_type AS item_type, NULL::uuid AS product_id, \
+             NULL::uuid AS course_id",
+            "SELECT 'product'::cart_item_type AS item_type, $1::uuid AS product_id, \
+             $1::uuid AS course_id",
+            "SELECT 'course'::cart_item_type AS item_type, $1::uuid AS product_id, \
+             NULL::uuid AS course_id",
+            "SELECT 'course'::cart_item_type AS item_type, NULL::uuid AS product_id, \
+             NULL::uuid AS course_id",
+            "SELECT 'course'::cart_item_type AS item_type, $1::uuid AS product_id, \
+             $1::uuid AS course_id",
+        ] {
+            let err = decode(sql)
+                .await
+                .expect_err("mismatched columns must not decode");
+            assert!(
+                matches!(err, sqlx::Error::Decode(_)),
+                "got: {err:?} for {sql}"
             );
         }
     }

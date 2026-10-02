@@ -1,6 +1,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::cart::model::CartItemType;
+
 use super::fulfilment::OrderLine;
 use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus, OrderSummaryRow};
 
@@ -48,10 +50,10 @@ pub async fn create_order(
 }
 
 /// Insert order_items for both product and course lines in one bulk
-/// INSERT. Each `OrderLine` (`orders::fulfilment::OrderLine`) has exactly
-/// one of `product_id`/`course_id` set; `item_type` is derived server-side
-/// from which one is present (rather than passed as a separate value) so
-/// the column can never disagree with the ids that actually got stored.
+/// INSERT. Each `OrderLine` (`orders::fulfilment::OrderLine`) carries a
+/// `LineTarget`; `item_type`, `product_id` and `course_id` are all bound
+/// from that one value (its accessors), so the columns can never disagree
+/// with each other.
 /// `name` is the checkout-time display name (from the cart snapshot) —
 /// stored verbatim so later reads never need to join the live
 /// product/course catalog. `stock_decremented` is the checkout-time fact of
@@ -65,6 +67,7 @@ pub async fn create_order_items(
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     let len = items.len();
     let mut ids: Vec<Uuid> = Vec::with_capacity(len);
+    let mut item_types: Vec<CartItemType> = Vec::with_capacity(len);
     let mut product_ids: Vec<Option<Uuid>> = Vec::with_capacity(len);
     let mut course_ids: Vec<Option<Uuid>> = Vec::with_capacity(len);
     let mut quantities: Vec<i32> = Vec::with_capacity(len);
@@ -74,8 +77,9 @@ pub async fn create_order_items(
 
     for line in items {
         ids.push(Uuid::now_v7());
-        product_ids.push(line.product_id);
-        course_ids.push(line.course_id);
+        item_types.push(line.target.item_type());
+        product_ids.push(line.target.product_id());
+        course_ids.push(line.target.course_id());
         quantities.push(line.quantity);
         prices.push(line.price_cents);
         names.push(line.name.clone());
@@ -85,13 +89,13 @@ pub async fn create_order_items(
     sqlx::query_as::<_, OrderItem>(
         "INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, \
          unit_price_cents, name, stock_decremented, created_at) \
-         SELECT u.id, $2, \
-                CASE WHEN u.product_id IS NOT NULL THEN 'product'::cart_item_type \
-                     ELSE 'course'::cart_item_type END, \
+         SELECT u.id, $2, u.item_type, \
                 u.product_id, u.course_id, u.quantity, u.unit_price_cents, u.name, \
                 u.stock_decremented, NOW() \
-         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[], $7::text[], $8::bool[]) \
-              AS u(id, product_id, course_id, quantity, unit_price_cents, name, stock_decremented) \
+         FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[], $7::text[], $8::bool[], \
+                     $9::cart_item_type[]) \
+              AS u(id, product_id, course_id, quantity, unit_price_cents, name, stock_decremented, \
+                   item_type) \
          RETURNING *",
     )
     .bind(&ids)
@@ -102,6 +106,7 @@ pub async fn create_order_items(
     .bind(&prices)
     .bind(&names)
     .bind(&stock_decremented)
+    .bind(&item_types)
     .fetch_all(&mut **tx)
     .await
 }

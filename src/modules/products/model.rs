@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::cart::model::LineTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "product_type", rename_all = "snake_case")]
@@ -49,13 +50,14 @@ impl std::str::FromStr for ProductType {
 /// decrement. `stock_decremented` is the checkout-time snapshot
 /// (`orders::fulfilment::order_lines` derives it; products only reads it):
 /// `false` (unlimited-stock product at checkout, or a legacy row) means
-/// nothing was decremented, so nothing is restored. `product_id` is
-/// `Option` because the column is nullable; a product line without one is
-/// unreachable under the `order_items_one_target` CHECK.
+/// nothing was decremented, so nothing is restored. `target` is decoded
+/// once at the row boundary (`cart::model::LineTarget`); a product line
+/// without a `product_id` cannot decode (the `order_items_one_target` CHECK
+/// forbids it anyway).
 #[derive(Debug, sqlx::FromRow)]
 pub struct OrderStockTrace {
-    pub item_id: Uuid,
-    pub product_id: Option<Uuid>,
+    #[sqlx(flatten)]
+    pub target: LineTarget,
     pub quantity: i32,
     pub stock_decremented: bool,
 }
