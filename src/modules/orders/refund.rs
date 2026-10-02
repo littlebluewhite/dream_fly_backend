@@ -84,7 +84,7 @@ mod tests {
         use TransitionDecision::*;
         let table: [(OrderStatus, OrderStatus, Option<TransitionDecision>); 36] = [
             (Pending, Pending, Some(NoOp)),
-            (Pending, Paid, Some(Flip)),
+            (Pending, Paid, None),
             (Pending, Processing, None),
             (Pending, Completed, None),
             (Pending, Cancelled, Some(Flip)),

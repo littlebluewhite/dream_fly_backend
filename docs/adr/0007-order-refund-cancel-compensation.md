@@ -155,9 +155,8 @@ affected，非錯誤）。測試 `redeem_after_refund_is_conflict` 覆蓋其中�
 源，退款/取消沒有東西可以「還給」優惠券。訂單自己的 `discount_cents`/`coupon_code` 也不被補償
 邏輯觸碰，維持結帳當下套用了什麼折扣的歷史紀錄。
 
-`paid_at` 同樣被保留，不清空：`orders::repository::update_status_and_paid_at_tx` 的 `CASE` 只
-在轉入 `paid` 且原本是 `NULL` 時才蓋 `NOW()`，轉往 cancelled/refunded 走 `ELSE paid_at` 分支，
-原始付款時間原封不動留著——退款後仍能查出「這筆單原本是什麼時候付的錢」，是審計用途的歷史紀
+`paid_at` 同樣被保留，不清空：`orders::repository::update_status_tx` 只改 `status`、不碰 `paid_at`
+（見文末 2026-10-03 Addendum），原始付款時間原封不動留著——退款後仍能查出「這筆單原本是什麼時候付的錢」，是審計用途的歷史紀
 錄；因為報表營收聚合本來就已經用 `REVENUE_STATUSES` 過濾掉 cancelled/refunded 狀態的訂單，保
 留 `paid_at` 不會造成重複計入營收。
 
@@ -652,3 +651,15 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 `service_orders::checkout_same_key_twin_committed_mid_flight_replays_twin`：它在單連線池上釘住
 唯一鍵違例 → 先 release → 重播這條路徑，補上 `order_paths_complete_on_a_single_connection_pool`
 原本坦承沒覆蓋的那個 release 站點。這支測試在重構前後都是綠的。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-10-03）：拿掉 `pending → paid` 轉移與 `paid_at` 的 `CASE`
+
+`create_order` 直接寫入 `status = 'paid'` 與 `paid_at`，執行期沒有任何路徑產生 `pending` 訂單
+（只有 seed 的每月一筆對照單與測試的 `OrderSeed`）。因此：
+
+- 狀態機刪掉 `(Pending, Paid)`：`pending` 只能轉 `cancelled`。admin `PATCH /orders/{id}/status`
+  要求 `pending → paid` 回 400，`paid_at` 維持 `NULL`——不會憑空蓋出一個假的付款時間。
+- `update_status_and_paid_at_tx` 改名 `update_status_tx`，刪掉 `paid_at = CASE WHEN $2 = 'paid' …`。
+  上面「`paid_at` 保留不清空」的結論不變，只是現在是因為這條 UPDATE 根本不碰 `paid_at`。
+- 測試：`decide_transition` 36 組表的 `(Pending, Paid)` 改為 `None`；新增
+  `update_order_status_pending_to_paid_is_400`。

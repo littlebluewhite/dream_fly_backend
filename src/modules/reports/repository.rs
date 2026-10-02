@@ -23,8 +23,8 @@ use super::model::{
 /// calendar rather than whatever timezone the DB session happens to be in.
 /// Revenue counts only the "paid family" (`paid`/`processing`/`completed`)
 /// — `refunded`/`cancelled`/`pending` orders never contribute (a refunded
-/// order keeps its original `paid_at` per `orders::repository::
-/// update_status_and_paid_at_tx`, so this is a status filter, not a
+/// order keeps its original `paid_at` (the
+/// refund path never clears it), so this is a status filter, not a
 /// `paid_at IS NOT NULL` filter). The `generate_series` LEFT JOIN
 /// guarantees exactly `months` rows even when `orders` is empty — no month
 /// can "disappear" for lack of matching rows.
@@ -753,8 +753,8 @@ pub async fn upcoming_session_count(
 /// Orders count as "paid" via `status::text = ANY($1)` against
 /// `REVENUE_STATUSES` (the same status set `revenue_trend` uses for the
 /// admin report's revenue section) rather than `paid_at IS NOT NULL` alone
-/// — a refunded/cancelled order keeps its original `paid_at` (see
-/// `orders::repository::update_status_and_paid_at_tx`) but has left the
+/// — a refunded/cancelled order keeps its original `paid_at` (the
+/// refund path never clears it) but has left the
 /// paid family, and surfacing it as a fresh "已付款" event would misrepresent
 /// its current state. The extra `paid_at IS NOT NULL` guard is
 /// belt-and-suspenders: every row reaching `status = ANY($1)` is guaranteed

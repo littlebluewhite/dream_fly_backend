@@ -472,12 +472,10 @@ pub async fn update_order_status(
 
     // Everything in a single tx: read+lock current status →
     // `refund::decide_transition` (same-status no-op / 400 / flip / flip +
-    // compensate) → single atomic UPDATE
-    // with conditional `paid_at` → outbox. Reading `current` under `FOR
+    // compensate) → single atomic status UPDATE → outbox. Reading `current` under `FOR
     // UPDATE` is also the `orders`-row lock that opens the refund lock order
     // (orders → users → products → enrolments → leave_requests (pending) →
-    // subscriptions, see `compensate_order_artifacts_tx`). No split UPDATE+UPDATE+SELECT that
-    // could leave `status='paid' AND paid_at=NULL`.
+    // subscriptions, see `compensate_order_artifacts_tx`).
     let mut tx = db.begin().await?;
 
     let current = repository::find_by_id_tx(&mut tx, order_id)
@@ -508,7 +506,7 @@ pub async fn update_order_status(
         }
     }
 
-    let updated = repository::update_status_and_paid_at_tx(&mut tx, order_id, &target)
+    let updated = repository::update_status_tx(&mut tx, order_id, &target)
         .await?
         .ok_or_else(|| AppError::NotFound("order not found".into()))?;
 

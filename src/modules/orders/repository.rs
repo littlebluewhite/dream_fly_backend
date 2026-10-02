@@ -186,15 +186,12 @@ pub async fn find_items_by_order(
     .await
 }
 
-/// Single atomic UPDATE: changes the status AND, if transitioning into
-/// `paid`, stamps `paid_at` in the same statement. Replaces the older
-/// split `update_status` + `set_paid_at` sequence that could leave the row
-/// in an inconsistent `paid` + `paid_at = NULL` state on partial failure.
-/// (In practice every order is already `paid` from creation — see
-/// `create_order` — so this branch is now only relevant if a future status
-/// ever needs `paid_at` semantics again; kept as-is since it's still
-/// correct and harmless.)
-pub async fn update_status_and_paid_at_tx(
+/// Single atomic UPDATE of the status. `paid_at` is never touched: every
+/// order is inserted already `paid` with `paid_at` stamped (see
+/// `create_order`), and there is no `pending → paid` transition, so a status
+/// change never has a payment time to stamp (a refunded/cancelled order
+/// keeps its original `paid_at`).
+pub async fn update_status_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
     status: &OrderStatus,
@@ -202,10 +199,6 @@ pub async fn update_status_and_paid_at_tx(
     sqlx::query_as::<_, Order>(
         "UPDATE orders SET \
             status = $2, \
-            paid_at = CASE \
-                WHEN $2 = 'paid' AND paid_at IS NULL THEN NOW() \
-                ELSE paid_at \
-            END, \
             updated_at = NOW() \
          WHERE id = $1 \
          RETURNING *",

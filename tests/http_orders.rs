@@ -3,8 +3,9 @@
 mod common;
 
 use chrono::{Duration, TimeZone, Utc};
-use common::fixtures::{CourseSeed, seed_entitlement_product};
+use common::fixtures::{CourseSeed, OrderSeed, seed_entitlement_product};
 use common::http::{spawn_test_app, spawn_test_app_with, TestApp};
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::products::model::ProductType;
 use serde_json::json;
 use sqlx::PgPool;
@@ -536,4 +537,32 @@ async fn update_status_refund_via_http_returns_cancelled_artifacts(db: PgPool) {
         body["subscriptions"][0]["status"], "cancelled",
         "subscription artifact reads cancelled"
     );
+}
+
+/// No runtime path creates a pending order (checkout writes `paid`
+/// directly), so `pending → paid` is not a legal admin transition: 400, and
+/// the order keeps `status = pending` / `paid_at = NULL` (a fake payment time
+/// must never be stamped).
+#[sqlx::test]
+async fn update_order_status_pending_to_paid_is_400(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin, admin_token) = app.seed_admin().await;
+    let buyer = app.register_member("pending-paid@example.com", "Password!234").await;
+    let order_id = OrderSeed::new(buyer.user_id, OrderStatus::Pending).insert(&app.db).await;
+
+    let resp = app
+        .patch(&format!("/api/v1/orders/{order_id}/status"))
+        .authorization_bearer(&admin_token)
+        .json(&json!({ "status": "paid" }))
+        .await;
+    assert_eq!(resp.status_code(), 400, "body={}", resp.text());
+
+    let (status, paid_at): (String, Option<chrono::DateTime<Utc>>) =
+        sqlx::query_as("SELECT status::text, paid_at FROM orders WHERE id = $1")
+            .bind(order_id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+    assert!(paid_at.is_none(), "paid_at must stay NULL");
 }

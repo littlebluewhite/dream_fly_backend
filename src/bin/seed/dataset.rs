@@ -671,8 +671,8 @@ async fn insert_enrolment_if_absent(
 /// never redeeming points) — so amounts, discount, applied code and
 /// `points_earned` come from the pricing owner, not a seed-side copy of its
 /// arithmetic. `insert_order_if_absent` maps `status` exhaustively: the
-/// paid family (and refunded, which keeps its original `paid_at`, matching
-/// `update_status_and_paid_at_tx`) records `paid_at = created_at`, the
+/// paid family (and refunded, which keeps its original `paid_at`, as the
+/// refund path never clears it) records `paid_at = created_at`, the
 /// priced `points_earned` and `PricingOutcome::ledger_deltas` (a
 /// `checkout_earn` row); refunded additionally applies
 /// `OrderPointsFlow::reversal_deltas` for that flow (a `refund_clawback` of
@@ -724,8 +724,8 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
             seed.pricing.points_used,
             seed.pricing.ledger_deltas(order_id),
         ),
-        // Refunded keeps its original `paid_at` (matching
-        // `update_status_and_paid_at_tx`) and its checkout ledger rows,
+        // Refunded keeps its original `paid_at` (the
+        // refund path never clears it) and its checkout ledger rows,
         // then the refund reverses that flow on top.
         OrderStatus::Refunded => {
             let mut ledger = seed.pricing.ledger_deltas(order_id);

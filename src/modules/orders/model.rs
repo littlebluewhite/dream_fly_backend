@@ -46,8 +46,7 @@ impl OrderStatus {
         use OrderStatus::*;
         matches!(
             (self, next),
-            (Pending, Paid)
-                | (Pending, Cancelled)
+            (Pending, Cancelled)
                 | (Paid, Processing)
                 | (Paid, Refunded)
                 | (Paid, Cancelled)

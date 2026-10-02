@@ -628,7 +628,7 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 
 #### `PATCH /orders/{id}/status` — admin
 Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunded" }`。回應：更新後的 `OrderResponse`。
-狀態機（非法轉換回 400）：`pending→paid|cancelled`；`paid→processing|refunded|cancelled`；`processing→completed|refunded`；`completed→refunded`；同狀態原地不動視為合法（幂等）。**Seed 出來的訂單一律已是 `paid`**（見 §1.8），實務上前端幾乎不會看到 `pending`。
+狀態機（非法轉換回 400）：`pending→cancelled`（**不可** `pending→paid`，回 400，`paid_at` 維持 `NULL`）；`paid→processing|refunded|cancelled`；`processing→completed|refunded`；`completed→refunded`；同狀態原地不動視為合法（幂等）。結帳建立的訂單一律已是 `paid`（見 §1.8），執行期沒有任何路徑產生 `pending`；seed 每個月只留一筆 `pending` 對照單，只能被取消。
 
 **補償語意（轉入 `cancelled`/`refunded`）**：當轉入前的狀態計入營收（`paid`/`processing`/`completed`）且目標是 `cancelled` 或 `refunded` 時（兩者補償語意相同，無差異——ADR-0007 決策 1），同一個交易內會依序：反轉該訂單結帳當下的點數流（ledger 實錄為準，不是抄訂單彙總欄——`checkout_redeem` 反轉為 `refund_restore`、`checkout_earn` 反轉為 `refund_clawback`，順序 restore 先、clawback 後，見 §1.6）→ 回補該訂單有實際扣減庫存的商品行（沒有扣減過的行，例如結帳當下是無限庫存，不會被回補，即使商品後來被改成有限庫存）→ 取消該訂單產生的報名（連同這些報名底下的**待審**假單轉為 `cancelled`，已核准假單與補課不動，見 §3.12/§3.20）與訂閱（`status` 一併轉為 `cancelled`，見 §3.11/§3.12）。**是整單語意**：不論訂單此刻已經核銷/使用多少，一律全額反轉，不按使用比例折算。優惠券使用不會被反轉（優惠券本身無使用次數計數），`paid_at` 也維持原值不清空。
 

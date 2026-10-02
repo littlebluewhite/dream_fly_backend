@@ -220,7 +220,7 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
         .await;
     // None of these should count, even though each has a real `paid_at` in
     // the current month — a refunded order keeps its original `paid_at`
-    // (see `orders::repository::update_status_and_paid_at_tx`), so the
+    // (the refund path never clears it), so the
     // filter must be on `status`, not `paid_at IS NOT NULL`.
     OrderSeed::new(user_id, OrderStatus::Refunded)
         .total_cents(999_999)
