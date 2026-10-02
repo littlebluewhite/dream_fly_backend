@@ -225,10 +225,12 @@ pub async fn verify_otp(
     auth_user_id: Uuid,
     req: OtpVerifyRequest,
 ) -> Result<MessageResponse, AppError> {
-    otp::verify_otp(store, auth_user_id, &req).await?;
+    let proof = otp::check(store, auth_user_id, &req).await?;
 
-    // Update phone_verified now that the code has been confirmed.
+    // Update phone_verified now that the code has been confirmed; the code is
+    // consumed only after this write succeeds (a 409 leaves it usable).
     repository::update_phone_verified(db, auth_user_id, &req.phone).await?;
+    otp::consume(store, proof).await?;
 
     Ok(MessageResponse {
         message: "phone verified successfully".into(),

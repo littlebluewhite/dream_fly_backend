@@ -1,7 +1,8 @@
 //! OTP (One-Time Password) send/verify lifecycle — the complete
 //! phone-verification flow: per-user request-rate check, 6-digit code
 //! generation, user-scoped short-lived storage (`EphemeralStore`), SMS
-//! dispatch, and verification (attempt-count bump + code compare + cleanup).
+//! dispatch, and verification (`check`: attempt-count bump + code compare;
+//! `consume`: cleanup, called only after the caller's DB write succeeds).
 //! Key formats and limits are private to this module.
 //!
 //! Every store call is **fail-closed**: a store error (INCR, SET, GET or
@@ -10,7 +11,7 @@
 //! unbounded attempt count would allow brute force.
 //!
 //! The verify-attempt-count-bump and OTP-invalidation-on-too-many-attempts
-//! in `verify_otp` below is a single invariant — bumping the attempt
+//! in `check` below is a single invariant — bumping the attempt
 //! counter and (past the threshold) deleting the live OTP are two halves of
 //! one "fail closed on brute force" decision, so they are never split
 //! across functions or files.
@@ -93,14 +94,22 @@ pub(super) async fn send_otp(
     })
 }
 
-/// Verify an OTP for `auth_user_id`. Returns `Ok(())` on success; the
-/// caller (`service::verify_otp`) is responsible for the DB write that
-/// marks the phone verified.
-pub(super) async fn verify_otp(
+/// Evidence that [`check`] accepted the code. The code is still live in the
+/// store until [`consume`] is called with this proof, so a caller whose
+/// follow-up DB write fails leaves the code usable for a retry.
+#[must_use = "an accepted code stays live until consume() is called"]
+pub(super) struct OtpProof {
+    auth_user_id: Uuid,
+}
+
+/// Check an OTP for `auth_user_id` without consuming it. The caller
+/// (`service::verify_otp`) does the DB write that marks the phone verified,
+/// then calls [`consume`].
+pub(super) async fn check(
     store: &dyn EphemeralStore,
     auth_user_id: Uuid,
     req: &OtpVerifyRequest,
-) -> Result<(), AppError> {
+) -> Result<OtpProof, AppError> {
     use subtle::ConstantTimeEq;
 
     // 1. Bump the per-user attempt counter first — fail-closed on brute force.
@@ -136,10 +145,14 @@ pub(super) async fn verify_otp(
         return Err(AppError::BadRequest("invalid verification code".into()));
     }
 
-    // 5. Success — delete OTP and attempt counter.
-    store.del(&otp_key).await?;
-    store.del(&attempts_key).await?;
+    Ok(OtpProof { auth_user_id })
+}
 
+/// Delete the accepted OTP and its attempt counter. Call only after the
+/// follow-up DB write succeeded.
+pub(super) async fn consume(store: &dyn EphemeralStore, proof: OtpProof) -> Result<(), AppError> {
+    store.del(&otp_key(proof.auth_user_id)).await?;
+    store.del(&attempts_key(proof.auth_user_id)).await?;
     Ok(())
 }
 
@@ -192,7 +205,7 @@ mod tests {
             &format!("otp:{user}"),
             r#"{"phone":"0912345678","code":"123456"}"#,
         );
-        verify_otp(
+        let proof = check(
             &store,
             user,
             &OtpVerifyRequest {
@@ -202,6 +215,7 @@ mod tests {
         )
         .await
         .expect("verify");
+        consume(&store, proof).await.expect("consume");
         assert_eq!(
             store.take_calls(),
             vec![

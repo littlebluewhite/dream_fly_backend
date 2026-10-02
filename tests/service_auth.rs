@@ -1052,6 +1052,44 @@ async fn otp_verify_sixth_attempt_invalidates_code_until_resend(db: PgPool) {
     assert!(verified);
 }
 
+#[sqlx::test]
+async fn verify_otp_conflict_keeps_code_usable(db: PgPool) {
+    let store = InMemoryEphemeralStore::new();
+    let (server, sms) = twilio_sms().await;
+    let owner = common::seed_member(&db, &format!("otp-owner-{}@example.com", Uuid::now_v7()), "Password!234").await;
+    let user_id = common::seed_member(&db, &format!("otp-conflict-{}@example.com", Uuid::now_v7()), "Password!234").await;
+
+    // Another user already holds the verified phone.
+    sqlx::query("UPDATE users SET phone = $2, phone_verified = true WHERE id = $1")
+        .bind(owner)
+        .bind(OTP_PHONE)
+        .execute(&db)
+        .await
+        .expect("seed verified phone");
+
+    send_otp(&store, &sms, user_id).await.expect("send");
+    let code = last_otp_code(&server).await;
+
+    let err = verify_otp(&db, &store, user_id, &code)
+        .await
+        .expect_err("phone already verified by another user");
+    // The unique-violation maps to 409 at the HTTP boundary.
+    assert!(
+        matches!(&err, AppError::Database(e) if e.as_database_error().is_some_and(|d| d.is_unique_violation())),
+        "expected unique violation, got: {err:?}"
+    );
+
+    // The DB write failed, so the code was not burned: free the phone, retry.
+    sqlx::query("UPDATE users SET phone_verified = false WHERE id = $1")
+        .bind(owner)
+        .execute(&db)
+        .await
+        .expect("free phone");
+    verify_otp(&db, &store, user_id, &code)
+        .await
+        .expect("same code still verifies after the conflict is gone");
+}
+
 // ------- short-lived state store down (`FailingEphemeralStore`) -------
 
 fn assert_internal(err: &AppError) {
