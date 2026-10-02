@@ -474,8 +474,7 @@ pub async fn update_order_status(
     // `refund::decide_transition` (same-status no-op / 400 / flip / flip +
     // compensate) → single atomic status UPDATE → outbox. Reading `current` under `FOR
     // UPDATE` is also the `orders`-row lock that opens the refund lock order
-    // (orders → users → products → enrolments → leave_requests (pending) →
-    // subscriptions, see `compensate_order_artifacts_tx`).
+    // (full graph: `orders::locks` module doc).
     let mut tx = db.begin().await?;
 
     let current = repository::find_by_id_tx(&mut tx, order_id)
@@ -564,9 +563,9 @@ pub async fn update_order_status(
 /// 4. `enrolments`/`subscriptions` `cancel_by_order_tx` — order-scoped batch
 ///    UPDATEs, naturally idempotent via `status <> 'cancelled'`, so a buyer
 ///    who already self-cancelled an enrolment is a harmless 0-row no-op.
-///    Lock order enrolments → leave_requests (pending) → subscriptions: the
-///    enrolments owner also cancels the pending leave requests of the
-///    enrolments it just flipped (B5).
+///    The enrolments owner also cancels the pending leave requests of the
+///    enrolments it just flipped (B5). Lock order of the whole refund:
+///    `orders::locks` module doc.
 ///
 /// Fixture / directly-built orders, and orders from seed runs before the
 /// seed wrote checkout ledger rows, carry no traces, so every step no-ops

@@ -30,6 +30,9 @@ pub async fn list(db: &PgPool, all: bool) -> Result<RewardListResponse, AppError
 /// `points::service::try_spend_tx`，裁決 7 — 點數唯一真相 = point_ledger +
 /// users.points_balance，此處不得另建一套機制；不足 → 409「點數不足」）→
 /// stock -1（非 NULL 才執行）→ 插入 redemption 紀錄。
+///
+/// 鎖序：rewards → users（`try_spend_tx` 內的 `lock_balance_tx`）。安全前提與
+/// 完整鎖序圖見 `orders::locks` 模組文件（沒有任何路徑持有 users 再鎖 rewards）。
 pub async fn redeem(db: &PgPool, user_id: Uuid, reward_id: Uuid) -> Result<RedeemResponse, AppError> {
     let mut tx = db.begin().await?;
 

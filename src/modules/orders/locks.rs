@@ -1,3 +1,44 @@
+//! 鎖序圖 (Lock Order Graph) — the single code anchor for every multi-table
+//! row-lock order in the money/stock/seat paths. Other modules' docs point
+//! here instead of restating it. Verified against the code, step by step:
+//!
+//! ```text
+//! checkout   users (FOR UPDATE)
+//!              -> cart target ids (read, no lock)
+//!              -> products (FOR NO KEY UPDATE, asc)
+//!              -> courses (FOR UPDATE, asc)
+//!              -> cart_items (FOR UPDATE OF ci, snapshot read)
+//!              -> enrolments (INSERT) -> subscriptions (INSERT)
+//! refund     orders (FOR UPDATE)
+//!              -> users (FOR UPDATE)
+//!              -> products (FOR NO KEY UPDATE, asc)
+//!              -> enrolments (UPDATE by order_id)
+//!              -> leave_requests (UPDATE, pending only)
+//!              -> subscriptions (UPDATE by order_id)
+//! redeem     rewards (FOR UPDATE) -> users (FOR UPDATE, via try_spend_tx)
+//! ```
+//!
+//! `checkout` and `refund` agree on `users` before `products`, and on
+//! `products` ascending, so they cannot form a cycle. `refund`'s `orders`
+//! lock precedes `users`, but checkout only INSERTs its own new `orders`
+//! row (nobody else can hold it yet), so no path holds `users` and then waits
+//! on an `orders` row someone else holds.
+//!
+//! `rewards::redeem` is `rewards` -> `users`. This is safe only because NO
+//! path holds `users` and then locks `rewards`: checkout and refund never
+//! touch `rewards`, and `redeem` itself takes `rewards` first. A new path
+//! that locks `users` before `rewards` would close a cycle with `redeem` —
+//! add it here first.
+//!
+//! Where each step lives: [`acquire_checkout_locks`] runs checkout's first
+//! three locks, and the `cart_items` lock is the `FOR UPDATE OF ci` in
+//! `cart::service::find_cart_items_for_checkout_tx` (taken right after, and
+//! before any write). [`acquire_refund_locks`] runs users + products; the
+//! `orders` lock is `orders::repository::find_by_id_tx` in
+//! `update_order_status`; the enrolments -> leave_requests -> subscriptions
+//! tail is `orders::service::compensate_order_artifacts_tx` (the enrolments
+//! owner cancels the pending leave requests of the enrolments it flipped).
+//!
 //! 訂單鎖協定 (Order Lock Protocol) — every row lock `checkout` takes
 //! before it writes, acquired in one place, in one fixed order:
 //!
