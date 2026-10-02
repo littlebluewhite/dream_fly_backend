@@ -3,7 +3,8 @@
 mod common;
 
 use common::fixtures::set_points_balance;
-use common::http::spawn_test_app;
+use chrono::{TimeZone, Utc};
+use common::http::{spawn_test_app, spawn_test_app_with};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -920,4 +921,59 @@ async fn admin_create_user_rejects_future_birth_date(db: PgPool) {
         }))
         .await;
     assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+}
+
+/// Pins the 422 body for an admin-created future `birth_date` (field key and
+/// message shape come from `validation::format_validation_errors`).
+#[sqlx::test]
+async fn admin_create_user_future_birth_date_422_body(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "future-create@example.com",
+            "name": "Future Kid",
+            "password": "Password!234",
+            "birth_date": "2999-01-01"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(
+        body["error"],
+        r#"{"birth_date":["birth_date cannot be in the future"]}"#
+    );
+}
+
+/// 2026-07-14 16:30Z is already 2026-07-15 in Taipei: a birth date of "today"
+/// in studio time must be accepted even though it is "tomorrow" in UTC.
+#[sqlx::test]
+async fn admin_create_user_birth_date_today_in_taipei_accepted(db: PgPool) {
+    let app = spawn_test_app_with(db, |cfg| {
+        cfg.server.studio_timezone = "Asia/Taipei".parse().unwrap();
+    })
+    .await;
+    app.clock
+        .set(Utc.with_ymd_and_hms(2026, 7, 14, 16, 30, 0).unwrap());
+    let (_admin_id, admin_token) = app.seed_admin().await;
+
+    let create = |email: &'static str, birth: &'static str| {
+        app.post("/api/v1/users")
+            .authorization_bearer(&admin_token)
+            .json(&json!({
+                "email": email,
+                "name": "Taipei Kid",
+                "password": "Password!234",
+                "birth_date": birth
+            }))
+    };
+    let ok = create("taipei-today@example.com", "2026-07-15").await;
+    assert_eq!(ok.status_code(), 200, "body={}", ok.text());
+    assert_eq!(ok.json::<serde_json::Value>()["birth_date"], "2026-07-15");
+
+    let future = create("taipei-tomorrow@example.com", "2026-07-16").await;
+    assert_eq!(future.status_code(), 422, "body={}", future.text());
 }

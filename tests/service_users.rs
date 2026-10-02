@@ -10,7 +10,7 @@
 
 mod common;
 
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -20,6 +20,14 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::users::dto::UpdateProfileRequest;
 use dream_fly_backend::modules::users::service;
+use dream_fly_backend::utils::studio_clock::StudioNow;
+
+fn studio_now() -> StudioNow {
+    StudioNow {
+        tz: "UTC".parse().unwrap(),
+        now: Utc::now(),
+    }
+}
 
 #[sqlx::test]
 async fn get_me_returns_seeded_profile(db: PgPool) {
@@ -77,6 +85,7 @@ async fn update_me_partial_patch_preserves_other_fields(db: PgPool) {
             preferences: None,
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me");
@@ -97,6 +106,7 @@ async fn update_me_partial_patch_preserves_other_fields(db: PgPool) {
             preferences: None,
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("second update_me");
@@ -121,6 +131,7 @@ async fn update_me_can_set_avatar_to_https_url(db: PgPool) {
             preferences: None,
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me");
@@ -149,6 +160,7 @@ async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
             preferences: Some(json!({ "class_reminder": true, "coach_msg": true })),
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me with preferences");
@@ -168,6 +180,7 @@ async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
             preferences: None,
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me without preferences");
@@ -188,6 +201,7 @@ async fn update_me_preferences_overwrite_and_absence_semantics(db: PgPool) {
             preferences: Some(json!({ "dark": true })),
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me overwrite preferences");
@@ -218,6 +232,7 @@ async fn update_me_birth_date_set_absence_and_clear_semantics(db: PgPool) {
             preferences: None,
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me no-op");
@@ -234,6 +249,7 @@ async fn update_me_birth_date_set_absence_and_clear_semantics(db: PgPool) {
             preferences: None,
             birth_date: Some(Some(date)),
         },
+        studio_now(),
     )
     .await
     .expect("update_me set birth_date");
@@ -250,6 +266,7 @@ async fn update_me_birth_date_set_absence_and_clear_semantics(db: PgPool) {
             preferences: None,
             birth_date: None,
         },
+        studio_now(),
     )
     .await
     .expect("update_me unrelated field");
@@ -267,6 +284,7 @@ async fn update_me_birth_date_set_absence_and_clear_semantics(db: PgPool) {
             preferences: None,
             birth_date: Some(None),
         },
+        studio_now(),
     )
     .await
     .expect("update_me clear birth_date");
@@ -288,6 +306,7 @@ async fn update_me_rejects_future_birth_date(db: PgPool) {
             preferences: None,
             birth_date: Some(Some(tomorrow)),
         },
+        studio_now(),
     )
     .await
     .unwrap_err();
@@ -309,6 +328,7 @@ async fn update_me_rejects_birth_date_before_1900(db: PgPool) {
             preferences: None,
             birth_date: Some(Some(too_old)),
         },
+        studio_now(),
     )
     .await
     .unwrap_err();
@@ -382,4 +402,43 @@ async fn list_users_clamps_per_page_to_100(db: PgPool) {
     .expect("list");
 
     assert_eq!(resp.meta.per_page, 100, "per_page should clamp to 100");
+}
+
+/// 2026-07-14 16:30Z is 2026-07-15 00:30 in Taipei: the studio's "today" is
+/// already the 15th while UTC's is still the 14th. A 7/15 birth date is
+/// accepted; 7/16 is still the future.
+#[sqlx::test]
+async fn update_me_birth_date_future_follows_studio_date_not_utc(db: PgPool) {
+    let user_id = common::seed_member(&db, "taipei-bday@example.com", "hunter22-secret").await;
+    let at = StudioNow {
+        tz: "Asia/Taipei".parse().unwrap(),
+        now: Utc.with_ymd_and_hms(2026, 7, 14, 16, 30, 0).unwrap(),
+    };
+    let patch = |date: NaiveDate| UpdateProfileRequest {
+        name: None,
+        phone: None,
+        avatar_url: None,
+        preferences: None,
+        birth_date: Some(Some(date)),
+    };
+
+    let resp = service::update_me(
+        &db,
+        user_id,
+        patch(NaiveDate::from_ymd_opt(2026, 7, 15).unwrap()),
+        at,
+    )
+    .await
+    .expect("studio-today birth date accepted");
+    assert_eq!(resp.birth_date, NaiveDate::from_ymd_opt(2026, 7, 15));
+
+    let err = service::update_me(
+        &db,
+        user_id,
+        patch(NaiveDate::from_ymd_opt(2026, 7, 16).unwrap()),
+        at,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 }

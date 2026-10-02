@@ -11,24 +11,25 @@ use crate::utils::url_validation::validate_stored_url;
 /// Earliest/latest `birth_date` accepted by both `CreateUserRequest` and
 /// `UpdateProfileRequest` — Round 4 Task P4-B2. Returns `Some(message)` when
 /// `date` falls outside `[1900-01-01, today]`; `None` when it's in range.
-/// Shared so the two call sites (a validator-crate custom function below for
-/// the plain-`Option` create path, and a manual check in
-/// `service::update_me` for the double-option patch path — `validator` can't
-/// express nested `Option` cleanly, same limitation noted on
-/// `venues::dto::UpdateVenueRequest`'s double-option fields) can't drift.
-pub(crate) fn birth_date_range_error(date: NaiveDate) -> Option<&'static str> {
+/// `today` is the studio-local date (`StudioNow::today`), so "future" follows
+/// the studio calendar rather than UTC. The 1900 floor needs no context and
+/// also runs in the `validator` custom function below (create path); the
+/// "future" half needs `today`, so both write paths call this from the
+/// service (create after DTO validation, `update_me` for the double-option
+/// patch — `validator` can't express nested `Option` cleanly, same limitation
+/// noted on `venues::dto::UpdateVenueRequest`'s double-option fields).
+pub(crate) fn birth_date_range_error(date: NaiveDate, today: NaiveDate) -> Option<&'static str> {
+    birth_date_floor_error(date)
+        .or_else(|| (date > today).then_some("birth_date cannot be in the future"))
+}
+
+fn birth_date_floor_error(date: NaiveDate) -> Option<&'static str> {
     let min = NaiveDate::from_ymd_opt(1900, 1, 1).expect("1900-01-01 is a valid date");
-    if date < min {
-        return Some("birth_date must not be before 1900-01-01");
-    }
-    if date > Utc::now().date_naive() {
-        return Some("birth_date cannot be in the future");
-    }
-    None
+    (date < min).then_some("birth_date must not be before 1900-01-01")
 }
 
 fn validate_birth_date(date: &NaiveDate) -> Result<(), ValidationError> {
-    match birth_date_range_error(*date) {
+    match birth_date_floor_error(*date) {
         Some(msg) => {
             let mut err = ValidationError::new("birth_date_out_of_range");
             err.message = Some(msg.into());
@@ -82,8 +83,8 @@ pub struct CreateUserRequest {
     /// Round 4 Task P4-B2 — optional at admin-creation time. Deliberately
     /// NOT on `auth::dto::RegisterRequest`: self-registration keeps this
     /// field out entirely to minimize signup friction (see
-    /// docs/api/integration-contract.md §3.2). Range-validated 1900-01-01
-    /// to today via `validate_birth_date`.
+    /// docs/api/integration-contract.md §3.2). 1900 floor via
+    /// `validate_birth_date`; the studio-date upper bound in `service::create_user`.
     #[validate(custom(function = "validate_birth_date"))]
     pub birth_date: Option<NaiveDate>,
 }

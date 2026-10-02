@@ -7,6 +7,8 @@ use crate::modules::auth::access::{self, AccessCache};
 use crate::modules::auth::provisioning as auth_provisioning;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::password;
+use crate::utils::studio_clock::StudioNow;
+use crate::utils::validation;
 
 use super::dto::{
     birth_date_range_error, CreateUserRequest, UpdateProfileRequest, UpdateUserRequest,
@@ -28,6 +30,7 @@ pub async fn update_me(
     db: &PgPool,
     user_id: Uuid,
     req: UpdateProfileRequest,
+    at: StudioNow,
 ) -> Result<UserResponse, AppError> {
     // `birth_date`'s double-option can't be range-checked via `#[validate]`
     // (validator can't express nested `Option` cleanly — see
@@ -35,7 +38,7 @@ pub async fn update_me(
     // instead. Only the "set to a date" branch is checked — clearing to
     // NULL (`Some(None)`) is always allowed.
     if let Some(Some(date)) = req.birth_date {
-        if let Some(msg) = birth_date_range_error(date) {
+        if let Some(msg) = birth_date_range_error(date, at.today()) {
             return Err(AppError::Validation(msg.to_string()));
         }
     }
@@ -108,7 +111,13 @@ pub async fn create_user(
     db: &PgPool,
     req: CreateUserRequest,
     correlation_id: Option<String>,
+    at: StudioNow,
 ) -> Result<UserResponse, AppError> {
+    if let Some(date) = req.birth_date {
+        if let Some(msg) = birth_date_range_error(date, at.today()) {
+            return Err(validation::field_error("birth_date", msg));
+        }
+    }
     let hashed = password::hash_for_storage(req.password.clone()).await?;
 
     let mut tx = db.begin().await?;

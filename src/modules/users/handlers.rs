@@ -29,7 +29,7 @@ pub async fn update_me(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<UpdateProfileRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
-    let response = service::update_me(&state.db, auth.user_id, req).await?;
+    let response = service::update_me(&state.db, auth.user_id, req, state.studio_now()).await?;
     Ok(Json(response))
 }
 
@@ -57,7 +57,7 @@ pub async fn create(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
-    let response = service::create_user(&state.db, req, request_id.0).await?;
+    let response = service::create_user(&state.db, req, request_id.0, state.studio_now()).await?;
     Ok(Json(response))
 }
 

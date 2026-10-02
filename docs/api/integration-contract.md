@@ -282,7 +282,7 @@ Body：`{ token, new_password }`（new_password 8-128 字）。回應：`{ "mess
 ```
 
 #### `PATCH /users/me` — 需登入
-Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查；`preferences` 可為任意合法 JSON 值，**整包覆寫**——帶了就整個取代舊值，不做深合併，也不逐 key 驗證；不帶則維持原值不動；`birth_date` 為 `YYYY-MM-DD` 字串，範圍 **`1900-01-01` 至今天（含）**，超出範圍回 422——未來日期與早於 1900 年皆同一錯誤類型；帶 JSON `null` 會清空為 `NULL`，不帶此欄則維持原值不動）。未設定過的使用者，`preferences`／`birth_date` 皆為 `null`。回應：`UserResponse`。
+Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查；`preferences` 可為任意合法 JSON 值，**整包覆寫**——帶了就整個取代舊值，不做深合併，也不逐 key 驗證；不帶則維持原值不動；`birth_date` 為 `YYYY-MM-DD` 字串，範圍 **`1900-01-01` 至今天（含）**（「今天」指工作室日期〔`STUDIO_TIMEZONE`〕，非 UTC 日期），超出範圍回 422——未來日期與早於 1900 年皆同一錯誤類型；帶 JSON `null` 會清空為 `NULL`，不帶此欄則維持原值不動）。未設定過的使用者，`preferences`／`birth_date` 皆為 `null`。回應：`UserResponse`。
 
 本輪前端慣例 key（**僅文件性列舉，後端不驗證其形狀，也不限制其他 key 名稱**）：`class_reminder`/`coach_msg`/`promo`/`dark`，皆為布林值，對應 mobile 設定畫面的班別提醒／教練訊息／促銷通知／深色模式四個開關。
 
@@ -295,7 +295,7 @@ Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date
 回應：單筆 `UserResponse`。404 若查無。
 
 #### `POST /users` — admin
-Body（`CreateUserRequest`）：`{ email, name, phone?, password, birth_date? }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字；`birth_date` 為 `YYYY-MM-DD` 字串，選填，範圍同 `PATCH /users/me`：`1900-01-01` 至今天）。建立流程與 `POST /auth/register` 共用同一 owner（`auth::provisioning::create_account`）：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色，並排入 `user_registered` outbox 事件（帶 `x-request-id` 則落在事件的 correlation_id）；與 `/auth/register` 不同的是，本端點不簽發 session、也不發送歡迎通知——帳號是 admin 代建，不是使用者本人註冊。回應：`UserResponse`（見上）。
+Body（`CreateUserRequest`）：`{ email, name, phone?, password, birth_date? }`（email 格式；name 2-100 字；phone 8-20 字，選填；password 8-128 字；`birth_date` 為 `YYYY-MM-DD` 字串，選填，範圍同 `PATCH /users/me`：`1900-01-01` 至工作室今天）。建立流程與 `POST /auth/register` 共用同一 owner（`auth::provisioning::create_account`）：Argon2 hash 密碼、`is_active = true`、於同一交易內指派 `member` 角色，並排入 `user_registered` outbox 事件（帶 `x-request-id` 則落在事件的 correlation_id）；與 `/auth/register` 不同的是，本端點不簽發 session、也不發送歡迎通知——帳號是 admin 代建，不是使用者本人註冊。回應：`UserResponse`（見上）。
 錯誤：409（email 已存在，訊息 `"Email 已被使用"`——與 `/auth/register` 刻意通用化的 409 訊息不同，因為呼叫者是 admin，不受帳號枚舉考量限制）；422（password < 8 字；`birth_date` 超出範圍）。
 
 **`POST /auth/register`（自助註冊）刻意不收 `birth_date`**——維持較低的註冊摩擦；自助註冊帳號的 `birth_date` 起始值為 `null`，會員本人可日後透過 `PATCH /users/me` 補填。

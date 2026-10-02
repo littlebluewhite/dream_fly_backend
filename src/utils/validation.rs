@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
-use validator::{Validate, ValidationErrors};
+use validator::{Validate, ValidationError, ValidationErrors};
 
 use crate::error::AppError;
 
@@ -33,6 +33,17 @@ where
 
         Ok(ValidatedJson(value))
     }
+}
+
+/// A single-field 422 shaped exactly like a `#[validate]` failure on `field`
+/// with a custom `message` — for checks the `validator` derive can't make
+/// (they need request-time context such as the studio date).
+pub fn field_error(field: &'static str, message: &'static str) -> AppError {
+    let mut err = ValidationError::new("custom");
+    err.message = Some(message.into());
+    let mut errors = ValidationErrors::new();
+    errors.add(field, err);
+    AppError::Validation(format_validation_errors(&errors))
 }
 
 /// Flatten a `ValidationErrors` tree into a single-line JSON string of the
