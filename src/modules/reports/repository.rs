@@ -9,8 +9,8 @@ use crate::modules::sessions::calendar::{MaterializedDay, MaterializedRange};
 use crate::utils::studio_clock::StudioNow;
 
 use super::model::{
-    ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
-    RetentionRow, VenueUsageRow, WeekdayLoadRow,
+    ActivityRow, AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSource,
+    IncomeSourceRow, KpiRow, RetentionRow, VenueUsageRow, WeekdayLoadRow,
 };
 
 // ---------------------------------------------------------------------------
@@ -193,9 +193,8 @@ pub async fn income_by_source(
                     interval '1 month' \
                   ) AS month_start \
          ), \
-         sources(source, ord) AS ( \
-           VALUES ('course', 1), ('ticket', 2), ('membership', 3), \
-                  ('course_package', 4), ('merchandise', 5), ('venue_rental', 6) \
+         sources AS ( \
+           SELECT source, ord FROM unnest($6::text[]) WITH ORDINALITY AS s(source, ord) \
          ), \
          line_income AS ( \
            SELECT date_trunc('month', o.paid_at AT TIME ZONE $2) AS month_start, \
@@ -235,6 +234,7 @@ pub async fn income_by_source(
     .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .bind(&VENUE_REVENUE_STATUSES[..])
+    .bind(IncomeSource::ALL.map(|s| s.as_str()).as_slice())
     .fetch_all(db)
     .await
 }

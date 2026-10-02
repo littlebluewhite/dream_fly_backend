@@ -22,15 +22,15 @@ use super::dto::{
     RetentionMonthRow, RevenueMonthPoint, VenueUsageEntry, WeekdayLoadEntry,
 };
 use super::model::{
-    AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSourceRow, KpiRow,
-    RetentionRow, VenueUsageRow, WeekdayLoadRow,
+    AdminCoachRow, AdminCourseRow, BucketCountRow, FunnelRow, IncomeSource, IncomeSourceRow,
+    KpiRow, RetentionRow, VenueUsageRow, WeekdayLoadRow,
 };
 
-/// The one source of `repository::income_by_source` that is *not* an order
-/// line (bookings, not `order_items`) — `category_split` is defined over
-/// order-line 毛額 only, so this source is filtered out of it (and out of
-/// its ratio denominator) while still appearing in `revenue_breakdown`.
-const VENUE_RENTAL_SOURCE: &str = "venue_rental";
+/// Whether an income-source key is an order line (see
+/// `IncomeSource::is_order_line`); `category_split` keeps only these.
+fn is_order_line_source(source: &str) -> bool {
+    source.parse::<IncomeSource>().is_ok_and(|s| s.is_order_line())
+}
 
 /// Every repository result `service::admin_report`'s sequential queries
 /// collect before assembly. Named fields are the only guard against the
@@ -180,12 +180,12 @@ pub fn assemble_admin_report(
 
     let order_line_total: i64 = revenue_breakdown
         .iter()
-        .filter(|r| r.source != VENUE_RENTAL_SOURCE)
+        .filter(|r| is_order_line_source(&r.source))
         .map(|r| r.gross_cents)
         .sum();
     let category_split: Vec<CategorySplitEntry> = revenue_breakdown
         .iter()
-        .filter(|r| r.source != VENUE_RENTAL_SOURCE)
+        .filter(|r| is_order_line_source(&r.source))
         .map(|r| CategorySplitEntry {
             source: r.source.clone(),
             gross_cents: r.gross_cents,

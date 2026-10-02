@@ -33,6 +33,7 @@ use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
+use dream_fly_backend::modules::reports::model::IncomeSource;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::PointsTier;
@@ -626,6 +627,80 @@ async fn admin_report_income_sources_12m_buckets_by_paid_month(db: PgPool) {
         course_by_month.iter().map(|(_, g)| g).sum::<i64>(),
         2_000,
         "the 12-months-ago order must have fallen off the window"
+    );
+}
+
+#[sqlx::test]
+async fn income_by_source_has_nonzero_bucket_for_every_source(db: PgPool) {
+    let now = Utc::now();
+    let buyer = seed_member(&db, "every-source@example.com", "Password!234").await;
+    let course_id = seed_course(&db, "Every Source Course", None).await;
+    let ticket_id =
+        seed_entitlement_product(&db, "every-ticket", ProductType::Ticket, 1_000, Some(30), None)
+            .await;
+    let membership_id = seed_entitlement_product(
+        &db,
+        "every-membership",
+        ProductType::Membership,
+        2_000,
+        None,
+        None,
+    )
+    .await;
+    let package_id = seed_entitlement_product(
+        &db,
+        "every-package",
+        ProductType::CoursePackage,
+        3_000,
+        None,
+        None,
+    )
+    .await;
+    let merch_id = seed_product(&db, "every-merch", 4_000, None).await;
+
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(now)
+        .line(SeedOrderLine::Course { course_id, unit_price_cents: 500 })
+        .line(SeedOrderLine::Product { product_id: ticket_id, quantity: 1, unit_price_cents: 1_000 })
+        .line(SeedOrderLine::Product {
+            product_id: membership_id,
+            quantity: 1,
+            unit_price_cents: 2_000,
+        })
+        .line(SeedOrderLine::Product {
+            product_id: package_id,
+            quantity: 1,
+            unit_price_cents: 3_000,
+        })
+        .line(SeedOrderLine::Product { product_id: merch_id, quantity: 1, unit_price_cents: 4_000 })
+        .insert(&db)
+        .await;
+    seed_venue_rentals(&db, months_ago(now, 0).date_naive(), &[(BookingStatus::Confirmed, 6_000)])
+        .await;
+
+    let report = service::admin_report(&db, common::studio_now_utc(now))
+        .await
+        .expect("admin_report");
+
+    let sources: Vec<(&str, i64)> =
+        report.revenue_breakdown.iter().map(|r| (r.source.as_str(), r.gross_cents)).collect();
+    assert_eq!(
+        sources,
+        [
+            ("course", 500),
+            ("ticket", 1_000),
+            ("membership", 2_000),
+            ("course_package", 3_000),
+            ("merchandise", 4_000),
+            ("venue_rental", 6_000),
+        ],
+        "every source has its own nonzero bucket, in display order"
+    );
+    let all: Vec<&str> = IncomeSource::ALL.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        sources.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        all,
+        "the zero-filled sources are exactly IncomeSource::ALL"
     );
 }
 

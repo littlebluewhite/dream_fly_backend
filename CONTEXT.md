@@ -216,6 +216,7 @@ _Avoid_: 誤以為這兩個 function 把 Rust 版也取代掉了(兩份手抄依
 
 **報表組裝(Report Assembly)**:
 `reports::assembly::assemble_admin_report`(`AdminReportInputs → AdminReportResponse`)是 `GET /reports/admin` 的欄位塑形/推導純核——`service::admin_report` 原本 13 個循序 repository 查詢之後緊接的每一條 ratio/position-index/filter/split 規則,原本 inline 寫在 service 裡,現在收進這裡:zero IO、owned output、`#[cfg(test)]` 錨測試,與 `orders::pricing`/`orders::fulfilment`/`subscriptions::entitlement` 同一紀律,是這個純核姊妹家族的第六個成員(pricing → fulfilment → marking::plan → pairing::resolve_pair → entitlement::plan → assembly::assemble_admin_report)。`current_month_key` 刻意是獨立參數而非 `AdminReportInputs` 的欄位——「`StudioNow` 不進純核」:它衍生自呼叫端取樣的 `at: StudioNow`(其 `now` 分量),擺在 struct 外才能讓 `AdminReportInputs` 每個欄位都單純是 repository 查詢結果,不混入 clock/tz 語意。`safe_ratio`(count-over-count、分母 0 回 `None` 而非 NaN/Infinity)是三種比率計算與 `category_split` 共用的同一個零安全 helper。
+收入來源值域(`course`/`ticket`/`membership`/`course_package`/`merchandise`/`venue_rental`)的單一 owner 是 `reports::model::IncomeSource`:`ALL` 即顯示序(`repository::income_by_source` 以 `unnest($6::text[]) WITH ORDINALITY` 綁它做零填補與排序)、`from_product_type` 窮舉 `ProductType`、`is_order_line()` 決定 `category_split` 是否納入(場租不是訂單明細);DTO 的 `source` 仍是 `String`。
 _Avoid_: 把 `current_month_key` 塞回 `AdminReportInputs` 的欄位(那會讓這個純輸入 struct 混入一個衍生自 clock 的值,污染「每個欄位都是查詢結果」的不變量)。
 
 **權益授予(Entitlement Grant)**:

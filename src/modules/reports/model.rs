@@ -16,6 +16,8 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::modules::products::model::ProductType;
+
 /// One row of `GET /reports/admin`'s `courses` list, before `fill_rate` is
 /// derived (see `assembly::safe_ratio`).
 #[derive(Debug, sqlx::FromRow)]
@@ -123,6 +125,69 @@ pub struct KpiRow {
     pub absent_last: i64,
 }
 
+/// The income-source value domain of `repository::income_by_source` — single
+/// owner of the six source spellings and their display order. `Course` is the
+/// `order_items.item_type = 'course'` line; the product sources mirror
+/// [`ProductType`]; `VenueRental` is the one source that is *not* an order
+/// line (bookings, not `order_items`). The DTOs keep `source` as a `String`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncomeSource {
+    Course,
+    Ticket,
+    Membership,
+    CoursePackage,
+    Merchandise,
+    VenueRental,
+}
+
+impl IncomeSource {
+    /// Every variant, in display order (`income_by_source` zero-fills and
+    /// orders by this position).
+    pub const ALL: [Self; 6] = [
+        Self::Course,
+        Self::Ticket,
+        Self::Membership,
+        Self::CoursePackage,
+        Self::Merchandise,
+        Self::VenueRental,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Course => "course",
+            Self::Ticket => "ticket",
+            Self::Membership => "membership",
+            Self::CoursePackage => "course_package",
+            Self::Merchandise => "merchandise",
+            Self::VenueRental => "venue_rental",
+        }
+    }
+
+    /// Exhaustive: a new `ProductType` must pick its income source here.
+    pub fn from_product_type(product_type: ProductType) -> Self {
+        match product_type {
+            ProductType::Ticket => Self::Ticket,
+            ProductType::CoursePackage => Self::CoursePackage,
+            ProductType::Membership => Self::Membership,
+            ProductType::Merchandise => Self::Merchandise,
+        }
+    }
+
+    /// Whether the source comes from `order_items` — `category_split` is
+    /// defined over order-line 毛額 only, so venue rental is excluded from it.
+    pub fn is_order_line(&self) -> bool {
+        !matches!(self, Self::VenueRental)
+    }
+}
+
+impl std::str::FromStr for IncomeSource {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+    }
+}
+
 /// One (month, source) bucket of `repository::income_by_source` — the
 /// shared per-source income aggregation `service::admin_report` derives
 /// both `revenue_breakdown` (current month) and `income_sources_12m` from.
@@ -163,4 +228,35 @@ pub struct ActivityRow {
     pub amount_cents: Option<i64>,
     pub inquiry_type: Option<String>,
     pub occurred_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn income_source_all_covers_every_product_type() {
+        // Tripwire: exhaustive match, no `_` arm — a new IncomeSource variant
+        // fails to compile here, pointing back at `ALL`.
+        for source in IncomeSource::ALL {
+            match source {
+                IncomeSource::Course
+                | IncomeSource::Ticket
+                | IncomeSource::Membership
+                | IncomeSource::CoursePackage
+                | IncomeSource::Merchandise
+                | IncomeSource::VenueRental => {}
+            }
+            assert_eq!(source.as_str().parse::<IncomeSource>(), Ok(source));
+        }
+        assert_eq!(IncomeSource::ALL.len(), 6, "ALL must list every variant exactly once");
+        for product_type in ProductType::ALL {
+            let source = IncomeSource::from_product_type(product_type);
+            assert_eq!(source.as_str(), product_type.as_str());
+            assert!(IncomeSource::ALL.contains(&source), "{product_type:?} maps outside ALL");
+            assert!(source.is_order_line());
+        }
+        assert!(IncomeSource::Course.is_order_line());
+        assert!(!IncomeSource::VenueRental.is_order_line());
+    }
 }
