@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::modules::points::service::BalanceLock;
+use crate::modules::products::model::Product;
 
 use super::dto::CartResponse;
 use super::model::{CartItemType, CheckoutLine, CheckoutTargets, LineTarget};
@@ -91,16 +92,12 @@ pub async fn update_quantity(
     // Wire-compat guard — kept in place ahead of the item lookup, not
     // deferred into `CartItemType::validate_quantity` below. A product
     // line's legal quantity is owned by `Product::ensure_line_quantity`
-    // (reached via `ensure_purchasable` below); this inline copy exists
-    // only to preserve error-code priority (codex r2). Moving it entirely
-    // after the lookup would change observable behavior: "qty out of range
-    // + item doesn't exist" would flip 400->404, and "course qty outside
-    // 1..=999" would flip 400->422.
-    if !(1..=999).contains(&quantity) {
-        return Err(AppError::BadRequest(
-            "quantity must be between 1 and 999".into(),
-        ));
-    }
+    // (reached via `ensure_purchasable` below); this guard runs only its
+    // range half, and only to preserve error-code priority (codex r2).
+    // Moving it entirely after the lookup would change observable
+    // behavior: "qty out of range + item doesn't exist" would flip
+    // 400->404, and "course qty out of range" would flip 400->422.
+    Product::ensure_quantity_in_range(quantity)?;
 
     let item = repository::find_item_by_id(db, user_id, item_id)
         .await?

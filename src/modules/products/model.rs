@@ -82,7 +82,25 @@ pub struct Product {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Upper bound of a product line's quantity (`1..=MAX_LINE_QUANTITY`).
+/// Owned here with [`Product::ensure_quantity_in_range`]; the cart wire
+/// DTOs bind it for their `#[validate(range)]`.
+pub const MAX_LINE_QUANTITY: i32 = 999;
+
 impl Product {
+    /// The range half of [`Self::ensure_line_quantity`], for callers that
+    /// must reject before any row is looked up (cart's pre-lookup guards,
+    /// which keep this 400 ahead of the lookup's 404): `1..=999`, else
+    /// `BadRequest` (400) `"quantity must be between 1 and 999"`.
+    pub fn ensure_quantity_in_range(quantity: i32) -> Result<(), AppError> {
+        if !(1..=MAX_LINE_QUANTITY).contains(&quantity) {
+            return Err(AppError::BadRequest(
+                "quantity must be between 1 and 999".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// A time-based entitlement: a `membership`/`ticket` with `valid_days`
     /// set and no `session_count` — its grant is one expiry date, which
     /// can't be multiplied by a quantity (ADR-0003; the grant itself is
@@ -97,7 +115,7 @@ impl Product {
 
     /// Is `quantity` a legal quantity for one line of this product — the
     /// single owner of that rule (cart add, cart update and checkout all
-    /// ask here). `1..=999`, else `BadRequest` (400); a time-based
+    /// ask here). [`Self::ensure_quantity_in_range`] (400); a time-based
     /// entitlement only at `1`, else `Validation` (422). Says nothing about
     /// `is_active` or stock — see [`Self::ensure_purchasable`].
     ///
@@ -105,11 +123,7 @@ impl Product {
     /// `"quantity must be between 1 and 999"`,
     /// `"time-based subscription quantity must be 1"`.
     pub fn ensure_line_quantity(&self, quantity: i32) -> Result<(), AppError> {
-        if !(1..=999).contains(&quantity) {
-            return Err(AppError::BadRequest(
-                "quantity must be between 1 and 999".into(),
-            ));
-        }
+        Self::ensure_quantity_in_range(quantity)?;
         if self.is_time_based_entitlement() && quantity != 1 {
             return Err(AppError::Validation(
                 "time-based subscription quantity must be 1".into(),

@@ -69,6 +69,39 @@ async fn add_item_increases_cart(db: PgPool) {
     assert_eq!(body["total_cents"], 3000);
 }
 
+/// The wire DTO's `#[validate(range)]` binds `products::model::MAX_LINE_QUANTITY`
+/// (999): 999 gets through, 1000 is rejected before the service runs.
+#[sqlx::test]
+async fn add_item_quantity_range_is_bound_at_the_wire(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app.register_member("c-max@example.com", "Password!234").await;
+    let pid = seed_product_via_admin(&app, "Bulk", None).await;
+
+    let resp = app
+        .post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1000 }))
+        .await;
+    assert!(
+        resp.status_code().is_client_error(),
+        "1000 must be rejected, body={}",
+        resp.text()
+    );
+    let cart: serde_json::Value = app
+        .get("/api/v1/cart")
+        .authorization_bearer(&user.access_token)
+        .await
+        .json();
+    assert!(cart["items"].as_array().unwrap().is_empty());
+
+    let resp = app
+        .post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 999 }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+}
+
 /// `GET /cart` surfaces `is_active`, live-joined off the product row (not a
 /// cart-time snapshot) — so it flips from `true` to `false` the moment the
 /// product is delisted, without the cart item itself changing.

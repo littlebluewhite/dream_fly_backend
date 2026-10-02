@@ -5,6 +5,7 @@ use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::products::model::Product;
 
 /// Discriminates whether a cart (or checkout) line targets a product or a
 /// course. Maps to the Postgres `cart_item_type` enum.
@@ -57,9 +58,10 @@ impl CartItemType {
     }
 
     /// The per-type quantity rule for the requested quantity, before any
-    /// row is looked up: `Product` allows `1..=999`, `Course` allows only
-    /// `1`. For a product this is only an early range guard (it keeps the
-    /// 400 ahead of the product lookup's 404); the owner of a product
+    /// row is looked up: `Product` delegates to
+    /// `products::model::Product::ensure_quantity_in_range`, `Course` allows
+    /// only `1`. For a product this is only an early range guard (it keeps
+    /// the 400 ahead of the product lookup's 404); the owner of a product
     /// line's legal quantity — range, the time-based entitlement rule, and
     /// judged on the merged/final quantity — is
     /// `products::model::Product::ensure_line_quantity`.
@@ -69,13 +71,7 @@ impl CartItemType {
     /// just a call to this method.
     pub fn validate_quantity(&self, qty: i32) -> Result<(), AppError> {
         match self {
-            Self::Product => {
-                if !(1..=999).contains(&qty) {
-                    return Err(AppError::BadRequest(
-                        "quantity must be between 1 and 999".into(),
-                    ));
-                }
-            }
+            Self::Product => Product::ensure_quantity_in_range(qty)?,
             Self::Course => {
                 if qty != 1 {
                     return Err(AppError::Validation("course quantity must be 1".into()));

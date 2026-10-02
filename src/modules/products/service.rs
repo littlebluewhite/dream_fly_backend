@@ -197,7 +197,8 @@ pub async fn update(
 /// deduplicated — the order the locks were taken in (PostgreSQL orders
 /// `uuid` bytewise, the same as `Uuid`'s `Ord`). Nothing else can change a
 /// held row before the caller's transaction ends, so `reserve_stock_tx`
-/// judges each line's quantity against these rows without re-reading.
+/// judges each line's quantity against these rows without re-reading
+/// ([`ProductLocks::rows_in_lock_order`] hands them out with the lines).
 /// [`ProductLocks::in_lock_order`] is the single owner of "walk these lines
 /// in lock order": a write-lock owner (`reserve_stock_tx`) no longer sorts
 /// on its own.
@@ -220,19 +221,34 @@ impl ProductLocks {
         items: Vec<T>,
         id: impl Fn(&T) -> Uuid,
     ) -> Result<Vec<T>, AppError> {
-        if let Some(item) = items.iter().find(|item| !self.covers(id(item))) {
-            let product_id = id(item);
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "product {product_id} is not covered by ProductLocks"
-            )));
-        }
-        let mut items = items;
-        items.sort_by_key(|item| id(item));
-        Ok(items)
+        Ok(self
+            .rows_in_lock_order(items, id)?
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect())
     }
 
-    fn covers(&self, product_id: Uuid) -> bool {
-        self.row(product_id).is_some()
+    /// [`Self::in_lock_order`], with each item paired with its locked row
+    /// (as read under the lock) — for a caller that judges the row, so it
+    /// never looks the row up a second time. Same ordering and same
+    /// `Internal` for an uncovered id (the first one in input order).
+    pub fn rows_in_lock_order<T>(
+        &self,
+        items: Vec<T>,
+        id: impl Fn(&T) -> Uuid,
+    ) -> Result<Vec<(&Product, T)>, AppError> {
+        let mut pairs = Vec::with_capacity(items.len());
+        for item in items {
+            let product_id = id(&item);
+            let row = self.row(product_id).ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "product {product_id} is not covered by ProductLocks"
+                ))
+            })?;
+            pairs.push((row, item));
+        }
+        pairs.sort_by_key(|(row, _)| row.id);
+        Ok(pairs)
     }
 
     /// The locked row for `product_id`, as read under the lock.
@@ -246,8 +262,9 @@ impl ProductLocks {
 
 /// Lock the given `products` rows `FOR NO KEY UPDATE`, ascending by id
 /// (`ORDER BY id`), inside the caller's transaction and return the
-/// [`ProductLocks`] witness, carrying the rows read under the lock. `FOR NO KEY UPDATE` is exactly the strength
-/// the later stock UPDATE needs, so no upgrade happens afterwards (two
+/// [`ProductLocks`] witness, carrying the rows read under the lock. `FOR NO
+/// KEY UPDATE` is exactly the strength the later stock UPDATE needs, so no
+/// upgrade happens afterwards (two
 /// buyers of one product queue here instead of deadlocking on a
 /// SHARE→UPDATE upgrade), and it does not block the `FOR KEY SHARE` that FK
 /// checks take (`order_items`/`cart_items` inserts). Ids that don't resolve
@@ -304,17 +321,14 @@ pub async fn reserve_stock_tx(
     locks: &ProductLocks,
     lines: &[(Uuid, i32, &str)],
 ) -> Result<HashMap<Uuid, Product>, AppError> {
-    let ordered = locks.in_lock_order(lines.to_vec(), |(product_id, _, _)| *product_id)?;
+    let ordered = locks.rows_in_lock_order(lines.to_vec(), |(product_id, _, _)| *product_id)?;
 
-    for (product_id, quantity, _) in &ordered {
-        let row = locks.row(*product_id).ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("product {product_id} was covered by ProductLocks"))
-        })?;
+    for (row, (_, quantity, _)) in &ordered {
         row.ensure_line_quantity(*quantity)?;
     }
 
     let mut reserved = HashMap::with_capacity(ordered.len());
-    for (product_id, quantity, name) in ordered {
+    for (_, (product_id, quantity, name)) in ordered {
         let product = repository::try_decrement_stock_tx(tx, product_id, quantity)
             .await?
             .ok_or_else(|| AppError::Conflict(format!("insufficient stock for product {name}")))?;
@@ -451,6 +465,17 @@ mod tests {
             .in_lock_order(vec![high, low], |id| *id)
             .expect("subset is covered");
         assert_eq!(ordered, vec![low, high]);
+    }
+
+    #[test]
+    fn rows_in_lock_order_pairs_each_item_with_its_locked_row() {
+        let (low, mid, high) = ids();
+        let locks = locks_over(&[low, mid, high]);
+        let pairs = locks
+            .rows_in_lock_order(vec![(high, "h"), (low, "l")], |(id, _)| *id)
+            .expect("all covered");
+        let got: Vec<(Uuid, (Uuid, &str))> = pairs.into_iter().map(|(row, item)| (row.id, item)).collect();
+        assert_eq!(got, vec![(low, (low, "l")), (high, (high, "h"))]);
     }
 
     #[test]

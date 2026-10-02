@@ -3,6 +3,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::error::AppError;
+use crate::modules::products::model::MAX_LINE_QUANTITY;
 
 use super::model::{CartItemJoined, LineTarget, checked_line_subtotal};
 
@@ -67,12 +68,12 @@ pub struct AddCartItemRequest {
     /// which returns `AppError::Validation` for any other value.
     pub item_type: String,
     pub item_id: Uuid,
-    #[validate(range(min = 1, max = 999))]
+    #[validate(range(min = 1, max = MAX_LINE_QUANTITY))]
     pub quantity: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateCartItemRequest {
-    #[validate(range(min = 1, max = 999))]
+    #[validate(range(min = 1, max = MAX_LINE_QUANTITY))]
     pub quantity: i32,
 }
