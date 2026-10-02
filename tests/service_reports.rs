@@ -1843,6 +1843,9 @@ async fn points_tier_matches_sql_tier_distribution_case(db: PgPool) {
 /// today-session with no attendance recorded and one pending leave request.
 #[sqlx::test]
 async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
+    // One clock sample for the whole test: no midnight race between "today"
+    // as seeded and "today" as the readers see it.
+    let now = Utc::now();
     let coach_user = seed_member(&db, "delisted-coach@example.com", "Password!234").await;
     let coach_id = seed_coach(&db, coach_user, "Delisted Scope Coach").await;
     let course_x = seed_course(&db, "Delisted Scope X", Some(coach_id)).await;
@@ -1853,16 +1856,25 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     let s3 = seed_member(&db, "delisted-s3@example.com", "Password!234").await;
     let s4 = seed_member(&db, "delisted-s4@example.com", "Password!234").await;
 
-    seed_enrolment(&db, s1, course_x, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(&db, s1, course_x, EnrolmentStatus::Active, now).await;
     let enrolment_s2_y =
-        seed_enrolment(&db, s2, course_y, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, s3, course_x, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, s3, course_y, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, s4, course_y, EnrolmentStatus::Cancelled, Utc::now()).await;
+        seed_enrolment(&db, s2, course_y, EnrolmentStatus::Active, now).await;
+    seed_enrolment(&db, s3, course_x, EnrolmentStatus::Active, now).await;
+    let enrolment_s3_y =
+        seed_enrolment(&db, s3, course_y, EnrolmentStatus::Active, now).await;
+    seed_enrolment(&db, s4, course_y, EnrolmentStatus::Cancelled, now).await;
 
-    let today = Utc::now().date_naive();
+    let today = now.date_naive();
     let session_y_today = seed_course_session(&db, course_y, today, t(9, 0), t(10, 0)).await;
     seed_leave_request(&db, enrolment_s2_y, session_y_today, LeaveStatus::Pending).await;
+
+    // Y's attendance within the 30-day window (yesterday): s2 present, s3
+    // absent -> 0.5. Plus a paid order on Y worth 5000 cents.
+    let session_y_yesterday =
+        seed_course_session(&db, course_y, today - Duration::days(1), t(9, 0), t(10, 0)).await;
+    seed_attendance(&db, session_y_yesterday, enrolment_s2_y, AttendanceStatus::Present, s2).await;
+    seed_attendance(&db, session_y_yesterday, enrolment_s3_y, AttendanceStatus::Absent, s3).await;
+    seed_course_revenue(&db, s1, course_y, 5_000, OrderStatus::Paid, Some(now)).await;
 
     // Y is delisted only after its roster/session/leave request are all in
     // place — delisting must not retroactively erase any of this.
@@ -1892,7 +1904,7 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
 
     // GET /reports/coach — student_count/today_sessions/pending_attendance
     // all count Y.
-    let coach_report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
+    let coach_report = service::coach_report(&db, common::studio_now_utc(now), &auth)
         .await
         .expect("coach_report");
     assert_eq!(coach_report.student_count, 3);
@@ -1901,10 +1913,15 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
         coach_report.pending_attendance, 1,
         "Y's today session is unmarked"
     );
+    assert_eq!(
+        coach_report.attendance_rate_30d,
+        Some(0.5),
+        "Y's present/absent marks must count toward the coach's 30-day rate"
+    );
 
     // GET /sessions/today as this coach — Y's today session still surfaces.
     let today_sessions =
-        sessions_service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
+        sessions_service::today_sessions(&db, common::studio_now_utc(now), &auth)
             .await
             .expect("today_sessions");
     assert_eq!(
@@ -1917,7 +1934,7 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     );
 
     // GET /reports/admin — coaches[A] also counts Y.
-    let admin_report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
+    let admin_report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
     let coach_row = admin_report
@@ -1927,6 +1944,8 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
         .expect("coach A row");
     assert_eq!(coach_row.course_count, 2);
     assert_eq!(coach_row.student_count, 3);
+    assert_eq!(coach_row.attendance_rate, Some(0.5));
+    assert_eq!(coach_row.revenue_cents_12m, 5_000);
 
     // GET /leave-requests as this coach — Y's pending leave request still
     // surfaces.
