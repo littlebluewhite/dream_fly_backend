@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::modules::bookings::model::VENUE_REVENUE_STATUSES;
+use crate::modules::coaches::service::CoachScope;
 use crate::modules::contact::model::InquiryType;
 use crate::modules::orders::model::REVENUE_STATUSES;
 use crate::modules::sessions::calendar::{MaterializedDay, MaterializedRange};
@@ -647,12 +648,12 @@ pub async fn coach_today_and_pending(
     .await
 }
 
-/// `(present_count, absent_count)` across `coach_id`'s courses' sessions in
+/// `(present_count, absent_count)` across the coach `scope`'s courses' sessions in
 /// `[from, to]`. `leave` rows are never selected into either bucket — the
 /// brief's "leave 不入分母" rule.
 pub async fn coach_attendance_in_range(
     db: &PgPool,
-    coach_id: Uuid,
+    scope: &CoachScope,
     from: NaiveDate,
     to: NaiveDate,
 ) -> Result<(i64, i64), sqlx::Error> {
@@ -661,10 +662,9 @@ pub async fn coach_attendance_in_range(
                 COUNT(*) FILTER (WHERE NOT ca.is_present) \
          FROM countable_attendance ca \
          JOIN course_sessions cs ON cs.id = ca.session_id \
-         JOIN courses c ON c.id = cs.course_id \
-         WHERE c.coach_id = $1 AND cs.session_date BETWEEN $2 AND $3",
+         WHERE cs.course_id = ANY($1) AND cs.session_date BETWEEN $2 AND $3",
     )
-    .bind(coach_id)
+    .bind(scope.course_ids())
     .bind(from)
     .bind(to)
     .fetch_one(db)

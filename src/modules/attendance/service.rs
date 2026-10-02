@@ -92,8 +92,8 @@ pub async fn bulk_upsert_attendance(
 /// the `coach` role but no `coaches` row — mirrors `sessions::today_sessions`'s
 /// convention for that same data anomaly.
 pub async fn my_students(db: &PgPool, auth: &AuthUser) -> Result<Vec<MyStudentResponse>, AppError> {
-    let students = match coaches_service::resolve(db, auth).await? {
-        Some(coach) => repository::find_my_students(db, coach.id).await?,
+    let students = match coaches_service::resolve_scope(db, auth).await? {
+        Some(scope) => repository::find_my_students(db, &scope).await?,
         None => Vec::new(),
     };
     Ok(students.into_iter().map(MyStudentResponse::from).collect())

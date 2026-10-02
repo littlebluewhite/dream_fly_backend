@@ -57,3 +57,16 @@ find_course_ids_by_coach`、`reports::repository::coach_today_and_pending`/`coac
 - 六個讀取端的一致性由跨面交叉測試錨定(`tests/service_reports.rs::
   coach_scope_includes_delisted_courses_on_every_surface`),不是靠共用 view/片段——任何一處日後不小心加回
   `is_active` 過濾,這條測試會立刻紅。
+
+## 增補(2026-10,BE-8):Rust 解析的集合延伸 2c6017c
+
+`2c6017c` 讓 `coach_today_and_pending` 改綁 `day.course_ids()`(`find_course_ids_by_coach` 的結果)。本次把同一手法
+推廣到全部教練身分讀取端:`coaches::service::resolve_scope` 一次解析出 `CoachScope { coach_id, course_ids }`
+(欄位私有),`find_my_students`、`coach_attendance_in_range`、請假 admin 列表 filter、`today_sessions` 教練分支、
+`coach_report` 一律收 `&CoachScope` 並綁 `= ANY($n)`;`find_course_ids_by_coach` 從 `sessions` 搬到 `coaches`,成為唯一
+寫 `coach_id = $1` 的語句。
+
+這**不是**推翻「落選方案」:否決的是「view / 共用 SQL 片段」(六個站點謂詞形狀不同、間接層換來的是表面一致);這裡
+是在 Rust 解析一次、把集合當參數傳入,沒有新增 view 或 SQL 片段。admin `reports::coach_reports`(逐教練相關子查詢)、
+證書關係 gate、請假 admin 分支不動。行為零變更(已下架課程仍在範圍內),由擴充後的跨面測試錨定
+(新增 `attendance_rate_30d`、admin `attendance_rate`、`revenue_cents_12m` 斷言)。

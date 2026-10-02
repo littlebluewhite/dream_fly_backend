@@ -124,24 +124,23 @@ pub async fn coach_report(
 ) -> Result<CoachReportResponse, AppError> {
     let StudioNow { tz, now } = at;
 
-    let coach = coaches_service::resolve(db, auth)
+    let scope = coaches_service::resolve_scope(db, auth)
         .await?
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
     let today = studio_clock::today(tz, now);
-    let course_ids = sessions_repository::find_course_ids_by_coach(db, coach.id).await?;
-    let day = calendar::materialize_today(db, &course_ids, today).await?;
+    let day = calendar::materialize_today(db, scope.course_ids(), today).await?;
 
     let (today_sessions, pending_attendance) =
         repository::coach_today_and_pending(db, &day).await?;
     let unread_messages = messages_repository::count_unread_for_user(db, auth.user_id).await?;
-    let student_count = attendance_repository::find_my_students(db, coach.id)
+    let student_count = attendance_repository::find_my_students(db, &scope)
         .await?
         .len() as i64;
 
     let window_from = today - Duration::days(COACH_ATTENDANCE_WINDOW_DAYS);
     let (present, absent) =
-        repository::coach_attendance_in_range(db, coach.id, window_from, today).await?;
+        repository::coach_attendance_in_range(db, &scope, window_from, today).await?;
 
     Ok(CoachReportResponse {
         today_sessions,

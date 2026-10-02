@@ -40,6 +40,38 @@ pub async fn resolve(
     Ok(repository::find_by_user_id(db, auth.user_id).await?)
 }
 
+/// 教練範圍(CONTEXT「教練範圍」、ADR-0012):呼叫者名下**全部**課程 id,不論
+/// `is_active`。由 [`resolve_scope`] 一次解析,讀取端只收 `&CoachScope` 並綁
+/// `= ANY($n)`,不再各自重述 `coach_id = $1`。欄位私有:唯一建構點是
+/// `resolve_scope`。
+pub struct CoachScope {
+    coach_id: Uuid,
+    course_ids: Vec<Uuid>,
+}
+
+impl CoachScope {
+    pub fn coach_id(&self) -> Uuid {
+        self.coach_id
+    }
+
+    pub fn course_ids(&self) -> &[Uuid] {
+        &self.course_ids
+    }
+}
+
+/// 解析呼叫者的教練範圍。None = 呼叫者沒有教練 profile(三態政策仍由呼叫端
+/// 決定,同 [`resolve`])。
+pub async fn resolve_scope(
+    db: &PgPool,
+    auth: &AuthUser,
+) -> Result<Option<CoachScope>, AppError> {
+    let Some(coach) = resolve(db, auth).await? else {
+        return Ok(None);
+    };
+    let course_ids = repository::find_course_ids_by_coach(db, coach.id).await?;
+    Ok(Some(CoachScope { coach_id: coach.id, course_ids }))
+}
+
 /// 課程教練所有權 gate:admin 直接放行;否則呼叫者必須是 course_coach_id 指到
 /// 的那個教練,不是則 403(文案由呼叫端傳入,參數化以保各站點 byte-identical)。
 pub async fn require_course_coach(

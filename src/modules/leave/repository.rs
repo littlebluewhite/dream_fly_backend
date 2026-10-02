@@ -1,6 +1,8 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use crate::modules::coaches::service::CoachScope;
+
 use super::model::{
     AdminLeaveRequestRow, LeaveDecisionContext, LeaveRequest, LeaveRequestForMakeup,
     LeaveRequestOwnerRow, LeaveRequestView, LeaveStatus, SessionContext,
@@ -22,11 +24,11 @@ const VIEW_JOINS: &str = "JOIN enrolments e ON e.id = lr.enrolment_id JOIN cours
 /// The coach/admin list's filter clause — single owner shared by
 /// [`find_admin_list`] and [`count_admin_list`] so `total` always counts the
 /// exact row set the page is cut from. Binds `$1` status, `$2` course_id,
-/// `$3` coach scope (each `NULL` = no restriction); assumes `lr` and `c`
+/// `$3` coach scope course ids (each `NULL` = no restriction); assumes `lr` and `c`
 /// (the enrolment's course) in scope.
 const ADMIN_LIST_FILTER: &str = "WHERE ($1 IS NULL OR lr.status = $1) \
     AND ($2::uuid IS NULL OR c.id = $2) \
-    AND ($3::uuid IS NULL OR c.coach_id = $3)";
+    AND ($3::uuid[] IS NULL OR c.id = ANY($3))";
 
 /// `course_sessions` JOINed with its course's `name` — used by
 /// `POST /leave-requests` (plain pool read). The makeup endpoint reads its
@@ -171,13 +173,13 @@ pub async fn cancel_pending_for_enrolments_tx(
 }
 
 /// Coach/admin list — optional `status`/`course_id` filters, plus an
-/// optional `coach_scope` (the caller's own `coaches.id`; `None` = no
+/// optional `coach_scope` (the caller's [`CoachScope`]; `None` = no
 /// restriction, i.e. admin sees every course's leave requests).
 pub async fn find_admin_list(
     db: &PgPool,
     status_filter: Option<LeaveStatus>,
     course_id_filter: Option<Uuid>,
-    coach_scope: Option<Uuid>,
+    coach_scope: Option<&CoachScope>,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<AdminLeaveRequestRow>, sqlx::Error> {
@@ -192,7 +194,7 @@ pub async fn find_admin_list(
     )))
     .bind(status_filter)
     .bind(course_id_filter)
-    .bind(coach_scope)
+    .bind(coach_scope.map(CoachScope::course_ids))
     .bind(limit as i64)
     .bind(offset as i64)
     .fetch_all(db)
@@ -205,7 +207,7 @@ pub async fn count_admin_list(
     db: &PgPool,
     status_filter: Option<LeaveStatus>,
     course_id_filter: Option<Uuid>,
-    coach_scope: Option<Uuid>,
+    coach_scope: Option<&CoachScope>,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
         "SELECT COUNT(*) \
@@ -216,7 +218,7 @@ pub async fn count_admin_list(
     )))
     .bind(status_filter)
     .bind(course_id_filter)
-    .bind(coach_scope)
+    .bind(coach_scope.map(CoachScope::course_ids))
     .fetch_one(db)
     .await
 }

@@ -48,6 +48,16 @@ pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, s
     .await
 }
 
+/// Course ids owned by a coach, 不論 `is_active`(ADR-0012)——全站唯一寫
+/// `courses.coach_id = $1` 的教練範圍語句;讀取端經
+/// `service::resolve_scope` 取得後一律綁 `= ANY($n)`。
+pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM courses WHERE coach_id = $1")
+        .bind(coach_id)
+        .fetch_all(db)
+        .await
+}
+
 pub async fn find_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Option<Coach>, sqlx::Error> {
     sqlx::query_as::<_, Coach>(
         "SELECT c.id, c.user_id, u.name, c.title, c.bio, c.experience, c.specialties, \

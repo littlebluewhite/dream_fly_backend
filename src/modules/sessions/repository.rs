@@ -30,15 +30,6 @@ pub async fn find_all_course_ids(db: &PgPool) -> Result<Vec<Uuid>, sqlx::Error> 
     sqlx::query_scalar::<_, Uuid>("SELECT id FROM courses").fetch_all(db).await
 }
 
-/// Course ids owned by a given coach — the materialize/query scope for a
-/// coach's own `GET /sessions/today`.
-pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM courses WHERE coach_id = $1")
-        .bind(coach_id)
-        .fetch_all(db)
-        .await
-}
-
 /// `coach_name` JOINs the same way as `find_my_weekly_schedule` (courses ->
 /// coaches -> users, LEFT so a coachless course still yields a row).
 /// `venue` is the session's own snapshot (`course_sessions.venue`, written

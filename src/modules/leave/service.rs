@@ -127,11 +127,11 @@ pub async fn list_leave_requests(
 
     let limit = pagination.limit();
 
-    let coach_scope: Option<Uuid> = if auth.is_admin() {
+    let coach_scope = if auth.is_admin() {
         None
     } else {
-        match coaches_service::resolve(db, auth).await? {
-            Some(coach) => Some(coach.id),
+        match coaches_service::resolve_scope(db, auth).await? {
+            Some(scope) => Some(scope),
             None => {
                 return Ok(LeaveRequestListResponse {
                     leave_requests: Vec::new(),
@@ -142,12 +142,12 @@ pub async fn list_leave_requests(
     };
 
     let total =
-        repository::count_admin_list(db, status_filter, query.course_id, coach_scope).await?;
+        repository::count_admin_list(db, status_filter, query.course_id, coach_scope.as_ref()).await?;
     let rows = repository::find_admin_list(
         db,
         status_filter,
         query.course_id,
-        coach_scope,
+        coach_scope.as_ref(),
         limit,
         pagination.offset(),
     )

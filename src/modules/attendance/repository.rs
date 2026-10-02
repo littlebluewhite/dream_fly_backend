@@ -1,6 +1,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::modules::coaches::service::CoachScope;
+
 use super::model::{MyStudentRow, RosterRow, SessionCourseRow};
 
 /// A session's course id + that course's assigned coach id (may be `None`
@@ -53,7 +55,7 @@ pub async fn find_roster(
 /// 的 `student_count` 直接取 `.len()`,不再另維護一支 COUNT 攣生查詢。
 pub async fn find_my_students(
     db: &PgPool,
-    coach_id: Uuid,
+    scope: &CoachScope,
 ) -> Result<Vec<MyStudentRow>, sqlx::Error> {
     sqlx::query_as::<_, MyStudentRow>(
         "SELECT u.id AS user_id, u.name, u.phone, \
@@ -63,11 +65,11 @@ pub async fn find_my_students(
          FROM active_enrolments e \
          JOIN courses c ON c.id = e.course_id \
          JOIN users u ON u.id = e.user_id \
-         WHERE c.coach_id = $1 \
+         WHERE c.id = ANY($1) \
          GROUP BY u.id, u.name, u.phone \
          ORDER BY u.name, u.id",
     )
-    .bind(coach_id)
+    .bind(scope.course_ids())
     .fetch_all(db)
     .await
 }

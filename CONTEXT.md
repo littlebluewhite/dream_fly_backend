@@ -21,13 +21,7 @@ _Avoid_: 把這條關係 gate 與單課 gate `require_course_coach` 混同
 
 **教練範圍(Coach Scope)**:
 「教練名下的課程/學員」= `courses.coach_id` 指向該教練的**全部**課程,不論 `is_active`;範圍下的學員 = 這些
-課程 `active_enrolments` 去重後的 distinct 使用者集合。七個讀取端(`GET /coaches/me/students`、
-`GET /reports/coach` 的 `student_count`/`today_sessions`/`pending_attendance`、`GET /reports/admin` 的
-`coaches[].course_count`/`student_count`、教練身分呼叫 `GET /leave-requests`、教練身分呼叫
-`GET /sessions/today`(`sessions::service::today_sessions`))一律同一口徑,由跨面交叉測試
-(`tests/service_reports.rs::coach_scope_includes_delisted_courses_on_every_surface`)錨定,不靠共用 view/SQL
-片段(`/reports/coach` 的 `today_sessions`/`pending_attendance` 與 `/sessions/today` 例外地共用同一份範圍:
-兩者都綁 `materialize_today` 回傳的 `MaterializedDay::course_ids()`,即 `find_course_ids_by_coach` 的結果)——`attendance::repository` 曾在其中兩處多帶 `AND c.is_active = true`,是漂移點,已刪(ADR-0012)。與「課
+課程 `active_enrolments` 去重後的 distinct 使用者集合。七個讀取端(`GET /coaches/me/students`、`GET /reports/coach` 的 `student_count`/`today_sessions`/`pending_attendance`/`attendance_rate_30d`、`GET /reports/admin` 的 `coaches[].course_count`/`student_count`、教練身分呼叫 `GET /leave-requests`、教練身分呼叫 `GET /sessions/today`(`sessions::service::today_sessions`))一律同一口徑,由跨面交叉測試(`tests/service_reports.rs::coach_scope_includes_delisted_courses_on_every_surface`,另錨定 `attendance_rate_30d`、admin `coaches[].attendance_rate`/`revenue_cents_12m`)錨定,不靠共用 view/SQL 片段。**Rust 一次解析**:`coaches::service::resolve_scope(db, auth) -> Option<CoachScope>`(欄位私有,唯一建構點;`coaches::repository::find_course_ids_by_coach` 是全站唯一寫 `courses.coach_id = $1` 的語句)把名下課程 id 集合解析一次,教練身分的讀取端——`attendance::find_my_students`、`reports::coach_attendance_in_range`、`leave` admin 列表 filter(`$3::uuid[] IS NULL OR c.id = ANY($3)`)、`sessions::today_sessions` 教練分支、`reports::coach_report`(解析一次傳到底,`materialize_today` 與其餘讀取共用同一份)——只收 `&CoachScope` 並綁 `= ANY($n)`。admin 側 `reports::coach_reports`(以 `co.id` 逐教練的相關子查詢)、證書關係 gate、請假 admin 分支不在此列。`attendance::repository` 曾在其中兩處多帶 `AND c.is_active = true`,是漂移點,已刪(ADR-0012)。與「課
 程教練所有權」不同維度(那是單資源 403 gate,這裡是名下範圍列表);與「上架可見性」也不同維度(下架只影響
 訪客/會員瀏覽端看不看得到、買不買得到,不影響教練自己或 admin 代管視角看到的範圍)。
 _Avoid_: 把某堂課下架當成把它從教練名下移除的手段(要移除得取消報名或改派 `courses.coach_id`);替單一讀取

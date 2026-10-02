@@ -93,8 +93,8 @@ pub async fn today_sessions(
     let course_ids = if auth.is_admin() {
         repository::find_all_course_ids(db).await?
     } else {
-        match coaches_service::resolve(db, auth).await? {
-            Some(coach) => repository::find_course_ids_by_coach(db, coach.id).await?,
+        match coaches_service::resolve_scope(db, auth).await? {
+            Some(scope) => scope.course_ids().to_vec(),
             None => Vec::new(),
         }
     };
