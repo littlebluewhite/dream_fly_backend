@@ -58,6 +58,16 @@
 //! each walks its lines via the witness's `in_lock_order` — which is also why
 //! a multi-line 409 names the line with the smallest id. A line the witness
 //! doesn't cover is `AppError::Internal`, not a silent unlocked write.
+//! `ProductLocks` also carries the rows read under the lock (`SELECT *`), so
+//! `reserve_stock_tx` judges every line's quantity
+//! (`Product::ensure_line_quantity`) before its first decrement without a
+//! second read — no new lock, no new edge.
+//!
+//! Cart add (`cart::service::add_product_item`) runs its upsert in a
+//! transaction so the merged quantity can be judged before commit. It is
+//! one statement — the `cart_items` row (or unique-index slot) plus the FK
+//! `FOR KEY SHARE` on `users`/`products` that the plain upsert always took —
+//! so it adds no edge to the graph above either.
 //!
 //! Refund/cancel compensation runs the refund half, [`acquire_refund_locks`]
 //! → [`RefundLocks`]: users (`FOR UPDATE`, `lock_balance_tx`) → the products

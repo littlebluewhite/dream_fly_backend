@@ -115,10 +115,13 @@ pub struct Order {
 }
 
 /// `order_items` row. Exactly one of `product_id`/`course_id` is set,
-/// matching `item_type` (enforced by the `order_items_one_target` CHECK) —
-/// mirrors `cart::model::CartItem`'s product/course dual-target shape, and
-/// reuses the same `cart_item_type` Postgres enum since an order line is
-/// just a cart line's frozen snapshot at checkout time.
+/// matching `item_type` (enforced by the `order_items_one_target` CHECK).
+/// Unlike `cart::model::CartItem` — which decodes that union once into a
+/// flattened `target: LineTarget` — this row keeps the raw three columns,
+/// copied field-for-field into `OrderItemResponse`, whose wire shape is
+/// those same three fields. It reuses the same `cart_item_type` Postgres
+/// enum since an order line is just a cart line's frozen snapshot at
+/// checkout time.
 #[derive(Debug, sqlx::FromRow, Serialize)]
 pub struct OrderItem {
     pub id: Uuid,

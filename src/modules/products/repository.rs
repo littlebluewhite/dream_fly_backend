@@ -137,15 +137,15 @@ pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Product>,
 }
 
 /// `FOR NO KEY UPDATE` on the given rows in ascending `id` order; returns
-/// the locked ids in that order (deduplicated — one row per id). Called only
-/// via `service::lock_products_tx`, which wraps the result in its
+/// the locked rows in that order (deduplicated — one row per id). Called
+/// only via `service::lock_products_tx`, which wraps the result in its
 /// `ProductLocks` witness.
 pub async fn lock_products_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ids: &[Uuid],
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM products WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE",
+) -> Result<Vec<Product>, sqlx::Error> {
+    sqlx::query_as::<_, Product>(
+        "SELECT * FROM products WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE",
     )
     .bind(ids)
     .fetch_all(&mut **tx)

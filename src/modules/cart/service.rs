@@ -36,19 +36,23 @@ async fn add_product_item(
     product_id: Uuid,
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
+    // The increment's own range, so a bad request is 400 before the
+    // product lookup's 404.
     CartItemType::Product.validate_quantity(quantity)?;
 
-    // Verify product exists and is active
     let product = crate::modules::products::repository::find_by_id(db, product_id)
         .await?
         .ok_or_else(|| AppError::NotFound("product not found".into()))?;
 
-    // `quantity` here is this add's increment, not the cart's final total —
-    // see `Product::ensure_purchasable`'s doc comment for the boundary with
-    // `reserve_stock_tx`.
-    product.ensure_purchasable(quantity)?;
-
-    repository::add_product_item(db, user_id, product_id, quantity).await?;
+    // Merge first, then judge the merged line (active, line quantity,
+    // stock — `Product::ensure_purchasable`); a rejection drops the tx,
+    // rolling the merge back. The upsert's row lock serializes concurrent
+    // adds to the same line, so two adds can't each pass against the
+    // pre-merge quantity.
+    let mut tx = db.begin().await?;
+    let merged = repository::add_product_item_tx(&mut tx, user_id, product_id, quantity).await?;
+    product.ensure_purchasable(merged.quantity)?;
+    tx.commit().await?;
 
     get_cart(db, user_id).await
 }
@@ -85,12 +89,13 @@ pub async fn update_quantity(
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
     // Wire-compat guard — kept in place ahead of the item lookup, not
-    // deferred into `CartItemType::validate_quantity` below. The *semantic*
-    // owner of this `1..=999` range is still `validate_quantity`'s `Product`
-    // branch; this inline copy exists only to preserve error-code priority
-    // (codex r2). Moving it entirely after the lookup would change observable
-    // behavior: "qty out of range + item doesn't exist" would flip 400->404,
-    // and "course qty outside 1..=999" would flip 400->422.
+    // deferred into `CartItemType::validate_quantity` below. A product
+    // line's legal quantity is owned by `Product::ensure_line_quantity`
+    // (reached via `ensure_purchasable` below); this inline copy exists
+    // only to preserve error-code priority (codex r2). Moving it entirely
+    // after the lookup would change observable behavior: "qty out of range
+    // + item doesn't exist" would flip 400->404, and "course qty outside
+    // 1..=999" would flip 400->422.
     if !(1..=999).contains(&quantity) {
         return Err(AppError::BadRequest(
             "quantity must be between 1 and 999".into(),
@@ -106,18 +111,11 @@ pub async fn update_quantity(
             CartItemType::Course.validate_quantity(quantity)?;
         }
         LineTarget::Product(product_id) => {
-            // Always `Ok` here — the inline 1..=999 guard above already
-            // rejected out-of-range input — but this is still the semantic
-            // owner's call site (`validate_quantity`'s `Product` arm).
-            // Deliberately kept, not simplified away: removing it would
-            // break the symmetry with the `Course` arm above.
-            CartItemType::Product.validate_quantity(quantity)?;
-
-            // Re-check product active + stock on quantity updates; without
-            // this, a user could ratchet a cart item past the available
-            // stock after a restock/inactivation. `quantity` here is the
-            // item's final value — see `Product::ensure_purchasable`'s doc
-            // comment for the boundary with `reserve_stock_tx`.
+            // Re-check the product on quantity updates (active, line
+            // quantity incl. the time-based rule, stock); without this, a
+            // user could ratchet a cart item past the available stock after
+            // a restock/inactivation. `quantity` is the item's final value,
+            // the same thing `add_product_item` judges after its merge.
             let product = crate::modules::products::repository::find_by_id(db, product_id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("product not found".into()))?;

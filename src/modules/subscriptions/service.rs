@@ -18,6 +18,10 @@ use super::repository;
 /// that module's doc for the four cases. This function is just: call it,
 /// then write the one `repository::insert_tx` row.
 ///
+/// `quantity` must already have passed `Product::ensure_line_quantity`
+/// (checkout's `products::service::reserve_stock_tx` runs it) — `plan`'s
+/// precondition.
+///
 /// `price_cents` is the unit price paid and is stored as given. `now` is
 /// the caller-sampled clock (checkout's own `now`), threaded through so
 /// `entitlement::plan` never reads the wall clock itself.
@@ -30,7 +34,7 @@ pub async fn grant_from_purchase_tx(
     order_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<Option<Subscription>, AppError> {
-    let Some(grant) = entitlement::plan(product, quantity, now)? else {
+    let Some(grant) = entitlement::plan(product, quantity, now) else {
         return Ok(None);
     };
 

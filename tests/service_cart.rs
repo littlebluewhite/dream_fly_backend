@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::fixtures::seed_course;
+use common::fixtures::{seed_course, seed_entitlement_product};
 use common::{seed_member, seed_product};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -18,6 +18,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::cart::model::LineTarget;
 use dream_fly_backend::modules::cart::service;
 use dream_fly_backend::modules::points::service as points_service;
+use dream_fly_backend::modules::products::model::ProductType;
 
 #[sqlx::test]
 async fn add_item_first_time_creates_cart_item(db: PgPool) {
@@ -71,27 +72,93 @@ async fn add_item_rejects_quantity_above_stock(db: PgPool) {
     );
 }
 
-// Characterization test (Task 7): locks in the *intentional* gap between
-// `add_item`'s per-request increment check and the cart's accumulated
-// total. `add_item` validates only the increment being added on each call
-// (the repository accumulates via `ON CONFLICT DO UPDATE SET quantity =
-// cart_items.quantity + $3`), so two additions that each individually clear
-// the stock check can still push the cart's total past `stock`. This is not
-// a bug to fix here — the authoritative decrement is
-// `products::service::reserve_stock_tx` at checkout — this test exists so
-// the gap is executable documentation instead of a comment someone could
-// silently invalidate.
+// Contract §3.8: repeat adds accumulate, and the *merged* quantity is what
+// `Product::ensure_purchasable` judges — two adds that each clear the stock
+// check on their own can no longer push the cart line past `stock`. A
+// rejected add rolls back, so the line keeps its pre-add quantity. (This
+// test replaces `add_item_repeated_can_accumulate_past_stock_by_design`.)
 #[sqlx::test]
-async fn add_item_repeated_can_accumulate_past_stock_by_design(db: PgPool) {
+async fn add_item_merged_quantity_past_stock_is_409_and_cart_unchanged(db: PgPool) {
     let user = seed_member(&db, "c11@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-11", 500, Some(3)).await;
 
     let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
     assert_eq!(cart.items[0].quantity, 2);
 
-    let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
+    let err = service::add_item(&db, user, "product", product, 2).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::Conflict(ref m) if m == "insufficient stock: only 3 available"),
+        "got {err:?}"
+    );
+
+    let cart = service::get_cart(&db, user).await.unwrap();
     assert_eq!(cart.items.len(), 1);
-    assert_eq!(cart.items[0].quantity, 4, "cart total exceeds stock of 3 by design");
+    assert_eq!(cart.items[0].quantity, 2, "rejected add must not change the line");
+}
+
+// Two concurrent adds to the same line: the upsert's row lock (or, for the
+// very first insert, the unique index) makes the second wait for the first
+// to commit, so it judges the merged total — exactly one add fits in stock.
+#[sqlx::test]
+async fn concurrent_add_item_same_line_only_one_fits_in_stock(db: PgPool) {
+    let user = seed_member(&db, "c16@example.com", "Password!234").await;
+    let product = seed_product(&db, "prod-16", 500, Some(3)).await;
+
+    let (a, b) = tokio::join!(
+        service::add_item(&db, user, "product", product, 2),
+        service::add_item(&db, user, "product", product, 2),
+    );
+
+    let results = [a, b];
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "got {results:?}");
+    assert!(
+        results
+            .iter()
+            .any(|r| matches!(r, Err(AppError::Conflict(m)) if m.contains("insufficient stock"))),
+        "got {results:?}"
+    );
+    let cart = service::get_cart(&db, user).await.unwrap();
+    assert_eq!(cart.items[0].quantity, 2);
+}
+
+#[sqlx::test]
+async fn add_item_merged_quantity_past_999_is_400_and_cart_unchanged(db: PgPool) {
+    let user = seed_member(&db, "c13@example.com", "Password!234").await;
+    let product = seed_product(&db, "prod-13", 500, None).await;
+
+    service::add_item(&db, user, "product", product, 999).await.unwrap();
+    let err = service::add_item(&db, user, "product", product, 1).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+        "got {err:?}"
+    );
+
+    let cart = service::get_cart(&db, user).await.unwrap();
+    assert_eq!(cart.items[0].quantity, 999, "rejected add must not change the line");
+}
+
+#[sqlx::test]
+async fn add_item_time_based_entitlement_twice_is_422_and_cart_unchanged(db: PgPool) {
+    let user = seed_member(&db, "c14@example.com", "Password!234").await;
+    let membership = seed_entitlement_product(
+        &db,
+        "prod-14-monthly",
+        ProductType::Membership,
+        5000,
+        Some(30),
+        None,
+    )
+    .await;
+
+    service::add_item(&db, user, "product", membership, 1).await.unwrap();
+    let err = service::add_item(&db, user, "product", membership, 1).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "time-based subscription quantity must be 1"),
+        "got {err:?}"
+    );
+
+    let cart = service::get_cart(&db, user).await.unwrap();
+    assert_eq!(cart.items[0].quantity, 1, "rejected add must not change the line");
 }
 
 #[sqlx::test]
@@ -159,8 +226,8 @@ async fn update_quantity_changes_and_get_cart_reflects(db: PgPool) {
 }
 
 // Task 7: the update-quantity call site validates the item's *final*
-// quantity (unlike `add_item`'s increment check above) — this had zero
-// direct test coverage before this task.
+// quantity (the same rule `add_item` applies to its merged quantity) — this
+// had zero direct test coverage before this task.
 #[sqlx::test]
 async fn update_quantity_above_stock_returns_conflict(db: PgPool) {
     let user = seed_member(&db, "c12@example.com", "Password!234").await;
@@ -171,6 +238,31 @@ async fn update_quantity_above_stock_returns_conflict(db: PgPool) {
     let err = service::update_quantity(&db, user, item_id, 6).await.unwrap_err();
     assert!(
         matches!(err, AppError::Conflict(ref m) if m.contains("insufficient stock")),
+        "got {err:?}"
+    );
+}
+
+// The final quantity goes through the same `Product::ensure_purchasable`
+// as `add_item`'s merged quantity, so the time-based multiple rule applies
+// here too.
+#[sqlx::test]
+async fn update_quantity_time_based_entitlement_above_one_is_422(db: PgPool) {
+    let user = seed_member(&db, "c15@example.com", "Password!234").await;
+    let membership = seed_entitlement_product(
+        &db,
+        "prod-15-monthly",
+        ProductType::Membership,
+        5000,
+        Some(30),
+        None,
+    )
+    .await;
+    let cart = service::add_item(&db, user, "product", membership, 1).await.unwrap();
+    let item_id = cart.items[0].id;
+
+    let err = service::update_quantity(&db, user, item_id, 2).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "time-based subscription quantity must be 1"),
         "got {err:?}"
     );
 }

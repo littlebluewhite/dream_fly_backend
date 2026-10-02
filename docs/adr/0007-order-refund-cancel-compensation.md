@@ -692,3 +692,38 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 建構）；新增 `products::service::restock_lines_skips_course_lines`、
 `cart::model::line_target_decode_rejects_mismatched_columns`（CHECK 禁止的六種形狀都是
 `Decode` 錯誤）。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-10-03）：品項合法數量收歸 products；結帳優先序變更——數量 400/422 提前到 409 之前
+
+**行為變更**（Controller 裁決 3）。購物車「重複加入累加」維持不變（契約 §3.8 改成對齊程式），但
+「一個商品行可以放幾份」從此只有一個 owner：`products::model::Product`。
+
+- `Product::is_time_based_entitlement()`：`membership`/`ticket`、有 `valid_days`、沒有
+  `session_count`。`Product::ensure_line_quantity(q)`：`1..=999` 否則 400；時間制且 `q ≠ 1` 回 422。
+  `Product::ensure_purchasable(q)` = 下架 400 → `ensure_line_quantity` → 庫存 409。錯誤字串全部沿用。
+- 購物車加入：本次 quantity 的範圍 400 → 商品 404 → **交易內** upsert `RETURNING` 取得合併後數量 →
+  `ensure_purchasable(merged)`，不合法就 rollback（該筆維持原數量）。upsert 的列鎖（首次插入時是唯一
+  索引）讓同一行的並發加入排隊，後到者判斷的是先到者 commit 後的總數。修改數量判斷最終數量，同一支
+  `ensure_purchasable`，因此也多了時間制倍數規則。
+- 結帳：`lock_products_tx` 改 `SELECT * … FOR NO KEY UPDATE`，`ProductLocks` 帶回鎖下讀到的列；
+  `reserve_stock_tx` 在第一筆扣庫存**之前**，依鎖序對每個商品行跑 `ensure_line_quantity`；
+  `try_decrement_stock_tx` 仍是庫存權威。鎖序圖不變（同一把鎖、同一順序，只是多讀欄位）。
+- `subscriptions::entitlement::plan` 改為不可失敗（回 `Option`），「時間制數量必須是 1」降為
+  `debug_assert!` 前置條件；原本的單元測試搬到 `products::model`。
+
+**結帳錯誤優先序變更**（`checkout` doc 仍是唯一權威）：
+`… → 金額溢位 422 → 品項數量 400/422 → 庫存 409 → 課程 409`。原本時間制倍數的 422 在
+`grant_from_purchase_tx` 裡，排在庫存 409 與課程 409 之後——同一筆壞資料，購物車裡其他行的狀態
+不同，就會回不同的錯，而且等於「先試扣庫存、試佔座位，最後才發現這行本來就不能買」。數量是這一行
+自己的屬性，不依賴別人搶走多少庫存或座位，所以排在任何會被併發改變的檢查之前。購物車端已經擋下
+這兩種數量，結帳只會在規則上線前就放進購物車的舊列遇到它。
+
+**測試**：翻轉 `add_item_repeated_can_accumulate_past_stock_by_design` →
+`add_item_merged_quantity_past_stock_is_409_and_cart_unchanged`；新增
+`add_item_merged_quantity_past_999_is_400_and_cart_unchanged`、
+`add_item_time_based_entitlement_twice_is_422_and_cart_unchanged`、
+`update_quantity_time_based_entitlement_above_one_is_422`、
+`concurrent_add_item_same_line_only_one_fits_in_stock`；`…_is_422_after_course_409` 改名
+`checkout_time_based_entitlement_quantity_over_one_is_422_before_course_409`（(b) 由 409 翻成
+422）；新增 `checkout_time_based_entitlement_quantity_over_one_is_422_before_stock_409`、
+`checkout_legacy_line_quantity_over_999_is_400_before_stock_409`。本檔其餘敘述維持決策當下狀態。

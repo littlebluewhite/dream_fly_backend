@@ -88,13 +88,16 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 /// - Unknown/inactive/expired coupon: 422.
 /// - Subtotal overflow: 422 (`pricing::price`, which also does the coupon
 ///   clamp, points cap, total and points earned).
+/// - Illegal line quantity: 400 outside `1..=999`, 422 for a time-based
+///   entitlement (`valid_days` set, no `session_count`) at quantity ≠ 1 —
+///   `Product::ensure_line_quantity`, run by
+///   `products::service::reserve_stock_tx` over every product line (lock
+///   order, first failure wins) before its first decrement. The cart
+///   rejects both at add/update time; this catches lines carted before
+///   that rule.
 /// - Insufficient stock: 409 (`products::service::reserve_stock_tx`).
 /// - Full course / already enrolled: 409
 ///   (`enrolments::service::enrol_batch_from_purchase_tx`).
-/// - Time-based entitlement (`valid_days` set, no `session_count`) bought at
-///   quantity > 1: 422 (`subscriptions::entitlement::plan`, reached via
-///   `subscriptions::service::grant_from_purchase_tx` — a time-based grant
-///   can't be multiplied into one subscription row).
 /// - Idempotency unique violation: a concurrent same-key twin won — its
 ///   order is replayed (`idempotency::record`).
 ///
@@ -220,12 +223,13 @@ pub async fn checkout(
         intent.use_points,
     )?;
 
-    // Stock decrement — product lines only; fail fast on shortage.
-    // `products::service::reserve_stock_tx` walks the lines in the
+    // Line quantity check, then stock decrement — product lines only; fail
+    // fast. `products::service::reserve_stock_tx` walks the lines in the
     // `ProductLocks` witness's lock order (`in_lock_order`, ascending
-    // product_id — see `orders::locks`) and hands back every decremented row,
-    // each already locked by this transaction; the subscription grant
-    // below reuses those rows instead of re-reading them.
+    // product_id — see `orders::locks`), judges every line's quantity
+    // against its locked row before the first decrement, and hands back
+    // every decremented row, each already locked by this transaction; the
+    // subscription grant below reuses those rows instead of re-reading them.
     //
     // `fulfilment::plan` does the line-target split (product lines to
     // reserve, course ids to enrol) in one exhaustive match, replacing the
@@ -308,14 +312,14 @@ pub async fn checkout(
     // Subscriptions — product lines whose product_type is
     // entitlement-eligible. `grant_from_purchase_tx` itself returns
     // `Ok(None)` for non-eligible types, so every product line is
-    // simply offered to it. It does not itself validate quantity >= 1;
-    // cart quantity is enforced to 1..=999 at add-time, so that always
-    // holds by the time we get here. The row comes straight out of
-    // `reserved` (the `reserve_stock_tx` result above) instead of a
-    // fresh read — that transaction already holds this row's lock,
-    // and the fields `grant_from_purchase_tx` reads
-    // (product_type/session_count/valid_days) are untouched by the
-    // stock decrement.
+    // simply offered to it. It does not itself validate the quantity:
+    // `reserve_stock_tx` above already ran `Product::ensure_line_quantity`
+    // on every product line (`entitlement::plan`'s precondition). The row
+    // comes straight out of `reserved` (the `reserve_stock_tx` result
+    // above) instead of a fresh read — that transaction already holds this
+    // row's lock, and the fields `grant_from_purchase_tx` reads
+    // (product_type/session_count/valid_days) are untouched by the stock
+    // decrement.
     for p in &plan.products {
         let product = reserved.get(&p.product_id).ok_or_else(|| {
             AppError::Internal(anyhow::anyhow!("product line was reserved by reserve_stock_tx"))

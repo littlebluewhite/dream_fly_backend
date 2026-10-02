@@ -28,7 +28,7 @@ impl CartItemType {
     /// `LineTarget::item_type()` itself. What remains hand-written into SQL:
     ///
     /// SQL-literal sites, by function (each hard-codes `'product'`/`'course'`):
-    /// - `cart::repository::add_product_item` — `'product'::cart_item_type` on insert
+    /// - `cart::repository::add_product_item_tx` — `'product'::cart_item_type` on insert
     /// - `cart::repository::add_course_item` — `'course'::cart_item_type` on insert
     /// - `cart::repository::find_cart_items_for_checkout_tx` — ×4: the
     ///   `'product'`/`'course'` SELECT literal and the `item_type = '…'`
@@ -56,11 +56,13 @@ impl CartItemType {
         }
     }
 
-    /// Single owner of the per-type quantity rule: `Product` allows
-    /// `1..=999`, `Course` allows only `1`. Error variant/message are
-    /// unchanged from the call sites this replaces (`cart::service`'s
-    /// `add_product_item`, `add_course_item`, and the two post-lookup
-    /// branches of `update_quantity`).
+    /// The per-type quantity rule for the requested quantity, before any
+    /// row is looked up: `Product` allows `1..=999`, `Course` allows only
+    /// `1`. For a product this is only an early range guard (it keeps the
+    /// 400 ahead of the product lookup's 404); the owner of a product
+    /// line's legal quantity — range, the time-based entitlement rule, and
+    /// judged on the merged/final quantity — is
+    /// `products::model::Product::ensure_line_quantity`.
     ///
     /// `update_quantity`'s pre-lookup guard is a separate, deliberately
     /// duplicated inline check — see the comment there for why it isn't

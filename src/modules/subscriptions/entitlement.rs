@@ -6,14 +6,17 @@
 //! this and then the one `repository::insert_tx` write.
 //!
 //! These are the ADR-0003 Decision-section grant rules, moved here verbatim:
-//! - `product.product_type` not in {membership, ticket} → `Ok(None)`.
+//! - `product.product_type` not in {membership, ticket} → `None`.
 //! - `session_count` set → one row, `total_sessions = remaining_sessions =
 //!   session_count * quantity`. If `valid_days` is *also* set, `expires_at`
 //!   is populated too (both constraints apply — sessions still drive the
 //!   quota).
 //! - else `valid_days` set → `expires_at = now + valid_days`, no session
-//!   quota; `quantity` must be 1 (a time-based grant can't be multiplied
-//!   into one row), otherwise `AppError::Validation`.
+//!   quota. `quantity` must be 1 (a time-based grant can't be multiplied
+//!   into one row) — a precondition, not a check: the rule's owner is
+//!   `Product::ensure_line_quantity`, which checkout runs (inside
+//!   `products::service::reserve_stock_tx`) before any grant. `plan` only
+//!   `debug_assert`s it.
 //! - neither set → unlimited membership record (no expiry, no quota).
 //!
 //! `now` is the caller's sampled clock (checkout's own `now`) rather than a
@@ -28,7 +31,6 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::error::AppError;
 use crate::modules::products::model::{Product, ProductType};
 
 /// What a purchase entitles the buyer to: session quota, expiry, or both —
@@ -42,19 +44,24 @@ pub struct EntitlementGrant {
 }
 
 /// Compute the entitlement grant for `quantity` units of `product`, sampled
-/// at `now`. `Ok(None)` means `product` isn't entitlement-eligible at all
+/// at `now`. `None` means `product` isn't entitlement-eligible at all
 /// (not `membership`/`ticket`) — the caller writes no row. See the module
 /// doc for the four branches.
-pub fn plan(
-    product: &Product,
-    quantity: i32,
-    now: DateTime<Utc>,
-) -> Result<Option<EntitlementGrant>, AppError> {
+///
+/// Infallible. Precondition: `quantity` already passed
+/// `Product::ensure_line_quantity` (so a time-based product arrives with
+/// `quantity == 1`); checked only by `debug_assert!`.
+pub fn plan(product: &Product, quantity: i32, now: DateTime<Utc>) -> Option<EntitlementGrant> {
+    debug_assert!(
+        product.ensure_line_quantity(quantity).is_ok(),
+        "entitlement::plan precondition: quantity {quantity} must pass ensure_line_quantity"
+    );
+
     if !matches!(
         product.product_type,
         ProductType::Membership | ProductType::Ticket
     ) {
-        return Ok(None);
+        return None;
     }
 
     let (total_sessions, remaining_sessions, expires_at) =
@@ -65,21 +72,16 @@ pub fn plan(
                 .map(|days| now + Duration::days(days as i64));
             (Some(total), Some(total), expires_at)
         } else if let Some(valid_days) = product.valid_days {
-            if quantity != 1 {
-                return Err(AppError::Validation(
-                    "time-based subscription quantity must be 1".into(),
-                ));
-            }
             (None, None, Some(now + Duration::days(valid_days as i64)))
         } else {
             (None, None, None)
         };
 
-    Ok(Some(EntitlementGrant {
+    Some(EntitlementGrant {
         total_sessions,
         remaining_sessions,
         expires_at,
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -116,17 +118,16 @@ mod tests {
     }
 
     // Mirrors `tests/service_subscriptions.rs`'s `grant_from_purchase_tx`
-    // cases (two of the six stay there as integration tests, guarding the
-    // DB wiring these pure cases can't reach) — same six scenarios, direct
-    // calls instead of a seeded product + DB transaction.
+    // cases (two stay there as integration tests, guarding the DB wiring
+    // these pure cases can't reach) — direct calls instead of a seeded
+    // product + DB transaction. The sixth case (time-based quantity ≠ 1)
+    // moved to `products::model`'s tests with the rule itself.
 
     #[test]
     fn session_count_multiplies_by_quantity() {
         let product = fixture_product(ProductType::Ticket, Some(10), None);
 
-        let grant = plan(&product, 3, Utc::now())
-            .expect("grant")
-            .expect("expected Some(EntitlementGrant)");
+        let grant = plan(&product, 3, Utc::now()).expect("expected Some(EntitlementGrant)");
 
         assert_eq!(grant.total_sessions, Some(30));
         assert_eq!(grant.remaining_sessions, Some(30));
@@ -138,9 +139,7 @@ mod tests {
         let product = fixture_product(ProductType::Ticket, Some(5), Some(90));
         let now = Utc::now();
 
-        let grant = plan(&product, 2, now)
-            .expect("grant")
-            .expect("expected Some(EntitlementGrant)");
+        let grant = plan(&product, 2, now).expect("expected Some(EntitlementGrant)");
 
         // Both constraints apply: sessions still drive the quota...
         assert_eq!(grant.total_sessions, Some(10));
@@ -155,9 +154,7 @@ mod tests {
         let product = fixture_product(ProductType::Membership, None, Some(30));
         let now = Utc::now();
 
-        let grant = plan(&product, 1, now)
-            .expect("grant")
-            .expect("expected Some(EntitlementGrant)");
+        let grant = plan(&product, 1, now).expect("expected Some(EntitlementGrant)");
 
         assert!(grant.total_sessions.is_none());
         assert!(grant.remaining_sessions.is_none());
@@ -168,9 +165,7 @@ mod tests {
     fn no_entitlement_fields_creates_unlimited_membership() {
         let product = fixture_product(ProductType::Membership, None, None);
 
-        let grant = plan(&product, 1, Utc::now())
-            .expect("grant")
-            .expect("expected Some(EntitlementGrant)");
+        let grant = plan(&product, 1, Utc::now()).expect("expected Some(EntitlementGrant)");
 
         assert!(grant.total_sessions.is_none());
         assert!(grant.remaining_sessions.is_none());
@@ -183,24 +178,8 @@ mod tests {
         // — session_count/valid_days are irrelevant to it (left None).
         let product = fixture_product(ProductType::Merchandise, None, None);
 
-        let grant = plan(&product, 1, Utc::now())
-            .expect("grant should not error for a non-entitlement product");
+        let grant = plan(&product, 1, Utc::now());
 
         assert!(grant.is_none());
-    }
-
-    #[test]
-    fn time_based_with_quantity_other_than_one_is_validation_error() {
-        let product = fixture_product(ProductType::Membership, None, Some(90));
-
-        let err = plan(&product, 2, Utc::now())
-            .expect_err("quantity=2 for a time-based product must fail");
-
-        match err {
-            AppError::Validation(msg) => {
-                assert_eq!(msg, "time-based subscription quantity must be 1")
-            }
-            other => panic!("expected Validation, got {other:?}"),
-        }
     }
 }

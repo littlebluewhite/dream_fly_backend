@@ -2,9 +2,10 @@
 //!
 //! Covered paths:
 //! - `grant_from_purchase_tx`: the branch rules themselves (session-count,
-//!   time-based, unlimited membership, non-entitlement `None`, the
-//!   time-based quantity-must-be-1 error) are pure-core tested in
-//!   `subscriptions::entitlement::plan`'s own `#[cfg(test)]` module — no DB,
+//!   time-based, unlimited membership, non-entitlement `None`) are
+//!   pure-core tested in `subscriptions::entitlement::plan`'s own
+//!   `#[cfg(test)]` module (the time-based quantity-must-be-1 rule lives in
+//!   `products::model::Product::ensure_line_quantity`'s tests) — no DB,
 //!   exact `expires_at` values, no ±1 day window. The two cases kept here
 //!   guard what only a real DB can: the session+valid_days combo through
 //!   `insert_tx` + `derived_status`, and that a non-entitlement product

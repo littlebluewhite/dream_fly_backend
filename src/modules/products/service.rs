@@ -193,19 +193,22 @@ pub async fn update(
 /// private; only `lock_products_tx` can construct one (same private-field
 /// witness technique as `courses::seats`'s `SessionLock`).
 ///
-/// `ids` are the locked rows' ids, ascending and deduplicated — the order
-/// the locks were taken in (PostgreSQL orders `uuid` bytewise, the same as
-/// `Uuid`'s `Ord`). [`ProductLocks::in_lock_order`] is the single
-/// owner of "walk these lines in lock order": a write-lock owner
-/// (`reserve_stock_tx`) no longer sorts on its own.
+/// `rows` are the locked rows as read under the lock, ascending by id and
+/// deduplicated — the order the locks were taken in (PostgreSQL orders
+/// `uuid` bytewise, the same as `Uuid`'s `Ord`). Nothing else can change a
+/// held row before the caller's transaction ends, so `reserve_stock_tx`
+/// judges each line's quantity against these rows without re-reading.
+/// [`ProductLocks::in_lock_order`] is the single owner of "walk these lines
+/// in lock order": a write-lock owner (`reserve_stock_tx`) no longer sorts
+/// on its own.
 #[derive(Debug)]
 pub struct ProductLocks {
-    ids: Vec<Uuid>,
+    rows: Vec<Product>,
 }
 
 impl ProductLocks {
-    pub fn ids(&self) -> &[Uuid] {
-        &self.ids
+    pub fn ids(&self) -> Vec<Uuid> {
+        self.rows.iter().map(|row| row.id).collect()
     }
 
     /// Reorder `items` into this witness's lock order (ascending product
@@ -229,13 +232,21 @@ impl ProductLocks {
     }
 
     fn covers(&self, product_id: Uuid) -> bool {
-        self.ids.binary_search(&product_id).is_ok()
+        self.row(product_id).is_some()
+    }
+
+    /// The locked row for `product_id`, as read under the lock.
+    fn row(&self, product_id: Uuid) -> Option<&Product> {
+        self.rows
+            .binary_search_by_key(&product_id, |row| row.id)
+            .ok()
+            .map(|i| &self.rows[i])
     }
 }
 
 /// Lock the given `products` rows `FOR NO KEY UPDATE`, ascending by id
 /// (`ORDER BY id`), inside the caller's transaction and return the
-/// [`ProductLocks`] witness. `FOR NO KEY UPDATE` is exactly the strength
+/// [`ProductLocks`] witness, carrying the rows read under the lock. `FOR NO KEY UPDATE` is exactly the strength
 /// the later stock UPDATE needs, so no upgrade happens afterwards (two
 /// buyers of one product queue here instead of deadlocking on a
 /// SHARE→UPDATE upgrade), and it does not block the `FOR KEY SHARE` that FK
@@ -246,8 +257,8 @@ pub async fn lock_products_tx(
     tx: &mut Transaction<'_, Postgres>,
     ids: &[Uuid],
 ) -> Result<ProductLocks, AppError> {
-    let ids = repository::lock_products_tx(tx, ids).await?;
-    Ok(ProductLocks { ids })
+    let rows = repository::lock_products_tx(tx, ids).await?;
+    Ok(ProductLocks { rows })
 }
 
 /// Reserve stock for a batch of product lines inside the caller's
@@ -264,9 +275,17 @@ pub async fn lock_products_tx(
 /// rationale: the "Cross-buyer dimension" anchor in `orders::locks`
 /// (ADR-0007 決策 5).
 ///
+/// Before the first decrement, every line's quantity is judged against its
+/// locked row by `Product::ensure_line_quantity`, in lock order: `1..=999`
+/// (400) and a time-based entitlement only at 1 (422). A cart line can only
+/// get past that rule if it was written before the rule existed, but
+/// checkout must not grant from it either way — and running it ahead of
+/// every decrement is what puts the line-quantity 400/422 before the stock
+/// 409 in `checkout`'s priority list.
+///
 /// Each line is then decremented in that order via
-/// `try_decrement_stock_tx`. The first line (in lock order) whose stock is
-/// insufficient fails the whole reservation with
+/// `try_decrement_stock_tx`, still the stock authority. The first line (in
+/// lock order) whose stock is insufficient fails the whole reservation with
 /// `AppError::Conflict("insufficient stock for product {name}")` — when
 /// more than one line is short, this is whichever has the smallest
 /// `product_id`, not necessarily the first element of the input slice.
@@ -286,6 +305,13 @@ pub async fn reserve_stock_tx(
     lines: &[(Uuid, i32, &str)],
 ) -> Result<HashMap<Uuid, Product>, AppError> {
     let ordered = locks.in_lock_order(lines.to_vec(), |(product_id, _, _)| *product_id)?;
+
+    for (product_id, quantity, _) in &ordered {
+        let row = locks.row(*product_id).ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("product {product_id} was covered by ProductLocks"))
+        })?;
+        row.ensure_line_quantity(*quantity)?;
+    }
 
     let mut reserved = HashMap::with_capacity(ordered.len());
     for (product_id, quantity, name) in ordered {
@@ -375,6 +401,32 @@ pub async fn restore_for_order_tx(
 mod tests {
     use super::*;
 
+    /// A witness over `ids` (must be ascending), with filler rows.
+    fn locks_over(ids: &[Uuid]) -> ProductLocks {
+        let rows = ids
+            .iter()
+            .map(|&id| Product {
+                id,
+                name: "Test Product".into(),
+                slug: "test-product".into(),
+                product_type: ProductType::Merchandise,
+                description: None,
+                price_cents: 1000,
+                original_price_cents: None,
+                features: vec![],
+                is_highlighted: false,
+                badge: None,
+                stock: None,
+                valid_days: None,
+                session_count: None,
+                is_active: true,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .collect();
+        ProductLocks { rows }
+    }
+
     fn ids() -> (Uuid, Uuid, Uuid) {
         let mut v = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
         v.sort();
@@ -384,9 +436,7 @@ mod tests {
     #[test]
     fn in_lock_order_sorts_items_ascending_by_id() {
         let (low, mid, high) = ids();
-        let locks = ProductLocks {
-            ids: vec![low, mid, high],
-        };
+        let locks = locks_over(&[low, mid, high]);
         let ordered = locks
             .in_lock_order(vec![(high, "h"), (low, "l"), (mid, "m")], |(id, _)| *id)
             .expect("all covered");
@@ -396,9 +446,7 @@ mod tests {
     #[test]
     fn in_lock_order_accepts_a_subset_of_the_witness() {
         let (low, mid, high) = ids();
-        let locks = ProductLocks {
-            ids: vec![low, mid, high],
-        };
+        let locks = locks_over(&[low, mid, high]);
         let ordered = locks
             .in_lock_order(vec![high, low], |id| *id)
             .expect("subset is covered");
@@ -408,9 +456,7 @@ mod tests {
     #[test]
     fn in_lock_order_rejects_an_id_outside_the_witness_as_internal() {
         let (low, mid, high) = ids();
-        let locks = ProductLocks {
-            ids: vec![low, high],
-        };
+        let locks = locks_over(&[low, high]);
         let err = locks
             .in_lock_order(vec![low, mid], |id| *id)
             .expect_err("mid was never locked");

@@ -83,34 +83,64 @@ pub struct Product {
 }
 
 impl Product {
-    /// Single-request purchasability predicate: can `quantity` units of this
-    /// product be bought *in this one request*? Checks `is_active`, then —
-    /// if the product tracks stock at all (`stock: Some(_)`; `None` means
-    /// unlimited, e.g. tickets/memberships) — that `quantity` doesn't exceed
-    /// it.
+    /// A time-based entitlement: a `membership`/`ticket` with `valid_days`
+    /// set and no `session_count` — its grant is one expiry date, which
+    /// can't be multiplied by a quantity (ADR-0003; the grant itself is
+    /// `subscriptions::entitlement::plan`).
+    pub fn is_time_based_entitlement(&self) -> bool {
+        matches!(
+            self.product_type,
+            ProductType::Membership | ProductType::Ticket
+        ) && self.session_count.is_none()
+            && self.valid_days.is_some()
+    }
+
+    /// Is `quantity` a legal quantity for one line of this product — the
+    /// single owner of that rule (cart add, cart update and checkout all
+    /// ask here). `1..=999`, else `BadRequest` (400); a time-based
+    /// entitlement only at `1`, else `Validation` (422). Says nothing about
+    /// `is_active` or stock — see [`Self::ensure_purchasable`].
     ///
-    /// This is deliberately not the owner of any cart-wide stock invariant:
-    /// what `quantity` *means* is entirely up to the caller. `cart::service`
-    /// has two call sites that pass different things —
-    /// `add_product_item` passes the increment being added this call (the
-    /// repository accumulates separately via `ON CONFLICT DO UPDATE SET
-    /// quantity = cart_items.quantity + $N`), while `update_quantity` passes
-    /// the item's final quantity. Because of that, repeated `add_item` calls
-    /// can each individually clear this check while the cart's accumulated
-    /// total drifts past `stock` — this method has no way to see that, and
-    /// is not responsible for closing that gap. The authoritative,
-    /// atomic-decrement check lives at checkout in
-    /// `products::service::reserve_stock_tx`; this predicate is only ever a
-    /// lightweight, single-request pre-check ahead of it.
+    /// Error strings are load-bearing (substring-matched in tests):
+    /// `"quantity must be between 1 and 999"`,
+    /// `"time-based subscription quantity must be 1"`.
+    pub fn ensure_line_quantity(&self, quantity: i32) -> Result<(), AppError> {
+        if !(1..=999).contains(&quantity) {
+            return Err(AppError::BadRequest(
+                "quantity must be between 1 and 999".into(),
+            ));
+        }
+        if self.is_time_based_entitlement() && quantity != 1 {
+            return Err(AppError::Validation(
+                "time-based subscription quantity must be 1".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Can a cart line hold `quantity` units of this product? `quantity` is
+    /// the line's *whole* quantity — after a repeat add has merged into it
+    /// (`cart::service::add_product_item`), or the final value of an update
+    /// — never just an increment. In order: inactive → 400, then
+    /// [`Self::ensure_line_quantity`] (400/422), then — if the product
+    /// tracks stock at all (`stock: None` means unlimited) — `quantity`
+    /// above `stock` → 409.
     ///
-    /// Error strings are load-bearing (asserted on by substring match in
+    /// This is a cart-time check against a stock value that can move before
+    /// checkout. The authoritative stock check is the atomic decrement at
+    /// checkout (`repository::try_decrement_stock_tx`, via
+    /// `service::reserve_stock_tx`).
+    ///
+    /// Error strings are load-bearing (substring-matched in
     /// `tests/service_cart.rs`): `"product is not available"` /
     /// `BadRequest` (400), `"insufficient stock: only {stock} available"` /
-    /// `Conflict` (409).
+    /// `Conflict` (409), plus [`Self::ensure_line_quantity`]'s two.
     pub fn ensure_purchasable(&self, quantity: i32) -> Result<(), AppError> {
         if !self.is_active {
             return Err(AppError::BadRequest("product is not available".into()));
         }
+
+        self.ensure_line_quantity(quantity)?;
 
         if let Some(stock) = self.stock {
             if quantity > stock {
@@ -131,11 +161,23 @@ mod tests {
     /// Minimal fixture for `ensure_purchasable` tests — only `is_active` and
     /// `stock` are varied per case, everything else is filler.
     fn fixture_product(is_active: bool, stock: Option<i32>) -> Product {
+        entitlement_product(ProductType::Merchandise, None, None, is_active, stock)
+    }
+
+    /// Fixture for the quantity-rule tests — the fields
+    /// `is_time_based_entitlement` branches on, plus `is_active`/`stock`.
+    fn entitlement_product(
+        product_type: ProductType,
+        session_count: Option<i32>,
+        valid_days: Option<i32>,
+        is_active: bool,
+        stock: Option<i32>,
+    ) -> Product {
         Product {
             id: Uuid::now_v7(),
             name: "Test Product".into(),
             slug: "test-product".into(),
-            product_type: ProductType::Merchandise,
+            product_type,
             description: None,
             price_cents: 1000,
             original_price_cents: None,
@@ -143,8 +185,8 @@ mod tests {
             is_highlighted: false,
             badge: None,
             stock,
-            valid_days: None,
-            session_count: None,
+            valid_days,
+            session_count,
             is_active,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -164,9 +206,110 @@ mod tests {
     }
 
     #[test]
-    fn ensure_purchasable_allows_any_quantity_when_stock_is_untracked() {
+    fn ensure_purchasable_allows_any_in_range_quantity_when_stock_is_untracked() {
         let product = fixture_product(true, None);
-        assert!(product.ensure_purchasable(1_000_000).is_ok());
+        assert!(product.ensure_purchasable(999).is_ok());
+    }
+
+    #[test]
+    fn ensure_purchasable_checks_line_quantity_before_stock() {
+        // 1000 is both out of range and above stock — the range 400 wins.
+        let product = fixture_product(true, Some(3));
+        let err = product.ensure_purchasable(1000).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+            "got: {err:?}"
+        );
+
+        // A time-based entitlement at quantity 2 with stock 1: the 422 wins.
+        let product = entitlement_product(ProductType::Membership, None, Some(30), true, Some(1));
+        let err = product.ensure_purchasable(2).expect_err("must reject");
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn ensure_purchasable_checks_inactive_before_line_quantity() {
+        let product = fixture_product(false, None);
+        let err = product.ensure_purchasable(0).expect_err("must reject");
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m == "product is not available"),
+            "got: {err:?}"
+        );
+    }
+
+    // --- ensure_line_quantity ---
+
+    #[test]
+    fn ensure_line_quantity_accepts_1_to_999() {
+        let product = fixture_product(true, None);
+        assert!(product.ensure_line_quantity(1).is_ok());
+        assert!(product.ensure_line_quantity(999).is_ok());
+    }
+
+    #[test]
+    fn ensure_line_quantity_rejects_out_of_range_as_bad_request() {
+        let product = fixture_product(true, None);
+        for quantity in [0, -1, 1000] {
+            let err = product.ensure_line_quantity(quantity).expect_err("must reject");
+            assert!(
+                matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+                "quantity {quantity} got: {err:?}"
+            );
+        }
+    }
+
+    // Moved from `subscriptions::entitlement`'s tests: the quantity rule
+    // used to be checked inside the grant itself, after every other
+    // checkout check.
+    #[test]
+    fn ensure_line_quantity_time_based_quantity_other_than_one_is_validation_error() {
+        let product = entitlement_product(ProductType::Membership, None, Some(90), true, None);
+
+        let err = product
+            .ensure_line_quantity(2)
+            .expect_err("quantity=2 for a time-based product must fail");
+
+        match err {
+            AppError::Validation(msg) => {
+                assert_eq!(msg, "time-based subscription quantity must be 1")
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        assert!(product.ensure_line_quantity(1).is_ok());
+    }
+
+    #[test]
+    fn ensure_line_quantity_allows_multiples_of_non_time_based_products() {
+        let cases = [
+            // session-count ticket: sessions multiply by quantity
+            entitlement_product(ProductType::Ticket, Some(10), None, true, None),
+            // session-count + valid_days: sessions still drive the quota
+            entitlement_product(ProductType::Ticket, Some(5), Some(90), true, None),
+            // unlimited membership
+            entitlement_product(ProductType::Membership, None, None, true, None),
+            // valid_days on a non-entitlement type grants nothing
+            entitlement_product(ProductType::Merchandise, None, Some(30), true, None),
+        ];
+        for product in cases {
+            assert!(
+                product.ensure_line_quantity(2).is_ok(),
+                "{:?} session_count={:?} valid_days={:?}",
+                product.product_type,
+                product.session_count,
+                product.valid_days
+            );
+        }
+    }
+
+    #[test]
+    fn is_time_based_entitlement_only_for_membership_or_ticket_with_valid_days_only() {
+        let yes = |t, s, v| entitlement_product(t, s, v, true, None).is_time_based_entitlement();
+        assert!(yes(ProductType::Membership, None, Some(30)));
+        assert!(yes(ProductType::Ticket, None, Some(30)));
+        assert!(!yes(ProductType::Ticket, Some(10), Some(30)));
+        assert!(!yes(ProductType::Membership, None, None));
+        assert!(!yes(ProductType::CoursePackage, None, Some(30)));
+        assert!(!yes(ProductType::Merchandise, None, Some(30)));
     }
 
     #[test]

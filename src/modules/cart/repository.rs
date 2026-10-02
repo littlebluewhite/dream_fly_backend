@@ -38,10 +38,14 @@ pub async fn find_item_by_id(
     .await
 }
 
-/// Add (or merge into) a product line. Repeat adds accumulate quantity via
-/// `ON CONFLICT ... DO UPDATE`.
-pub async fn add_product_item(
-    db: &PgPool,
+/// Add (or merge into) a product line inside the caller's transaction.
+/// Repeat adds accumulate quantity via `ON CONFLICT ... DO UPDATE`; the
+/// returned row carries the *merged* quantity, which the caller judges
+/// before committing. The upsert leaves the line's row locked until the
+/// transaction ends, so concurrent adds to the same line queue here and
+/// each sees the other's committed total.
+pub async fn add_product_item_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     product_id: Uuid,
     quantity: i32,
@@ -56,7 +60,7 @@ pub async fn add_product_item(
     .bind(user_id)
     .bind(product_id)
     .bind(quantity)
-    .fetch_one(db)
+    .fetch_one(&mut **tx)
     .await
 }
 

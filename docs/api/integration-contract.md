@@ -523,11 +523,16 @@ Create body：`{ name, slug?, product_type, description?, price_cents, original_
 
 #### `POST /cart/items` — 需登入
 Body：`{ item_type: "product"|"course", item_id: "uuid", quantity? }`（quantity 預設 1，範圍 1-999）。回應：更新後的 `CartResponse`。
-規則：**課程項目 quantity 永遠視為 1**（DB constraint `cart_items_course_qty` 強制）；同一使用者對同一 product 或同一 course 只能有一筆購物車項目（重複加入視為 upsert，quantity 不會累加，以最後一次的 quantity 為準——實際行為請以 `service.rs` 為準，前端可假設「加入已存在項目」不會拋錯而是更新該筆）。
-錯誤：422（`item_type` 不是 `product`/`course`）。
+規則：**課程項目 quantity 永遠視為 1**（DB constraint `cart_items_course_qty` 強制），重複加入同一課程回 409 `"course already in cart"`。同一使用者對同一 product 只能有一筆購物車項目：**重複加入會累加**（新 quantity = 原 quantity + 本次 quantity），並以**累加後**的 quantity 判斷是否合法——不合法時整個請求回錯、該筆維持加入前的 quantity（不會半套用）。商品行的合法數量：
+- 1–999，否則 400 `"quantity must be between 1 and 999"`（本次 quantity 本身超出範圍時，在查商品之前就回這個 400）；
+- **時間制方案**（`membership`/`ticket`，有 `valid_days`、沒有 `session_count`，見 §3.11）只能是 1，否則 422 `"time-based subscription quantity must be 1"`——已在購物車裡的時間制方案再加一次也是這個 422；
+- 有限庫存商品不可超過目前庫存，否則 409 `"insufficient stock: only {stock} available"`（購物車階段的檢查；結帳時才真正扣庫存，見 §3.10）。
+
+錯誤（依優先序）：422（`item_type` 不是 `product`/`course`）；本次 quantity 不合法（商品不在 1–999 回 400、課程不是 1 回 422 `"course quantity must be 1"`）；404（商品/課程不存在）；400（已下架 `"product is not available"`/`"course is not available"`）；400/422（累加後數量不合法，見上）；409（累加後超過庫存；課程已在購物車）。
 
 #### `PATCH /cart/items/{id}` — 需登入
 `{id}` 為 cart item 的 id（不是 product_id/course_id）。Body：`{ quantity }`（1-999）。回應：`CartResponse`。
+`quantity` 是該筆的**最終**數量（不是增量），以與 `POST /cart/items` 累加後相同的規則判斷：400（不在 1–999，在查該筆之前）；404（該筆不存在）；課程行非 1 → 422；商品行已下架 → 400、時間制方案非 1 → 422、超過庫存 → 409。
 
 #### `DELETE /cart/items/{id}` — 需登入
 回應：`CartResponse`（移除後的購物車）。
@@ -609,7 +614,9 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 
 `payment_method` 為 `null` 僅出現在此欄位新增（Round 4 Task P4-B1）前建立的歷史訂單。
 
-錯誤：400（購物車為空）；422（無效優惠碼；付款方式不在值域內；購物車內有已下架的商品或課程 — 訊息列出被下架的品項名稱，見上）；409（商品庫存不足、課程已滿或重複報名 — 整筆結帳一起回滾，不會部分成功）。
+錯誤：400（購物車為空）；422（無效優惠碼；付款方式不在值域內；購物車內有已下架的商品或課程 — 訊息列出被下架的品項名稱，見上）；400/422（購物車內有數量不合法的商品行——超出 1–999 回 400 `"quantity must be between 1 and 999"`、時間制方案數量不是 1 回 422 `"time-based subscription quantity must be 1"`，見 §3.8；購物車端已擋，這裡只會遇到規則上線前就放進購物車的舊資料）；409（商品庫存不足、課程已滿或重複報名 — 整筆結帳一起回滾，不會部分成功）。
+
+多種錯誤同時成立時的優先序：付款方式 422 → 使用者不存在 404 → 購物車為空 400 → 已下架 422 → 無效優惠碼 422 → 金額溢位 422 → **品項數量 400/422** → 庫存不足 409 → 課程已滿/重複報名 409。（權威清單在 `orders::service::checkout` 的 doc；時間制方案數量的 422 原本排在兩種 409 之後，2026-10 起提前到庫存檢查之前，見 ADR-0007 2026-10-03 Addendum。）
 
 #### `GET /orders/me?page=&per_page=` — 需登入
 回應（`OrderListResponse`）：`{ "orders": [OrderSummary], "total", "page", "per_page" }`。

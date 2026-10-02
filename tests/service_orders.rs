@@ -24,7 +24,6 @@ use common::fixtures::{
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
-use dream_fly_backend::modules::cart::repository as cart_repository;
 use dream_fly_backend::modules::cart::service as cart_service;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
 use dream_fly_backend::modules::coupons::service as coupons_service;
@@ -623,12 +622,14 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_409(db: PgPool) {
+async fn checkout_time_based_entitlement_quantity_over_one_is_422_before_course_409(db: PgPool) {
     // (a) A time-based entitlement (`valid_days` set, no `session_count`)
     // bought at quantity > 1 can't be multiplied into one subscription row
-    // — `entitlement::plan` (reached via `grant_from_purchase_tx`) rejects
-    // it with 422, and checkout rolls back with zero writes: no order, no
-    // subscription, cart untouched.
+    // — `Product::ensure_line_quantity` (run by `reserve_stock_tx` before
+    // its first decrement) rejects it with 422, and checkout rolls back
+    // with zero writes: no order, no subscription, cart untouched. The
+    // cart service no longer lets this line in; the fixture writes it
+    // directly, standing in for a line carted before that rule existed.
     let membership = seed_entitlement_product(
         &db,
         "quantity-guard",
@@ -682,10 +683,10 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_4
     );
 
     // (b) Same offending line, but the cart also has a full course — the
-    // course-capacity 409 (`enrolments::service::enrol_batch_from_purchase_tx`)
-    // fires before `grant_from_purchase_tx`/`entitlement::plan` is ever
-    // reached, so this must come back 409, not 422 — pinning the doc's
-    // priority order (course 409 before the entitlement 422).
+    // line-quantity 422 runs in `reserve_stock_tx`, before
+    // `enrol_batch_from_purchase_tx` ever reaches the full course, so this
+    // must come back 422, not 409 — pinning the doc's priority order (line
+    // quantity 400/422 before stock 409 and course 409).
     let full_course = seed_full_course(&db, "Entitlement Priority Course", 1).await;
     let membership_2 = seed_entitlement_product(
         &db,
@@ -721,10 +722,100 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_after_course_4
         common::studio_now_utc(chrono::Utc::now()),
     )
     .await
-    .expect_err("full course must reject before the entitlement quantity check is reached");
-    assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
+    .expect_err("the line-quantity check must reject before the full course is reached");
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "time-based subscription quantity must be 1"),
+        "got: {err:?}"
+    );
 
     assert_eq!(common::order_count(&db, user_2).await, 0);
+}
+
+#[sqlx::test]
+async fn checkout_time_based_entitlement_quantity_over_one_is_422_before_stock_409(db: PgPool) {
+    // The short-stock line is given the smallest possible id, so in lock
+    // order it is reached first — the 422 must still win because every
+    // line's quantity is checked before the first decrement, not
+    // interleaved with them. (UUIDv7 creation order isn't guaranteed to
+    // match value order within one millisecond, so the id is pinned.)
+    let seeded = common::seed_product(&db, "qty-before-stock-short", 1000, Some(1)).await;
+    let short = Uuid::from_u128(1);
+    sqlx::query("UPDATE products SET id = $2 WHERE id = $1")
+        .bind(seeded)
+        .bind(short)
+        .execute(&db)
+        .await
+        .unwrap();
+    let membership = seed_entitlement_product(
+        &db,
+        "qty-before-stock-monthly",
+        ProductType::Membership,
+        5000,
+        Some(30),
+        None,
+    )
+    .await;
+    let user = seed_carted_member(
+        &db,
+        "qty-before-stock@example.com",
+        &[
+            SeedCartLine::Product { product_id: short, quantity: 2 },
+            SeedCartLine::Product { product_id: membership, quantity: 2 },
+        ],
+        0,
+    )
+    .await;
+
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("time-based quantity > 1 must reject before the stock check");
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "time-based subscription quantity must be 1"),
+        "got: {err:?}"
+    );
+    assert_eq!(common::order_count(&db, user).await, 0);
+    assert_eq!(common::product_stock(&db, short).await, Some(1));
+}
+
+#[sqlx::test]
+async fn checkout_legacy_line_quantity_over_999_is_400_before_stock_409(db: PgPool) {
+    // A cart row written before the merged-quantity rule (the fixture
+    // writes it directly) can still hold more than 999 units. Checkout
+    // rejects it with the same 400 the cart would, ahead of the stock 409
+    // the line would also hit.
+    let product = common::seed_product(&db, "legacy-qty-over-999", 10, Some(5)).await;
+    let user = seed_carted_member(
+        &db,
+        "legacy-qty@example.com",
+        &[SeedCartLine::Product { product_id: product, quantity: 1000 }],
+        0,
+    )
+    .await;
+
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("a line over 999 must reject checkout");
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+        "got: {err:?}"
+    );
+    assert_eq!(common::order_count(&db, user).await, 0);
+    assert_eq!(common::product_stock(&db, product).await, Some(5));
+    assert_eq!(common::cart_count(&db, user).await, 1);
 }
 
 #[sqlx::test]
@@ -1215,9 +1306,10 @@ async fn checkout_locks_block_same_user_cart_insert_until_commit(db: PgPool) {
     let db_insert = Arc::new(db.clone());
     let handle = tokio::runtime::Handle::current();
     let insert = tokio::task::spawn_blocking(move || {
-        handle.block_on(cart_repository::add_product_item(
+        handle.block_on(cart_service::add_item(
             db_insert.as_ref(),
             user,
+            "product",
             late,
             1,
         ))
