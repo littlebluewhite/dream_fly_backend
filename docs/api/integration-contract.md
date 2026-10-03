@@ -13,26 +13,7 @@
 ### 1.2 認證（Bearer Token）
 
 - 除各端點表中標註「公開」者外，其餘皆需帶 `Authorization: Bearer <access_token>`。
-- 取得 token 的端點（`/auth/register`、`/auth/login`、`/auth/google`、`/auth/refresh`）回應皆為同一形狀：
-
-  ```jsonc
-  // AuthResponse
-  {
-    "access_token": "eyJ...",
-    "refresh_token": "eyJ...",
-    "user": {
-      "id": "uuid",
-      "email": "string",
-      "name": "string",
-      "phone": "string | null",
-      "phone_verified": "boolean",
-      "avatar_url": "string | null",
-      "is_active": "boolean",
-      "created_at": "ISO8601",
-      "roles": ["member" /* | "admin" | "coach" | "guest" */]
-    }
-  }
-  ```
+- 取得 token 的端點（`/auth/register`、`/auth/login`、`/auth/google`、`/auth/refresh`）回應皆為同一型別：[`AuthResponse`](../../bindings/AuthResponse.ts)（`user` 為 [`AuthUserResponse`](../../bindings/AuthUserResponse.ts)，是 `UserResponse` 的欄位子集）。`access_token`/`refresh_token` 為 JWT 字串。`roles` 型別是 `string[]`，值域為 `member`/`admin`/`coach`/`guest`（`UserResponse.roles` 同）。
 
 - **沒有 `expires_in` 欄位** — access/refresh token 的存活期不隨回應提供，前端必須依本文件記載的固定值自行判斷：
   - **access token：15 分鐘**（`config/default.toml` 的 `auth.jwt_access_expiration_minutes`，開發環境不變）。
@@ -256,7 +237,7 @@ Body：`{ refresh_token }`。回應：`AuthResponse`（含輪替後的新 token 
 錯誤：401（token 無效、過期、或被偵測為重放 — 見 §1.2）。
 
 #### `POST /auth/logout` — 公開（帶 refresh token）
-Body：`{ refresh_token }`。回應：`{ "message": "logged out successfully" }`。幂等。
+Body：`{ refresh_token }`。回應：`{ "message": "logged out successfully" }`。幂等。（本節所有 `{ "message": … }` 回應的型別皆為 [`MessageAck`](../../bindings/MessageAck.ts)；訊息字串為固定值，照列於各端點。）
 
 #### `POST /auth/otp/send` — 需登入
 Body：`{ phone }`（8-20 字）。回應：`{ "message": "verification code sent" }`。
@@ -279,18 +260,7 @@ Body：`{ token, new_password }`（new_password 8-128 字）。回應：`{ "mess
 ### 3.2 Users
 
 #### `GET /users/me` — 需登入
-回應（`UserResponse`）：
-
-```jsonc
-{
-  "id": "uuid", "email": "string", "name": "string",
-  "phone": "string|null", "phone_verified": "boolean",
-  "avatar_url": "string|null", "is_active": "boolean",
-  "last_login": "ISO8601|null", "created_at": "ISO8601",
-  "roles": ["member"], "points_balance": "number",
-  "preferences": "object|null", "birth_date": "YYYY-MM-DD|null"
-}
-```
+回應：[`UserResponse`](../../bindings/UserResponse.ts)。`points_balance` 單位為點數（§1.6）；`preferences` 是任意 JSON 值（實務上為物件），未設定為 `null`；`birth_date` 為 `YYYY-MM-DD`，未設定為 `null`；`roles` 值域見 §1.2。
 
 #### `PATCH /users/me` — 需登入
 Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date? }`（name 2-100 字；phone 8-20 字；avatar_url 須通過內部 URL 安全檢查；`preferences` 可為任意合法 JSON 值，**整包覆寫**——帶了就整個取代舊值，不做深合併，也不逐 key 驗證；不帶則維持原值不動；`birth_date` 為 `YYYY-MM-DD` 字串，範圍 **`1900-01-01` 至今天（含）**（「今天」指工作室日期〔`STUDIO_TIMEZONE`〕，非 UTC 日期），超出範圍回 422——未來日期與早於 1900 年皆同一錯誤類型；帶 JSON `null` 會清空為 `NULL`，不帶此欄則維持原值不動）。未設定過的使用者，`preferences`／`birth_date` 皆為 `null`。回應：`UserResponse`。
@@ -300,7 +270,7 @@ Body（皆為選填）：`{ name?, phone?, avatar_url?, preferences?, birth_date
 `UserResponse` 是 users 模組唯一的回應型別——`GET /users`、`GET /users/{id}`、`POST /users`、`PATCH /users/{id}`（見下，皆為 admin 視角）回應也是同一型別，因此同樣帶出 `preferences`／`birth_date`；但這些 admin 端點中只有 `POST /users`（見下）能寫入 `birth_date`，`preferences` 則仍須由使用者本人透過 `PATCH /users/me` 設定。
 
 #### `GET /users?page=&per_page=` — admin
-回應（`UserListResponse`）：`{ "users": [UserResponse], "total", "page", "per_page" }`。Task 18 起前端 admin 學員管理頁消費此端點（`points_balance` 映射為學員點數）。
+回應：[`UserListResponse`](../../bindings/UserListResponse.ts)。Task 18 起前端 admin 學員管理頁消費此端點（`points_balance` 映射為學員點數）。
 
 #### `GET /users/{id}` — admin
 回應：單筆 `UserResponse`。404 若查無。
@@ -321,24 +291,7 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 ### 3.3 Courses
 
 #### `GET /courses?page=&per_page=` — 公開
-回應（`CourseListResponse`）：`{ "courses": [CourseResponse], "total", "page", "per_page" }`。**目前不支援 category/level 篩選 query**，一次拉全部再前端篩選，或等後端加篩選端點。**列表項目不含 `schedule_slots`**——見下方 `GET /courses/{slugOrId}` 的裁決說明。
-
-`CourseResponse`：
-
-```jsonc
-{
-  "id": "uuid", "name": "string", "slug": "string",
-  "level": "foundation|beginner|intermediate|advanced|elite",
-  "description": "string|null", "duration_minutes": "number",
-  "price_cents": "number", "max_students": "number",
-  "min_age": "number|null", "max_age": "number|null",
-  "features": ["string"], "is_active": "boolean",
-  "coach_id": "uuid|null", "category": "string|null",
-  "schedule_text": "string|null", "is_highlighted": "boolean",
-  "created_at": "ISO8601", "updated_at": "ISO8601",
-  "enrolled_count": "number", "waitlist_count": "number"
-}
-```
+回應：[`CourseListResponse`](../../bindings/CourseListResponse.ts)，列為 [`CourseResponse`](../../bindings/CourseResponse.ts)。**目前不支援 category/level 篩選 query**，一次拉全部再前端篩選，或等後端加篩選端點。**列表項目不含 `schedule_slots`**——見下方 `GET /courses/{slugOrId}` 的裁決說明。
 
 `enrolled_count`/`waitlist_count` 為即時計算（分別數 `enrolments.status='active'`、`waitlist_entries.status='waiting'`），非快取值。
 
@@ -353,19 +306,9 @@ Body（皆為選填）：`{ name?, phone?, is_active? }`（name 2-100 字；phon
 | `elite` | 選手 |
 
 #### `GET /courses/{slugOrId}` — 公開
-`{slugOrId}` 可為 slug 或 UUID（後端先嘗試 parse 成 UUID，失敗則當 slug 查詢，皆大小寫不敏感）。回應（`CourseDetailResponse`）：`CourseResponse` 的所有欄位（同一層，非巢狀）再加一個 `schedule_slots` 陣列：
+`{slugOrId}` 可為 slug 或 UUID（後端先嘗試 parse 成 UUID，失敗則當 slug 查詢，皆大小寫不敏感）。回應：[`CourseDetailResponse`](../../bindings/CourseDetailResponse.ts)——`CourseResponse` 的所有欄位（同一層，非巢狀）再加一個 `schedule_slots` 陣列（[`CourseScheduleSlotResponse`](../../bindings/CourseScheduleSlotResponse.ts)`[]`）。
 
-```jsonc
-{
-  "id": "uuid", "name": "string", /* ...其餘欄位同 CourseResponse... */
-  "schedule_slots": [
-    { "id": "uuid", "day_of_week": 0, "start_time": "HH:MM:SS",
-      "end_time": "HH:MM:SS", "venue": "string|null" }
-  ]
-}
-```
-
-`day_of_week` 為 **0=Sunday .. 6=Saturday**（PostgreSQL `EXTRACT(DOW)` 慣例，也是 JS `Date.getDay()` 慣例；詳見 §3.18）。404 若查無課程。已下架資源走公開明細一律 404，與不存在同形。
+`schedule_slots[].day_of_week` 為 **0=Sunday .. 6=Saturday**（PostgreSQL `EXTRACT(DOW)` 慣例，也是 JS `Date.getDay()` 慣例；詳見 §3.18）。404 若查無課程。已下架資源走公開明細一律 404，與不存在同形。
 
 **裁決**：`schedule_slots` 只在單一課程回應出現（本端點、`POST`、`PATCH`），`GET /courses`（列表）刻意不附加——避免對每筆課程多查一次 slots 造成 N+1。前端要顯示某課程週模式時，一律呼叫本端點取得該課程 detail。
 
@@ -380,30 +323,19 @@ Body（`UpdateCourseRequest`，皆選填，同名欄位語意同上）。`min_ag
 ### 3.4 Coaches
 
 #### `GET /coaches` — 公開
-回應：`CoachResponse[]`（**純陣列，不分頁**，依 `display_order` 排序）。
-
-```jsonc
-{
-  "id": "uuid", "user_id": "uuid", "name": "string", "title": "string",
-  "bio": "string|null", "experience": "string|null",
-  "specialties": ["string"], "certifications": ["string"],
-  "is_active": "boolean", "display_order": "number",
-  "slug": "string|null", "photo_url": "string|null",
-  "created_at": "ISO8601"
-}
-```
+回應：[`CoachResponse`](../../bindings/CoachResponse.ts)`[]`（**純陣列，不分頁**，依 `display_order` 排序）。
 
 `name` 為教練姓名（join `users.name`，coaches 表本身無此欄位）；`title` 是職稱（如「資深體操教練」），**不含姓名**——兩者是不同語意的欄位。
 
 #### `GET /coaches/{id}` — 公開
-`{id}` 為教練的 UUID（非使用者 id，也非 slug）。回應（`CoachDetailResponse`）：`{ "coach": CoachResponse, "schedules": CoachScheduleResponse[] }`。已下架資源走公開明細一律 404，與不存在同形。
+`{id}` 為教練的 UUID（非使用者 id，也非 slug）。回應：[`CoachDetailResponse`](../../bindings/CoachDetailResponse.ts)。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `POST /coaches` — admin
 將既有使用者（先用 `POST /users` 建帳號）綁定為教練。Body：`{ user_id, title, bio?, experience?, specialties?, certifications?, display_order?, slug?, photo_url?, is_active? }`。`user_id`/`title` 必填（`title` 對應 `coaches.title`，NOT NULL 無 DEFAULT）；其餘欄位省略時採 DB 預設（`specialties`/`certifications` 預設空陣列、`is_active` 預設 `true`、`display_order` 預設 `0`、`slug`/`photo_url` 維持 `NULL`）。姓名不在此——那是 `users.name`。
 
 Service 內同一交易完成兩件事：新增 coaches 列 + 指派該 user `coach` 角色；成功後會清除該 user 的 Redis 角色快取（`user_roles:{id}`），下一次請求即可看到新角色，不必等 15 分鐘 TTL 到期。
 
-回應：`CoachResponse`（與 `GET /coaches` 同型）。
+回應：[`CoachResponse`](../../bindings/CoachResponse.ts)（與 `GET /coaches` 同型）。
 錯誤：404（`user_id` 查無此使用者）；409（該 user 已是教練，或 `slug` 與其他教練衝突）。
 
 #### `PATCH /coaches/{id}` — admin
@@ -413,24 +345,24 @@ Service 內同一交易完成兩件事：新增 coaches 列 + 指派該 user `co
 錯誤：404（查無此教練）；409（`slug` 與其他教練衝突）。
 
 #### `GET /coaches/{id}/schedule` — 公開
-回應：`CoachScheduleResponse[]`：`{ id, day_of_week (0-6), start_time ("HH:MM:SS"), end_time, is_available }`。已下架資源走公開明細一律 404，與不存在同形。
+回應：[`CoachScheduleResponse`](../../bindings/CoachScheduleResponse.ts)`[]`（`day_of_week` 為 0-6）。已下架資源走公開明細一律 404，與不存在同形。
 
 #### `PUT /coaches/{id}/schedule` — 需登入
 Body：`{ schedules: [{ day_of_week, start_time, end_time, is_available }] }`。整批覆蓋該教練的排班。回應：更新後的 `CoachScheduleResponse[]`。
 錯誤：409（教練班表時段重疊）。
 
 #### `POST /coaches/{id}/clock-in` / `POST /coaches/{id}/clock-out` — 需登入
-Body（clock-in）：`{ note? }`（≤500 字）。回應（`ClockRecordResponse`）：`{ id, clock_in, clock_out, note, created_at }`。clock-out 無 body。同一教練同時只能有一筆未結束的打卡（DB 唯一索引保證）。
+Body（clock-in）：`{ note? }`（≤500 字）。回應：[`ClockRecordResponse`](../../bindings/ClockRecordResponse.ts)。clock-out 無 body。同一教練同時只能有一筆未結束的打卡（DB 唯一索引保證）。
 
 #### `GET /coaches/{id}/clock-records?page=&per_page=` — 需登入
-回應：`ClockRecordResponse[]`（**純陣列**，依 `clock_in DESC`；雖吃 `page`/`per_page` query 但回應本身不含分頁 meta，`total` 需前端自行處理或忽略）。
+回應：[`ClockRecordResponse`](../../bindings/ClockRecordResponse.ts)`[]`（**純陣列**，依 `clock_in DESC`；雖吃 `page`/`per_page` query 但回應本身不含分頁 meta，`total` 需前端自行處理或忽略）。
 
 ---
 
 ### 3.5 Venues
 
 #### `GET /venues` — 公開
-回應：`VenueResponse[]`（**純陣列，不分頁**）：`{ id, category_id, name, slug, description, features, image_url, is_active, created_at }`。
+回應：[`VenueResponse`](../../bindings/VenueResponse.ts)`[]`（**純陣列，不分頁**）。
 
 #### `GET /venues/{slug}` — 公開
 **僅接受 slug**（不像 courses/products 支援 UUID fallback）。回應：`VenueResponse`。已下架資源走公開明細一律 404，與不存在同形。
@@ -447,12 +379,12 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, descri
 ### 3.6 Schedule
 
 #### `GET /schedule?year=&month=` — 公開
-回應：`DaySchedule[]`（每日一筆）：`{ date: "YYYY-MM-DD", slots: TimeSlotResponse[] }`。
+回應：[`DaySchedule`](../../bindings/DaySchedule.ts)`[]`（每日一筆）。
 
-`TimeSlotResponse`：`{ id, date, start_time, end_time, venue_id, course_id, capacity, booked, status: "available"|"limited"|"full"|"closed", price_cents }`。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。`booked` 是該時段目前佔位的預約數（狀態為 `pending`/`confirmed`/`completed`/`no_show`，只有 `cancelled` 不計），每次讀取時計算、不落地儲存（ADR-0015）；欄位名稱與型別不變，`status` 依它推導。
+[`TimeSlotResponse`](../../bindings/TimeSlotResponse.ts)：`status` 值域為 [`SlotStatus`](../../bindings/SlotStatus.ts)（`available`/`limited`/`full`/`closed`），讀取時依 `booked`/`capacity`/`is_closed` 推導、不落地（見下方 `PATCH /schedule/slots/{id}`）。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。`booked` 是該時段目前佔位的預約數（狀態為 `pending`/`confirmed`/`completed`/`no_show`，只有 `cancelled` 不計），每次讀取時計算、不落地儲存（ADR-0015）；欄位名稱與型別不變，`status` 依它推導。
 
 #### `GET /schedule/availability?date=YYYY-MM-DD` — 公開
-回應：`TimeSlotResponse[]`（純陣列，當日所有時段）。
+回應：[`TimeSlotResponse`](../../bindings/TimeSlotResponse.ts)`[]`（純陣列，當日所有時段）。
 
 #### `POST /schedule/slots` — 需登入
 Body：`{ slots: [{ date, start_time, end_time, venue_id?, course_id?, capacity, price_cents? }] }`。`price_cents` 選填，省略預設 `0`（§1.5）。回應：建立後的時段列表（`TimeSlotResponse[]`）。
@@ -469,29 +401,14 @@ Body：`{ is_closed: boolean }`。admin 手動關閉／重新開放單一時段�
 - `POST /bookings` 建立預約時，會把當下 `time_slot_id` 對應 slot 的 `price_cents` **複製（快照）**進新建立的 `bookings.price_cents`——之後該 slot 被改價，既有 booking 的 `price_cents` 不受影響。
 - `PATCH /bookings/{id}/cancel` 取消預約**不會**清除或歸零 `price_cents`；`BookingResponse` 回應中的 `price_cents` 在取消前後維持不變。
 - 詳見 §1.5 金額慣例。
+- 回應型別已產生：單筆 [`BookingResponse`](../../bindings/BookingResponse.ts)、分頁列表 [`PaginatedBookingsResponse`](../../bindings/PaginatedBookingsResponse.ts)（端點語意仍未收錄）。
 
 ---
 
 ### 3.7 Products
 
 #### `GET /products?product_type=&page=&per_page=` — 公開
-`product_type` 選填篩選：`ticket|course_package|membership|merchandise`（大小寫敏感）。回應（`ProductListResponse`）：`{ "products": [ProductResponse], "total", "page", "per_page" }`。錯誤：422（`product_type` 帶值但不在允許值域內）。
-
-`ProductResponse`：
-
-```jsonc
-{
-  "id": "uuid", "name": "string", "slug": "string",
-  "product_type": "ticket|course_package|membership|merchandise",
-  "description": "string|null", "price_cents": "number",
-  "original_price_cents": "number|null", "features": ["string"],
-  "is_highlighted": "boolean", "badge": "string|null",
-  "stock": "number|null", "quota": "number|null", "sold": "number",
-  "valid_days": "number|null",
-  "session_count": "number|null", "is_active": "boolean",
-  "created_at": "ISO8601", "updated_at": "ISO8601"
-}
-```
+`product_type` 選填篩選：`ticket|course_package|membership|merchandise`（大小寫敏感）。回應：[`ProductListResponse`](../../bindings/ProductListResponse.ts)，列為 [`ProductResponse`](../../bindings/ProductResponse.ts)。錯誤：422（`product_type` 帶值但不在允許值域內）。
 
 `stock: null` = 無限庫存（票券/方案皆為 null；只有實體商品 merchandise 才會有限量庫存數字）。`quota` 為 `stock` 的直接映射（同一個值，語意相同，null = 無限）。`sold` = 該商品在「已付款類」訂單（`paid`/`processing`/`completed`）中 `order_items.quantity` 的總和，一次 GROUP BY 查詢算完，無訂單時為 `0`。
 
@@ -508,28 +425,9 @@ Create body：`{ name, slug?, product_type, description?, price_cents, original_
 購物車不再只認 `product_id` — 現在每筆項目透過 `item_type`（`"product"` 或 `"course"`）+ `item_id`（該 product 或 course 的 UUID）指定目標。
 
 #### `GET /cart` — 需登入
-回應（`CartResponse`）：
+回應：[`CartResponse`](../../bindings/CartResponse.ts)，`items` 為 [`CartItemResponse`](../../bindings/CartItemResponse.ts)`[]`。
 
-```jsonc
-{
-  "items": [
-    {
-      "id": "uuid",              // cart item 自己的 id（PATCH/DELETE 用這個）
-      "item_type": "product|course",
-      "item_id": "uuid",         // 對應的 product_id 或 course_id
-      "name": "string", "slug": "string",
-      "quantity": "number",
-      "unit_price_cents": "number",
-      "subtotal_cents": "number",
-      "is_active": "boolean"    // 對應 product/course 目前是否已下架；前端可用它標記
-                                // 「這行結帳時會被擋下」，提示買家先移除
-    }
-  ],
-  "total_cents": "number"
-}
-```
-
-`is_active` 是即時 join 現在的商品/課程目錄取得（`COALESCE(products.is_active, courses.is_active)`——每筆恰對應其中一邊），不是快照欄位。`is_active: false` 的行結帳時會被整批擋下（422，見 §3.10），前端可據此提前標記、提示買家移除。
+每行的 `id` 是 cart item 自己的 id（`PATCH`/`DELETE /cart/items/{id}` 用這個）；`item_id` 是對應的 product_id 或 course_id（依 `item_type`）。`is_active` 表示對應的 product/course 目前是否仍上架，是即時 join 現在的商品/課程目錄取得（`COALESCE(products.is_active, courses.is_active)`——每筆恰對應其中一邊），不是快照欄位。`is_active: false` 的行結帳時會被整批擋下（422，見 §3.10），前端可據此提前標記、提示買家移除。
 
 #### `POST /cart/items` — 需登入
 Body：`{ item_type: "product"|"course", item_id: "uuid", quantity? }`（quantity 預設 1，範圍 1-999）。回應：更新後的 `CartResponse`。
@@ -555,16 +453,7 @@ Body：`{ item_type: "product"|"course", item_id: "uuid", quantity? }`（quantit
 ### 3.9 Coupons
 
 #### `GET /coupons?page=&per_page=` — admin
-回應（`CouponListResponse`）：`{ "coupons": [CouponResponse], "total", "page", "per_page" }`（分頁慣例見 §1.4）。
-
-`CouponResponse`：
-
-```jsonc
-{
-  "id": "uuid", "code": "string", "discount_cents": "number",
-  "is_active": "boolean", "expires_at": "ISO8601|null", "created_at": "ISO8601"
-}
-```
+回應：[`CouponListResponse`](../../bindings/CouponListResponse.ts)，列為 [`CouponResponse`](../../bindings/CouponResponse.ts)（分頁慣例見 §1.4）。`expires_at` 為 `null` 表示永久有效。
 
 #### `POST /coupons` — admin
 Body（`CreateCouponRequest`）：`{ code, discount_cents, expires_at? }`（code 1-50 字；discount_cents 須 `>= 1`）。回應：`CouponResponse`（見上）。
@@ -580,7 +469,7 @@ Body（皆選填，`UpdateCouponRequest`）：`{ discount_cents?, is_active?, ex
 錯誤：404（查無此 coupon）。
 
 #### `GET /coupons/{code}/validate?subtotal_cents=` — 需登入（任何已登入使用者，無角色限制）
-`subtotal_cents` 選填。回應（`CouponValidateResponse`）：`{ "code": "string", "discount_cents": "number", "applied_discount_cents"?: "number" }`。`discount_cents` 恆為券面額，不受夾擠影響；帶了 `subtotal_cents` 才多回 `applied_discount_cents = min(discount_cents, subtotal_cents)`——與結帳（`POST /orders`，見 §3.10）同一夾擠規則（`orders::pricing::clamp_coupon_discount`）。不帶 `subtotal_cents` 時，回應逐位元組不變（`applied_discount_cents` 完全不出現在 JSON 中，向後相容既有呼叫端）。
+`subtotal_cents` 選填。回應：[`CouponValidateResponse`](../../bindings/CouponValidateResponse.ts)。`discount_cents` 恆為券面額，不受夾擠影響；帶了 `subtotal_cents` 才多回 `applied_discount_cents = min(discount_cents, subtotal_cents)`——與結帳（`POST /orders`，見 §3.10）同一夾擠規則（`orders::pricing::clamp_coupon_discount`）。不帶 `subtotal_cents` 時，回應逐位元組不變（`applied_discount_cents` 完全不出現在 JSON 中，向後相容既有呼叫端）。
 判定「有效」= `is_active = true` 且（`expires_at` 為 null 或尚未過期）。
 錯誤：404（`"coupon not found"` — 不存在、未啟用、已過期皆回此訊息，不區分原因）；422（`subtotal_cents` 為負數——此檢查先於 coupon 查詢，故未知 code 加負值一律回 422，不回 404）；400（`subtotal_cents` 無法解析為整數，如 `?subtotal_cents=abc`——回 `"subtotal_cents must be an integer"`，維持 §1.3 的 JSON 錯誤格式，不是框架預設的純文字拒絕）。
 
