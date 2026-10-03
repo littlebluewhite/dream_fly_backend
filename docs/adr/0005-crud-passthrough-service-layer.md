@@ -69,3 +69,9 @@ repository 呼叫幾乎零加值的轉手函式，統計結果：
 - 此裁決建立在現有 REST JSON 剖面（六檔模組結構 + §1.4 具名複數鍵分頁）之上；若未來出現第三種
   剖面需求（例如 GraphQL 的欄位選擇式查詢，或另一種要求泛型分頁的 client），代表消費端形狀已經
   超出本 ADR 的假設範圍，應重開本 ADR 重新評估，而非在現有剖面上硬套變通。
+
+## 增補(2026-10,W-3):wire 型別產生不改變「不做泛型 `Paginated<T>`」
+
+ADR-0016 讓 response DTO 經 ts-rs 產生前端型別。具名信封(`CouponListResponse`、`OrderListResponse`……)
+各自輸出一個 TS 型別,`PageMeta` 經 `#[serde(flatten)]` 內嵌為 `total`/`page`/`per_page` 欄位,形狀與
+§1.4 一致。產生型別不需要也不構成引入泛型 `Paginated<T>` 的理由——本 ADR 的裁決照舊。
