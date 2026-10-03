@@ -387,6 +387,34 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
     assert_eq!(total_bookings, 1);
 }
 
+/// 取消與新增競速:容量 1 的 slot 上 A 持有唯一座位,A 取消的同時 B 預約。
+/// 兩種先後都合法(B 先搶輸 → 滿額 400;取消先落地 → B 成功),不變式是座位
+/// 絕不超賣,且最終佔位數恰等於 B 是否成功。
+#[sqlx::test]
+async fn concurrent_cancel_and_create_never_oversell(db: PgPool) {
+    let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
+    let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
+    let slot = TimeSlotSeed::new(1, common::today_utc()).insert(&db).await;
+    let req = move || CreateBookingRequest { time_slot_id: slot, note: None };
+    let held = service::create_booking(&db, common::studio_now_utc(Utc::now()), user_a, req(), None)
+        .await
+        .expect("A takes the only seat");
+
+    let (db_c, db_b) = (Arc::new(db.clone()), Arc::new(db.clone()));
+    let auth_a = common::member_auth(user_a);
+    let cancel = tokio::spawn(async move {
+        service::cancel_booking(db_c.as_ref(), common::studio_now_utc(Utc::now()), &auth_a, held.id, None).await
+    });
+    let create = tokio::spawn(async move {
+        service::create_booking(db_b.as_ref(), common::studio_now_utc(Utc::now()), user_b, req(), None).await
+    });
+    let (cancelled, created) = tokio::join!(cancel, create);
+    cancelled.expect("cancel task panicked").expect("A's cancel always succeeds");
+    let b_got_seat = created.expect("create task panicked").is_ok();
+
+    assert_eq!(common::slot_booked(&db, slot).await, i32::from(b_got_seat));
+}
+
 // ---------------------------------------------------------------------
 // Pin tests: `bookings::occupancy` 收攏前既有的三個分類/優先序行為——
 // 釘住行為不變,不是新行為。
