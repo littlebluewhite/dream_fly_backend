@@ -19,7 +19,7 @@ pub async fn me(
     auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PointsMeResponse>, AppError> {
-    let result = service::get_my_points(&state.db, auth.user_id, &params).await?;
+    let result = service::get_my_points(&state.db, auth.user_id, &params, state.studio_now()).await?;
     Ok(Json(result))
 }
 

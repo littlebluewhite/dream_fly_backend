@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::pagination::PaginationParams;
+use crate::utils::studio_clock::StudioNow;
 
 use super::dto::{
     AdjustPointsRequest, LedgerEntryResponse, PointsAdjustmentResponse, PointsMeResponse,
@@ -228,6 +229,7 @@ pub async fn get_my_points(
     db: &PgPool,
     user_id: Uuid,
     pagination: &PaginationParams,
+    at: StudioNow,
 ) -> Result<PointsMeResponse, AppError> {
     let balance = repository::find_balance(db, user_id)
         .await?
@@ -237,9 +239,11 @@ pub async fn get_my_points(
         repository::find_ledger_by_user(db, user_id, pagination.limit(), pagination.offset())
             .await?;
     let total = repository::count_ledger_by_user(db, user_id).await?;
+    let earned_this_month = repository::sum_earned_in_studio_month(db, user_id, at).await?;
 
     Ok(PointsMeResponse {
         balance,
+        earned_this_month,
         ledger: entries.into_iter().map(LedgerEntryResponse::from).collect(),
         meta: pagination.meta(total),
     })

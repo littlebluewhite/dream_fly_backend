@@ -738,6 +738,7 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
 ```jsonc
 {
   "balance": "number",
+  "earned_this_month": "number",
   "ledger": [
     { "id": "uuid", "delta": "number", "balance_after": "number",
       "reason": "checkout_earn|checkout_redeem|admin_adjust|redeem|refund_restore|refund_clawback",
@@ -746,6 +747,8 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
   "total": "number", "page": "number", "per_page": "number"
 }
 ```
+
+`earned_this_month`：本工作室月份（`server.studio_timezone`）內 `reason = checkout_earn` 的 `delta` 總和，不分頁、不受 `page`/`per_page` 影響；退款扣回（`refund_clawback`）與其他 reason 一律不計入、不相減，無資料為 `0`。
 
 `delta` 可正可負（`checkout_redeem`/`redeem`/`refund_clawback` 恆為負、`checkout_earn`/`refund_restore` 恆為正——完整值域與符號慣例見 §1.6）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
 

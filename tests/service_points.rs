@@ -471,6 +471,7 @@ async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
             page: 1,
             per_page: 500,
         },
+        common::studio_now_utc(chrono::Utc::now()),
     )
     .await
     .expect("get_my_points");

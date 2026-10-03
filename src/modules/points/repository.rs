@@ -1,6 +1,8 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use crate::utils::studio_clock::StudioNow;
+
 use super::model::{OrderPointsFlow, PointLedgerEntry, PointReason};
 
 /// Current points balance for a user (NOT NULL column on `users`). `None`
@@ -57,6 +59,25 @@ pub async fn count_ledger_by_user(db: &PgPool, user_id: Uuid) -> Result<i64, sql
         .bind(user_id)
         .fetch_one(db)
         .await
+}
+
+/// Sum of the user's `checkout_earn` deltas in the studio month containing
+/// `at.now`. Clawbacks and every other reason are deliberately not netted.
+pub async fn sum_earned_in_studio_month(
+    db: &PgPool,
+    user_id: Uuid,
+    at: StudioNow,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(delta), 0)::BIGINT FROM point_ledger \
+         WHERE user_id = $1 AND reason = 'checkout_earn' \
+           AND date_trunc('month', created_at AT TIME ZONE $3) = studio_month_anchor($2, $3)",
+    )
+    .bind(user_id)
+    .bind(at.now)
+    .bind(at.tz.name())
+    .fetch_one(db)
+    .await
 }
 
 /// Atomically adjust a user's points balance inside the caller's

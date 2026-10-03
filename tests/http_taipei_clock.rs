@@ -8,11 +8,12 @@ mod common;
 
 use chrono::{Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use common::fixtures::{
-    TimeSlotSeed, seed_booking, seed_course, seed_course_session, seed_enrolment,
+    TimeSlotSeed, seed_point_ledger_entry, seed_booking, seed_course, seed_course_session, seed_enrolment,
 };
 use common::http::{TestApp, spawn_test_app_with};
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::points::model::PointReason;
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -121,4 +122,33 @@ async fn coach_report_today_sessions_uses_taipei_date(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert_eq!(body["today_sessions"], 2);
+}
+
+/// `earned_this_month` follows the studio month, not the UTC month: at Taipei
+/// 2026-07-15 the month began at 2026-06-30 16:00Z, so a row one second before
+/// that is June, and one at 2026-07-31 16:00Z is already August.
+#[sqlx::test]
+async fn points_me_earned_this_month_uses_studio_month_boundaries(db: PgPool) {
+    let app = taipei_app_at_half_past_midnight(db).await;
+    let user = app.register_member("pts-taipei@example.com", "Password!234").await;
+    let at = |y, mo, d, h, mi, s| Utc.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap();
+    let rows = [
+        (at(2026, 6, 30, 15, 59, 59), PointReason::CheckoutEarn, 1000), // Taipei June 30: excluded
+        (at(2026, 6, 30, 16, 0, 0), PointReason::CheckoutEarn, 1),      // Taipei July 1 00:00: in
+        (at(2026, 7, 14, 16, 0, 0), PointReason::CheckoutEarn, 20),     // in
+        (at(2026, 7, 14, 16, 0, 0), PointReason::RefundClawback, -5),   // other reason: excluded
+        (at(2026, 7, 14, 16, 0, 0), PointReason::AdminAdjust, 300),     // other reason: excluded
+        (at(2026, 7, 31, 16, 0, 0), PointReason::CheckoutEarn, 2000),   // Taipei Aug 1: excluded
+    ];
+    for (created_at, reason, delta) in rows {
+        seed_point_ledger_entry(&app.db, user.user_id, delta, delta, reason, None, created_at)
+            .await;
+    }
+
+    let resp = app
+        .get("/api/v1/points/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<serde_json::Value>()["earned_this_month"], 21);
 }

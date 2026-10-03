@@ -91,6 +91,50 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
 }
 
 #[sqlx::test]
+async fn me_includes_earned_this_month_counting_only_checkout_earn(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let user = app
+        .register_member("pts-earned@example.com", "Password!234")
+        .await;
+    let now = app.studio_now().now;
+    for (delta, reason) in [
+        (30, PointReason::CheckoutEarn),
+        (12, PointReason::CheckoutEarn),
+        (-8, PointReason::RefundClawback),
+        (50, PointReason::AdminAdjust),
+        (-5, PointReason::CheckoutRedeem),
+    ] {
+        seed_point_ledger_entry(&app.db, user.user_id, delta, delta, reason, None, now).await;
+    }
+    // Same month last year: must not count.
+    seed_point_ledger_entry(
+        &app.db,
+        user.user_id,
+        999,
+        999,
+        PointReason::CheckoutEarn,
+        None,
+        now - Duration::days(366),
+    )
+    .await;
+
+    let resp = app
+        .get("/api/v1/points/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["earned_this_month"], 42);
+    // ledger is paginated, earned_this_month is not: one-row pages still report it.
+    let paged: serde_json::Value = app
+        .get("/api/v1/points/me?page=1&per_page=1")
+        .authorization_bearer(&user.access_token)
+        .await
+        .json();
+    assert_eq!(paged["earned_this_month"], 42);
+}
+
+#[sqlx::test]
 async fn me_paginates_newest_first(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app

@@ -33,6 +33,9 @@ impl From<PointLedgerEntry> for LedgerEntryResponse {
 #[derive(Debug, Serialize)]
 pub struct PointsMeResponse {
     pub balance: i64,
+    /// Sum of `checkout_earn` deltas in the current studio month (clawbacks
+    /// not netted); independent of ledger pagination.
+    pub earned_this_month: i64,
     pub ledger: Vec<LedgerEntryResponse>,
     #[serde(flatten)]
     pub meta: PageMeta,
