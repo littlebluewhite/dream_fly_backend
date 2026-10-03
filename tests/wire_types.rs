@@ -289,23 +289,80 @@ fn every_serialize_dto_is_listed() {
     }
     for (file, module) in files {
         let text = fs::read_to_string(&file).unwrap();
-        let mut serialize = false;
-        for line in text.lines().map(str::trim) {
-            if let Some(derives) = line.strip_prefix("#[derive(") {
-                serialize = derives.trim_end_matches(")]").split(',').any(|d| d.trim() == "Serialize");
-            } else if let Some(name) = ["pub struct ", "pub enum "].iter().find_map(|p| line.strip_prefix(p)) {
-                let name = name.split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap();
-                let short = format!("{}::{name}", module.trim_start_matches("modules::"));
-                let full = format!("dream_fly_backend::{module}::{name}");
-                assert!(
-                    !serialize || listed.contains(&full.as_str()) || NOT_WIRE_TYPES.iter().any(|(n, _)| *n == short),
-                    "{full} derives Serialize but is not a wire type: derive ts_rs::TS and add it to \
-                     wire_types!, or add it to NOT_WIRE_TYPES with a reason"
-                );
-                serialize = false;
-            }
+        for name in serialize_item_names(&text) {
+            let short = format!("{}::{name}", module.trim_start_matches("modules::"));
+            let full = format!("dream_fly_backend::{module}::{name}");
+            assert!(
+                listed.contains(&full.as_str()) || NOT_WIRE_TYPES.iter().any(|(n, _)| *n == short),
+                "{full} derives Serialize but is not a wire type: derive ts_rs::TS and add it to \
+                 wire_types!, or add it to NOT_WIRE_TYPES with a reason"
+            );
         }
     }
+}
+
+/// Names of the `struct`/`enum` items in `text` whose `#[derive(...)]` lists
+/// `Serialize`. The derive may span several lines and the item may be
+/// `pub` or `pub(crate)`; attributes between the derive and the item are skipped.
+fn serialize_item_names(text: &str) -> Vec<String> {
+    fn item_name(line: &str) -> Option<&str> {
+        let rest = line.strip_prefix("pub")?;
+        let rest = if rest.starts_with('(') { rest.split_once(')')?.1 } else { rest };
+        let rest = rest.trim_start();
+        let name = rest.strip_prefix("struct ").or_else(|| rest.strip_prefix("enum "))?;
+        name.split(|c: char| !c.is_alphanumeric() && c != '_').next()
+    }
+
+    let mut names = Vec::new();
+    let mut serialize = false;
+    let mut open_derive: Option<String> = None;
+    for line in text.lines().map(str::trim) {
+        if let Some(derive) = open_derive.as_mut() {
+            derive.push_str(line);
+        } else if let Some(rest) = line.strip_prefix("#[derive(") {
+            open_derive = Some(rest.to_owned());
+        } else if let Some(name) = item_name(line) {
+            if serialize {
+                names.push(name.to_owned());
+            }
+            serialize = false;
+        }
+        if open_derive.as_ref().is_some_and(|d| d.contains(")]")) {
+            let derive = open_derive.take().unwrap();
+            let derives = derive.split(")]").next().unwrap();
+            serialize = derives.split(',').any(|d| d.trim() == "Serialize");
+        }
+    }
+    names
+}
+
+#[test]
+fn serialize_scanner_handles_multiline_derives_and_pub_crate() {
+    let sample = "\
+#[derive(Debug, Serialize)]
+pub struct OneLine {}
+
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    ts_rs::TS,
+)]
+#[serde(rename_all = \"snake_case\")]
+pub enum MultiLine {}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Crate {}
+
+#[derive(
+    Debug,
+    Deserialize,
+)]
+pub struct NotSerialized {}
+
+pub struct NoDerive {}
+";
+    assert_eq!(serialize_item_names(sample), ["OneLine", "MultiLine", "Crate"]);
 }
 
 /// `export type { X } from "./X";` per exported file, sorted by path.
