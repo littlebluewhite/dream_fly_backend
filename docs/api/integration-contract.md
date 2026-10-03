@@ -247,7 +247,7 @@ Body：`{ phone }`（8-20 字）。回應：`{ "message": "verification code sen
 #### `POST /auth/otp/verify` — 需登入
 Body：`{ phone, code }`（code 恰 6 碼）。回應：`{ "message": "phone verified successfully" }`。成功後 `users.phone_verified = true`。
 限制：每組驗證碼最多錯 5 次。
-驗證碼只在資料庫寫入成功後才消耗：若寫入失敗（例如該手機已被其他使用者驗證 → 409），驗證碼仍有效，可在有效期內重試。
+驗證碼只在資料庫寫入成功後才消耗：若寫入失敗（例如該手機已被其他使用者驗證 → 409），驗證碼仍有效，可在有效期內重試。若寫入成功但隨後消耗驗證碼失敗，該請求回 500，但驗證碼仍有效，重試是幂等的。
 
 #### `POST /auth/password/forgot` — 公開
 Body：`{ email }`。回應恆為 `{ "message": "if that email exists, a password reset link has been sent" }`（不論 email 是否存在，避免帳號枚舉）。重設連結 15 分鐘有效，寄送至信箱。

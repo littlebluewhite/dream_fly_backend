@@ -1080,7 +1080,14 @@ async fn verify_otp_conflict_keeps_code_usable(db: PgPool) {
         "expected unique violation, got: {err:?}"
     );
 
-    // The DB write failed, so the code was not burned: free the phone, retry.
+    // The DB write failed, so the code was not burned — and the failed attempt
+    // stays counted (retained, not reset): free the phone, retry.
+    let attempts_key = format!("otp_attempts:{user_id}");
+    assert_eq!(
+        store.get(&attempts_key).await.expect("read attempts").as_deref(),
+        Some("1"),
+        "the 409 must keep the attempt count, not reset it"
+    );
     sqlx::query("UPDATE users SET phone_verified = false WHERE id = $1")
         .bind(owner)
         .execute(&db)
