@@ -342,10 +342,12 @@ pub struct TimeSlotSeed {
 }
 
 impl TimeSlotSeed {
-    pub fn new(capacity: i32) -> Self {
+    /// `today` is the studio-local date (`TestApp::today()` / `StudioNow::today()`);
+    /// the default date is two studio days after it.
+    pub fn new(capacity: i32, today: NaiveDate) -> Self {
         Self {
             capacity,
-            date: (Utc::now() + Duration::days(2)).date_naive(),
+            date: today + Duration::days(2),
             start: NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
             course_id: None,
             venue_id: None,
@@ -1034,7 +1036,7 @@ pub async fn seed_venue_rentals(
     slot_date: NaiveDate,
     rentals: &[(BookingStatus, i64)],
 ) -> Vec<Uuid> {
-    let slot_id = TimeSlotSeed::new(rentals.len() as i32).on(slot_date).insert(db).await;
+    let slot_id = TimeSlotSeed::new(rentals.len() as i32, slot_date).on(slot_date).insert(db).await;
     let mut booking_ids = Vec::with_capacity(rentals.len());
     for (status, price_cents) in rentals {
         let email = format!("venue-rental-{}@example.com", Uuid::now_v7());
@@ -1065,16 +1067,18 @@ pub struct LeaveScene {
 /// 呼叫端已有 `seed_course`/`CourseSeed` 可選。
 /// `makeup_session_id` 給 `Some` 時,額外把它寫回
 /// `leave_requests.makeup_session_id`——回補場次本身仍由呼叫端以
-/// `seed_course_session` 建立,composite 只負責串接這最後一步。Returns the
-/// new scene.
+/// `seed_course_session` 建立,composite 只負責串接這最後一步。
+/// `today` is the studio-local date; the session is placed on the next studio
+/// day. Returns the new scene.
 pub async fn seed_leave_scene(
     db: &PgPool,
     user_id: Uuid,
     course_id: Uuid,
     status: LeaveStatus,
     makeup_session_id: Option<Uuid>,
+    today: NaiveDate,
 ) -> LeaveScene {
-    let tomorrow = (Utc::now() + Duration::days(1)).date_naive();
+    let tomorrow = today + Duration::days(1);
     let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
     let end = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
     let session = seed_course_session(db, course_id, tomorrow, start, end).await;

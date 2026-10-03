@@ -84,7 +84,7 @@ async fn e2e_booking_flow(db: PgPool) {
             "description": "Primary training hall",
         }))
         .await;
-    let slot_id = TimeSlotSeed::new(3).insert(&app.db).await;
+    let slot_id = TimeSlotSeed::new(3, app.today()).insert(&app.db).await;
 
     // Member lists schedule availability for tomorrow + 2d.
     let date = (chrono::Utc::now() + chrono::Duration::days(2)).date_naive();

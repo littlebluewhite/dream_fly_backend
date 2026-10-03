@@ -508,7 +508,7 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
 
     // A venue booking this month must show up in revenue_breakdown but stay
     // out of category_split (order-line 毛額 only) and its ratios.
-    let slot_id = TimeSlotSeed::new(10).on(months_ago(now, 0).date_naive()).insert(&db).await;
+    let slot_id = TimeSlotSeed::new(10, common::studio_now_utc(now).today()).on(months_ago(now, 0).date_naive()).insert(&db).await;
     seed_booking(&db, buyer, slot_id, BookingStatus::Confirmed, 100_000).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))

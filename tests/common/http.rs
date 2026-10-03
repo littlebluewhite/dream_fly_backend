@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use axum_test::TestServer;
+use chrono::NaiveDate;
 use serde_json::json;
 use sqlx::PgPool;
 use tokio_util::task::TaskTracker;
@@ -55,6 +56,8 @@ use dream_fly_backend::health::HealthProbe;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
+use dream_fly_backend::utils::clock::Clock;
+use dream_fly_backend::utils::studio_clock::StudioNow;
 use dream_fly_backend::state::{AppState, Infra, Overrides};
 use dream_fly_backend::utils::ephemeral::EphemeralStore;
 
@@ -163,6 +166,17 @@ pub struct TestApp {
 }
 
 impl TestApp {
+    /// The studio's "now" as the service layer sees it: the app's configured
+    /// studio timezone plus its (possibly pinned) clock.
+    pub fn studio_now(&self) -> StudioNow {
+        StudioNow { tz: self.config.server.studio_timezone, now: self.clock.now() }
+    }
+
+    /// The studio-local calendar date right now — what fixtures take as `today`.
+    pub fn today(&self) -> NaiveDate {
+        self.studio_now().today()
+    }
+
     /// Return a `POST` builder pre-decorated with auth + synthetic XFF.
     pub fn post(&self, path: &str) -> axum_test::TestRequest {
         self.server.post(path)

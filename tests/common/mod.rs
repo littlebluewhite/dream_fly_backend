@@ -74,6 +74,12 @@ pub fn studio_now_utc(now: chrono::DateTime<Utc>) -> StudioNow {
     }
 }
 
+/// Today's date with the studio timezone pinned to UTC (the default test
+/// config) — for service-layer tests that have no `TestApp`.
+pub fn today_utc() -> chrono::NaiveDate {
+    studio_now_utc(Utc::now()).today()
+}
+
 /// Build a Redis connection for tests (db 15, clear of the dev db 0).
 /// Expects a locally running Redis (docker-compose up) — override via
 /// `TEST_REDIS_URL` if needed. Only the Redis adapter tests use it

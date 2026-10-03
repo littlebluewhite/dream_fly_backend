@@ -129,7 +129,7 @@ async fn get_monthly_schedule_validates_month_range(db: PgPool) {
 
 #[sqlx::test]
 async fn get_monthly_schedule_returns_seeded_slot(db: PgPool) {
-    let _slot_id = TimeSlotSeed::new(5).insert(&db).await;
+    let _slot_id = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
     let now = Utc::now();
     // `TimeSlotSeed` defaults to 2 days from now, which is usually the
     // same month — if we've rolled into a new month, query that one.

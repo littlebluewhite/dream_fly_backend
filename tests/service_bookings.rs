@@ -25,7 +25,7 @@ use dream_fly_backend::modules::bookings::service;
 #[sqlx::test]
 async fn create_booking_increments_slot_booked(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
 
     let booking = service::create_booking(
         &db,
@@ -54,7 +54,7 @@ async fn create_booking_increments_slot_booked(db: PgPool) {
 #[sqlx::test]
 async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
 
     service::create_booking(
         &db,
@@ -93,7 +93,7 @@ async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
 async fn full_slot_rejects_new_booking(db: PgPool) {
     let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
     let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(1).insert(&db).await;
+    let slot = TimeSlotSeed::new(1, common::today_utc()).insert(&db).await;
 
     service::create_booking(
         &db,
@@ -130,7 +130,7 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
 #[sqlx::test]
 async fn closed_slot_rejects_new_booking(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
     sqlx::query("UPDATE time_slots SET is_closed = true WHERE id = $1")
         .bind(slot)
         .execute(&db)
@@ -160,7 +160,7 @@ async fn closed_slot_rejects_new_booking(db: PgPool) {
 #[sqlx::test]
 async fn cancel_booking_frees_seat_and_is_idempotent(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
     let auth = common::member_auth(user);
 
     let booking = service::create_booking(
@@ -213,7 +213,7 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     // in the past). We do this by seeding the slot row directly with the
     // current UTC date + a start_time in the near future.
     let soon = (Utc::now() + Duration::hours(3)).date_naive();
-    let slot = TimeSlotSeed::new(5)
+    let slot = TimeSlotSeed::new(5, common::today_utc())
         .on(soon)
         .start((Utc::now() + Duration::hours(3)).time())
         .insert(&db)
@@ -248,7 +248,7 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
 #[sqlx::test]
 async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
 
     // `TimeSlotSeed` relies on the column default (0) — bump it to a
     // known non-zero price before booking so the snapshot assertion below
@@ -298,7 +298,7 @@ async fn create_booking_snapshots_slot_price_and_survives_repricing(db: PgPool) 
 #[sqlx::test]
 async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
     sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
         .bind(slot)
         .bind(12_345_i64)
@@ -336,7 +336,7 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
     // should read booked = 1.
     let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
     let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(1).insert(&db).await;
+    let slot = TimeSlotSeed::new(1, common::today_utc()).insert(&db).await;
 
     let db_a = Arc::new(db.clone());
     let db_b = Arc::new(db.clone());
@@ -426,7 +426,7 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let past_date = (Utc::now() - Duration::days(1)).date_naive();
     let past_time = (Utc::now() - Duration::days(1)).time();
-    let slot = TimeSlotSeed::new(1).on(past_date).start(past_time).insert(&db).await;
+    let slot = TimeSlotSeed::new(1, common::today_utc()).on(past_date).start(past_time).insert(&db).await;
     let other = common::seed_member(&db, "other@example.com", "passw0rd!").await;
     common::fixtures::seed_booking(&db, other, slot, BookingStatus::Confirmed, 0).await;
 
@@ -454,7 +454,7 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
 #[sqlx::test]
 async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
     let auth = common::member_auth(user);
 
     let booking = service::create_booking(
@@ -488,7 +488,7 @@ async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
 #[sqlx::test]
 async fn seeded_confirmed_booking_occupies_seat_so_cancel_frees_it(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let slot = TimeSlotSeed::new(5).insert(&db).await;
+    let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
     let auth = common::member_auth(user);
     let booking =
         common::fixtures::seed_booking(&db, user, slot, BookingStatus::Confirmed, 1_000).await;
@@ -544,7 +544,7 @@ async fn occupying_bookings_view_matches_occupies_seat(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let mut expected = Vec::new();
     for status in all_statuses {
-        let slot = TimeSlotSeed::new(5).insert(&db).await;
+        let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
         let occupies_seat = status.occupies_seat();
         let booking = common::fixtures::seed_booking(&db, user, slot, status, 0).await;
         if occupies_seat {

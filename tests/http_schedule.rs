@@ -34,7 +34,7 @@ async fn get_monthly_schedule_missing_params_returns_400(db: PgPool) {
 #[sqlx::test]
 async fn get_availability_returns_seeded_slot(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let id = TimeSlotSeed::new(10).insert(&app.db).await;
+    let id = TimeSlotSeed::new(10, app.today()).insert(&app.db).await;
 
     let date = (Utc::now() + Duration::days(2)).date_naive();
     let resp = app
@@ -134,7 +134,7 @@ async fn create_slots_overlapping_existing_venue_slot_returns_409(db: PgPool) {
     let (_admin, token) = app.seed_admin().await;
     let venue_id = seed_venue(&app.db, "Overlap Venue", None).await;
     // `TimeSlotSeed` defaults to today + 2 days, 10:00-11:00.
-    TimeSlotSeed::new(10).venue(venue_id).insert(&app.db).await;
+    TimeSlotSeed::new(10, app.today()).venue(venue_id).insert(&app.db).await;
     let date = (Utc::now() + Duration::days(2)).date_naive();
 
     let resp = app
@@ -165,7 +165,7 @@ async fn admin_closes_slot_then_monthly_shows_closed_status(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
     // `TimeSlotSeed` defaults to today + 2 days, 10:00-11:00.
-    let slot_id = TimeSlotSeed::new(10).insert(&app.db).await;
+    let slot_id = TimeSlotSeed::new(10, app.today()).insert(&app.db).await;
 
     let patch_resp = app
         .patch(&format!("/api/v1/schedule/slots/{slot_id}"))
@@ -201,7 +201,7 @@ async fn admin_closes_slot_then_monthly_shows_closed_status(db: PgPool) {
 async fn update_slot_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.register_member("smem2@example.com", "Password!234").await;
-    let slot_id = TimeSlotSeed::new(10).insert(&app.db).await;
+    let slot_id = TimeSlotSeed::new(10, app.today()).insert(&app.db).await;
 
     let resp = app
         .patch(&format!("/api/v1/schedule/slots/{slot_id}"))
