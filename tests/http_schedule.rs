@@ -36,7 +36,7 @@ async fn get_availability_returns_seeded_slot(db: PgPool) {
     let app = spawn_test_app(db).await;
     let id = TimeSlotSeed::new(10, app.today()).insert(&app.db).await;
 
-    let date = (Utc::now() + Duration::days(2)).date_naive();
+    let date = app.today() + Duration::days(2);
     let resp = app
         .get(&format!("/api/v1/schedule/availability?date={date}"))
         .await;
@@ -135,7 +135,7 @@ async fn create_slots_overlapping_existing_venue_slot_returns_409(db: PgPool) {
     let venue_id = seed_venue(&app.db, "Overlap Venue", None).await;
     // `TimeSlotSeed` defaults to today + 2 days, 10:00-11:00.
     TimeSlotSeed::new(10, app.today()).venue(venue_id).insert(&app.db).await;
-    let date = (Utc::now() + Duration::days(2)).date_naive();
+    let date = app.today() + Duration::days(2);
 
     let resp = app
         .post("/api/v1/schedule/slots")
@@ -175,7 +175,7 @@ async fn admin_closes_slot_then_monthly_shows_closed_status(db: PgPool) {
     assert_eq!(patch_resp.status_code(), 200, "body={}", patch_resp.text());
     assert_eq!(patch_resp.json::<serde_json::Value>()["status"], "closed");
 
-    let target_date = (Utc::now() + Duration::days(2)).date_naive();
+    let target_date = app.today() + Duration::days(2);
     let resp = app
         .get(&format!(
             "/api/v1/schedule?year={}&month={}",
