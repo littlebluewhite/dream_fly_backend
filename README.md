@@ -177,6 +177,16 @@ scripts/smoke.sh http://localhost:3000/api/v1  # 也可自行指定 BASE_URL
 
 API 完整契約（端點、認證、DTO 欄位、分頁/金額/點數慣例）見 [`docs/api/integration-contract.md`](docs/api/integration-contract.md)。
 
+## 前端 wire 型別（`bindings/`）
+
+`bindings/` 是由 Rust DTO 以 ts-rs 產生、並 commit 進版控的 TypeScript 型別，是前後端 wire 形狀的唯一來源。DTO 有變動時重新產生：
+
+```bash
+WIRE_BINDINGS=write cargo test --test wire_types
+```
+
+前端（`dream_fly_frontend`）以 `npm run wire:sync` 鏡像到 `src/lib/api/generated/`，`npm run check` 會比對是否過期。
+
 ## 常用指令
 
 ```bash
