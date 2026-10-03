@@ -144,6 +144,18 @@ async fn later_run_keeps_invariants(db: PgPool) {
             .expect("count zero-delta ledger rows");
     assert_eq!(zero_delta_rows, 0);
 
+    // ④ capacity invariant — the dropped `time_slots_booked_bound` CHECK used
+    // to guarantee it: no slot holds more occupying bookings than its capacity.
+    let over_capacity: Vec<(Uuid, i32, i64)> = sqlx::query_as(
+        "SELECT ts.id, ts.capacity, COUNT(ob.*) FROM time_slots ts \
+         JOIN occupying_bookings ob ON ob.time_slot_id = ts.id \
+         GROUP BY ts.id, ts.capacity HAVING COUNT(ob.*) > ts.capacity",
+    )
+    .fetch_all(&db)
+    .await
+    .expect("load over-capacity slots");
+    assert!(over_capacity.is_empty(), "over-capacity slots: {over_capacity:?}");
+
     let orders: Vec<(Uuid, i64, i64, OrderStatus)> = sqlx::query_as(
         "SELECT id, points_earned, points_used, status FROM orders \
          WHERE order_number LIKE 'DF-SEED-%'",
