@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "inquiry_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum InquiryStatus {
@@ -47,7 +47,7 @@ impl std::str::FromStr for InquiryStatus {
 /// strings `"general"`/`"trial"` are accepted, per
 /// docs/api/integration-contract.md §3.17), and this refactor preserves
 /// that behavior rather than silently loosening it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum InquiryType {
     General,

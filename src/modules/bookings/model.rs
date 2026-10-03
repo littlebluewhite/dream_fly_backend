@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "booking_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum BookingStatus {

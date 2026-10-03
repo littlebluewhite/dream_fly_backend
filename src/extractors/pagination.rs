@@ -9,7 +9,7 @@ pub struct PaginationParams {
 }
 
 /// Pagination envelope shared by list-endpoint DTOs via `#[serde(flatten)]`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PageMeta {
     pub total: i64,
     pub page: u32,

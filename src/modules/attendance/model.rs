@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Closed status set for a single (session, enrolment) attendance mark.
 /// Mirrors `enrolments::model::EnrolmentStatus`'s derive set — the closest
 /// sibling "closed status enum" in this codebase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "attendance_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum AttendanceStatus {
@@ -70,7 +70,7 @@ pub struct RosterRow {
 /// directly as the response field type). `enrolment_id` is the active
 /// enrolment tying this student to this course — the frontend's "write a
 /// report card" action needs it to call `POST /report-cards`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct StudentCourseBrief {
     pub course_id: Uuid,
     pub course_name: String,

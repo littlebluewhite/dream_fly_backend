@@ -9,7 +9,8 @@ use serde_json::json;
 /// Generic JSON response with a single `message` field. Used across
 /// modules for operations that return a confirmation string rather
 /// than a domain entity.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(rename = "MessageAck")]
 pub struct MessageResponse {
     pub message: String,
 }

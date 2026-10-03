@@ -23,7 +23,7 @@ pub struct CourseScheduleSlotEntry {
     pub venue: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CourseScheduleSlotResponse {
     pub id: Uuid,
     pub day_of_week: i16,
@@ -44,7 +44,7 @@ impl From<CourseScheduleSlot> for CourseScheduleSlotResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CourseResponse {
     pub id: Uuid,
     pub name: String,
@@ -99,14 +99,14 @@ impl From<Course> for CourseResponse {
 /// `schedule_slots`. Deliberately not used by the list endpoint
 /// (`CourseListResponse` stays `Vec<CourseResponse>`) to avoid an N+1 slots
 /// query per row — see docs/api/integration-contract.md §3.3.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CourseDetailResponse {
     #[serde(flatten)]
     pub course: CourseResponse,
     pub schedule_slots: Vec<CourseScheduleSlotResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CourseListResponse {
     pub courses: Vec<CourseResponse>,
     #[serde(flatten)]

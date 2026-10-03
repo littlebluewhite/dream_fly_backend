@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "subscription_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionStatus {

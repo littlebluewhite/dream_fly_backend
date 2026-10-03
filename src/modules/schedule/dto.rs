@@ -16,7 +16,7 @@ pub struct AvailabilityQuery {
     pub date: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct TimeSlotResponse {
     pub id: Uuid,
     pub date: NaiveDate,
@@ -51,7 +51,7 @@ impl From<TimeSlot> for TimeSlotResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct DaySchedule {
     pub date: NaiveDate,
     pub slots: Vec<TimeSlotResponse>,

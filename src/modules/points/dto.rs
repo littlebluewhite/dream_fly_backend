@@ -7,7 +7,7 @@ use crate::extractors::pagination::PageMeta;
 
 use super::model::{PointLedgerEntry, PointReason};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct LedgerEntryResponse {
     pub id: Uuid,
     pub delta: i64,
@@ -30,7 +30,7 @@ impl From<PointLedgerEntry> for LedgerEntryResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PointsMeResponse {
     pub balance: i64,
     /// Sum of `checkout_earn` deltas in the current studio month (clawbacks
@@ -77,7 +77,7 @@ fn validate_nonzero_delta(delta: i64) -> Result<(), ValidationError> {
 /// user's balance later uses `GET /users/{id}`'s `points_balance`
 /// (`users::dto::UserResponse`); confirming the exact `AdminAdjust`
 /// ledger row still means a direct `point_ledger` query.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PointsAdjustmentResponse {
     pub user_id: Uuid,
     pub balance: i64,

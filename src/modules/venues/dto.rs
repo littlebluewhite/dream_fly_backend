@@ -8,7 +8,7 @@ use crate::utils::url_validation::validate_stored_url;
 
 use super::model::Venue;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct VenueCategoryResponse {
     pub id: Uuid,
     pub name: String,
@@ -17,7 +17,7 @@ pub struct VenueCategoryResponse {
     pub display_order: i32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct VenueResponse {
     pub id: Uuid,
     pub category_id: Option<Uuid>,
@@ -46,7 +46,7 @@ impl From<Venue> for VenueResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct VenueWithCategoryResponse {
     pub venue: VenueResponse,
     pub category: Option<VenueCategoryResponse>,

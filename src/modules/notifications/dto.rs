@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::model::{Notification, NotificationType};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct NotificationResponse {
     pub id: Uuid,
     #[serde(rename = "type")]
@@ -30,7 +30,7 @@ impl From<Notification> for NotificationResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct UnreadCountResponse {
     pub count: i64,
 }

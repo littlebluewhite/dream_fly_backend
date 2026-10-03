@@ -8,7 +8,7 @@ use crate::utils::double_option::deserialize_some;
 
 use super::model::{RedemptionWithReward, Reward};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RewardResponse {
     pub id: Uuid,
     pub name: String,
@@ -37,7 +37,7 @@ impl From<Reward> for RewardResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RewardListResponse {
     pub rewards: Vec<RewardResponse>,
 }
@@ -51,14 +51,14 @@ pub struct RewardListQuery {
 }
 
 /// Response for `POST /rewards/{id}/redeem`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RedeemResponse {
     pub redemption_id: Uuid,
     pub points_spent: i32,
     pub balance_after: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RedemptionResponse {
     pub id: Uuid,
     pub reward_id: Uuid,
@@ -79,7 +79,7 @@ impl From<RedemptionWithReward> for RedemptionResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RedemptionListResponse {
     pub redemptions: Vec<RedemptionResponse>,
     #[serde(flatten)]

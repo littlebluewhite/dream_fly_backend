@@ -55,7 +55,7 @@ impl MakeupInfo {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct LeaveRequestResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -117,7 +117,7 @@ pub struct LeaveRequestQuery {
     pub course_id: Option<Uuid>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct AdminLeaveRequestResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -163,7 +163,7 @@ impl From<AdminLeaveRequestRow> for AdminLeaveRequestResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct LeaveRequestListResponse {
     pub leave_requests: Vec<AdminLeaveRequestResponse>,
     #[serde(flatten)]

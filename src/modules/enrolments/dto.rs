@@ -7,7 +7,7 @@ use crate::modules::courses::model::CourseLevel;
 
 use super::model::{EnrolmentAttendanceRow, EnrolmentStatus, EnrolmentWithCourse, MyEnrolmentRow};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct EnrolmentResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -36,7 +36,7 @@ impl From<EnrolmentWithCourse> for EnrolmentResponse {
 /// `attended`/`total` attendance stats (contract §3.12: `countable_attendance`
 /// caliber — `present`/`absent` count toward `total`, `leave` and
 /// never-marked sessions don't; `attended` is the `present` subset).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct MyEnrolmentResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -68,7 +68,7 @@ impl From<MyEnrolmentRow> for MyEnrolmentResponse {
 /// `GET /enrolments/{id}/attendance` response entry — this enrolment's
 /// per-session attendance timeline, oldest to newest (contract §3.12; see
 /// also §3.19 Attendance for the `status` enum's meaning).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct AttendanceEntryResponse {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,

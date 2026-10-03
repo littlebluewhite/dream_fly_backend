@@ -25,7 +25,7 @@ pub struct CheckoutRequest {
     pub payment_method: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct OrderResponse {
     pub id: Uuid,
     pub order_number: String,
@@ -44,7 +44,7 @@ pub struct OrderResponse {
     pub subscriptions: Vec<SubscriptionResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct OrderItemResponse {
     pub id: Uuid,
     pub item_type: CartItemType,
@@ -101,14 +101,14 @@ impl OrderResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct OrderListResponse {
     pub orders: Vec<OrderSummary>,
     #[serde(flatten)]
     pub meta: PageMeta,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct OrderSummary {
     pub id: Uuid,
     pub order_number: String,
@@ -143,7 +143,7 @@ pub struct UpdateOrderStatusRequest {
 // Admin order list — GET /orders (admin only)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct AdminOrderSummary {
     pub id: Uuid,
     pub order_number: String,
@@ -177,7 +177,7 @@ impl From<AdminOrderRow> for AdminOrderSummary {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct AdminOrderListResponse {
     pub orders: Vec<AdminOrderSummary>,
     #[serde(flatten)]

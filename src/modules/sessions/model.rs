@@ -9,7 +9,7 @@ use crate::utils::studio_clock;
 /// Not a database column and not a state machine: every read recomputes it
 /// from the current wall-clock time, so it can never go stale or need a
 /// migration when the studio's schedule changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Upcoming,

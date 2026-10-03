@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::modules::cart::model::LineTarget;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "product_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ProductType {

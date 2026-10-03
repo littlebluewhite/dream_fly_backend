@@ -7,7 +7,7 @@ use crate::modules::products::model::MAX_LINE_QUANTITY;
 
 use super::model::{CartItemJoined, CartItemType, LineTarget, checked_line_subtotal};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CartItemResponse {
     pub id: Uuid,
     pub item_type: CartItemType,
@@ -20,7 +20,7 @@ pub struct CartItemResponse {
     pub is_active: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CartResponse {
     pub items: Vec<CartItemResponse>,
     pub total_cents: i64,

@@ -17,7 +17,7 @@ pub struct SessionsRangeQuery {
     pub to: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CourseSessionResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -55,7 +55,7 @@ impl CourseSessionResponse {
 /// service::today_sessions`). Both are nullable: `coach_name` when the
 /// course has no assigned coach, `venue` when the session's venue snapshot
 /// (`course_sessions.venue`, taken from its slot at materialization) is NULL.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct TodaySessionResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -88,7 +88,7 @@ impl TodaySessionResponse {
 // GET /schedule/me
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct MyScheduleEntryResponse {
     pub course_id: Uuid,
     pub course_name: String,

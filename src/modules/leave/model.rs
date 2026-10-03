@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Closed status set for a `leave_requests` row. Mirrors
 /// `enrolments::model::EnrolmentStatus`/`attendance::model::AttendanceStatus`'s
 /// derive set and `FromStr` pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "leave_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum LeaveStatus {

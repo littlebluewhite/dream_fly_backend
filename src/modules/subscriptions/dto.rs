@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::model::{Subscription, SubscriptionStatus, SubscriptionWithProduct};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct SubscriptionResponse {
     pub id: Uuid,
     pub product_id: Uuid,

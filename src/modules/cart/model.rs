@@ -9,7 +9,7 @@ use crate::modules::products::model::Product;
 
 /// Discriminates whether a cart (or checkout) line targets a product or a
 /// course. Maps to the Postgres `cart_item_type` enum.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "cart_item_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum CartItemType {

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "course_level", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum CourseLevel {

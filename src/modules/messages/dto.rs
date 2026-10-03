@@ -16,7 +16,7 @@ pub struct CreateConversationRequest {
     pub user_id: Uuid,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ConversationResponse {
     pub id: Uuid,
     pub member_id: Uuid,
@@ -41,7 +41,7 @@ impl From<Conversation> for ConversationResponse {
 // GET /conversations/me
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ConversationSummaryResponse {
     pub id: Uuid,
     pub peer_id: Uuid,
@@ -68,7 +68,7 @@ impl From<ConversationSummaryRow> for ConversationSummaryResponse {
 // GET /conversations/{id}/messages
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct MessageResponse {
     pub id: Uuid,
     pub sender_id: Uuid,
@@ -89,7 +89,7 @@ impl From<Message> for MessageResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct MessageListResponse {
     pub messages: Vec<MessageResponse>,
     #[serde(flatten)]
@@ -110,7 +110,7 @@ pub struct CreateMessageRequest {
 // PATCH /conversations/{id}/read
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct MarkReadResponse {
     pub updated: i64,
 }

@@ -9,7 +9,7 @@ use crate::utils::double_option::deserialize_some;
 use crate::utils::url_validation::validate_stored_url;
 
 /// List view — excludes content for efficiency
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PostResponse {
     pub id: Uuid,
     pub author_id: Uuid,
@@ -41,7 +41,7 @@ impl From<Post> for PostResponse {
 }
 
 /// Detail view — includes content and updated_at
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PostDetailResponse {
     pub id: Uuid,
     pub author_id: Uuid,
@@ -76,7 +76,7 @@ impl From<Post> for PostDetailResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PostListResponse {
     pub posts: Vec<PostResponse>,
     #[serde(flatten)]

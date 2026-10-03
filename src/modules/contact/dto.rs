@@ -8,7 +8,7 @@ use crate::utils::double_option::deserialize_some;
 
 use super::model::{ContactInquiry, InquiryStatus, InquiryType};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct InquiryResponse {
     pub id: Uuid,
     pub name: String,
@@ -18,6 +18,8 @@ pub struct InquiryResponse {
     pub message: String,
     pub status: InquiryStatus,
     pub assigned_to: Option<Uuid>,
+    /// Stored as text, validated against `InquiryType` on write.
+    #[ts(as = "InquiryType")]
     pub inquiry_type: String,
     pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
@@ -43,7 +45,7 @@ impl From<ContactInquiry> for InquiryResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct InquiryListResponse {
     pub inquiries: Vec<InquiryResponse>,
     #[serde(flatten)]

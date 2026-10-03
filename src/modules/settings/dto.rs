@@ -9,7 +9,7 @@ use validator::Validate;
 /// `BTreeMap`'s alphabetical iteration — chosen over `HashMap` purely for
 /// deterministic serialized JSON (stable test/log output), not a contract
 /// requirement.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct SettingsResponse {
     pub settings: BTreeMap<String, serde_json::Value>,
 }

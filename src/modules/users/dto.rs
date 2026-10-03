@@ -108,7 +108,7 @@ pub struct UpdateUserRequest {
 /// `last_login`/`points_balance`/`preferences`/`birth_date`. Pinned by
 /// `tests::auth_user_response_is_field_subset_projection_of_users_user_response`
 /// below: a rename, retype, or drop on either side fails that test first.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct UserResponse {
     pub id: Uuid,
     pub email: String,
@@ -157,7 +157,7 @@ impl UserResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct UserListResponse {
     pub users: Vec<UserResponse>,
     #[serde(flatten)]

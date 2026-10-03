@@ -8,7 +8,7 @@ use crate::utils::url_validation::validate_stored_url;
 
 use super::model::{ClockRecord, Coach, CoachSchedule};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CoachResponse {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -45,13 +45,13 @@ impl From<Coach> for CoachResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CoachDetailResponse {
     pub coach: CoachResponse,
     pub schedules: Vec<CoachScheduleResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CoachScheduleResponse {
     pub id: Uuid,
     pub day_of_week: i16,
@@ -147,7 +147,7 @@ pub struct ScheduleEntry {
     pub is_available: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ClockRecordResponse {
     pub id: Uuid,
     pub clock_in: DateTime<Utc>,

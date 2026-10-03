@@ -8,7 +8,7 @@ use super::model::{AttendanceStatus, MyStudentRow, RosterRow, StudentCourseBrief
 // GET /sessions/{id}/roster, PUT /sessions/{id}/attendance
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RosterEntryResponse {
     pub enrolment_id: Uuid,
     pub user_id: Uuid,
@@ -50,7 +50,7 @@ pub struct BulkUpsertAttendanceRequest {
 // GET /coaches/me/students
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct MyStudentResponse {
     pub user_id: Uuid,
     pub name: String,

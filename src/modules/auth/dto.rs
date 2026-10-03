@@ -65,7 +65,7 @@ pub struct ResetPasswordRequest {
     pub new_password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct AuthResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -77,7 +77,8 @@ pub struct AuthResponse {
 /// field here must serialize identically on both types. Pinned by
 /// `users::dto::tests::
 /// auth_user_response_is_field_subset_projection_of_users_user_response`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(rename = "AuthUserResponse")]
 pub struct UserResponse {
     pub id: Uuid,
     pub email: String,

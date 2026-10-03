@@ -73,6 +73,10 @@ thiserror = "2"
 # `dyn EventPublisher` (`src/kafka/producer.rs`).
 async-trait = "0.1"
 
+# Wire types: response DTOs derive `TS`; `tests/wire_types.rs` exports them
+# into the committed `bindings/` dir the frontend consumes (ADR-0016).
+ts-rs = { version = "12", features = ["chrono-impl", "uuid-impl", "serde-json-impl"] }
+
 [dev-dependencies]
 # In-process Axum HTTP test client — spawns the real router/middleware stack
 # inside the test, without binding a TCP socket. Used by every `tests/http_*`.
@@ -99,3 +103,6 @@ pretty_assertions = "1"
 # `test-util` adds the paused clock (`#[tokio::test(start_paused = true)]`)
 # the Kafka consumer loop tests use to run retry backoff without waiting.
 tokio = { version = "1", features = ["full", "test-util"] }
+# `format` pretty-prints the exported TS so committed `bindings/` diffs read
+# cleanly (ADR-0016).
+ts-rs = { version = "12", features = ["chrono-impl", "uuid-impl", "serde-json-impl", "format"] }

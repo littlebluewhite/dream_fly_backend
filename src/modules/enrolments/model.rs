@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::courses::model::CourseLevel;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS)]
 #[sqlx(type_name = "enrolment_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum EnrolmentStatus {

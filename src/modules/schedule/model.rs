@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// stale the way the old stored CASE-expression status could. `booked` is
 /// itself counted at read time from the `occupying_bookings` view
 /// (`schedule::repository::SLOT_COLUMNS`, ADR-0015) — no stored counter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum SlotStatus {
     Available,

@@ -5,7 +5,7 @@ use validator::Validate;
 
 use super::model::{WaitlistEntryWithCourse, WaitlistStatus};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct WaitlistResponse {
     pub id: Uuid,
     pub course_id: Uuid,

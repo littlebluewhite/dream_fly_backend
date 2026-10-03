@@ -8,7 +8,7 @@ use crate::utils::double_option::deserialize_some;
 
 use super::model::{Product, ProductType};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ProductResponse {
     pub id: Uuid,
     pub name: String,
@@ -133,7 +133,7 @@ pub struct ProductQuery {
 /// Paginated response envelope for `GET /products`. Matches the shape of
 /// the other list endpoints (orders, posts, bookings) so clients get a
 /// consistent pagination contract across modules.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ProductListResponse {
     pub products: Vec<ProductResponse>,
     #[serde(flatten)]

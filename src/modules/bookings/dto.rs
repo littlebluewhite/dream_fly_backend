@@ -14,7 +14,7 @@ pub struct CreateBookingRequest {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct BookingResponse {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -40,7 +40,7 @@ impl From<Booking> for BookingResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct PaginatedBookingsResponse {
     pub bookings: Vec<BookingResponse>,
     #[serde(flatten)]

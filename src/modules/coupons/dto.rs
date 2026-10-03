@@ -8,7 +8,7 @@ use crate::utils::double_option::deserialize_some;
 
 use super::model::Coupon;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CouponResponse {
     pub id: Uuid,
     pub code: String,
@@ -41,11 +41,12 @@ impl From<Coupon> for CouponResponse {
 /// `#[serde(skip_serializing_if)]` keeps a response with no `subtotal_cents`
 /// byte-for-byte identical to before this field existed; the exact-body
 /// assertions in `tests/http_coupons.rs` are the regression net for that.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CouponValidateResponse {
     pub code: String,
     pub discount_cents: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub applied_discount_cents: Option<i64>,
 }
 
@@ -57,7 +58,7 @@ pub struct ValidateCouponQuery {
     pub subtotal_cents: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CouponListResponse {
     pub coupons: Vec<CouponResponse>,
     #[serde(flatten)]

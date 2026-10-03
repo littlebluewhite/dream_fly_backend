@@ -19,7 +19,7 @@ pub struct CreateReportCardRequest {
     pub rating: Option<i16>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ReportCardResponse {
     pub id: Uuid,
     pub course_id: Uuid,
@@ -62,7 +62,7 @@ pub struct CreateCertificateRequest {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct CertificateResponse {
     pub id: Uuid,
     pub course_id: Option<Uuid>,
