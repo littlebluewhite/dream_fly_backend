@@ -60,9 +60,10 @@ async fn create_post_invalid_category_returns_validation(db: PgPool) {
 }
 
 /// Case policy: `category` is one of the 4 fields the wire accepts
-/// case-insensitively (parsed via `to_lowercase`) and stores lowercase.
+/// case-insensitively (parsed via `to_lowercase`); the stored PG enum value round-trips to the
+/// matching variant.
 #[sqlx::test]
-async fn create_post_with_mixed_case_category_is_stored_lowercase(db: PgPool) {
+async fn create_post_with_mixed_case_category_round_trips_pg_enum(db: PgPool) {
     let author = common::seed_member(&db, "a@example.com", "hunter22-secret").await;
     let post = service::create_post(&db, author, create_req("Mixed Case", "Article"))
         .await
@@ -299,7 +300,7 @@ async fn list_published_paginates_and_excludes_drafts(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn update_post_mixed_case_category_is_stored_lowercase(db: PgPool) {
+async fn update_post_mixed_case_category_round_trips_pg_enum(db: PgPool) {
     // `update_post` validated the category via `PostCategory::from_str`
     // (which lowercases), but then wrote the caller's raw string to the
     // repository — a mixed-case variant of a legal category passed

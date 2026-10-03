@@ -38,7 +38,6 @@ pub struct UnreadCountResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::notifications::model::NotificationType;
 
     /// Golden wire shape: `notification_type` goes out under the key `type`.
     #[test]

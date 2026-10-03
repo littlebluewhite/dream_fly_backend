@@ -191,7 +191,6 @@ pub struct UpdateCourseRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::courses::model::CourseLevel;
 
     /// Golden wire shape: `level` is the lowercase label.
     #[test]

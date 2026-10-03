@@ -99,9 +99,10 @@ async fn list_inquiries_clamps_per_page(db: PgPool) {
 }
 
 /// Case policy: `status` is one of the 4 fields the wire accepts
-/// case-insensitively (parsed via `to_lowercase`) and stores lowercase.
+/// case-insensitively (parsed via `to_lowercase`); the stored PG enum value round-trips to the
+/// matching variant.
 #[sqlx::test]
-async fn update_inquiry_with_mixed_case_status_is_stored_lowercase(db: PgPool) {
+async fn update_inquiry_with_mixed_case_status_round_trips_pg_enum(db: PgPool) {
     let created = service::submit_inquiry(&db, req("Mixed Case Status"))
         .await
         .expect("submit_inquiry");

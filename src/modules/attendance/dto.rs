@@ -72,7 +72,6 @@ impl From<MyStudentRow> for MyStudentResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::attendance::model::AttendanceStatus;
 
     fn row(attendance_status: Option<AttendanceStatus>) -> RosterRow {
         RosterRow {

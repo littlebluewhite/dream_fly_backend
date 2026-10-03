@@ -59,7 +59,6 @@ impl SubscriptionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::subscriptions::model::SubscriptionStatus;
 
     /// Golden wire shape: `status` is the read-time `derived_status`, not the
     /// stored column.
