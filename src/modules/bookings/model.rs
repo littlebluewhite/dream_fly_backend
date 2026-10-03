@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "booking_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum BookingStatus {
     Pending,
     Confirmed,
@@ -13,6 +14,16 @@ pub enum BookingStatus {
 }
 
 impl BookingStatus {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 5] = [
+        Self::Pending,
+        Self::Confirmed,
+        Self::Cancelled,
+        Self::Completed,
+        Self::NoShow,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",

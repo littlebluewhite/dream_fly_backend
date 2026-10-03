@@ -11,6 +11,7 @@ use crate::modules::products::model::Product;
 /// course. Maps to the Postgres `cart_item_type` enum.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "cart_item_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CartItemType {
     Product,
     Course,

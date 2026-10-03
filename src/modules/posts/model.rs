@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "post_category", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum PostCategory {
     Announcement,
     Article,
@@ -44,6 +45,7 @@ impl std::str::FromStr for PostCategory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "post_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum PostStatus {
     Draft,
     Published,

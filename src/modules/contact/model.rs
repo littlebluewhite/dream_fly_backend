@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "inquiry_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum InquiryStatus {
     New,
     InProgress,
@@ -46,7 +47,8 @@ impl std::str::FromStr for InquiryStatus {
 /// strings `"general"`/`"trial"` are accepted, per
 /// docs/api/integration-contract.md §3.17), and this refactor preserves
 /// that behavior rather than silently loosening it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InquiryType {
     General,
     Trial,

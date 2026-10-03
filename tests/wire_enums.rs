@@ -8,6 +8,9 @@
 //! Covers the 9 enums Phase 3 wires straight into the repository:
 //! attendance_status, cart_item_type, inquiry_status, course_level,
 //! leave_status, order_status, post_category, post_status, product_type.
+//! W-1 adds booking_status, enrolment_status, notification_type, point_reason,
+//! subscription_status, waitlist_status (their serde spelling is pinned in
+//! `wire_serde.rs`).
 //! Plus `Role`, whose value domain is the `roles` table rather than a PG enum
 //! (`role_all_matches_roles_table`, ADR-0014).
 
@@ -16,14 +19,20 @@ mod common;
 use sqlx::PgPool;
 
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
+use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::CartItemType;
 use dream_fly_backend::modules::contact::model::InquiryStatus;
 use dream_fly_backend::modules::courses::model::CourseLevel;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
+use dream_fly_backend::modules::notifications::model::NotificationType;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::model::Role;
+use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::posts::model::{PostCategory, PostStatus};
 use dream_fly_backend::modules::products::model::ProductType;
+use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
+use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 
 /// Fetch every label of a PG enum type (`SELECT unnest(enum_range(NULL::x))::text`)
 /// and assert it equals `all_labels`, in order.
@@ -93,6 +102,42 @@ async fn post_status_all_matches_enum_range(db: PgPool) {
 async fn product_type_all_matches_enum_range(db: PgPool) {
     let all: Vec<&str> = ProductType::ALL.map(|v| v.as_str()).to_vec();
     assert_all_matches_enum_range(&db, "product_type", &all).await;
+}
+
+#[sqlx::test]
+async fn booking_status_all_matches_enum_range(db: PgPool) {
+    let all: Vec<&str> = BookingStatus::ALL.map(|v| v.as_str()).to_vec();
+    assert_all_matches_enum_range(&db, "booking_status", &all).await;
+}
+
+#[sqlx::test]
+async fn enrolment_status_all_matches_enum_range(db: PgPool) {
+    let all: Vec<&str> = EnrolmentStatus::ALL.map(|v| v.as_str()).to_vec();
+    assert_all_matches_enum_range(&db, "enrolment_status", &all).await;
+}
+
+#[sqlx::test]
+async fn notification_type_all_matches_enum_range(db: PgPool) {
+    let all: Vec<&str> = NotificationType::ALL.map(|v| v.as_str()).to_vec();
+    assert_all_matches_enum_range(&db, "notification_type", &all).await;
+}
+
+#[sqlx::test]
+async fn point_reason_all_matches_enum_range(db: PgPool) {
+    let all: Vec<&str> = PointReason::ALL.map(|v| v.as_str()).to_vec();
+    assert_all_matches_enum_range(&db, "point_reason", &all).await;
+}
+
+#[sqlx::test]
+async fn subscription_status_all_matches_enum_range(db: PgPool) {
+    let all: Vec<&str> = SubscriptionStatus::ALL.map(|v| v.as_str()).to_vec();
+    assert_all_matches_enum_range(&db, "subscription_status", &all).await;
+}
+
+#[sqlx::test]
+async fn waitlist_status_all_matches_enum_range(db: PgPool) {
+    let all: Vec<&str> = WaitlistStatus::ALL.map(|v| v.as_str()).to_vec();
+    assert_all_matches_enum_range(&db, "waitlist_status", &all).await;
 }
 
 /// `roles` is a table, not a PG enum, so there is no `enum_range` to compare

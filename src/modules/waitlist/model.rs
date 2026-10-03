@@ -4,12 +4,17 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
 #[sqlx(type_name = "waitlist_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum WaitlistStatus {
     Waiting,
     Cancelled,
 }
 
 impl WaitlistStatus {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 2] = [Self::Waiting, Self::Cancelled];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Waiting => "waiting",

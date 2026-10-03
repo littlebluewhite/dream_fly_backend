@@ -10,7 +10,8 @@ use uuid::Uuid;
 /// stale the way the old stored CASE-expression status could. `booked` is
 /// itself counted at read time from the `occupying_bookings` view
 /// (`schedule::repository::SLOT_COLUMNS`, ADR-0015) — no stored counter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SlotStatus {
     Available,
     Limited,
@@ -19,6 +20,10 @@ pub enum SlotStatus {
 }
 
 impl SlotStatus {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 4] = [Self::Available, Self::Limited, Self::Full, Self::Closed];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Available => "available",

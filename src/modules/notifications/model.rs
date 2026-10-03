@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "notification_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum NotificationType {
     BookingConfirmed,
     BookingCancelled,
@@ -14,6 +15,17 @@ pub enum NotificationType {
 }
 
 impl NotificationType {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 6] = [
+        Self::BookingConfirmed,
+        Self::BookingCancelled,
+        Self::OrderPlaced,
+        Self::OrderStatus,
+        Self::System,
+        Self::Promotion,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::BookingConfirmed => "booking_confirmed",

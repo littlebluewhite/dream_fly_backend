@@ -7,6 +7,7 @@ use uuid::Uuid;
 /// sibling "closed status enum" in this codebase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "attendance_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum AttendanceStatus {
     Present,
     Absent,

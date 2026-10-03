@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
 #[sqlx(type_name = "point_reason", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum PointReason {
     CheckoutEarn,
     CheckoutRedeem,
@@ -22,6 +23,17 @@ pub enum PointReason {
 }
 
 impl PointReason {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 6] = [
+        Self::CheckoutEarn,
+        Self::CheckoutRedeem,
+        Self::AdminAdjust,
+        Self::Redeem,
+        Self::RefundRestore,
+        Self::RefundClawback,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::CheckoutEarn => "checkout_earn",

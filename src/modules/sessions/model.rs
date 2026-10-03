@@ -9,7 +9,8 @@ use crate::utils::studio_clock;
 /// Not a database column and not a state machine: every read recomputes it
 /// from the current wall-clock time, so it can never go stale or need a
 /// migration when the studio's schedule changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Upcoming,
     Ongoing,
@@ -17,6 +18,10 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 3] = [Self::Upcoming, Self::Ongoing, Self::Done];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Upcoming => "upcoming",

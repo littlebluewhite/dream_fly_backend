@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
 #[sqlx(type_name = "subscription_status", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum SubscriptionStatus {
     Active,
     Expired,
@@ -11,6 +12,10 @@ pub enum SubscriptionStatus {
 }
 
 impl SubscriptionStatus {
+    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// domain.
+    pub const ALL: [Self; 3] = [Self::Active, Self::Expired, Self::Cancelled];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
