@@ -535,22 +535,12 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 購買 `ticket` 或 `membership` 類商品會產生一筆 subscription，記錄「剩餘堂數」與/或「到期日」。
 
 #### `GET /subscriptions/me` — 需登入
-回應：`SubscriptionResponse[]`（**純陣列，不分頁**，新到舊）：
+回應：[`SubscriptionResponse`](../../bindings/SubscriptionResponse.ts)`[]`（**純陣列，不分頁**，新到舊）。`expires_at` 為 `null` 表示沒有到期日、`total_sessions`/`remaining_sessions` 為 `null` 表示沒有堂數限制（方案記錄「剩餘堂數」與/或「到期日」，見上）。
 
-```jsonc
-{
-  "id": "uuid", "product_id": "uuid", "product_name": "string",
-  "status": "active|expired|cancelled",
-  "started_at": "ISO8601", "expires_at": "ISO8601|null",
-  "total_sessions": "number|null", "remaining_sessions": "number|null",
-  "price_cents": "number"
-}
-```
-
-`status` 為**讀取當下即時計算**：DB 裡的 `cancelled` 直接回傳；否則若 `expires_at` 已過或 `remaining_sessions == 0` 回 `"expired"`；都沒有才回 `"active"`（DB 儲存值本身不會因為到期而被動改寫）。**`cancelled` 目前唯一的寫入來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——本模組沒有任何端點可以直接把一筆訂閱標記為 `cancelled`（`POST /subscriptions/{id}/redeem` 只會遞減堂數，不改變 `status`）。
+`status`（[`SubscriptionStatus`](../../bindings/SubscriptionStatus.ts)）為**讀取當下即時計算**：DB 裡的 `cancelled` 直接回傳；否則若 `expires_at` 已過或 `remaining_sessions == 0` 回 `"expired"`；都沒有才回 `"active"`（DB 儲存值本身不會因為到期而被動改寫）。**`cancelled` 目前唯一的寫入來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——本模組沒有任何端點可以直接把一筆訂閱標記為 `cancelled`（`POST /subscriptions/{id}/redeem` 只會遞減堂數，不改變 `status`）。
 
 #### `POST /subscriptions/{id}/redeem` — admin 或 coach
-無 body。核銷一堂課（`remaining_sessions -= 1`，原子操作）。回應：更新後的 `SubscriptionResponse`。
+無 body。核銷一堂課（`remaining_sessions -= 1`，原子操作）。回應：更新後的 [`SubscriptionResponse`](../../bindings/SubscriptionResponse.ts)。
 錯誤：404（不存在）；409（`"subscription has no session quota"` — 純天數方案沒有堂數可核銷；或 `"subscription is not redeemable"` — 已無剩餘堂數/已過期/已取消）。
 
 ---
@@ -558,34 +548,17 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 ### 3.12 Enrolments（課程報名）
 
 #### `GET /enrolments/me` — 需登入
-回應：`MyEnrolmentResponse[]`（**純陣列，不分頁**，新到舊）：
-
-```jsonc
-{
-  "id": "uuid", "course_id": "uuid", "course_name": "string",
-  "course_level": "foundation|beginner|intermediate|advanced|elite",
-  "schedule_text": "string|null", "status": "active|cancelled",
-  "enrolled_at": "ISO8601",
-  "attended": "number", "total": "number"
-}
-```
+回應：[`MyEnrolmentResponse`](../../bindings/MyEnrolmentResponse.ts)`[]`（**純陣列，不分頁**，新到舊）。`course_level` 值域與中文對照見 §3.3。
 
 `attended`/`total` 為即時計算（單一 LEFT JOIN `countable_attendance` 聚合，非儲存欄位）：`attended` 為該 enrolment 被標記 `status='present'` 的筆數；`total` 為該 enrolment 的 `present`+`absent` 筆數之和——view 的成員資格本身即為分母。**`leave` 與尚未點名的場次一律不計入 `total`**（也就是說 `total` 不是「該課程至今已上過幾堂」，也不是「已點名場次數」，而是「present+absent 的場次數」；純請假、從未點名的場次皆不影響這兩個統計）。無 `present`/`absent` 紀錄時兩者皆為 `0`（即使該 enrolment 有請假紀錄）。詳見 §3.19 Attendance。
 
 #### `PATCH /enrolments/{id}/cancel` — 需登入（本人或 admin）
-無 body。回應：更新後的 `EnrolmentResponse`（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。**`cancelled` 另一個來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——與本端點的自助/admin 取消是同一個 `status` 值，`EnrolmentResponse` 本身無法分辨這筆報名是被使用者自己取消還是因為訂單整筆退款而取消。已經自助取消過的報名再被訂單退款觸及是安全的 no-op，不會報錯。
+無 body。回應：更新後的 [`EnrolmentResponse`](../../bindings/EnrolmentResponse.ts)（`status: "cancelled"`，**不含** `attended`/`total`——僅 `GET /enrolments/me` 回傳這兩個統計欄位）。**`cancelled` 另一個來源是所屬訂單被退款/取消**（`PATCH /orders/{id}/status` 轉入 `cancelled`/`refunded` 的補償語意，見 §3.10）——與本端點的自助/admin 取消是同一個 `status` 值，`EnrolmentResponse` 本身無法分辨這筆報名是被使用者自己取消還是因為訂單整筆退款而取消。已經自助取消過的報名再被訂單退款觸及是安全的 no-op，不會報錯。
 
 **連帶取消待審假單**：取消報名（本端點或訂單退款/取消）會在同一個交易內，把這筆報名底下 `status = "pending"` 的假單一併轉為 `cancelled`（見 §3.20）；**已核准的假單與已預約的補課不受影響**。不另發通知。錯誤序不變：404（不存在）→ 403（非本人也非 admin）→ 409（已取消）。
 
 #### `GET /enrolments/{id}/attendance` — 需登入（本人或 admin）
-這筆報名的逐堂出勤紀錄：`attendance_records` JOIN `course_sessions`，只回**已點名**的場次(未點名場次不出現)，依 `session_date`(次要鍵 `start_time`)**舊到新**排序。回應（`AttendanceEntryResponse[]`，純陣列）：
-
-```jsonc
-[
-  { "session_date": "YYYY-MM-DD", "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
-    "status": "present|absent|leave", "marked_at": "ISO8601" }
-]
-```
+這筆報名的逐堂出勤紀錄：`attendance_records` JOIN `course_sessions`，只回**已點名**的場次(未點名場次不出現)，依 `session_date`(次要鍵 `start_time`)**舊到新**排序。回應：[`AttendanceEntryResponse`](../../bindings/AttendanceEntryResponse.ts)`[]`（純陣列）。
 
 `status` 為 §3.19 Attendance 的 `attendance_status` enum 原樣輸出。無任何點名紀錄的 enrolment 回 `200` 空陣列(不是 404)。
 
@@ -600,13 +573,13 @@ Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunde
 補成功後的候補列由 admin 或會員手動取消。（ADR-0006）
 
 #### `POST /waitlist` — 需登入
-Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_id, course_name, status: "waiting"|"cancelled", created_at }`。
+Body：`{ course_id: "uuid" }`。回應：[`WaitlistResponse`](../../bindings/WaitlistResponse.ts)。
 
 #### `GET /waitlist/me` — 需登入
-回應：`WaitlistResponse[]`（**純陣列**，新到舊）。
+回應：[`WaitlistResponse`](../../bindings/WaitlistResponse.ts)`[]`（**純陣列**，新到舊）。
 
 #### `GET /waitlist?course_id=uuid` — admin
-回應：`WaitlistResponse[]`（該課程候補中的名單，舊到新）。缺少/無效 `course_id` 回 422（admin 以外先 403）。
+回應：[`WaitlistResponse`](../../bindings/WaitlistResponse.ts)`[]`（該課程候補中的名單，舊到新）。缺少/無效 `course_id` 回 422（admin 以外先 403）。
 
 #### `DELETE /waitlist/{id}` — 需登入（本人或 admin）
 取消候補。回應：204 No Content。
@@ -631,46 +604,25 @@ Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位�
 ### 3.15 Notifications
 
 #### `GET /notifications?page=&per_page=` — 需登入
-回應：`NotificationResponse[]`（**純陣列**——吃 `page`/`per_page` query 但無分頁 meta 包裹）：
-
-```jsonc
-{
-  "id": "uuid", "type": "booking_confirmed|booking_cancelled|order_placed|order_status|system|promotion",
-  "title": "string", "message": "string", "is_read": "boolean",
-  "metadata": "object|null", "created_at": "ISO8601"
-}
-```
+回應：[`NotificationResponse`](../../bindings/NotificationResponse.ts)`[]`（**純陣列**——吃 `page`/`per_page` query 但無分頁 meta 包裹）。`metadata` 為物件或 `null`。
 
 注意 JSON key 是 `type`（Rust 欄位名 `notification_type` 經 `#[serde(rename = "type")]` 對外呈現為 `type`）。
 
 #### `GET /notifications/unread-count` — 需登入
-回應：`{ "count": "number" }`。
+回應：[`UnreadCountResponse`](../../bindings/UnreadCountResponse.ts)。
 
 #### `PATCH /notifications/{id}/read` — 需登入
-無 body。回應：更新後的 `NotificationResponse`（`is_read: true`）。
+無 body。回應：更新後的 [`NotificationResponse`](../../bindings/NotificationResponse.ts)（`is_read: true`）。
 
 ---
 
 ### 3.16 Posts（公告/文章）
 
 #### `GET /posts?page=&per_page=` — 公開
-只回傳 `status = "published"` 的文章。回應（`PostListResponse`）：`{ "posts": [PostResponse], "total", "page", "per_page" }`。
-
-`PostResponse`（**列表用，不含 `content`**）：
-
-```jsonc
-{
-  "id": "uuid", "author_id": "uuid", "title": "string", "slug": "string",
-  "excerpt": "string|null",
-  "category": "announcement|article|promotion|event",
-  "status": "published",
-  "cover_image": "string|null", "published_at": "ISO8601|null",
-  "created_at": "ISO8601"
-}
-```
+只回傳 `status = "published"` 的文章。回應：[`PostListResponse`](../../bindings/PostListResponse.ts)，列為 [`PostResponse`](../../bindings/PostResponse.ts)（**列表用，不含 `content`**）。本端點只回 published 文章，故列中 `status` 恆為 `"published"`。
 
 #### `GET /posts/{slugOrId}` — 公開
-slug 或 UUID 皆可。回應（`PostDetailResponse`，**多了 `content` 與 `updated_at`**）：同上欄位 + `content: string`、`updated_at: ISO8601`。草稿/封存文章走此端點一律 404（非 admin 亦看不到）。
+slug 或 UUID 皆可。回應：[`PostDetailResponse`](../../bindings/PostDetailResponse.ts)（**比列表多了 `content` 與 `updated_at`**）。草稿/封存文章走此端點一律 404（非 admin 亦看不到）。
 
 #### `POST /posts` — admin 或 coach
 Body：`{ title, slug?, content, excerpt?, category, cover_image? }`（`category` 為 `announcement|article|promotion|event` 四值之一，**大小寫不敏感**——混合大小寫如 `"Article"` 一樣接受，儲存與回應皆為小寫；不在值域內 422）。新建文章預設 `status: "draft"`。回應：`PostDetailResponse`。
@@ -686,10 +638,10 @@ Body（皆選填）：`{ title?, slug?, content?, excerpt?, category?, status?, 
 ### 3.17 Contact（聯絡表單）
 
 #### `POST /contact` — 公開
-Body：`{ name, email, phone?, subject, message, inquiry_type?, metadata? }`。`inquiry_type` 選填，預設 `"general"`，僅接受 `"general"`／`"trial"`（應用層驗證，非 DB CHECK/enum）；非法值 422。`metadata` 選填 JSONB 物件，後端不逐欄驗證、原樣存取——`trial`（試上預約）慣例欄位：`category`／`student_age`／`preferred_day`／`preferred_slot`／`parent_name`／`parent_phone`／`student_name`／`note`（僅文件性列舉，非後端 schema）。回應（`InquiryResponse`）：`{ id, name, email, phone, subject, message, status: "new", assigned_to: null, inquiry_type, metadata, created_at, updated_at }`。既有呼叫端不帶 `inquiry_type`/`metadata` 時行為不變。
+Body：`{ name, email, phone?, subject, message, inquiry_type?, metadata? }`。`inquiry_type` 選填，預設 `"general"`，僅接受 `"general"`／`"trial"`（應用層驗證，非 DB CHECK/enum）；非法值 422。`metadata` 選填 JSONB 物件，後端不逐欄驗證、原樣存取——`trial`（試上預約）慣例欄位：`category`／`student_age`／`preferred_day`／`preferred_slot`／`parent_name`／`parent_phone`／`student_name`／`note`（僅文件性列舉，非後端 schema）。回應：[`InquiryResponse`](../../bindings/InquiryResponse.ts)；新建洽詢的 `status` 恆為 `"new"`、`assigned_to` 恆為 `null`。既有呼叫端不帶 `inquiry_type`/`metadata` 時行為不變。
 
 #### `GET /contact/inquiries?page=&per_page=` — admin
-回應（`InquiryListResponse`）：`{ "inquiries": [InquiryResponse], "total", "page", "per_page" }`。
+回應：[`InquiryListResponse`](../../bindings/InquiryListResponse.ts)。
 
 #### `PATCH /contact/inquiries/{id}` — admin
 Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRequest`）：`{ status?, assigned_to? }`。`status` 僅接受 `new`／`in_progress`／`resolved`／`closed`（`InquiryStatus` 既有值域），非法值 422。`assigned_to` 可明確傳 `null` 清空指派（清為 `NULL`），欄位不帶則維持原值不動。回應：`InquiryResponse`（見上）。
