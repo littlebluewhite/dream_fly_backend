@@ -37,7 +37,7 @@ use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service;
-use dream_fly_backend::modules::products::model::ProductType;
+use dream_fly_backend::modules::products::model::{ProductType, QUANTITY_RANGE_MSG};
 use dream_fly_backend::modules::products::service as product_service;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 
@@ -813,7 +813,7 @@ async fn checkout_legacy_line_quantity_over_999_is_400_before_stock_409(db: PgPo
     .await
     .expect_err("a line over 999 must reject checkout");
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+        matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
         "got: {err:?}"
     );
     assert_eq!(common::order_count(&db, user).await, 0);

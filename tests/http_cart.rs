@@ -82,11 +82,9 @@ async fn add_item_quantity_range_is_bound_at_the_wire(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .json(&json!({ "item_type": "product", "item_id": pid, "quantity": 1000 }))
         .await;
-    assert!(
-        resp.status_code().is_client_error(),
-        "1000 must be rejected, body={}",
-        resp.text()
-    );
+    assert_eq!(resp.status_code(), 422, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], r#"{"quantity":["range"]}"#);
     let cart: serde_json::Value = app
         .get("/api/v1/cart")
         .authorization_bearer(&user.access_token)

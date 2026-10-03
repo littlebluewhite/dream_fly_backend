@@ -213,6 +213,7 @@ pub fn checked_line_subtotal(price_cents: i64, quantity: i32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::products::model::QUANTITY_RANGE_MSG;
 
     // --- validate_quantity: Product (1..=999) ---
 
@@ -230,7 +231,7 @@ mod tests {
                 .validate_quantity(qty)
                 .expect_err("must reject");
             assert!(
-                matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+                matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
                 "got: {err:?} for qty={qty}"
             );
         }

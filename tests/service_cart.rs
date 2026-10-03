@@ -18,7 +18,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::cart::model::{CartItemType, LineTarget};
 use dream_fly_backend::modules::cart::service;
 use dream_fly_backend::modules::points::service as points_service;
-use dream_fly_backend::modules::products::model::ProductType;
+use dream_fly_backend::modules::products::model::{ProductType, QUANTITY_RANGE_MSG};
 
 #[sqlx::test]
 async fn add_item_first_time_creates_cart_item(db: PgPool) {
@@ -121,6 +121,36 @@ async fn concurrent_add_item_same_line_only_one_fits_in_stock(db: PgPool) {
     assert_eq!(cart.items[0].quantity, 2);
 }
 
+/// A row already near `i32::MAX` (reachable only by direct SQL) must not
+/// overflow the upsert's `quantity + $3` into a 500: the merge is clamped,
+/// so the normal quantity-range 400 fires and the tx rolls back.
+#[sqlx::test]
+async fn add_item_onto_near_i32_max_quantity_is_400_and_cart_unchanged(db: PgPool) {
+    let user = seed_member(&db, "c13b@example.com", "Password!234").await;
+    let product = seed_product(&db, "prod-13b", 500, None).await;
+
+    service::add_item(&db, user, "product", product, 1).await.unwrap();
+    sqlx::query("UPDATE cart_items SET quantity = $1 WHERE user_id = $2")
+        .bind(i32::MAX - 1)
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let err = service::add_item(&db, user, "product", product, 5).await.unwrap_err();
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
+        "got {err:?}"
+    );
+
+    let quantity: i32 = sqlx::query_scalar("SELECT quantity FROM cart_items WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(quantity, i32::MAX - 1, "rejected add must not change the line");
+}
+
 #[sqlx::test]
 async fn add_item_merged_quantity_past_999_is_400_and_cart_unchanged(db: PgPool) {
     let user = seed_member(&db, "c13@example.com", "Password!234").await;
@@ -129,7 +159,7 @@ async fn add_item_merged_quantity_past_999_is_400_and_cart_unchanged(db: PgPool)
     service::add_item(&db, user, "product", product, 999).await.unwrap();
     let err = service::add_item(&db, user, "product", product, 1).await.unwrap_err();
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m == "quantity must be between 1 and 999"),
+        matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
         "got {err:?}"
     );
 

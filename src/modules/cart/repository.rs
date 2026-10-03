@@ -43,7 +43,9 @@ pub async fn find_item_by_id(
 /// returned row carries the *merged* quantity, which the caller judges
 /// before committing. The upsert leaves the line's row locked until the
 /// transaction ends, so concurrent adds to the same line queue here and
-/// each sees the other's committed total.
+/// each sees the other's committed total. The merge is summed in bigint and
+/// clamped to `i32::MAX`, so a near-overflow row yields an out-of-range
+/// quantity for the caller to reject (400) instead of an `int4` overflow (500).
 pub async fn add_product_item_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -54,7 +56,8 @@ pub async fn add_product_item_tx(
         "INSERT INTO cart_items (id, user_id, item_type, product_id, quantity, created_at, updated_at) \
          VALUES (gen_random_uuid(), $1, 'product'::cart_item_type, $2, $3, NOW(), NOW()) \
          ON CONFLICT (user_id, product_id) WHERE product_id IS NOT NULL \
-         DO UPDATE SET quantity = cart_items.quantity + $3, updated_at = NOW() \
+         DO UPDATE SET quantity = LEAST(cart_items.quantity::bigint + $3, 2147483647)::int, \
+         updated_at = NOW() \
          RETURNING *",
     )
     .bind(user_id)
