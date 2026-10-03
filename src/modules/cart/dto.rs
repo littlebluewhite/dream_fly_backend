@@ -5,12 +5,12 @@ use validator::Validate;
 use crate::error::AppError;
 use crate::modules::products::model::MAX_LINE_QUANTITY;
 
-use super::model::{CartItemJoined, LineTarget, checked_line_subtotal};
+use super::model::{CartItemJoined, CartItemType, LineTarget, checked_line_subtotal};
 
 #[derive(Debug, Serialize)]
 pub struct CartItemResponse {
     pub id: Uuid,
-    pub item_type: String,
+    pub item_type: CartItemType,
     pub item_id: Uuid,
     pub name: String,
     pub slug: String,
@@ -44,7 +44,7 @@ impl CartResponse {
                 .ok_or_else(|| AppError::Validation("cart total overflow".into()))?;
             cart_items.push(CartItemResponse {
                 id: item.id,
-                item_type: item.target.item_type().as_str().to_string(),
+                item_type: item.target.item_type(),
                 item_id,
                 name: item.name,
                 slug: item.slug,

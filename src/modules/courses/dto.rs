@@ -6,7 +6,7 @@ use validator::Validate;
 use crate::extractors::pagination::PageMeta;
 use crate::utils::double_option::deserialize_some;
 
-use super::model::{Course, CourseScheduleSlot};
+use super::model::{Course, CourseLevel, CourseScheduleSlot};
 
 /// One weekly-slot entry in a `POST /courses` / `PATCH /courses/{id}` body.
 /// Mirrors `coaches::dto::ScheduleEntry` (day_of_week + "HH:MM" strings),
@@ -49,7 +49,7 @@ pub struct CourseResponse {
     pub id: Uuid,
     pub name: String,
     pub slug: String,
-    pub level: String,
+    pub level: CourseLevel,
     pub description: Option<String>,
     pub duration_minutes: i32,
     pub price_cents: i64,
@@ -74,7 +74,7 @@ impl From<Course> for CourseResponse {
             id: c.id,
             name: c.name,
             slug: c.slug,
-            level: c.level.as_str().to_string(),
+            level: c.level,
             description: c.description,
             duration_minutes: c.duration_minutes,
             price_cents: c.price_cents,

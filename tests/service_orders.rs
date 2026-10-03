@@ -24,10 +24,12 @@ use common::fixtures::{
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::cart::model::CartItemType;
 use dream_fly_backend::modules::cart::service as cart_service;
 use dream_fly_backend::modules::coupons::dto::UpdateCouponRequest;
 use dream_fly_backend::modules::coupons::service as coupons_service;
 use dream_fly_backend::modules::courses::seats as courses_seats;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
@@ -37,6 +39,7 @@ use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::products::service as product_service;
+use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 
 #[sqlx::test]
 async fn checkout_creates_order_and_clears_cart(db: PgPool) {
@@ -52,7 +55,7 @@ async fn checkout_creates_order_and_clears_cart(db: PgPool) {
     assert_eq!(resp.items.len(), 1);
     assert_eq!(resp.items[0].quantity, 2);
     assert_eq!(resp.items[0].unit_price_cents, 1500);
-    assert_eq!(resp.items[0].item_type, "product");
+    assert_eq!(resp.items[0].item_type, CartItemType::Product);
 
     // No coupon/points regression: a plain product checkout still behaves
     // exactly as before, and now also earns points — 5% of NT$30 (3000
@@ -331,14 +334,14 @@ async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
     let course_item = resp
         .items
         .iter()
-        .find(|i| i.item_type == "course")
+        .find(|i| i.item_type == CartItemType::Course)
         .expect("a course order_item");
     assert_eq!(course_item.course_id, Some(course));
     assert_eq!(course_item.product_id, None);
     let product_item = resp
         .items
         .iter()
-        .find(|i| i.item_type == "product")
+        .find(|i| i.item_type == CartItemType::Product)
         .expect("a product order_item");
     assert_eq!(product_item.product_id, Some(product));
     assert_eq!(product_item.course_id, None);
@@ -1459,12 +1462,12 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
     let order = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
         .await
         .expect("checkout");
-    assert_eq!(order.status, "paid");
+    assert_eq!(order.status, OrderStatus::Paid);
 
     let updated = service::update_order_status(&db, order.id, "processing", None)
         .await
         .expect("update status");
-    assert_eq!(updated.status, "processing");
+    assert_eq!(updated.status, OrderStatus::Processing);
 
     // Status persisted in the DB.
     let db_status: String = sqlx::query_scalar("SELECT status::text FROM orders WHERE id = $1")
@@ -1634,10 +1637,10 @@ async fn assert_fully_compensated(
     // Enrolment + subscription cancelled (the response re-reads the latest
     // artifact rows).
     assert_eq!(outcome.enrolments.len(), 1);
-    assert_eq!(outcome.enrolments[0].status, "cancelled", "enrolment cancelled");
+    assert_eq!(outcome.enrolments[0].status, EnrolmentStatus::Cancelled, "enrolment cancelled");
     assert_eq!(outcome.subscriptions.len(), 1);
     assert_eq!(
-        outcome.subscriptions[0].status, "cancelled",
+        outcome.subscriptions[0].status, SubscriptionStatus::Cancelled,
         "subscription cancelled"
     );
 
@@ -1698,7 +1701,7 @@ async fn refund_reverses_stock_enrolment_subscription_and_points(db: PgPool) {
     let refunded = service::update_order_status(&db, order.id, "refunded", None)
         .await
         .expect("refund");
-    assert_eq!(refunded.status, "refunded");
+    assert_eq!(refunded.status, OrderStatus::Refunded);
 
     assert_fully_compensated(&db, user, &order, &refunded, limited).await;
 
@@ -1717,7 +1720,7 @@ async fn cancel_compensates_identically_to_refund(db: PgPool) {
     let cancelled = service::update_order_status(&db, order.id, "cancelled", None)
         .await
         .expect("cancel");
-    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.status, OrderStatus::Cancelled);
 
     assert_fully_compensated(&db, user, &order, &cancelled, limited).await;
 
@@ -1849,7 +1852,7 @@ async fn refunded_same_status_noop_does_not_compensate_twice(db: PgPool) {
     let again = service::update_order_status(&db, order.id, "refunded", None)
         .await
         .expect("same-status noop is Ok");
-    assert_eq!(again.status, "refunded");
+    assert_eq!(again.status, OrderStatus::Refunded);
 
     let refund_ledger: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM point_ledger \
@@ -2001,7 +2004,7 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
     let resp = service::update_order_status(&db, order_id, "refunded", None)
         .await
         .expect("refund directly-built paid order");
-    assert_eq!(resp.status, "refunded");
+    assert_eq!(resp.status, OrderStatus::Refunded);
 
     assert_eq!(
         common::points_balance_of(&db, user).await,
@@ -2071,9 +2074,9 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
     let refunded = service::update_order_status(&db, order.id, "refunded", None)
         .await
         .expect("refund after self-cancel");
-    assert_eq!(refunded.status, "refunded");
+    assert_eq!(refunded.status, OrderStatus::Refunded);
     assert_eq!(
-        refunded.enrolments[0].status, "cancelled",
+        refunded.enrolments[0].status, EnrolmentStatus::Cancelled,
         "enrolment stays cancelled"
     );
 
@@ -2216,7 +2219,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
     )
     .await
     .expect("checkout must complete on a 1-connection pool (commit→assemble)");
-    assert_eq!(first.status, "paid");
+    assert_eq!(first.status, OrderStatus::Paid);
     assert_eq!(first.items.len(), 1);
 
     // 2. Same-status no-op: release → assemble. PATCH paid→paid drops the tx
@@ -2225,7 +2228,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
     let noop = service::update_order_status(&pool, first.id, "paid", None)
         .await
         .expect("same-status no-op must complete on a 1-connection pool (release→assemble)");
-    assert_eq!(noop.status, "paid");
+    assert_eq!(noop.status, OrderStatus::Paid);
     assert_eq!(noop.order_number, first.order_number);
 
     // 3. Status transition: commit → assemble. paid→processing compensates
@@ -2233,7 +2236,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
     let processing = service::update_order_status(&pool, first.id, "processing", None)
         .await
         .expect("status transition must complete on a 1-connection pool (commit→assemble)");
-    assert_eq!(processing.status, "processing");
+    assert_eq!(processing.status, OrderStatus::Processing);
 
     // 4. Same-key replay: the idempotency pre-check returns the prior order
     //    without ever opening a tx (`no_open_tx`) — assemble runs with the lone

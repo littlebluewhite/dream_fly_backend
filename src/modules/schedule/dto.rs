@@ -26,14 +26,14 @@ pub struct TimeSlotResponse {
     pub course_id: Option<Uuid>,
     pub capacity: i32,
     pub booked: i32,
-    pub status: String,
+    pub status: SlotStatus,
     /// Round 4 Task P4-B2 — venue-rental price for this slot (§1.5).
     pub price_cents: i64,
 }
 
 impl From<TimeSlot> for TimeSlotResponse {
     fn from(ts: TimeSlot) -> Self {
-        // Wire format unchanged (`status: String`) — only the source moves
+        // Wire format unchanged (`SlotStatus` serializes as its `as_str`) — only the source moves
         // from a stored column to this read-time derivation.
         let status = SlotStatus::derive(ts.booked, ts.capacity, ts.is_closed);
         Self {
@@ -45,7 +45,7 @@ impl From<TimeSlot> for TimeSlotResponse {
             course_id: ts.course_id,
             capacity: ts.capacity,
             booked: ts.booked,
-            status: status.as_str().to_string(),
+            status,
             price_cents: ts.price_cents,
         }
     }

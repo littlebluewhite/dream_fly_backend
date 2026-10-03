@@ -159,7 +159,7 @@ async fn redeem_decrements_remaining_sessions(db: PgPool) {
     let resp = service::redeem(&db, sub_id).await.expect("redeem");
     assert_eq!(resp.remaining_sessions, Some(2));
     assert_eq!(resp.total_sessions, Some(3));
-    assert_eq!(resp.status, "active");
+    assert_eq!(resp.status, SubscriptionStatus::Active);
     assert_eq!(resp.product_id, product_id);
 }
 

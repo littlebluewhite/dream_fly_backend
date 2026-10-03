@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::modules::cart::model::LineTarget;
+use dream_fly_backend::modules::cart::model::{CartItemType, LineTarget};
 use dream_fly_backend::modules::cart::service;
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::products::model::ProductType;
@@ -27,7 +27,7 @@ async fn add_item_first_time_creates_cart_item(db: PgPool) {
 
     let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
     assert_eq!(cart.items.len(), 1);
-    assert_eq!(cart.items[0].item_type, "product");
+    assert_eq!(cart.items[0].item_type, CartItemType::Product);
     assert_eq!(cart.items[0].item_id, product);
     assert_eq!(cart.items[0].quantity, 2);
     assert_eq!(cart.items[0].subtotal_cents, 1000);
@@ -310,7 +310,7 @@ async fn add_course_item_creates_cart_item_with_quantity_one(db: PgPool) {
 
     let cart = service::add_item(&db, user, "course", course, 1).await.unwrap();
     assert_eq!(cart.items.len(), 1);
-    assert_eq!(cart.items[0].item_type, "course");
+    assert_eq!(cart.items[0].item_type, CartItemType::Course);
     assert_eq!(cart.items[0].item_id, course);
     assert_eq!(cart.items[0].quantity, 1);
     // seed_course hardcodes price_cents = 50000.

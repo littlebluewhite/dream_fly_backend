@@ -2,14 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::model::{Subscription, SubscriptionWithProduct};
+use super::model::{Subscription, SubscriptionStatus, SubscriptionWithProduct};
 
 #[derive(Debug, Serialize)]
 pub struct SubscriptionResponse {
     pub id: Uuid,
     pub product_id: Uuid,
     pub product_name: String,
-    pub status: String,
+    pub status: SubscriptionStatus,
     pub started_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub total_sessions: Option<i32>,
@@ -19,7 +19,7 @@ pub struct SubscriptionResponse {
 
 impl From<SubscriptionWithProduct> for SubscriptionResponse {
     fn from(s: SubscriptionWithProduct) -> Self {
-        let status = s.derived_status.as_str().to_string();
+        let status = s.derived_status;
         Self {
             id: s.id,
             product_id: s.product_id,
@@ -41,7 +41,7 @@ impl SubscriptionResponse {
     /// could observe a concurrent redeem's later decrement and misreport
     /// what this call consumed.
     pub fn from_subscription(s: Subscription, product_name: String) -> Self {
-        let status = s.derived_status.as_str().to_string();
+        let status = s.derived_status;
         Self {
             id: s.id,
             product_id: s.product_id,

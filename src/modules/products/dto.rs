@@ -6,14 +6,14 @@ use validator::Validate;
 use crate::extractors::pagination::PageMeta;
 use crate::utils::double_option::deserialize_some;
 
-use super::model::Product;
+use super::model::{Product, ProductType};
 
 #[derive(Debug, Serialize)]
 pub struct ProductResponse {
     pub id: Uuid,
     pub name: String,
     pub slug: String,
-    pub product_type: String,
+    pub product_type: ProductType,
     pub description: Option<String>,
     pub price_cents: i64,
     pub original_price_cents: Option<i64>,
@@ -42,12 +42,11 @@ impl ProductResponse {
     /// `order_items`/`orders` that callers batch across a whole page (see
     /// `service::list`) rather than repeat per row.
     pub fn from_product(p: Product, sold: i64) -> Self {
-        let product_type = p.product_type.as_str();
         Self {
             id: p.id,
             name: p.name,
             slug: p.slug,
-            product_type: product_type.to_string(),
+            product_type: p.product_type,
             description: p.description,
             price_cents: p.price_cents,
             original_price_cents: p.original_price_cents,

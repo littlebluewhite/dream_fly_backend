@@ -11,6 +11,7 @@ use sqlx::PgPool;
 
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::contact::dto::{CreateInquiryRequest, UpdateInquiryRequest};
+use dream_fly_backend::modules::contact::model::InquiryStatus;
 use dream_fly_backend::modules::contact::service;
 
 fn req(subject: &str) -> CreateInquiryRequest {
@@ -36,7 +37,7 @@ async fn submit_inquiry_persists_and_returns_new_row(db: PgPool) {
     assert_eq!(resp.subject, "Question about classes");
     // Default status on a newly created inquiry — the column is non-null
     // with an enum default, so the response should carry it.
-    assert!(!resp.status.is_empty(), "status must be populated");
+    assert_eq!(resp.status, InquiryStatus::New, "status must be populated");
 
     // Row really exists in DB.
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM contact_inquiries WHERE id = $1")
@@ -115,5 +116,5 @@ async fn update_inquiry_with_mixed_case_status_is_stored_lowercase(db: PgPool) {
     )
     .await
     .expect("mixed-case status must be accepted");
-    assert_eq!(updated.status, "resolved");
+    assert_eq!(updated.status, InquiryStatus::Resolved);
 }

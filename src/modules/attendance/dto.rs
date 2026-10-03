@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::model::{MyStudentRow, RosterRow, StudentCourseBrief};
+use super::model::{AttendanceStatus, MyStudentRow, RosterRow, StudentCourseBrief};
 
 // ---------------------------------------------------------------------------
 // GET /sessions/{id}/roster, PUT /sessions/{id}/attendance
@@ -13,7 +13,7 @@ pub struct RosterEntryResponse {
     pub enrolment_id: Uuid,
     pub user_id: Uuid,
     pub user_name: String,
-    pub attendance_status: Option<String>,
+    pub attendance_status: Option<AttendanceStatus>,
 }
 
 impl From<RosterRow> for RosterEntryResponse {
@@ -22,7 +22,7 @@ impl From<RosterRow> for RosterEntryResponse {
             enrolment_id: r.enrolment_id,
             user_id: r.user_id,
             user_name: r.user_name,
-            attendance_status: r.attendance_status.map(|s| s.as_str().to_string()),
+            attendance_status: r.attendance_status,
         }
     }
 }

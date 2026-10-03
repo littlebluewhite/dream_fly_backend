@@ -29,6 +29,7 @@ use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::courses::dto::{
     CourseScheduleSlotEntry, CreateCourseRequest, UpdateCourseRequest,
 };
+use dream_fly_backend::modules::courses::model::CourseLevel;
 use dream_fly_backend::modules::courses::service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
@@ -109,7 +110,7 @@ async fn create_course_auto_generates_slug_from_name(db: PgPool) {
         .expect("create_course");
     assert_eq!(resp.course.name, "Intro To Bars");
     assert_eq!(resp.course.slug, "intro-to-bars");
-    assert_eq!(resp.course.level, "beginner");
+    assert_eq!(resp.course.level, CourseLevel::Beginner);
     assert!(resp.course.is_active);
 }
 
@@ -175,7 +176,7 @@ async fn create_course_with_mixed_case_level_is_stored_lowercase(db: PgPool) {
     )
     .await
     .expect("mixed-case level must be accepted");
-    assert_eq!(resp.course.level, "beginner");
+    assert_eq!(resp.course.level, CourseLevel::Beginner);
 }
 
 /// Same case policy, on the PATCH path.
@@ -196,7 +197,7 @@ async fn update_course_with_mixed_case_level_is_stored_lowercase(db: PgPool) {
     )
     .await
     .expect("mixed-case level must be accepted");
-    assert_eq!(updated.course.level, "advanced");
+    assert_eq!(updated.course.level, CourseLevel::Advanced);
 }
 
 /// Task 7: `course_level` grew from 3 tiers to 5 (`foundation`/`elite`
@@ -213,7 +214,7 @@ async fn create_course_with_foundation_level_succeeds(db: PgPool) {
     )
     .await
     .expect("create_course");
-    assert_eq!(resp.course.level, "foundation");
+    assert_eq!(resp.course.level, CourseLevel::Foundation);
 }
 
 /// Task 7: same as above for the new top tier.
@@ -228,7 +229,7 @@ async fn create_course_with_elite_level_succeeds(db: PgPool) {
     )
     .await
     .expect("create_course");
-    assert_eq!(resp.course.level, "elite");
+    assert_eq!(resp.course.level, CourseLevel::Elite);
 }
 
 #[sqlx::test]

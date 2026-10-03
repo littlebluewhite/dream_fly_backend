@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::model::Post;
+use super::model::{Post, PostCategory, PostStatus};
 use crate::extractors::pagination::PageMeta;
 use crate::utils::double_option::deserialize_some;
 use crate::utils::url_validation::validate_stored_url;
@@ -16,8 +16,8 @@ pub struct PostResponse {
     pub title: String,
     pub slug: String,
     pub excerpt: Option<String>,
-    pub category: String,
-    pub status: String,
+    pub category: PostCategory,
+    pub status: PostStatus,
     pub cover_image: Option<String>,
     pub published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -31,8 +31,8 @@ impl From<Post> for PostResponse {
             title: p.title,
             slug: p.slug,
             excerpt: p.excerpt,
-            category: p.category.as_str().to_string(),
-            status: p.status.as_str().to_string(),
+            category: p.category,
+            status: p.status,
             cover_image: p.cover_image,
             published_at: p.published_at,
             created_at: p.created_at,
@@ -49,8 +49,8 @@ pub struct PostDetailResponse {
     pub slug: String,
     pub content: String,
     pub excerpt: Option<String>,
-    pub category: String,
-    pub status: String,
+    pub category: PostCategory,
+    pub status: PostStatus,
     pub cover_image: Option<String>,
     pub published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -66,8 +66,8 @@ impl From<Post> for PostDetailResponse {
             slug: p.slug,
             content: p.content,
             excerpt: p.excerpt,
-            category: p.category.as_str().to_string(),
-            status: p.status.as_str().to_string(),
+            category: p.category,
+            status: p.status,
             cover_image: p.cover_image,
             published_at: p.published_at,
             created_at: p.created_at,

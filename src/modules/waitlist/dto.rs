@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-use super::model::WaitlistEntryWithCourse;
+use super::model::{WaitlistEntryWithCourse, WaitlistStatus};
 
 #[derive(Debug, Serialize)]
 pub struct WaitlistResponse {
     pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
-    pub status: String,
+    pub status: WaitlistStatus,
     pub created_at: DateTime<Utc>,
 }
 
@@ -20,7 +20,7 @@ impl From<WaitlistEntryWithCourse> for WaitlistResponse {
             id: w.id,
             course_id: w.course_id,
             course_name: w.course_name,
-            status: w.status.as_str().to_string(),
+            status: w.status,
             created_at: w.created_at,
         }
     }

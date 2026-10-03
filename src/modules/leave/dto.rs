@@ -5,7 +5,7 @@ use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
 
-use super::model::{AdminLeaveRequestRow, LeaveRequestView};
+use super::model::{AdminLeaveRequestRow, LeaveRequestView, LeaveStatus};
 
 // ---------------------------------------------------------------------------
 // POST /leave-requests
@@ -64,7 +64,7 @@ pub struct LeaveRequestResponse {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
     pub reason: Option<String>,
-    pub status: String,
+    pub status: LeaveStatus,
     pub makeup_session_id: Option<Uuid>,
     pub makeup_session_date: Option<NaiveDate>,
     pub makeup_start_time: Option<NaiveTime>,
@@ -94,7 +94,7 @@ impl From<LeaveRequestView> for LeaveRequestResponse {
             session_date: r.session_date,
             start_time: r.start_time,
             reason: r.reason,
-            status: r.status.as_str().to_string(),
+            status: r.status,
             makeup_session_id: makeup.as_ref().map(|m| m.session_id),
             makeup_session_date: makeup.as_ref().map(|m| m.session_date),
             makeup_start_time: makeup.map(|m| m.start_time),
@@ -128,7 +128,7 @@ pub struct AdminLeaveRequestResponse {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
     pub reason: Option<String>,
-    pub status: String,
+    pub status: LeaveStatus,
     pub makeup_session_id: Option<Uuid>,
     pub makeup_session_date: Option<NaiveDate>,
     pub makeup_start_time: Option<NaiveTime>,

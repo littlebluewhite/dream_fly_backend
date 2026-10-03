@@ -26,6 +26,7 @@ use common::fixtures::{OrderSeed, SeedOrderLine};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::products::dto::{
     CreateProductRequest, UpdateProductRequest,
 };
@@ -63,7 +64,7 @@ async fn create_product_auto_generates_slug(db: PgPool) {
         .await
         .expect("create");
     assert_eq!(resp.slug, "jump-rope");
-    assert_eq!(resp.product_type, "merchandise");
+    assert_eq!(resp.product_type, ProductType::Merchandise);
     assert_eq!(resp.stock, Some(10));
 }
 

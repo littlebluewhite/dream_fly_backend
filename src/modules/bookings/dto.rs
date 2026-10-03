@@ -5,7 +5,7 @@ use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
 
-use super::model::Booking;
+use super::model::{Booking, BookingStatus};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateBookingRequest {
@@ -19,7 +19,7 @@ pub struct BookingResponse {
     pub id: Uuid,
     pub user_id: Uuid,
     pub time_slot_id: Uuid,
-    pub status: String,
+    pub status: BookingStatus,
     pub note: Option<String>,
     /// Round 4 Task P4-B2 — price snapshot captured at booking time (§1.5).
     pub price_cents: i64,
@@ -32,7 +32,7 @@ impl From<Booking> for BookingResponse {
             id: b.id,
             user_id: b.user_id,
             time_slot_id: b.time_slot_id,
-            status: b.status.as_str().to_string(),
+            status: b.status,
             note: b.note,
             price_cents: b.price_cents,
             created_at: b.created_at,

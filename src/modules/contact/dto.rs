@@ -6,7 +6,7 @@ use validator::{Validate, ValidationError};
 use crate::extractors::pagination::PageMeta;
 use crate::utils::double_option::deserialize_some;
 
-use super::model::{ContactInquiry, InquiryType};
+use super::model::{ContactInquiry, InquiryStatus, InquiryType};
 
 #[derive(Debug, Serialize)]
 pub struct InquiryResponse {
@@ -16,7 +16,7 @@ pub struct InquiryResponse {
     pub phone: Option<String>,
     pub subject: String,
     pub message: String,
-    pub status: String,
+    pub status: InquiryStatus,
     pub assigned_to: Option<Uuid>,
     pub inquiry_type: String,
     pub metadata: Option<serde_json::Value>,
@@ -33,7 +33,7 @@ impl From<ContactInquiry> for InquiryResponse {
             phone: i.phone,
             subject: i.subject,
             message: i.message,
-            status: i.status.as_str().to_string(),
+            status: i.status,
             assigned_to: i.assigned_to,
             inquiry_type: i.inquiry_type,
             metadata: i.metadata,

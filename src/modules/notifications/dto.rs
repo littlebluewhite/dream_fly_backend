@@ -2,13 +2,13 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::model::Notification;
+use super::model::{Notification, NotificationType};
 
 #[derive(Debug, Serialize)]
 pub struct NotificationResponse {
     pub id: Uuid,
     #[serde(rename = "type")]
-    pub notification_type: String,
+    pub notification_type: NotificationType,
     pub title: String,
     pub message: String,
     pub is_read: bool,
@@ -20,7 +20,7 @@ impl From<Notification> for NotificationResponse {
     fn from(n: Notification) -> Self {
         Self {
             id: n.id,
-            notification_type: n.notification_type.as_str().to_string(),
+            notification_type: n.notification_type,
             title: n.title,
             message: n.message,
             is_read: n.is_read,

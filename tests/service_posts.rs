@@ -20,6 +20,7 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::posts::dto::{CreatePostRequest, UpdatePostRequest};
+use dream_fly_backend::modules::posts::model::{PostCategory, PostStatus};
 use dream_fly_backend::modules::posts::service;
 
 fn create_req(title: &str, category: &str) -> CreatePostRequest {
@@ -66,7 +67,7 @@ async fn create_post_with_mixed_case_category_is_stored_lowercase(db: PgPool) {
     let post = service::create_post(&db, author, create_req("Mixed Case", "Article"))
         .await
         .expect("mixed-case category must be accepted");
-    assert_eq!(post.category, "article");
+    assert_eq!(post.category, PostCategory::Article);
 }
 
 #[sqlx::test]
@@ -214,7 +215,7 @@ async fn update_post_draft_to_published_sets_published_at(db: PgPool) {
     .await
     .expect("publish transition");
 
-    assert_eq!(updated.status, "published");
+    assert_eq!(updated.status, PostStatus::Published);
     assert!(
         updated.published_at.is_some(),
         "published_at should be set on first publish"
@@ -293,7 +294,7 @@ async fn list_published_paginates_and_excludes_drafts(db: PgPool) {
     assert_eq!(page.posts.len(), 3);
     assert_eq!(page.meta.total, 3);
     for p in &page.posts {
-        assert_eq!(p.status, "published");
+        assert_eq!(p.status, PostStatus::Published);
     }
 }
 
@@ -325,5 +326,5 @@ async fn update_post_mixed_case_category_is_stored_lowercase(db: PgPool) {
     .await
     .expect("mixed-case category must be accepted, same as create_post");
 
-    assert_eq!(updated.category, "article");
+    assert_eq!(updated.category, PostCategory::Article);
 }

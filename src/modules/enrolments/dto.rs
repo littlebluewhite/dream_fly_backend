@@ -2,16 +2,19 @@ use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::model::{EnrolmentAttendanceRow, EnrolmentWithCourse, MyEnrolmentRow};
+use crate::modules::attendance::model::AttendanceStatus;
+use crate::modules::courses::model::CourseLevel;
+
+use super::model::{EnrolmentAttendanceRow, EnrolmentStatus, EnrolmentWithCourse, MyEnrolmentRow};
 
 #[derive(Debug, Serialize)]
 pub struct EnrolmentResponse {
     pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
-    pub course_level: String,
+    pub course_level: CourseLevel,
     pub schedule_text: Option<String>,
-    pub status: String,
+    pub status: EnrolmentStatus,
     pub enrolled_at: DateTime<Utc>,
 }
 
@@ -21,9 +24,9 @@ impl From<EnrolmentWithCourse> for EnrolmentResponse {
             id: e.id,
             course_id: e.course_id,
             course_name: e.course_name,
-            course_level: e.course_level.as_str().to_string(),
+            course_level: e.course_level,
             schedule_text: e.schedule_text,
-            status: e.status.as_str().to_string(),
+            status: e.status,
             enrolled_at: e.enrolled_at,
         }
     }
@@ -38,9 +41,9 @@ pub struct MyEnrolmentResponse {
     pub id: Uuid,
     pub course_id: Uuid,
     pub course_name: String,
-    pub course_level: String,
+    pub course_level: CourseLevel,
     pub schedule_text: Option<String>,
-    pub status: String,
+    pub status: EnrolmentStatus,
     pub enrolled_at: DateTime<Utc>,
     pub attended: i64,
     pub total: i64,
@@ -52,9 +55,9 @@ impl From<MyEnrolmentRow> for MyEnrolmentResponse {
             id: e.id,
             course_id: e.course_id,
             course_name: e.course_name,
-            course_level: e.course_level.as_str().to_string(),
+            course_level: e.course_level,
             schedule_text: e.schedule_text,
-            status: e.status.as_str().to_string(),
+            status: e.status,
             enrolled_at: e.enrolled_at,
             attended: e.attended,
             total: e.total,
@@ -70,7 +73,7 @@ pub struct AttendanceEntryResponse {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
-    pub status: String,
+    pub status: AttendanceStatus,
     pub marked_at: DateTime<Utc>,
 }
 
@@ -80,7 +83,7 @@ impl From<EnrolmentAttendanceRow> for AttendanceEntryResponse {
             session_date: r.session_date,
             start_time: r.start_time,
             end_time: r.end_time,
-            status: r.status.as_str().to_string(),
+            status: r.status,
             marked_at: r.marked_at,
         }
     }

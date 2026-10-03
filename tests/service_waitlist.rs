@@ -21,6 +21,7 @@ use uuid::Uuid;
 use common::fixtures::{CourseSeed, seed_enrolment};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 use dream_fly_backend::modules::waitlist::repository as waitlist_repo;
 use dream_fly_backend::modules::waitlist::service;
 
@@ -39,7 +40,7 @@ async fn join_full_course_creates_waiting_entry(db: PgPool) {
 
     assert_eq!(entry.course_id, course_id);
     assert_eq!(entry.course_name, "Full Join Course");
-    assert_eq!(entry.status, "waiting");
+    assert_eq!(entry.status, WaitlistStatus::Waiting);
 }
 
 #[sqlx::test]
@@ -135,7 +136,7 @@ async fn cancel_then_rejoin_succeeds(db: PgPool) {
         .expect("re-join after cancel should succeed — partial index only guards 'waiting' rows");
 
     assert_ne!(first.id, second.id);
-    assert_eq!(second.status, "waiting");
+    assert_eq!(second.status, WaitlistStatus::Waiting);
 }
 
 #[sqlx::test]

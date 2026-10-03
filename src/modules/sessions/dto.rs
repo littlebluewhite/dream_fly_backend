@@ -24,7 +24,7 @@ pub struct CourseSessionResponse {
     pub session_date: NaiveDate,
     pub start_time: NaiveTime,
     pub end_time: NaiveTime,
-    pub status: String,
+    pub status: SessionStatus,
 }
 
 impl CourseSessionResponse {
@@ -35,7 +35,7 @@ impl CourseSessionResponse {
             session_date: s.session_date,
             start_time: s.start_time,
             end_time: s.end_time,
-            status: status.as_str().to_string(),
+            status,
         }
     }
 }
@@ -65,7 +65,7 @@ pub struct TodaySessionResponse {
     pub end_time: NaiveTime,
     pub enrolled_count: i64,
     pub venue: Option<String>,
-    pub status: String,
+    pub status: SessionStatus,
 }
 
 impl TodaySessionResponse {
@@ -79,7 +79,7 @@ impl TodaySessionResponse {
             end_time: r.end_time,
             enrolled_count: r.enrolled_count,
             venue: r.venue,
-            status: status.as_str().to_string(),
+            status,
         }
     }
 }

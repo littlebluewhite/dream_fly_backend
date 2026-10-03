@@ -4,10 +4,11 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::extractors::pagination::PageMeta;
+use crate::modules::cart::model::CartItemType;
 use crate::modules::enrolments::dto::EnrolmentResponse;
 use crate::modules::subscriptions::dto::SubscriptionResponse;
 
-use super::model::{AdminOrderRow, Order, OrderItem, OrderItemBrief, OrderSummaryRow};
+use super::model::{AdminOrderRow, Order, OrderItem, OrderItemBrief, OrderStatus, OrderSummaryRow};
 
 /// `POST /orders` body. Every field is optional: an empty body (or `{}`)
 /// checks out the cart at full price with no points redeemed — see
@@ -28,7 +29,7 @@ pub struct CheckoutRequest {
 pub struct OrderResponse {
     pub id: Uuid,
     pub order_number: String,
-    pub status: String,
+    pub status: OrderStatus,
     pub total_cents: i64,
     pub discount_cents: i64,
     pub coupon_code: Option<String>,
@@ -46,7 +47,7 @@ pub struct OrderResponse {
 #[derive(Debug, Serialize)]
 pub struct OrderItemResponse {
     pub id: Uuid,
-    pub item_type: String,
+    pub item_type: CartItemType,
     pub product_id: Option<Uuid>,
     pub course_id: Option<Uuid>,
     pub quantity: i32,
@@ -57,7 +58,7 @@ impl OrderItemResponse {
     pub fn from_model(item: OrderItem) -> Self {
         Self {
             id: item.id,
-            item_type: item.item_type.as_str().to_string(),
+            item_type: item.item_type,
             product_id: item.product_id,
             course_id: item.course_id,
             quantity: item.quantity,
@@ -81,7 +82,7 @@ impl OrderResponse {
         Self {
             id: order.id,
             order_number: order.order_number,
-            status: order.status.as_str().to_string(),
+            status: order.status,
             total_cents: order.total_cents,
             discount_cents: order.discount_cents,
             coupon_code: order.coupon_code,
@@ -111,7 +112,7 @@ pub struct OrderListResponse {
 pub struct OrderSummary {
     pub id: Uuid,
     pub order_number: String,
-    pub status: String,
+    pub status: OrderStatus,
     pub total_cents: i64,
     pub created_at: DateTime<Utc>,
     /// Per-line `{ name, quantity }` brief — `name` is the order_items
@@ -124,7 +125,7 @@ impl From<OrderSummaryRow> for OrderSummary {
         Self {
             id: o.id,
             order_number: o.order_number,
-            status: o.status.as_str().to_string(),
+            status: o.status,
             total_cents: o.total_cents,
             created_at: o.created_at,
             items: o.items.0,
@@ -148,7 +149,7 @@ pub struct AdminOrderSummary {
     pub order_number: String,
     pub user_name: String,
     pub user_email: String,
-    pub status: String,
+    pub status: OrderStatus,
     pub total_cents: i64,
     pub points_used: i64,
     pub coupon_code: Option<String>,
@@ -165,7 +166,7 @@ impl From<AdminOrderRow> for AdminOrderSummary {
             order_number: o.order_number,
             user_name: o.user_name,
             user_email: o.user_email,
-            status: o.status.as_str().to_string(),
+            status: o.status,
             total_cents: o.total_cents,
             points_used: o.points_used,
             coupon_code: o.coupon_code,
