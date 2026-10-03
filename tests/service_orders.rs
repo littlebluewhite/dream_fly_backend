@@ -1505,7 +1505,7 @@ async fn checkout_with_correlation_id_appears_in_outbox_payload(db: PgPool) {
     .expect("checkout");
 
     let correlation_id: String =
-        sqlx::query_scalar("SELECT payload->>'correlation_id' FROM events_outbox")
+        sqlx::query_scalar("SELECT payload->>'correlation_id' FROM events_outbox WHERE payload->>'event_type' = 'order_created'")
             .fetch_one(&db)
             .await
             .expect("order_created outbox row");
@@ -1525,7 +1525,7 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
     // `correlation_id` is skipped entirely at serialization time when `None`
     // (see `KafkaEvent`'s `skip_serializing_if`), so the key itself must be
     // absent from the JSONB payload rather than present with a JSON null.
-    let has_key: bool = sqlx::query_scalar("SELECT payload ? 'correlation_id' FROM events_outbox")
+    let has_key: bool = sqlx::query_scalar("SELECT payload ? 'correlation_id' FROM events_outbox WHERE payload->>'event_type' = 'order_created'")
         .fetch_one(&db)
         .await
         .expect("order_created outbox row");

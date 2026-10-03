@@ -378,7 +378,8 @@ async fn admin_create_user_writes_user_registered_outbox_event(db: PgPool) {
 
     let correlation_id: String = sqlx::query_scalar(
         "SELECT payload->>'correlation_id' FROM events_outbox \
-         WHERE payload->>'event_type' = 'user_registered'",
+         WHERE payload->>'event_type' = 'user_registered' \
+           AND payload->'data'->>'email' = 'admincreated-event@example.com'",
     )
     .fetch_one(&app.db)
     .await

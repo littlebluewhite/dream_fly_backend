@@ -13,53 +13,52 @@ use uuid::Uuid;
 
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
-use dream_fly_backend::modules::coaches::repository as coaches_repository;
+use dream_fly_backend::modules::auth::access::AccessCache;
+use dream_fly_backend::modules::coaches::dto::CreateCoachRequest;
+use dream_fly_backend::modules::coaches::service as coaches_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
-use dream_fly_backend::modules::permissions::model::Role;
-use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 
+use super::mocks::InMemoryAccessCache;
 use super::{add_course_to_cart, add_to_cart, seed_member};
 
-/// Insert a coach profile linked to the given user and attach the `coach`
-/// role, in the same transaction. Returns the coach id.
+/// Create a coach profile for the given user and attach the `coach` role.
+/// Returns the coach id.
 ///
-/// Owner: delegates to `coaches::repository::insert_tx` /
-/// `permissions::repository::assign_role` rather than hand-rolling
-/// the `INSERT` — mirrors `seed_member` above.
+/// Owner: delegates to `coaches::service::create_coach`. The throwaway
+/// cache is fine for service-layer tests that never read through the access
+/// cache; HTTP tests whose user may already be cached use
+/// `TestApp::seed_coach_for`, which passes `app.access_cache`.
 pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
-    let mut tx = db.begin().await.expect("begin tx");
+    seed_coach_with_cache(db, &InMemoryAccessCache::new(), user_id, title).await
+}
 
-    let coach = coaches_repository::insert_tx(
-        &mut tx,
+/// [`seed_coach`] with an explicit access cache, so the role grant flushes
+/// the cache the caller's requests read from.
+pub async fn seed_coach_with_cache(
+    db: &PgPool,
+    cache: &dyn AccessCache,
+    user_id: Uuid,
+    title: &str,
+) -> Uuid {
+    let req = CreateCoachRequest {
         user_id,
-        title,
-        Some("Test bio"),
-        Some("5 years"),
-        &[String::from("gymnastics")],
-        &[String::from("cert-a")],
-        true,
-        0,
-        None,
-        None,
-    )
-    .await
-    .expect("insert coach");
-
-    // Witness discarded: this helper has never invalidated the role/active
-    // cache either, same rationale as `seed_member`.
-    let _ = permissions_repository::assign_role(&mut tx, user_id, Role::Coach)
-        .await
-        .expect("assign coach role");
-
-    tx.commit().await.expect("commit seed_coach");
-
-    coach.id
+        title: title.to_string(),
+        bio: Some("Test bio".into()),
+        experience: Some("5 years".into()),
+        specialties: vec!["gymnastics".into()],
+        certifications: vec!["cert-a".into()],
+        is_active: Some(true),
+        display_order: Some(0),
+        slug: None,
+        photo_url: None,
+    };
+    coaches_service::create_coach(db, cache, &req).await.expect("create coach").id
 }
 
 /// Insert a published course with a unique slug derived from `name`

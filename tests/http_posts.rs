@@ -3,6 +3,7 @@
 mod common;
 
 use common::fixtures::seed_post;
+use dream_fly_backend::modules::permissions::model::Role;
 use common::http::spawn_test_app;
 use serde_json::json;
 use sqlx::PgPool;
@@ -103,7 +104,7 @@ async fn create_post_as_coach_succeeds(db: PgPool) {
     // above already covers admin; this was the only moved staff-gate site
     // across the six Step 9 modules without a coach-passes-the-gate test.
     let app = spawn_test_app(db).await;
-    let (_coach_user, token) = app.seed_user_with_roles("p-coach@example.com", &["coach"]).await;
+    let (_coach_user, token) = app.seed_user_with_roles("p-coach@example.com", &[Role::Coach]).await;
 
     let resp = app
         .post("/api/v1/posts")

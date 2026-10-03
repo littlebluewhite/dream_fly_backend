@@ -5,6 +5,7 @@
 
 mod common;
 
+use dream_fly_backend::modules::permissions::model::Role;
 use chrono::{DateTime, Duration, Utc};
 use common::fixtures::seed_message;
 use common::http::{TestApp, spawn_test_app};
@@ -101,7 +102,7 @@ async fn create_targeting_self_with_dual_roles_returns_422(db: PgPool) {
     // role-violation path instead — this one pins the guard itself.
     let app = spawn_test_app(db).await;
     let (user_id, token) = app
-        .seed_user_with_roles("msg-dual-self@example.com", &["coach", "member"])
+        .seed_user_with_roles("msg-dual-self@example.com", &[Role::Coach])
         .await;
 
     let resp = app
@@ -122,10 +123,10 @@ async fn create_between_dual_role_users_is_idempotent_in_both_directions(db: PgP
     // the conversation A→B already created.
     let app = spawn_test_app(db).await;
     let (user_a, token_a) = app
-        .seed_user_with_roles("msg-dual-a@example.com", &["coach", "member"])
+        .seed_user_with_roles("msg-dual-a@example.com", &[Role::Coach])
         .await;
     let (user_b, token_b) = app
-        .seed_user_with_roles("msg-dual-b@example.com", &["coach", "member"])
+        .seed_user_with_roles("msg-dual-b@example.com", &[Role::Coach])
         .await;
 
     let resp1 = app

@@ -25,11 +25,3 @@ impl Role {
         }
     }
 }
-
-impl std::str::FromStr for Role {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
-    }
-}

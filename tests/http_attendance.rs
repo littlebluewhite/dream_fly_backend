@@ -10,6 +10,7 @@ use common::fixtures::{
 };
 use common::http::spawn_test_app;
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use serde_json::json;
@@ -521,7 +522,7 @@ async fn my_students_as_admin_without_coach_role_returns_403(db: PgPool) {
 async fn my_students_as_coach_with_no_coach_row_returns_empty(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_user_id, token) = app
-        .seed_user_with_roles("att-students-nocoach@example.com", &["coach"])
+        .seed_user_with_roles("att-students-nocoach@example.com", &[Role::Coach])
         .await;
 
     let resp = app

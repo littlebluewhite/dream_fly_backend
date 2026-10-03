@@ -4,6 +4,7 @@
 
 mod common;
 
+use dream_fly_backend::modules::permissions::model::Role;
 use common::http::spawn_test_app;
 use sqlx::PgPool;
 
@@ -114,7 +115,7 @@ async fn coach_report_as_admin_without_coach_role_returns_403(db: PgPool) {
 async fn coach_report_role_but_no_coach_row_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_user_id, token) =
-        app.seed_user_with_roles("reports-coach-no-row@example.com", &["coach"]).await;
+        app.seed_user_with_roles("reports-coach-no-row@example.com", &[Role::Coach]).await;
 
     let resp = app
         .get("/api/v1/reports/coach")
@@ -172,7 +173,7 @@ async fn member_report_as_coach_role_also_returns_200(db: PgPool) {
     // "登入即可" (any authenticated user) — no role restriction.
     let app = spawn_test_app(db).await;
     let (_user_id, token) =
-        app.seed_user_with_roles("reports-me-coach@example.com", &["coach"]).await;
+        app.seed_user_with_roles("reports-me-coach@example.com", &[Role::Coach]).await;
 
     let resp = app
         .get("/api/v1/reports/me")

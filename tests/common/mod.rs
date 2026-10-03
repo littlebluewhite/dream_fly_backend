@@ -27,9 +27,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::AuthConfig;
 use dream_fly_backend::extractors::auth::AuthUser;
-use dream_fly_backend::modules::auth::repository;
-use dream_fly_backend::modules::permissions::model::Role;
-use dream_fly_backend::modules::permissions::repository as permissions_repository;
+use dream_fly_backend::modules::auth::provisioning::{self, NewAccount};
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -137,24 +135,26 @@ pub fn admin_auth(user_id: Uuid) -> AuthUser {
 
 /// Insert a member user with a pre-hashed password. Returns the new user's id.
 ///
-/// Owner: delegates to `auth::repository::create_user_tx` /
-/// `permissions::repository::assign_role` rather than hand-rolling
-/// the `INSERT` — see those for the real row shape.
+/// Owner: delegates to `auth::provisioning::create_account` — the same
+/// birth path as `register` (lowercased email, `member` role, outbox event).
 pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> Uuid {
     let hash = hashed(plaintext_password).await;
 
     let mut tx = db.begin().await.expect("begin tx");
 
-    let user = repository::create_user_tx(&mut tx, email, "Test Member", None, &hash, None)
-        .await
-        .expect("insert user");
-
-    // Attach the `member` role (seeded by migration 00002). The user row was
-    // created in this very tx, so no access-cache entry can exist for it.
-    permissions_repository::assign_role(&mut tx, user.id, Role::Member)
-        .await
-        .expect("assign member role")
-        .assume_uncached();
+    let user = provisioning::create_account(
+        &mut tx,
+        NewAccount {
+            email,
+            name: "Test Member",
+            phone: None,
+            birth_date: None,
+            password_hash: &hash,
+        },
+        None,
+    )
+    .await
+    .expect("create account");
 
     tx.commit().await.expect("commit seed_member");
 

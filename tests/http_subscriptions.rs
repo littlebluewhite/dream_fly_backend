@@ -6,6 +6,7 @@ use chrono::{Duration, Utc};
 use common::fixtures::{seed_entitlement_product, seed_subscription};
 use common::http::spawn_test_app;
 use dream_fly_backend::modules::products::model::ProductType;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -233,7 +234,7 @@ async fn redeem_as_admin_decrements_and_returns_200(db: PgPool) {
 #[sqlx::test]
 async fn redeem_as_coach_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (_coach_id, token) = app.seed_user_with_roles("sub-redeem-coach@example.com", &["coach"]).await;
+    let (_coach_id, token) = app.seed_user_with_roles("sub-redeem-coach@example.com", &[Role::Coach]).await;
     let owner = app.register_member("sub-redeem-owner-b@example.com", "Password!234").await;
     let product_id = seed_entitlement_product(
         &app.db,

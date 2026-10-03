@@ -265,7 +265,7 @@ async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
         .iter()
         .find(|s| s["course_id"] == course_with_coach.to_string())
         .expect("course_with_coach session present");
-    assert_eq!(entry_with["coach_name"], "Seeded User");
+    assert_eq!(entry_with["coach_name"], "Test Member");
     assert_eq!(entry_with["venue"], "Studio A");
 
     let entry_without = arr

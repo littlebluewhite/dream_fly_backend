@@ -15,6 +15,7 @@
 
 mod common;
 
+use dream_fly_backend::modules::permissions::model::Role;
 use common::http::spawn_test_app;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -83,7 +84,7 @@ async fn staff_gate_member_token_returns_403(db: PgPool) {
 async fn staff_gate_coach_token_returns_200(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_coach_user_id, coach_token) =
-        app.seed_user_with_roles("gate-staff-coach@example.com", &["coach"]).await;
+        app.seed_user_with_roles("gate-staff-coach@example.com", &[Role::Coach]).await;
 
     let resp = app
         .get("/api/v1/sessions/today")

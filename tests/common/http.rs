@@ -52,7 +52,6 @@ use dream_fly_backend::config::{
     SmsConfig,
 };
 use dream_fly_backend::health::HealthProbe;
-use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
@@ -207,63 +206,57 @@ impl TestApp {
         }
     }
 
-    /// Seed a user directly in the DB with the named roles attached, and
-    /// return `(user_id, access_token)`. Use this when a test needs an
-    /// admin or coach without going through `/auth/register`.
-    ///
-    /// Owner: delegates to `auth::repository::create_user_tx` /
-    /// `permissions::repository::assign_role` rather than
-    /// hand-rolling the `INSERT` — see those for the real row shape.
-    pub async fn seed_user_with_roles(
-        &self,
-        email: &str,
-        roles: &[&str],
-    ) -> (Uuid, String) {
-        let hash = super::hashed("Password!234").await;
+    /// Seed a user directly in the DB and return `(user_id, access_token)`.
+    /// Every user is born a `member` (via `seed_member`'s owner,
+    /// `create_account`, as in production); `extra` roles are granted on
+    /// top. Use this when a test needs an admin or coach without going
+    /// through `/auth/register`.
+    pub async fn seed_user_with_roles(&self, email: &str, extra: &[Role]) -> (Uuid, String) {
+        let user_id = super::seed_member(&self.db, email, "Password!234").await;
 
-        let mut tx = self.db.begin().await.expect("begin tx");
-
-        let user = repository::create_user_tx(&mut tx, email, "Seeded User", None, &hash, None)
-            .await
-            .expect("insert user");
-
-        for role in roles {
-            let role: Role = role.parse().expect("known role name");
-            // The user row was created in this very tx, so no access-cache
-            // entry can exist for it yet.
-            permissions_repository::assign_role(&mut tx, user.id, role)
+        for role in extra {
+            let mut conn = self.db.acquire().await.expect("acquire conn");
+            // The user was created moments ago and has made no request, so
+            // no access-cache entry can exist for it yet.
+            permissions_repository::assign_role(&mut conn, user_id, *role)
                 .await
                 .expect("assign role")
                 .assume_uncached();
         }
 
-        tx.commit().await.expect("commit seed_user_with_roles");
-
+        // `create_account` lowercases the email; the token must carry the
+        // stored form.
         let token = dream_fly_backend::utils::jwt::encode_access_token(
             &self.config.auth,
-            user.id,
-            email,
+            user_id,
+            &email.to_lowercase(),
         )
         .expect("encode access token");
 
-        (user.id, token)
+        (user_id, token)
     }
 
     /// Convenience for tests that want a ready-to-use admin account.
     pub async fn seed_admin(&self) -> (Uuid, String) {
         let email = format!("admin-{}@test.local", Uuid::now_v7());
-        self.seed_user_with_roles(&email, &["admin"]).await
+        self.seed_user_with_roles(&email, &[Role::Admin]).await
     }
 
     /// Seed a ready-to-use coach: a user with the `coach` role, its coach
-    /// profile (`seed_coach`), and an access token — the three things a
+    /// profile (`seed_coach_for`), and an access token — the three things a
     /// coach-scoped HTTP test needs. Email and title are generated; tests
     /// that assert on either should keep seeding them explicitly.
     pub async fn seed_coach_user(&self) -> SeededCoach {
         let email = format!("coach-{}@test.local", Uuid::now_v7());
-        let (user_id, token) = self.seed_user_with_roles(&email, &["coach"]).await;
-        let coach_id = super::fixtures::seed_coach(&self.db, user_id, "Test Coach").await;
+        let (user_id, token) = self.seed_user_with_roles(&email, &[]).await;
+        let coach_id = self.seed_coach_for(user_id, "Test Coach").await;
         SeededCoach { user_id, coach_id, token }
+    }
+
+    /// `fixtures::seed_coach` against this app's access cache, for a user
+    /// that may already have made requests (the coach grant flushes it).
+    pub async fn seed_coach_for(&self, user_id: Uuid, title: &str) -> Uuid {
+        super::fixtures::seed_coach_with_cache(&self.db, &*self.access_cache, user_id, title).await
     }
 
     /// Deterministically wait for every background task spawned so far

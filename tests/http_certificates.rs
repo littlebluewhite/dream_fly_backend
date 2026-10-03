@@ -69,7 +69,7 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
     assert_eq!(body["term_label"], "2026 Spring");
     assert_eq!(body["comment"], "進步很多");
     assert_eq!(body["rating"], 5);
-    assert_eq!(body["created_by_name"], "Seeded User");
+    assert_eq!(body["created_by_name"], "Test Member");
     assert!(body["id"].as_str().is_some());
 }
 
