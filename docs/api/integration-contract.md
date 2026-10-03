@@ -690,29 +690,15 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 #### `GET /sessions/{id}/roster` — admin 或該課教練
 該場次名冊：課程的 active enrolments JOIN `users`，並 LEFT JOIN 這個場次自己的出勤紀錄（尚未點名的學員該欄位為 `null`）。404：場次不存在。403：非本課教練。
 
-回應（`RosterEntryResponse[]`，純陣列，依學員姓名排序）：
-
-```jsonc
-[
-  { "enrolment_id": "uuid", "user_id": "uuid", "user_name": "string",
-    "attendance_status": "present|absent|leave|null" }
-]
-```
+回應：[`RosterEntryResponse`](../../bindings/RosterEntryResponse.ts)`[]`（純陣列，依學員姓名排序）。`attendance_status` 為 `null` 表示該學員此場次尚未點名。
 
 #### `PUT /sessions/{id}/attendance` — admin 或該課教練
-Body：`{ "records": [ { "enrolment_id": "uuid", "status": "present|absent|leave" }, ... ] }`。批次 upsert（`ON CONFLICT (session_id, enrolment_id) DO UPDATE`）——重複呼叫同樣的 body 冪等、不會產生重複紀錄；同一 enrolment 再次點名會覆寫先前狀態，不影響 `created_at`（例外：持有 `approved` 假單的成員，其 `leave` 紀錄不能被 `present`/`absent` 覆寫——見裁決 5）。回應：更新後的完整名冊（`RosterEntryResponse[]`，與 `GET /sessions/{id}/roster` 同形狀）。
+Body：`{ "records": [ { "enrolment_id": "uuid", "status": "present|absent|leave" }, ... ] }`。批次 upsert（`ON CONFLICT (session_id, enrolment_id) DO UPDATE`）——重複呼叫同樣的 body 冪等、不會產生重複紀錄；同一 enrolment 再次點名會覆寫先前狀態，不影響 `created_at`（例外：持有 `approved` 假單的成員，其 `leave` 紀錄不能被 `present`/`absent` 覆寫——見裁決 5）。回應：更新後的完整名冊（[`RosterEntryResponse`](../../bindings/RosterEntryResponse.ts)`[]`，與 `GET /sessions/{id}/roster` 同形狀）。
 
 錯誤：404（場次不存在）；403（非本課教練）；422（場次尚未開始，訊息「場次尚未開始，無法點名」，見上方裁決 4——**此檢查先於下方這條，即使 `records` 為空陣列也會觸發**）；422（`status` 不是 `present`/`absent`/`leave` 之一，或任何 `enrolment_id` 不屬於該場次所在課程／狀態非 `active`——**整批拒絕，零寫入**，見上方裁決 2）；422（批次中含對該場次持有 `approved` 假單的成員被點為 `present`/`absent`——**整批拒絕，零寫入**，見上方裁決 5）。
 
 #### `GET /coaches/me/students` — coach
-呼叫者（教練）「active 課程」的「active enrolments」，去重後的學員清單。回應（`MyStudentResponse[]`，純陣列，依學員姓名排序）：
-
-```jsonc
-[
-  { "user_id": "uuid", "name": "string", "phone": "string|null",
-    "courses": [ { "course_id": "uuid", "course_name": "string", "enrolment_id": "uuid" } ] }
-]
-```
+呼叫者（教練）「active 課程」的「active enrolments」，去重後的學員清單。回應：[`MyStudentResponse`](../../bindings/MyStudentResponse.ts)`[]`（純陣列，依學員姓名排序；`courses` 為 [`StudentCourseBrief`](../../bindings/StudentCourseBrief.ts)`[]`）。
 
 呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列時回空陣列（非錯誤，同 `GET /sessions/today` 的慣例）。這是前端「我的學員」列表（FE getStudents）的資料源；每筆 `courses` 條目的 `enrolment_id` 是該學員在該課程的 active enrolment id，前端「寫評語」需以此呼叫 `POST /report-cards`。
 
@@ -769,52 +755,27 @@ Body：`{ session_id: "uuid" }`（欲預約的補課目標場次）。驗證順�
 角色規則：對話的兩端需一端具 `coach` 角色、另一端具 `member` 角色；呼叫者可為任一端（`user_id` 帶對方即可，順序無關——先前已建立的對話無論由哪一方再次呼叫都會 get-or-create 回同一筆）。違反回 422「僅支援教練與會員間的對話」，涵蓋：兩端角色相同（皆 member 或皆 coach）、任一端不具 `coach`/`member` 任一角色（例如純 admin）、或 `user_id` 等於呼叫者自己。回應正規化為 `member_id`/`coach_id`（不是「呼叫者/對方」）。
 
 #### `POST /conversations` — 需登入（member 或 coach）
-Body：`{ user_id: "uuid" }`（對方的 user id）。回應（`ConversationResponse`）：
-
-```jsonc
-{
-  "id": "uuid", "member_id": "uuid", "coach_id": "uuid",
-  "created_at": "ISO8601", "last_message_at": "ISO8601|null"
-}
-```
+Body：`{ user_id: "uuid" }`（對方的 user id）。回應：[`ConversationResponse`](../../bindings/ConversationResponse.ts)。`last_message_at` 為 `null` 表示尚無訊息。
 
 錯誤：422（角色驗證失敗，見上方「角色規則」）。
 
 #### `GET /conversations/me` — 需登入
-回應：`ConversationSummaryResponse[]`（**純陣列，不分頁**），依 `last_message_at DESC NULLS LAST, created_at DESC` 排序（尚無訊息的對話排最後；同刻/皆無訊息時以建立時間新到舊穩定排序）：
-
-```jsonc
-{
-  "id": "uuid", "peer_id": "uuid", "peer_name": "string",
-  "last_message_body": "string|null", "last_message_at": "ISO8601|null",
-  "unread_count": "number"
-}
-```
+回應：[`ConversationSummaryResponse`](../../bindings/ConversationSummaryResponse.ts)`[]`（**純陣列，不分頁**），依 `last_message_at DESC NULLS LAST, created_at DESC` 排序（尚無訊息的對話排最後；同刻/皆無訊息時以建立時間新到舊穩定排序）。
 
 `peer_id`/`peer_name` 是「對方」——呼叫者是 member 就回 coach 那端，反之亦然；`peer_name` 取自 `users.name`。`last_message_body` 是該對話最新一則訊息內容，截斷至 100 字（尚無訊息則為 `null`）。`unread_count` 為「對方寄出、且尚未讀取」的訊息數（`sender_id <> 呼叫者 AND read_at IS NULL`）——呼叫者自己寄出的訊息永遠不計入自己的 `unread_count`。單一查詢聚合完成（`last_message_body`/`unread_count` 皆為 correlated subquery），無 N+1。
 
 #### `GET /conversations/{id}/messages?page=&per_page=` — 需登入（僅參與者）
-分頁列表，`created_at DESC`（新到舊）。回應（`MessageListResponse`）：
-
-```jsonc
-{
-  "messages": [
-    { "id": "uuid", "sender_id": "uuid", "body": "string",
-      "created_at": "ISO8601", "read_at": "ISO8601|null" }
-  ],
-  "total": "number", "page": "number", "per_page": "number"
-}
-```
+分頁列表，`created_at DESC`（新到舊）。回應：[`MessageListResponse`](../../bindings/MessageListResponse.ts)，列為 [`MessageResponse`](../../bindings/MessageResponse.ts)。`read_at` 為 `null` 表示收件方尚未讀取（見下方 `PATCH /conversations/{id}/read`）。
 
 錯誤：404（對話不存在）；403（呼叫者非該對話 member/coach 任一方）。
 
 #### `POST /conversations/{id}/messages` — 需登入（僅參與者）
-Body：`{ body: "string" }`（長度需 1 到 2000 字，DB CHECK 與 API validator 兩層皆驗證）。**同一交易**內寫入訊息並更新該對話的 `last_message_at` 為當下時間。回應：新訊息（`MessageResponse`，形狀同上方列表項目；`sender_id` 為呼叫者自己，`read_at` 必為 `null`）。
+Body：`{ body: "string" }`（長度需 1 到 2000 字，DB CHECK 與 API validator 兩層皆驗證）。**同一交易**內寫入訊息並更新該對話的 `last_message_at` 為當下時間。回應：新訊息（[`MessageResponse`](../../bindings/MessageResponse.ts)，同上方列表項目；`sender_id` 為呼叫者自己，`read_at` 必為 `null`）。
 
 錯誤：404（對話不存在）；403（非參與者）；422（`body` 長度不在 1–2000）。
 
 #### `PATCH /conversations/{id}/read` — 需登入（僅參與者）
-無 body。將該對話中「對方寄出、且尚未讀取」的訊息全數標記為已讀（`read_at = now()`）——**只影響對方寄出的訊息，呼叫者自己寄出的訊息不受影響**。回應：`{ "updated": "number" }`（本次標記已讀的訊息數）。
+無 body。將該對話中「對方寄出、且尚未讀取」的訊息全數標記為已讀（`read_at = now()`）——**只影響對方寄出的訊息，呼叫者自己寄出的訊息不受影響**。回應：[`MarkReadResponse`](../../bindings/MarkReadResponse.ts)（`updated` 為本次標記已讀的訊息數）。
 
 錯誤：404（對話不存在）；403（非參與者）。
 
@@ -835,36 +796,20 @@ Body：`{ body: "string" }`（長度需 1 到 2000 字，DB CHECK 與 API valida
 證書發放成功會對該學員寫入一筆 `system` 類型 notification（見 §3.15），文案：「你獲得了新證書：{title}」。
 
 #### `POST /report-cards` — admin 或該課教練
-Body：`{ enrolment_id: "uuid", term_label: "string", comment?: "string", rating?: number }`（`term_label` 1–100 字；`rating` 選填，1–5）。回應（`ReportCardResponse`）：
-
-```jsonc
-{
-  "id": "uuid", "course_id": "uuid", "course_name": "string",
-  "term_label": "string", "comment": "string|null", "rating": "number|null",
-  "created_by_name": "string", "created_at": "ISO8601"
-}
-```
+Body：`{ enrolment_id: "uuid", term_label: "string", comment?: "string", rating?: number }`（`term_label` 1–100 字；`rating` 選填，1–5）。回應：[`ReportCardResponse`](../../bindings/ReportCardResponse.ts)。`comment`/`rating` 未帶時為 `null`。
 
 錯誤：404（`enrolment_id` 不存在，訊息「報名紀錄不存在」）；403（coach 並非該 enrolment 所屬課程的教練，訊息「非本課教練」）；409（`(enrolment_id, term_label)` 已存在，訊息「此期別已建立過成績單」）；422（`rating` 不在 1–5、或 `term_label` 長度不符）。
 
 #### `GET /report-cards/me` — 需登入
-回應：`ReportCardResponse[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己（透過其 enrolments）的成績單。
+回應：[`ReportCardResponse`](../../bindings/ReportCardResponse.ts)`[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己（透過其 enrolments）的成績單。
 
 #### `POST /certificates` — admin 或教練（限自己課程學員）
-Body：`{ user_id: "uuid", course_id?: "uuid", title: "string", level?: "string", issued_on: "YYYY-MM-DD", note?: "string" }`（`title` 1–200 字；`level` 選填，至多 100 字）。回應（`CertificateResponse`）：
-
-```jsonc
-{
-  "id": "uuid", "course_id": "uuid|null", "course_name": "string|null",
-  "title": "string", "level": "string|null", "issued_on": "YYYY-MM-DD",
-  "note": "string|null", "created_at": "ISO8601"
-}
-```
+Body：`{ user_id: "uuid", course_id?: "uuid", title: "string", level?: "string", issued_on: "YYYY-MM-DD", note?: "string" }`（`title` 1–200 字；`level` 選填，至多 100 字）。回應：[`CertificateResponse`](../../bindings/CertificateResponse.ts)。`course_id`/`course_name` 為 `null` 表示證書不綁定課程（見上）。
 
 錯誤：403（coach 且該學員不具呼叫者任一課程的 enrolment，訊息「僅能發給自己課程的學員」）；422（`title`/`level` 長度不符）。
 
 #### `GET /certificates/me` — 需登入
-回應：`CertificateResponse[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己的證書。
+回應：[`CertificateResponse`](../../bindings/CertificateResponse.ts)`[]`（**純陣列，不分頁**），新到舊。僅回傳呼叫者自己的證書。
 
 ---
 
@@ -877,46 +822,22 @@ Body：`{ user_id: "uuid", course_id?: "uuid", title: "string", level?: "string"
 **`POST /rewards/{id}/redeem` 為單一交易，依序**：鎖品項列（`FOR UPDATE`）→ 檢查 `is_active`（否則 404）→ 檢查 `stock`（`null` 略過；`0` → 409）→ 鎖並檢查呼叫者 `users.points_balance`（不足 `points_cost` → 409）→ 寫入 `point_ledger`（`delta = -points_cost`，`reason = "redeem"`）並同步 `users.points_balance` → `stock` 非 `null` 才 `-1` → 插入 `reward_redemptions` 紀錄。**併發防護**：兩筆兌換搶同一品項最後一件庫存時，品項列的 `FOR UPDATE` 序列化兩者的庫存檢查，恰好一筆成功，另一筆回 409「已兌換完畢」。
 
 #### `GET /rewards?all=` — 需登入
-Member（未帶 `all` 或 `all=false`）：僅回傳 `is_active = true` 的品項，依 `display_order` 排序。`all=true` 需 admin，回傳含 inactive 在內的全部品項（排序不變）；非 admin 帶 `all=true` 回 403。回應（`RewardListResponse`，**純陣列，不分頁**）：
-
-```jsonc
-{
-  "rewards": [
-    { "id": "uuid", "name": "string", "description": "string|null",
-      "points_cost": "number", "stock": "number|null", "is_active": "boolean",
-      "display_order": "number", "created_at": "ISO8601", "updated_at": "ISO8601" }
-  ]
-}
-```
+Member（未帶 `all` 或 `all=false`）：僅回傳 `is_active = true` 的品項，依 `display_order` 排序。`all=true` 需 admin，回傳含 inactive 在內的全部品項（排序不變）；非 admin 帶 `all=true` 回 403。回應：[`RewardListResponse`](../../bindings/RewardListResponse.ts)（**不分頁**；陣列包在 `rewards` 鍵下，無分頁 meta），列為 [`RewardResponse`](../../bindings/RewardResponse.ts)。`points_cost` 單位為點數；`stock` 為 `null` 表示不限量（見上）。
 
 錯誤：403（非 admin 帶 `all=true`）。
 
 #### `POST /rewards/{id}/redeem` — 需登入
-無 body。成功回應：
-
-```jsonc
-{ "redemption_id": "uuid", "points_spent": "number", "balance_after": "number" }
-```
+無 body。成功回應：[`RedeemResponse`](../../bindings/RedeemResponse.ts)（`balance_after` 為扣點後的餘額）。
 
 錯誤：404（品項不存在或 `is_active = false`，訊息「獎勵不存在」）；409（庫存為 `0`，訊息「已兌換完畢」；或點數餘額低於 `points_cost`，訊息「點數不足」）。
 
 #### `GET /rewards/redemptions/me?page=&per_page=` — 需登入
-回應（`RedemptionListResponse`）：
-
-```jsonc
-{
-  "redemptions": [
-    { "id": "uuid", "reward_id": "uuid", "reward_name": "string",
-      "points_spent": "number", "created_at": "ISO8601" }
-  ],
-  "total": "number", "page": "number", "per_page": "number"
-}
-```
+回應：[`RedemptionListResponse`](../../bindings/RedemptionListResponse.ts)，列為 [`RedemptionResponse`](../../bindings/RedemptionResponse.ts)。
 
 新到舊，僅回傳呼叫者自己的兌換紀錄。`reward_name` 為即時 join 目前的品項名稱（非兌換當下快照）——品項改名後，舊兌換紀錄顯示的名稱會跟著變動。
 
 #### `POST /rewards` / `PATCH /rewards/{id}` — admin
-Create body：`{ name, description?, points_cost, stock?, display_order? }`（`name` 1–200 字；`points_cost` 需 > 0；`stock` 選填且 >= 0，留空即不限量；`display_order` 選填，預設 `0`）。新建品項一律 `is_active = true`。回應：建立後的品項（形狀同 `GET /rewards` 陣列中的單筆）。
+Create body：`{ name, description?, points_cost, stock?, display_order? }`（`name` 1–200 字；`points_cost` 需 > 0；`stock` 選填且 >= 0，留空即不限量；`display_order` 選填，預設 `0`）。新建品項一律 `is_active = true`。回應：建立後的品項（[`RewardResponse`](../../bindings/RewardResponse.ts)，同 `GET /rewards` 陣列中的單筆）。
 
 Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?, stock?, is_active?, display_order? }`。`description`/`stock` 可明確傳 `null` 清空（`description` 清為 `NULL`；`stock` 清為 `NULL` 即改為不限量），欄位不帶則維持原值不動。
 
@@ -938,54 +859,13 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?,
 
 #### `GET /reports/admin` — admin
 
-```jsonc
-{
-  "revenue": {
-    "this_month_cents": "number",
-    "last_month_cents": "number",
-    "trend": [
-      { "month": "YYYY-MM", "revenue_cents": "number" }
-    ]
-  },
-  "kpis": {
-    "new_members":       { "this_month": "number", "last_month": "number" },
-    "new_enrolments":    { "this_month": "number", "last_month": "number" },
-    "paid_orders_count": { "this_month": "number", "last_month": "number" },
-    "attendance_rate":   { "this_month": "number|null", "last_month": "number|null" }
-  },
-  "revenue_breakdown": [
-    { "source": "course|ticket|membership|course_package|merchandise|venue_rental",
-      "gross_cents": "number", "orders_count": "number", "units": "number" }
-  ],
-  "income_sources_12m": [
-    { "month": "YYYY-MM", "source": "…（同上 6 值）",
-      "gross_cents": "number", "orders_count": "number", "units": "number" }
-  ],
-  "category_split": [
-    { "source": "course|ticket|membership|course_package|merchandise",
-      "gross_cents": "number", "ratio": "number|null" }
-  ],
-  "payment_split": [ { "method": "string", "count": "number" } ],
-  "attendance_distribution": [ { "bucket": "gte_95|85_94|75_84|lt_75", "count": "number" } ],
-  "age_distribution":        [ { "bucket": "0-6|7-12|13-17|18-25|26-40|41+", "count": "number" } ],
-  "tier_distribution":       [ { "bucket": "regular|bronze|silver|gold", "count": "number" } ],
-  "retention": [
-    { "month": "YYYY-MM", "new_count": "number", "returning_count": "number", "rate": "number|null" }
-  ],
-  "funnel": { "trial_inquiries": "number", "new_enrolments": "number" },
-  "weekday_load": [ { "weekday": "number（0=週日..6=週六）", "present_count": "number" } ],
-  "venue_usage": [ { "venue": "string", "minutes": "number" } ],
-  "members": { "total": "number", "new_this_month": "number", "active": "number" },
-  "courses": [
-    { "course_id": "uuid", "name": "string", "enrolled": "number",
-      "max_students": "number", "fill_rate": "number|null", "waitlist_count": "number" }
-  ],
-  "coaches": [
-    { "coach_id": "uuid", "name": "string", "course_count": "number", "student_count": "number",
-      "revenue_cents_12m": "number", "attendance_rate": "number|null" }
-  ]
-}
-```
+回應：[`AdminReportResponse`](../../bindings/AdminReportResponse.ts)。各段型別見該檔（如 [`IncomeSourceEntry`](../../bindings/IncomeSourceEntry.ts)、[`BucketCountEntry`](../../bindings/BucketCountEntry.ts)、[`AdminCoachReportRow`](../../bindings/AdminCoachReportRow.ts)）。下列值域在型別中只是 `string`/`number`，以本文件為準：
+
+- `source`（`revenue_breakdown`/`income_sources_12m`）：`course`/`ticket`/`membership`/`course_package`/`merchandise`/`venue_rental`（canonical 序）；`category_split` 只有前五個（不含 `venue_rental`）。
+- `bucket`：`attendance_distribution` 為 `gte_95`/`85_94`/`75_84`/`lt_75`；`age_distribution` 為 `0-6`/`7-12`/`13-17`/`18-25`/`26-40`/`41+`；`tier_distribution` 為 `regular`/`bronze`/`silver`/`gold`（各桶定義見下）。
+- `payment_split[].method`：§1.8 的 `payment_method` 值域，外加 `"unknown"`（見下）。
+- `weekday_load[].weekday`：`0`=週日..`6`=週六（§3.18 慣例）。
+- `month`：studio 時區的 `YYYY-MM`。
 
 Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也不新增資料表）：金流組（Task P4-B4a）加 `kpis`/`revenue_breakdown`/`income_sources_12m`/`category_split`/`payment_split` 與 `coaches[].revenue_cents_12m`；人流組（Task P4-B4b）加 `attendance_distribution`/`age_distribution`/`tier_distribution`/`retention`/`funnel`/`weekday_load`/`venue_usage` 與 `coaches[].attendance_rate`。共通口徑：**月界與「今日」一律 studio 時區**（§3.18 裁決 2；`AT TIME ZONE` + `date_trunc`）；**金額聚合一律折扣前毛額**（order line `unit_price_cents × quantity`，order 層 `discount` 不攤分，與 `revenue` 的「實收」`total_cents` 口徑不同），且**排除 `pending`/`refunded`**（`status ∈ REVENUE_STATUSES`，非 `paid_at IS NOT NULL`）；比率一律 `0–1`，分母為 0 → `null`（非 `0`/`NaN`）。
 
@@ -1010,17 +890,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 
 #### `GET /reports/coach` — coach
 
-物化「今日」場次後彙總（同 `GET /sessions/today` 的物化時機）：
-
-```jsonc
-{
-  "today_sessions": "number",
-  "pending_attendance": "number",
-  "unread_messages": "number",
-  "student_count": "number",
-  "attendance_rate_30d": "number|null"
-}
-```
+物化「今日」場次後彙總（同 `GET /sessions/today` 的物化時機）。回應：[`CoachReportResponse`](../../bindings/CoachReportResponse.ts)。
 
 - `today_sessions`：呼叫者名下課程今日場次數（studio 當地日期）。
 - `pending_attendance`：今日場次中「尚無任何一筆 `attendance_records`」者的數量（只要有任一筆紀錄即不算 pending，不要求全班點完）。
@@ -1032,17 +902,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 
 #### `GET /reports/me` — 需登入
 
-物化「今日起 7 天」場次後彙總（`from=今天`、`to=今天+7 天`，與 §3.18 `GET /courses/{id}/sessions` 的預設範圍算法一致，即 8 個曆日的區間）：
-
-```jsonc
-{
-  "attended_total": "number",
-  "attendance_rate": "number|null",
-  "points_balance": "number",
-  "active_enrolments": "number",
-  "upcoming_sessions_7d": "number"
-}
-```
+物化「今日起 7 天」場次後彙總（`from=今天`、`to=今天+7 天`，與 §3.18 `GET /courses/{id}/sessions` 的預設範圍算法一致，即 8 個曆日的區間）。回應：[`MemberReportResponse`](../../bindings/MemberReportResponse.ts)。
 
 - `attended_total`/`attendance_rate`：呼叫者**所有**報名（不論 enrolment 現在是否仍 `active`——已取消的報名不會抹除已發生的出勤歷史）之出勤紀錄；`attended_total` 為 `present` 筆數，`attendance_rate` 為 `present/(present+absent)`，`leave` 不計；無資料時 `attendance_rate` 回 `null`。
 - `points_balance`：即時讀 `users.points_balance`。
@@ -1055,13 +915,7 @@ Round 4 Phase 4 分兩批擴充本端點（皆為 additive，不新增端點也�
 
 Admin 桌面「最新動態」面板的資料源（Round 4 Task B8）。UNION 四來源，各自取最近 20 筆再合併依 `occurred_at` 倒序取 20：新註冊會員（`users.created_at`）、新付款訂單（`orders`，見下方裁決）、新報名（`enrolments.created_at`）、新洽詢（`contact_inquiries.created_at`，含 §3.17 的 `inquiry_type`）。
 
-```jsonc
-{
-  "items": [
-    { "kind": "user|order|enrolment|inquiry", "label": "string", "occurred_at": "ISO8601" }
-  ]
-}
-```
+回應：[`ActivityResponse`](../../bindings/ActivityResponse.ts)，`items` 為 [`ActivityItem`](../../bindings/ActivityItem.ts)`[]`，依 `occurred_at` 倒序。`kind` 型別是 `string`，值域為 `user`/`order`/`enrolment`/`inquiry`。
 
 - `label` 由後端組成的繁體中文人讀字串，四種 `kind` 各自的模板：
   - `user`：「新會員註冊:{name}」
@@ -1103,7 +957,7 @@ Admin 桌面「系統設定」頁與 mobile-admin 設定畫面的後端存放層
    - `security`：安全性設定布林物件，例如 `{ twoFA }`。
 
 #### `GET /settings` — admin
-回應（`SettingsResponse`）：`{ "settings": { "<key>": <value>, ... } }`。空表回 `{ "settings": {} }`。
+回應：[`SettingsResponse`](../../bindings/SettingsResponse.ts)。空表回 `{ "settings": {} }`。
 
 #### `PUT /settings` — admin
 Body（`UpdateSettingsRequest`）：`{ "settings": { "<key>": <value>, ... } }`。逐 key upsert（新 key 建立、既有 key 覆寫且 `updated_at` 更新為當下時間），`value` 可為任意合法 JSON（含巢狀物件/陣列），原樣存取。空 `settings` 物件視為 no-op（200，回傳目前全量狀態，不寫入、`updated_at` 不變）。回應同 `GET /settings`。
