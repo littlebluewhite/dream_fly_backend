@@ -73,8 +73,8 @@ pub async fn find_by_id(
     .await
 }
 
-/// Transactional slot lookup with `FOR SHARE` so concurrent booking
-/// mutations block until this read commits.
+/// Transactional slot lookup with `FOR SHARE`: the lock keeps the slot's
+/// date/start time stable for the caller's 24-hour cancel check.
 pub async fn find_by_id_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,

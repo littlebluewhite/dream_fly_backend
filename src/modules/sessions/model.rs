@@ -18,7 +18,7 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    /// Every variant, in declaration (= PG label) order — single owner of the value
+    /// Every variant, in declaration order — single owner of the value
     /// domain.
     pub const ALL: [Self; 3] = [Self::Upcoming, Self::Ongoing, Self::Done];
 

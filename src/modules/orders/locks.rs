@@ -1,6 +1,6 @@
 //! 鎖序圖 (Lock Order Graph) — the single code anchor for every multi-table
 //! row-lock order in the money/stock/seat paths. Other modules' docs point
-//! here instead of restating it. Verified against the code, step by step:
+//! here instead of restating it:
 //!
 //! ```text
 //! checkout   users (FOR UPDATE)
@@ -29,6 +29,14 @@
 //! touch `rewards`, and `redeem` itself takes `rewards` first. A new path
 //! that locks `users` before `rewards` would close a cycle with `redeem` —
 //! add it here first.
+//!
+//! Two seat paths live outside this graph; neither can deadlock today.
+//! Venue booking: create takes `time_slots` (FOR NO KEY UPDATE) then INSERTs
+//! `bookings`; cancel takes `bookings` (FOR UPDATE) then `time_slots` (FOR
+//! SHARE, non-admin only). Makeup booking: `leave_requests` (FOR UPDATE) then
+//! `course_sessions` (FOR UPDATE). Each touches a disjoint table set from the
+//! graph above, and create's `bookings` row is brand new, so no one else can
+//! hold it.
 //!
 //! Where each step lives: [`acquire_checkout_locks`] runs checkout's first
 //! three locks, and the `cart_items` lock is the `FOR UPDATE OF ci` in
@@ -190,10 +198,8 @@ impl RefundLocks {
 /// Run the refund half of the order lock protocol inside the caller's
 /// transaction (which already holds the `orders` row `FOR UPDATE`): users
 /// (unconditionally, even for a zero-points order) → the products the order
-/// will restock, ascending. Errors besides a database error, in order:
-/// `lock_balance_tx`'s 404 "user not found", then
-/// `lock_restock_for_order_tx`'s `Internal` for a product line missing its
-/// `product_id`.
+/// will restock, ascending. Errors besides a database error:
+/// `lock_balance_tx`'s 404 "user not found".
 pub async fn acquire_refund_locks(
     tx: &mut Transaction<'_, Postgres>,
     order: &Order,

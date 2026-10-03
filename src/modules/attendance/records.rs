@@ -5,7 +5,7 @@
 //!   批次點名。空批次跳過查詢 → valid-set 讀 → approved-set 讀 →
 //!   `marking::plan` → 逐列 upsert,全部在呼叫端的寫入 tx 內。
 //! - [`project_approved_leave_tx`](`pub(crate)`,僅
-//!   `leave::service::decide_leave_request`):核准請假投影成 `leave` 列。
+//!   `leave::service::decide_tx`):核准請假投影成 `leave` 列。
 //!
 //! 核准恆勝的雙層防護(ADR-0008 乙案)都住在這裡:第一層是 `marking::plan`
 //! 的整批 pre-check(approved-set 在寫入 tx 內讀);第二層是私有

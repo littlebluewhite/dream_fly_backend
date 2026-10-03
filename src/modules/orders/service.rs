@@ -555,8 +555,7 @@ pub async fn update_order_status(
 /// 1. `locks::acquire_refund_locks` — the buyer's `users` row
 ///    UNCONDITIONALLY (even a zero-points order; same-buyer checkout/refund
 ///    exclusion, 決策 5), then the products the order will restock,
-///    ascending. 404 "user not found"; `Internal` for a product line missing
-///    its `product_id`.
+///    ascending. 404 "user not found".
 /// 2. `points::service::reverse_order_tx` — reverses the order's
 ///    `checkout_earn`/`checkout_redeem` ledger flow, restore before
 ///    clawback (決策 4); 409「點數不足」 on a clawback the balance can't cover.
