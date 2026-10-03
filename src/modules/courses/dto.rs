@@ -187,3 +187,40 @@ pub struct UpdateCourseRequest {
     #[validate(nested)]
     pub schedule_slots: Option<Vec<CourseScheduleSlotEntry>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::courses::model::CourseLevel;
+
+    /// Golden wire shape: `level` is the lowercase label.
+    #[test]
+    fn course_response_json_is_golden() {
+        let c = Course {
+            id: Uuid::nil(),
+            name: "n".into(),
+            slug: "s".into(),
+            level: CourseLevel::Foundation,
+            description: None,
+            duration_minutes: 60,
+            price_cents: 100,
+            max_students: 10,
+            min_age: None,
+            max_age: None,
+            features: vec![],
+            is_active: true,
+            coach_id: None,
+            category: None,
+            schedule_text: None,
+            is_highlighted: false,
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+            updated_at: DateTime::<Utc>::UNIX_EPOCH,
+            enrolled_count: 0,
+            waitlist_count: 0,
+        };
+        assert_eq!(
+            serde_json::to_string(&CourseResponse::from(c)).unwrap(),
+            r#"{"id":"00000000-0000-0000-0000-000000000000","name":"n","slug":"s","level":"foundation","description":null,"duration_minutes":60,"price_cents":100,"max_students":10,"min_age":null,"max_age":null,"features":[],"is_active":true,"coach_id":null,"category":null,"schedule_text":null,"is_highlighted":false,"created_at":"1970-01-01T00:00:00Z","updated_at":"1970-01-01T00:00:00Z","enrolled_count":0,"waitlist_count":0}"#
+        );
+    }
+}

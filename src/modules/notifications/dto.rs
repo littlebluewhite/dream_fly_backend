@@ -34,3 +34,28 @@ impl From<Notification> for NotificationResponse {
 pub struct UnreadCountResponse {
     pub count: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::notifications::model::NotificationType;
+
+    /// Golden wire shape: `notification_type` goes out under the key `type`.
+    #[test]
+    fn response_json_is_golden() {
+        let n = Notification {
+            id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            notification_type: NotificationType::BookingConfirmed,
+            title: "t".into(),
+            message: "m".into(),
+            is_read: false,
+            metadata: None,
+            created_at: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        assert_eq!(
+            serde_json::to_string(&NotificationResponse::from(n)).unwrap(),
+            r#"{"id":"00000000-0000-0000-0000-000000000000","type":"booking_confirmed","title":"t","message":"m","is_read":false,"metadata":null,"created_at":"1970-01-01T00:00:00Z"}"#
+        );
+    }
+}

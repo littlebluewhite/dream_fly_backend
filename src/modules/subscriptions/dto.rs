@@ -55,3 +55,31 @@ impl SubscriptionResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::subscriptions::model::SubscriptionStatus;
+
+    /// Golden wire shape: `status` is the read-time `derived_status`, not the
+    /// stored column.
+    #[test]
+    fn response_json_carries_derived_status() {
+        let s = SubscriptionWithProduct {
+            id: Uuid::nil(),
+            product_id: Uuid::nil(),
+            product_name: "p".into(),
+            status: SubscriptionStatus::Active,
+            started_at: DateTime::<Utc>::UNIX_EPOCH,
+            expires_at: None,
+            total_sessions: Some(10),
+            remaining_sessions: Some(0),
+            price_cents: 100,
+            derived_status: SubscriptionStatus::Expired,
+        };
+        assert_eq!(
+            serde_json::to_string(&SubscriptionResponse::from(s)).unwrap(),
+            r#"{"id":"00000000-0000-0000-0000-000000000000","product_id":"00000000-0000-0000-0000-000000000000","product_name":"p","status":"expired","started_at":"1970-01-01T00:00:00Z","expires_at":null,"total_sessions":10,"remaining_sessions":0,"price_cents":100}"#
+        );
+    }
+}

@@ -68,3 +68,32 @@ impl From<MyStudentRow> for MyStudentResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::attendance::model::AttendanceStatus;
+
+    fn row(attendance_status: Option<AttendanceStatus>) -> RosterRow {
+        RosterRow {
+            enrolment_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "u".into(),
+            attendance_status,
+        }
+    }
+
+    /// Golden wire shape: an unmarked roster entry carries an explicit `null`.
+    #[test]
+    fn roster_entry_json_is_golden() {
+        assert_eq!(
+            serde_json::to_string(&RosterEntryResponse::from(row(None))).unwrap(),
+            r#"{"enrolment_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","user_name":"u","attendance_status":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RosterEntryResponse::from(row(Some(AttendanceStatus::Present))))
+                .unwrap(),
+            r#"{"enrolment_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","user_name":"u","attendance_status":"present"}"#
+        );
+    }
+}
