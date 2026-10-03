@@ -97,3 +97,21 @@ pub struct ContactInquiry {
     /// validation.
     pub metadata: Option<serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inquiry_type_all_covers_every_variant() {
+        // Tripwire:窮盡 match、無 `_` arm。新增 InquiryType 變體時本行編譯
+        // 錯誤,把人押回 `ALL`。
+        for kind in InquiryType::ALL {
+            match kind {
+                InquiryType::General | InquiryType::Trial => {}
+            }
+            assert_eq!(kind.as_str().parse::<InquiryType>(), Ok(kind));
+        }
+        assert_eq!(InquiryType::ALL.len(), 2, "ALL must list every variant exactly once");
+    }
+}

@@ -129,6 +129,18 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
+    #[test]
+    fn session_status_all_covers_every_variant() {
+        // Tripwire:窮盡 match、無 `_` arm。新增 SessionStatus 變體時本行
+        // 編譯錯誤,把人押回 `ALL`。
+        for status in SessionStatus::ALL {
+            match status {
+                SessionStatus::Upcoming | SessionStatus::Ongoing | SessionStatus::Done => {}
+            }
+        }
+        assert_eq!(SessionStatus::ALL.len(), 3, "ALL must list every variant exactly once");
+    }
+
     fn new_york() -> Tz {
         "America/New_York".parse::<Tz>().expect("valid IANA name")
     }

@@ -95,6 +95,21 @@ pub struct TimeSlot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn slot_status_all_covers_every_variant() {
+        // Tripwire:窮盡 match、無 `_` arm。新增 SlotStatus 變體時本行編譯
+        // 錯誤,把人押回 `ALL`。
+        for status in SlotStatus::ALL {
+            match status {
+                SlotStatus::Available
+                | SlotStatus::Limited
+                | SlotStatus::Full
+                | SlotStatus::Closed => {}
+            }
+        }
+        assert_eq!(SlotStatus::ALL.len(), 4, "ALL must list every variant exactly once");
+    }
+
     // --- SlotStatus::derive table (仿 courses::seats::remaining_table 款式) ---
 
     #[test]
