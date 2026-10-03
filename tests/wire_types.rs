@@ -10,7 +10,9 @@
 //!
 //! The `wire_types!` list is the export list. The test fails when a listed
 //! type references a type that is not listed, or when two listed types would
-//! write the same `.ts` file (give one a `#[ts(rename = "...")]`).
+//! write the same `.ts` file (give one a `#[ts(rename = "...")]`). A second
+//! test scans the DTO sources so a `Serialize` type left off the list fails
+//! too, unless it is in `NOT_WIRE_TYPES`.
 //! `i64` is exported as `number` (`with_large_int`): wire integers stay
 //! below 2^53 (ADR-0016).
 
@@ -258,6 +260,52 @@ fn bindings_match_response_dtos() {
          Regenerate with: WIRE_BINDINGS=write cargo test --test wire_types",
         report.join("\n")
     );
+}
+
+/// `Serialize` types in DTO sources that are deliberately not wire types.
+const NOT_WIRE_TYPES: &[(&str, &str)] = &[
+    ("coaches::dto::ScheduleEntry", "request entry of UpdateScheduleRequest"),
+    ("schedule::dto::SlotEntry", "request entry of CreateSlotsRequest"),
+    ("courses::dto::CourseScheduleSlotEntry", "request entry of Create/UpdateCourseRequest"),
+];
+
+/// Catches a response DTO nobody added to `wire_types!` (no other listed type
+/// references it, so the dependency check cannot see it).
+#[test]
+fn every_serialize_dto_is_listed() {
+    let cfg = Config::new().with_large_int("number");
+    let listed: Vec<&str> = wire_types(&cfg).iter().map(|t| t.rust_name).collect();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files: Vec<(PathBuf, String)> = vec![
+        (src.join("error/mod.rs"), "error".into()),
+        (src.join("extractors/pagination.rs"), "extractors::pagination".into()),
+    ];
+    for entry in fs::read_dir(src.join("modules")).unwrap() {
+        let dir = entry.unwrap().path();
+        let module = dir.file_name().unwrap().to_string_lossy().into_owned();
+        if dir.join("dto.rs").exists() {
+            files.push((dir.join("dto.rs"), format!("modules::{module}::dto")));
+        }
+    }
+    for (file, module) in files {
+        let text = fs::read_to_string(&file).unwrap();
+        let mut serialize = false;
+        for line in text.lines().map(str::trim) {
+            if let Some(derives) = line.strip_prefix("#[derive(") {
+                serialize = derives.trim_end_matches(")]").split(',').any(|d| d.trim() == "Serialize");
+            } else if let Some(name) = ["pub struct ", "pub enum "].iter().find_map(|p| line.strip_prefix(p)) {
+                let name = name.split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap();
+                let short = format!("{}::{name}", module.trim_start_matches("modules::"));
+                let full = format!("dream_fly_backend::{module}::{name}");
+                assert!(
+                    !serialize || listed.contains(&full.as_str()) || NOT_WIRE_TYPES.iter().any(|(n, _)| *n == short),
+                    "{full} derives Serialize but is not a wire type: derive ts_rs::TS and add it to \
+                     wire_types!, or add it to NOT_WIRE_TYPES with a reason"
+                );
+                serialize = false;
+            }
+        }
+    }
 }
 
 /// `export type { X } from "./X";` per exported file, sorted by path.

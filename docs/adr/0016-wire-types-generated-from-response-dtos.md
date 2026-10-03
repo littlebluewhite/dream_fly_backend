@@ -30,6 +30,7 @@ DTO 的狀態類欄位從 `String` 換成這些 enum。Rust DTO 因此已經能�
   4. 產生排序的 `index.ts`(`export type { X } from "./X";`);
   5. 與 committed `bindings/` 逐檔比對,不符即失敗並列出 missing/stale/extra,提示
      `WIRE_BINDINGS=write cargo test --test wire_types` 重新產生。
+  6. 另一個測試掃 DTO 原始碼,抓「derive `Serialize` 卻不在清單」的型別(見 Consequences)。
   `cargo test` 因此保證 `bindings/` 永遠等於當下 DTO 的輸出;改 DTO 不重新產生,gate 不會綠。
 - **`i64` → `number` 不變量**:`with_large_int("number")` 把 `i64`/`u64` 輸出為 `number`。這成立的前提是
   wire 上的整數(金額 cents、點數、計數)永遠 ≤ 2^53;超過的值 JSON.parse 會失真。若出現可能超過的欄位,
@@ -58,8 +59,11 @@ DTO 的狀態類欄位從 `String` 換成這些 enum。Rust DTO 因此已經能�
 ## Consequences
 
 - 新增 response DTO:derive `ts_rs::TS`、加進 `wire_types!` 清單、`WIRE_BINDINGS=write cargo test --test
-  wire_types`,commit `bindings/` 的變更。忘了列入清單而被其他清單型別引用 → 測試失敗並指出型別;
-  沒被引用的漏列型別不會被抓到,靠 review 把關。
+  wire_types`,commit `bindings/` 的變更。忘了列入清單而被其他清單型別引用 → 依賴檢查失敗並指出型別;
+  沒被引用的頂層型別由 `every_serialize_dto_is_listed` 抓:它掃 `src/modules/*/dto.rs`、
+  `src/error/mod.rs`、`src/extractors/pagination.rs`,每個 derive `Serialize` 的 struct/enum 必須在
+  `wire_types!` 清單,或列入 `NOT_WIRE_TYPES`(附一行理由;目前是三個 request entry:`ScheduleEntry`、
+  `SlotEntry`、`CourseScheduleSlotEntry`)。放在其他檔案的回應型別不在掃描範圍,仍靠 review。
 - 新的 Rust 同名回應型別需要 `#[ts(rename = "…")]`,否則撞名檢查失敗。
 - DTO 欄位的 doc comment 會成為 TS 的 JSDoc,一併出現在 `bindings/`。
 - 前端由 `scripts/wire.mjs` 同步 `bindings/` 到 `src/lib/api/generated/`(前端任務),漂移成為前端
