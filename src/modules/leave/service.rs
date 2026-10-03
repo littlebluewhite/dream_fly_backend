@@ -130,15 +130,13 @@ pub async fn list_leave_requests(
     let coach_scope = if auth.is_admin() {
         None
     } else {
-        match coaches_service::resolve_scope(db, auth).await? {
-            Some(scope) => Some(scope),
-            None => {
-                return Ok(LeaveRequestListResponse {
-                    leave_requests: Vec::new(),
-                    meta: pagination.meta(0),
-                });
-            }
-        }
+        let Some(scope) = coaches_service::resolve_scope(db, auth).await? else {
+            return Ok(LeaveRequestListResponse {
+                leave_requests: Vec::new(),
+                meta: pagination.meta(0),
+            });
+        };
+        Some(scope)
     };
 
     let total =

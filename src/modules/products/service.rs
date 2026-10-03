@@ -208,10 +208,6 @@ pub struct ProductLocks {
 }
 
 impl ProductLocks {
-    pub fn ids(&self) -> Vec<Uuid> {
-        self.rows.iter().map(|row| row.id).collect()
-    }
-
     /// Reorder `items` into this witness's lock order (ascending product
     /// id). An item whose id this witness does not cover maps to
     /// `AppError::Internal` — writing a row the caller never locked is a
@@ -520,6 +516,8 @@ mod tests {
 
     #[test]
     fn restock_lines_skips_course_lines() {
+        // The trace query never returns course lines today; this pins the
+        // defensive filter in `restock_lines` should that ever change.
         // A course line never touches stock — skipped even if its trace
         // claimed a decrement. Product lines around it keep their order.
         let (first, last) = (Uuid::now_v7(), Uuid::now_v7());

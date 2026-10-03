@@ -1302,7 +1302,10 @@ async fn checkout_locks_block_same_user_cart_insert_until_commit(db: PgPool) {
 
     let mut tx = db.begin().await.unwrap();
     let checkout_locks = locks::acquire_checkout_locks(&mut tx, user).await.unwrap();
-    assert_eq!(checkout_locks.products().ids(), &[in_cart]);
+    // The witness covers exactly the cart's product: `late` is not locked yet.
+    let products = checkout_locks.products();
+    assert!(products.in_lock_order(vec![in_cart], |id| *id).is_ok());
+    assert!(products.in_lock_order(vec![late], |id| *id).is_err());
 
     // The same user adds a new line from another connection, on a real OS
     // thread (same single-threaded runtime rationale as the tests above).

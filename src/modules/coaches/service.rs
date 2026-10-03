@@ -46,15 +46,10 @@ pub async fn resolve(
 /// `= ANY($n)`,不再各自重述 `coach_id = $1`。欄位私有:唯一建構點是
 /// `resolve_scope`。
 pub struct CoachScope {
-    coach_id: Uuid,
     course_ids: Vec<Uuid>,
 }
 
 impl CoachScope {
-    pub fn coach_id(&self) -> Uuid {
-        self.coach_id
-    }
-
     pub fn course_ids(&self) -> &[Uuid] {
         &self.course_ids
     }
@@ -70,7 +65,7 @@ pub async fn resolve_scope(
         return Ok(None);
     };
     let course_ids = repository::find_course_ids_by_coach(db, coach.id).await?;
-    Ok(Some(CoachScope { coach_id: coach.id, course_ids }))
+    Ok(Some(CoachScope { course_ids }))
 }
 
 /// 課程教練所有權 gate:admin 直接放行;否則呼叫者必須是 course_coach_id 指到
