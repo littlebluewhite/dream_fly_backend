@@ -52,7 +52,8 @@
 - 分頁回應形狀一律為：`{ "<items_key>": [...], "total": number, "page": number, "per_page": number }`。
 - `page` 若帶 `0`，一律視同 `1`（查詢照第 1 頁執行,不報錯）;回應 `meta` 的 `page` 欄位保證回報 clamp 後的值,恆 `>= 1`——不會出現「查的是第 1 頁、`page` 欄位卻回 `0`」這種欄位與實際查詢頁碼不一致的情況。
 - **有分頁**的端點：`GET /courses`、`GET /products`、`GET /coupons`（admin）、`GET /orders`（admin）、`GET /orders/me`、`GET /posts`、`GET /contact/inquiries`（admin）、`GET /points/me`（ledger 部分分頁，balance 不分頁）、`GET /leave-requests`（admin/coach，見 §3.20）、`GET /conversations/{id}/messages`（見 §3.21）、`GET /rewards/redemptions/me`（見 §3.23）。
-- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）、`GET /report-cards/me`、`GET /certificates/me`（後兩者見 §3.22）、`GET /rewards`（見 §3.23）。
+- **純陣列（無分頁）**的端點：`GET /coaches`、`GET /venues`、`GET /subscriptions/me`、`GET /enrolments/me`、`GET /waitlist/me`、`GET /waitlist?course_id=`、`GET /notifications`（僅接受 `page`/`per_page` 但回應是純陣列，見下方 Notifications 一節）、`GET /schedule`、`GET /courses/{id}/sessions`、`GET /sessions/today`、`GET /schedule/me`（後三者見 §3.18）、`GET /leave-requests/me`（見 §3.20）、`GET /conversations/me`（見 §3.21）、`GET /report-cards/me`、`GET /certificates/me`（後兩者見 §3.22）。
+- `GET /rewards`（見 §3.23）**不分頁但不是純陣列**：陣列包在 `rewards` 鍵下，無分頁 meta（[`RewardListResponse`](../../bindings/RewardListResponse.ts)）。
 
 ### 1.5 金額慣例
 
@@ -381,7 +382,7 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, descri
 #### `GET /schedule?year=&month=` — 公開
 回應：[`DaySchedule`](../../bindings/DaySchedule.ts)`[]`（每日一筆）。
 
-[`TimeSlotResponse`](../../bindings/TimeSlotResponse.ts)：`status` 值域為 [`SlotStatus`](../../bindings/SlotStatus.ts)（`available`/`limited`/`full`/`closed`），讀取時依 `booked`/`capacity`/`is_closed` 推導、不落地（見下方 `PATCH /schedule/slots/{id}`）。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。`booked` 是該時段目前佔位的預約數（狀態為 `pending`/`confirmed`/`completed`/`no_show`，只有 `cancelled` 不計），每次讀取時計算、不落地儲存（ADR-0015）；欄位名稱與型別不變，`status` 依它推導。
+[`TimeSlotResponse`](../../bindings/TimeSlotResponse.ts)：`status` 值域為 [`SlotStatus`](../../bindings/SlotStatus.ts)（`available`/`limited`/`full`/`closed`），讀取時依 `booked`/`capacity`/`is_closed` 推導、不落地（見下方 `PATCH /schedule/slots/{id}`）。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。`booked` 是該時段目前佔位的預約數（狀態為 `pending`/`confirmed`/`completed`/`no_show`，只有 `cancelled` 不計），每次讀取時計算、不落地儲存（ADR-0015）；欄位名稱與型別不變。
 
 #### `GET /schedule/availability?date=YYYY-MM-DD` — 公開
 回應：[`TimeSlotResponse`](../../bindings/TimeSlotResponse.ts)`[]`（純陣列，當日所有時段）。
@@ -396,7 +397,7 @@ Body：`{ is_closed: boolean }`。admin 手動關閉／重新開放單一時段�
 
 #### Bookings（場租預約）— `price_cents` 快照語意
 
-本文件目前未收錄 `/bookings/*`（`POST /bookings`、`GET /bookings/me`、`PATCH /bookings/{id}/cancel`、`GET /bookings` admin）端點的完整請求/回應形狀——這是既有缺口，不在本任務（P4-B2）範圍內修補。以下僅記錄 Task P4-B2 新增的 `price_cents` 相關語意：
+本文件目前未收錄 `/bookings/*`（`POST /bookings`、`GET /bookings/me`、`PATCH /bookings/{id}/cancel`、`GET /bookings` admin）端點的請求 body 與端點語意（回應型別見本小節末的 bindings 指標）——這是既有缺口，不在本任務（P4-B2）範圍內修補。以下僅記錄 Task P4-B2 新增的 `price_cents` 相關語意：
 
 - `POST /bookings` 建立預約時，會把當下 `time_slot_id` 對應 slot 的 `price_cents` **複製（快照）**進新建立的 `bookings.price_cents`——之後該 slot 被改價，既有 booking 的 `price_cents` 不受影響。
 - `PATCH /bookings/{id}/cancel` 取消預約**不會**清除或歸零 `price_cents`；`BookingResponse` 回應中的 `price_cents` 在取消前後維持不變。
