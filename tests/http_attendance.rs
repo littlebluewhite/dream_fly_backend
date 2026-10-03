@@ -6,10 +6,9 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{
-    seed_attendance, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
+    seed_course, seed_course_session, seed_enrolment, seed_leave_request,
 };
 use common::http::spawn_test_app;
-use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
@@ -398,7 +397,7 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
 #[sqlx::test]
 async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (admin_id, admin_token) = app.seed_admin().await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Approved Leave Guard Course", None).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member_a = app.register_member("att-approved-leave-a@example.com", "Password!234").await;
@@ -409,9 +408,8 @@ async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPo
     let enrolment_b =
         seed_enrolment(&app.db, member_b.user_id, course_id, EnrolmentStatus::Active, Utc::now())
             .await;
-    // A holds an approved leave, already projected to an attendance `leave` row.
+    // A holds an approved leave; the fixture goes through `decide_tx`, so the `leave` row exists.
     seed_leave_request(&app.db, enrolment_a, session_id, LeaveStatus::Approved).await;
-    seed_attendance(&app.db, session_id, enrolment_a, AttendanceStatus::Leave, admin_id).await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))
@@ -451,7 +449,7 @@ async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPo
 #[sqlx::test]
 async fn attendance_put_leave_over_approved_leave_is_idempotent(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (admin_id, admin_token) = app.seed_admin().await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Approved Leave Idempotent Course", None).await;
     let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
     let member = app.register_member("att-approved-leave-idem@example.com", "Password!234").await;
@@ -459,7 +457,6 @@ async fn attendance_put_leave_over_approved_leave_is_idempotent(db: PgPool) {
         seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
             .await;
     seed_leave_request(&app.db, enrolment_id, session_id, LeaveStatus::Approved).await;
-    seed_attendance(&app.db, session_id, enrolment_id, AttendanceStatus::Leave, admin_id).await;
 
     let resp = app
         .put(&format!("/api/v1/sessions/{session_id}/attendance"))

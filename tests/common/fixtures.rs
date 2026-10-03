@@ -18,6 +18,7 @@ use dream_fly_backend::modules::coaches::dto::CreateCoachRequest;
 use dream_fly_backend::modules::coaches::service as coaches_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
+use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::products::model::ProductType;
@@ -304,7 +305,10 @@ pub async fn seed_post(db: &PgPool, author_id: Uuid, title: &str, published: boo
     id
 }
 
-/// Insert a notification row (bypassing the Kafka consumer path) for a user.
+/// Insert a notification row directly for a user. Production writes
+/// notifications synchronously after commit (`PendingNotification::deliver`,
+/// ADR-0009), not via a Kafka consumer; this skips that call to control
+/// `is_read` and the title.
 pub async fn seed_notification(db: &PgPool, user_id: Uuid, title: &str, is_read: bool) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
@@ -821,11 +825,12 @@ pub async fn seed_attendance(
     id
 }
 
-/// Insert a `leave_requests` row directly (bypassing
-/// `leave::service::create_leave_request`), so tests can arrange exact
-/// pre-existing states — `status` in particular — without going through the
-/// "not yet started" / duplicate-index checks the create endpoint enforces.
-/// `status` is one of `pending`/`approved`/`rejected`/`cancelled`. Returns
+/// 造一張指定狀態的假單,取代各測試手填 `leave_requests`。`Pending` 直接
+/// INSERT;`Cancelled` 也直接 INSERT(取消走 `cancel_if_pending_tx`,不經 `decide_tx`,
+/// 無出勤投影可帶;仍是只建當前狀態,不重演取消);`Approved`/`Rejected` 先 INSERT 一張 pending,再走
+/// production `leave::service::decide_tx`——與 `decide_leave_request` 同一個 seam,
+/// 因此 Approved 假單與真實核准一樣帶有出勤 `leave` 投影(ADR-0008)。決定者
+/// 取該報名的會員本人(只要是合法 user id;fixture 不關心誰核准)。Returns
 /// the new row's id.
 pub async fn seed_leave_request(
     db: &PgPool,
@@ -834,6 +839,10 @@ pub async fn seed_leave_request(
     status: LeaveStatus,
 ) -> Uuid {
     let id = Uuid::now_v7();
+    let inserted_status = match status {
+        LeaveStatus::Approved | LeaveStatus::Rejected => LeaveStatus::Pending,
+        other => other,
+    };
     sqlx::query(
         r#"
         INSERT INTO leave_requests (id, enrolment_id, session_id, status, created_at, updated_at)
@@ -843,10 +852,23 @@ pub async fn seed_leave_request(
     .bind(id)
     .bind(enrolment_id)
     .bind(session_id)
-    .bind(status)
+    .bind(inserted_status)
     .execute(db)
     .await
     .expect("insert leave_request");
+    if matches!(status, LeaveStatus::Approved | LeaveStatus::Rejected) {
+        let decided_by: Uuid = sqlx::query_scalar("SELECT user_id FROM enrolments WHERE id = $1")
+            .bind(enrolment_id)
+            .fetch_one(db)
+            .await
+            .expect("enrolment owner");
+        let mut tx = db.begin().await.expect("begin decide tx");
+        leave_service::decide_tx(&mut tx, id, status, decided_by)
+            .await
+            .expect("decide_tx")
+            .expect("seeded leave request is pending");
+        tx.commit().await.expect("commit decide tx");
+    }
     id
 }
 

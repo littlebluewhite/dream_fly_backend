@@ -39,3 +39,14 @@ R15 Phase 2 把 `bin/seed.rs` 改成目錄 bin(`bin/seed/main.rs` 入口 + `bin/
 at: StudioNow) -> SeedReport`),只是路徑搬遷與型別化取樣時鐘,不是重開本 ADR:`run` 依舊直寫歷史列、不
 經 `orders::service::checkout`。兩個重開條件都未成立——沒有出現第二個需要造「歷史訂單」的測試族群
 (`tests/common::fixtures` 仍只造「當下狀態」),`dataset::run` 也沒有改走真實結帳。
+
+## Addendum (2026-10-03)
+
+前提「fixture 只建當前狀態」收窄,兩處:
+
+- `OrderSeed` 已能寫回溯訂單(`paid_at` 可指定),但仍是直寫列、不產 points ledger——不是
+  seed 那種「已結帳、已結算」的歷史,故重開條件 1 未成立;共用 history writer 仍遞延。
+- 假單 fixture 不再只建當前狀態:`seed_leave_request` 的 Approved/Rejected 先插 pending,再走 production
+  `leave::service::decide_tx`(`decide_leave_request` 也用它),所以 Approved 假單帶有與真實核准相同的出勤
+  `leave` 投影。這是借用既有 production seam,不是新建共用 history writer;Pending 照舊直接 INSERT,
+  Cancelled 也直接 INSERT(取消走 `cancel_if_pending_tx`,無投影可帶)。

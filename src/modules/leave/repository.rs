@@ -277,6 +277,18 @@ pub async fn decide_tx(
     .await
 }
 
+/// The enrolment a leave request belongs to — `service::decide_tx` needs it to
+/// project an approval onto `attendance_records` (the read view omits it).
+pub async fn find_enrolment_id_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar("SELECT enrolment_id FROM leave_requests WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+}
+
 /// Lock the leave request row (`FOR UPDATE OF lr`) for the makeup endpoint —
 /// this is the guard that makes two concurrent `POST .../makeup` calls for
 /// the *same* leave request serialize, so only one can ever see

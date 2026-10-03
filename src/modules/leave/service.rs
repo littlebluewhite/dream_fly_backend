@@ -14,7 +14,7 @@ use super::dto::{
     AdminLeaveRequestResponse, CreateLeaveRequestRequest, LeaveRequestListResponse,
     LeaveRequestQuery, LeaveRequestResponse, MakeupRequest,
 };
-use super::model::LeaveStatus;
+use super::model::{LeaveRequestView, LeaveStatus};
 use super::repository;
 use super::rules;
 
@@ -159,6 +159,32 @@ pub async fn list_leave_requests(
     })
 }
 
+/// 核准/駁回一張 `pending` 假單,核准時在同一 tx 投影出勤 `leave`(核准恆勝,
+/// ADR-0008)。`decide_leave_request` 與測試 fixture(`seed_leave_request`)共用
+/// 這個 seam,所以 fixture 造出的 Approved 假單與 production 狀態一致。已非
+/// `pending` 時回 `None`(呼叫端決定 409 或 panic)。
+pub async fn decide_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    new_status: LeaveStatus,
+    decided_by: Uuid,
+) -> Result<Option<LeaveRequestView>, sqlx::Error> {
+    let Some(updated) = repository::decide_tx(tx, id, new_status, decided_by).await? else {
+        return Ok(None);
+    };
+    if new_status == LeaveStatus::Approved {
+        let enrolment_id = repository::find_enrolment_id_tx(tx, id).await?;
+        attendance_records::project_approved_leave_tx(
+            tx,
+            updated.session_id,
+            enrolment_id,
+            decided_by,
+        )
+        .await?;
+    }
+    Ok(Some(updated))
+}
+
 /// `PATCH /leave-requests/{id}` — that course's coach or admin decides a
 /// still-`pending` request. Approving upserts `attendance_records.status =
 /// 'leave'` for the original session in the *same transaction* as the
@@ -185,20 +211,9 @@ pub async fn decide_leave_request(
 
     let mut tx = db.begin().await?;
 
-    let updated = repository::decide_tx(&mut tx, id, new_status, auth.user_id)
+    let updated = decide_tx(&mut tx, id, new_status, auth.user_id)
         .await?
         .ok_or_else(|| AppError::Conflict(rules::DECIDE_NOT_PENDING.into()))?;
-
-    if new_status == LeaveStatus::Approved {
-        // 核准恆勝(ADR-0008):投影成 `leave` 恆過寫入點守衛。
-        attendance_records::project_approved_leave_tx(
-            &mut tx,
-            ctx.session_id,
-            ctx.enrolment_id,
-            auth.user_id,
-        )
-        .await?;
-    }
 
     tx.commit().await?;
 
