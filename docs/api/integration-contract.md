@@ -105,6 +105,16 @@
 - 轉入 `cancelled`/`refunded` 時，若訂單當下狀態計入營收（`paid`/`processing`/`completed`），會觸發**補償**：回補該訂單有實際扣減庫存的商品行、反轉結帳當下的點數流、取消該訂單產生的報名與訂閱——兩個目標狀態的補償語意相同，詳見 §3.10。`pending → cancelled`（從未成交）與同狀態重複 PATCH 都不會觸發補償。
 - `payment_method`（Round 4 Task P4-B1，報表基礎欄位）記錄本筆訂單的付款方式，值域：`credit_card`（預設）/ `line_pay` / `atm` / `jkopay` / `cash`；純應用層值域，非 DB enum。`POST /orders` 不帶此欄時預設 `credit_card`；帶入值域外的字串回 422。此欄位新增前建立的歷史訂單為 `null`。
 
+### 1.9 Wire 形狀來源（`bindings/`）
+
+- **回應的欄位名、型別、可否為 `null` 以唯一來源為準：後端 committed 的 [`bindings/`](../../bindings/index.ts)**——由 response DTO 經 ts-rs 產生（ADR-0016），`cargo test` 保證它等於當下 DTO 的輸出；前端以 `scripts/wire.mjs` 同步到 `src/lib/api/generated/`，漂移即 `npm run check` 編譯錯誤。本文件各端點以「回應：[`OrderListResponse`](../../bindings/OrderListResponse.ts)」的形式指向對應型別，不再重抄欄位清單。
+- **本文件只寫型別說不出的事**：單位（cents、點數、工作室時區）、`null` 的意義、讀取時推導的值與其規則、排序與分頁語意、enum 各值的意義、值域只是 `string` 的欄位之值域、錯誤表、狀態機、裁決，以及 request body、query 參數、認證與端點表。兩者衝突時，形狀以 `bindings/` 為準，語意以本文件為準，並回報後端修正。
+- **純陣列回應**（`Vec<X>`，無具名信封）沒有自己的型別檔，以「[`X`](…)`[]`」指向元素型別。
+- **Request DTO 不在 `bindings/`**（ADR-0016「只含 response」）：request body 的形狀與驗證規則仍以本文件為準。
+- **字串欄位的格式**（TS 型別都是 `string`）：`id`/`*_id` 為 UUID；`*_at`、`clock_in`/`clock_out`、`last_login` 為 ISO8601 時間戳（見 §4）；`date`/`*_date`/`issued_on`/`birth_date` 為 `YYYY-MM-DD`；`*_time` 為 `HH:MM:SS`（回應一律帶秒）；報表的 `month` 為工作室時區的 `YYYY-MM`。
+- **整數不變量**：`i64` 欄位在 TS 中是 `number`，前提是 wire 上的整數（金額 cents、點數、計數）恆 ≤ 2^53；可能超過的欄位必須改以字串上 wire（ADR-0016）。
+- **選填鍵**：TS 中的 `field?: T` 表示該鍵可能整個不出現（不是 `null`），例如 `CouponValidateResponse.applied_discount_cents`（§3.9）。
+
 ---
 
 ## 2. 端點總覽表
@@ -592,25 +602,9 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 - 結帳對象為**當下購物車全部內容**，成功後購物車會被清空。購物車為空時回 400 `"cart is empty"`。
 - 購物車內任何一行（商品或課程）若在加入購物車後被下架（`is_active = false`），結帳**整筆**回 422，訊息列出所有被下架品項的名稱（例：`以下項目已下架,請先自購物車移除再結帳:「品名A」、「品名B」`——注意這句訊息本身用半形逗號/冒號，不是中文全形標點），要求先自購物車移除再結帳，不會靜默略過該行只結其餘項目。即使購物車**全部**項目都已下架，結帳快照本身仍非空，因此回的是這個 422，不是 `"cart is empty"` 的 400。
 
-回應（`OrderResponse`）：
+回應：[`OrderResponse`](../../bindings/OrderResponse.ts)。
 
-```jsonc
-{
-  "id": "uuid", "order_number": "string", "status": "paid",
-  "total_cents": "number", "discount_cents": "number",
-  "coupon_code": "string|null", "points_used": "number",
-  "points_earned": "number", "payment_method": "string|null",
-  "paid_at": "ISO8601", "created_at": "ISO8601",
-  "items": [
-    { "id": "uuid", "item_type": "product|course", "product_id": "uuid|null",
-      "course_id": "uuid|null", "quantity": "number", "unit_price_cents": "number" }
-  ],
-  "enrolments": [ /* EnrolmentResponse[]，見 §3.12 — 本次購買產生的課程報名 */ ],
-  "subscriptions": [ /* SubscriptionResponse[]，見 §3.11 — 本次購買產生的方案/票券 */ ]
-}
-```
-
-`enrolments`/`subscriptions` 只包含**這筆訂單**產生的項目（用 `order_id` 反查），不是使用者的全部報名/訂閱清單——那些請另外呼叫 `/enrolments/me` / `/subscriptions/me`。
+結帳回應的 `status` 恆為 `"paid"`、`paid_at` 恆有值（見 §1.8；型別上可為 `null` 是因為同一型別也用於 seed 的 `pending` 對照單）。`items` 每行的 `item_type` 為 `product`/`course`，對應的 `product_id` 或 `course_id` 恰有一個有值、另一個為 `null`（DB CHECK `order_items_one_target`）。`enrolments`（見 §3.12）是本次購買產生的課程報名，`subscriptions`（見 §3.11）是本次購買產生的方案/票券——兩者只包含**這筆訂單**產生的項目（用 `order_id` 反查），不是使用者的全部報名/訂閱清單——那些請另外呼叫 `/enrolments/me` / `/subscriptions/me`。
 
 `payment_method` 為 `null` 僅出現在此欄位新增（Round 4 Task P4-B1）前建立的歷史訂單。
 
@@ -619,19 +613,19 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 多種錯誤同時成立時的優先序：付款方式 422 → 使用者不存在 404 → 購物車為空 400 → 已下架 422 → 無效優惠碼 422 → 金額溢位 422 → **品項數量 400/422** → 庫存不足 409 → 課程已滿/重複報名 409。（權威清單在 `orders::service::checkout` 的 doc；時間制方案數量的 422 原本排在兩種 409 之後，2026-10 起提前到庫存檢查之前，見 ADR-0007 2026-10-03 Addendum。）
 
 #### `GET /orders/me?page=&per_page=` — 需登入
-回應（`OrderListResponse`）：`{ "orders": [OrderSummary], "total", "page", "per_page" }`。
+回應：[`OrderListResponse`](../../bindings/OrderListResponse.ts)。
 
-`OrderSummary`（**摘要，不含 enrolments/subscriptions artifacts，但含品項摘要**）：`{ id, order_number, status, total_cents, created_at, items }`。
+[`OrderSummary`](../../bindings/OrderSummary.ts) 是**摘要，不含 enrolments/subscriptions artifacts，但含品項摘要**。
 
-`items`：`[{ name: string, quantity: number }]`——`name` 取自 `order_items` 下單當時的快照欄位（結帳當下的商品/課程名稱），**不是**即時 join 現在的商品目錄，所以商品改名或下架後，舊訂單的品項名稱仍維持下單當時的樣子。
+`items`（[`OrderItemBrief`](../../bindings/OrderItemBrief.ts)`[]`）的 `name` 取自 `order_items` 下單當時的快照欄位（結帳當下的商品/課程名稱），**不是**即時 join 現在的商品目錄，所以商品改名或下架後，舊訂單的品項名稱仍維持下單當時的樣子。
 
 #### `GET /orders/{id}` — 需登入（本人或 admin）
-回應：完整 `OrderResponse`（同結帳回應形狀，含 items + enrolments + subscriptions）。403 若非本人也非 admin。
+回應：完整 [`OrderResponse`](../../bindings/OrderResponse.ts)（同結帳回應，含 items + enrolments + subscriptions）。403 若非本人也非 admin。
 
 #### `GET /orders?page=&per_page=` — admin
-回應（`AdminOrderListResponse`）：`{ "orders": [AdminOrderSummary], "total", "page", "per_page" }`。
+回應：[`AdminOrderListResponse`](../../bindings/AdminOrderListResponse.ts)。
 
-`AdminOrderSummary`：`{ id, order_number, user_name, user_email, status, total_cents, points_used, coupon_code, paid_at, created_at, items }`（含買家姓名/信箱，一般 `OrderSummary` 沒有；`items` 同上）。`paid_at`：`ISO8601 | null`，同 `OrderResponse.paid_at`；結帳建立的訂單必有值（結帳是唯一寫入 `paid_at` 的路徑，狀態轉換不會改它，退款/取消後仍保留原值），seed 的 `pending` 對照單為 `null`。
+[`AdminOrderSummary`](../../bindings/AdminOrderSummary.ts) 含買家姓名/信箱（一般 `OrderSummary` 沒有；`items` 同上）。`paid_at` 同 `OrderResponse.paid_at`：結帳建立的訂單必有值（結帳是唯一寫入 `paid_at` 的路徑，狀態轉換不會改它，退款/取消後仍保留原值），seed 的 `pending` 對照單為 `null`。
 
 #### `PATCH /orders/{id}/status` — admin
 Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunded" }`。回應：更新後的 `OrderResponse`。
@@ -733,27 +727,14 @@ Body：`{ course_id: "uuid" }`。回應（`WaitlistResponse`）：`{ id, course_
 ### 3.14 Points（點數）
 
 #### `GET /points/me?page=&per_page=` — 需登入
-回應（`PointsMeResponse`，**balance 不分頁，ledger 分頁**）：
-
-```jsonc
-{
-  "balance": "number",
-  "earned_this_month": "number",
-  "ledger": [
-    { "id": "uuid", "delta": "number", "balance_after": "number",
-      "reason": "checkout_earn|checkout_redeem|admin_adjust|redeem|refund_restore|refund_clawback",
-      "order_id": "uuid|null", "created_at": "ISO8601" }
-  ],
-  "total": "number", "page": "number", "per_page": "number"
-}
-```
+回應：[`PointsMeResponse`](../../bindings/PointsMeResponse.ts)（**balance 不分頁，ledger 分頁**——`total`/`page`/`per_page` 只描述 `ledger`）。`ledger` 列為 [`LedgerEntryResponse`](../../bindings/LedgerEntryResponse.ts)，`reason` 值域見 [`PointReason`](../../bindings/PointReason.ts) 與 §1.6。`balance`/`delta`/`balance_after`/`earned_this_month` 單位皆為點數（1 點 = NT$1，§1.6）。
 
 `earned_this_month`：本工作室月份（`server.studio_timezone`）內 `reason = checkout_earn` 的 `delta` 總和，不分頁、不受 `page`/`per_page` 影響；退款扣回（`refund_clawback`）與其他 reason 一律不計入、不相減，無資料為 `0`。
 
 `delta` 可正可負（`checkout_redeem`/`redeem`/`refund_clawback` 恆為負、`checkout_earn`/`refund_restore` 恆為正——完整值域與符號慣例見 §1.6）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。
 
 #### `POST /points/adjustments` — admin
-Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位皆必填；`delta` 不可為 `0`）。admin 手動調整任一使用者的點數餘額，用途是關閉退款/取消補償流程中「點數不足」409 的修復迴路：補點後即可重試先前失敗的退款。呼叫前須先取得該使用者當下的餘額（`GET /users/{id}` 的 `points_balance`，見 §3.2——`GET /points/me` 僅回呼叫者本人餘額，無法查他人）填入 `expected_balance`；後端於交易內鎖列讀取實際餘額並比對，不符即拒絕。**注意：`expected_balance` 是樂觀鎖（CAS），非嚴格冪等**——呼叫逾時後原樣重試，若第一次已成功、餘額已變，重試會收到 409 而非重放原本的成功結果；此時應重新查詢該使用者當下的 `points_balance`（`GET /users/{id}`）比對是否已反映預期變化，而非盲目重試——本端點目前沒有供 admin 查詢他人 `point_ledger` 明細的介面，逐列確認需直接查資料表。**殘餘風險（ABA）**：若第三方在重試視窗內恰好把餘額改回精確等於 `expected_balance` 的值，該次重試會被誤判為未變而通過，悄悄套用一次不該重放的調整——這是本端點目前接受的殘餘風險（admin 手動低頻操作 + 每筆調整皆有 `AdminAdjust` ledger 列可稽核），若未來出現自動化呼叫端需升級為 request-id 去重鍵；完整論證見 ADR-0007 決策 10。回應：`{ user_id: uuid, balance: number }`（調整後餘額）。寫入的 `point_ledger` 列：`reason = "admin_adjust"`、`order_id` 恆為 `null`。
+Body：`{ user_id: uuid, delta: number, expected_balance: number }`（三欄位皆必填；`delta` 不可為 `0`）。admin 手動調整任一使用者的點數餘額，用途是關閉退款/取消補償流程中「點數不足」409 的修復迴路：補點後即可重試先前失敗的退款。呼叫前須先取得該使用者當下的餘額（`GET /users/{id}` 的 `points_balance`，見 §3.2——`GET /points/me` 僅回呼叫者本人餘額，無法查他人）填入 `expected_balance`；後端於交易內鎖列讀取實際餘額並比對，不符即拒絕。**注意：`expected_balance` 是樂觀鎖（CAS），非嚴格冪等**——呼叫逾時後原樣重試，若第一次已成功、餘額已變，重試會收到 409 而非重放原本的成功結果；此時應重新查詢該使用者當下的 `points_balance`（`GET /users/{id}`）比對是否已反映預期變化，而非盲目重試——本端點目前沒有供 admin 查詢他人 `point_ledger` 明細的介面，逐列確認需直接查資料表。**殘餘風險（ABA）**：若第三方在重試視窗內恰好把餘額改回精確等於 `expected_balance` 的值，該次重試會被誤判為未變而通過，悄悄套用一次不該重放的調整——這是本端點目前接受的殘餘風險（admin 手動低頻操作 + 每筆調整皆有 `AdminAdjust` ledger 列可稽核），若未來出現自動化呼叫端需升級為 request-id 去重鍵；完整論證見 ADR-0007 決策 10。回應：[`PointsAdjustmentResponse`](../../bindings/PointsAdjustmentResponse.ts)（`balance` 為調整後餘額）。寫入的 `point_ledger` 列：`reason = "admin_adjust"`、`order_id` 恆為 `null`。
 錯誤：404（`user_id` 查無此使用者）；409（`expected_balance` 與實際餘額不符；或扣點後餘額將為負，訊息「點數不足」）；422（`delta` 為 `0`，或欄位缺漏）。
 
 ---
@@ -840,41 +821,15 @@ Admin 人工跟進用（Round 4 Task B5）。Body（皆選填，`UpdateInquiryRe
 #### `GET /courses/{id}/sessions?from=YYYY-MM-DD&to=YYYY-MM-DD` — 需登入
 先物化（依該課程的 `schedule_slots`，只為 `[max(from, 今天), to]` 範圍內尚未存在的場次執行 `INSERT ... ON CONFLICT DO NOTHING`；重複呼叫同一範圍不會產生重複場次），再回傳該課程在 `[from, to]` 範圍內的場次列表。**過去日期不物化**：`from` 早於今天時，今天以前的部分只回已存在的場次列，不依當下的週課表新建（當下課表不代表那天實際上了什麼課，ADR-0011）。`from`/`to` 皆選填：預設 `from=今天`、`to=from+28 天`（只給其中一個時，另一個仍依此規則相對計算）。422：`to < from`，或範圍跨距（`to - from`）超過 **60 天**（剛好 60 天可接受）。404：課程不存在。
 
-回應（`CourseSessionResponse[]`，純陣列，依 `session_date, start_time` 排序）：
-
-```jsonc
-[
-  { "id": "uuid", "course_id": "uuid", "session_date": "YYYY-MM-DD",
-    "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
-    "status": "upcoming|ongoing|done" }
-]
-```
+回應：[`CourseSessionResponse`](../../bindings/CourseSessionResponse.ts)`[]`（純陣列，依 `session_date, start_time` 排序）。`status` 的推導規則見上方裁決 4。
 
 #### `GET /sessions/today` — admin 或 coach
-教練：先物化、再只回「自己課程」（`courses.coach_id` 對應呼叫者的 `coaches.id`）今日場次；若呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列（資料異常），回空陣列而非錯誤。admin：物化並回**全部課程**今日場次。回應（`TodaySessionResponse[]`，純陣列，依 `start_time` 排序，教練與 admin 兩分支共用同一回應型）：
-
-```jsonc
-[
-  { "id": "uuid", "course_id": "uuid", "course_name": "string",
-    "coach_name": "string|null",
-    "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
-    "enrolled_count": "number", "venue": "string|null",
-    "status": "upcoming|ongoing|done" }
-]
-```
+教練：先物化、再只回「自己課程」（`courses.coach_id` 對應呼叫者的 `coaches.id`）今日場次；若呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列（資料異常），回空陣列而非錯誤。admin：物化並回**全部課程**今日場次。回應：[`TodaySessionResponse`](../../bindings/TodaySessionResponse.ts)`[]`（純陣列，依 `start_time` 排序，教練與 admin 兩分支共用同一回應型）。`status` 同裁決 4。
 
 `enrolled_count` 為即時計算（該課程 `enrolments.status='active'` 筆數）。`coach_name`（Round 4 Task B8 新增）為 `null` 表示該課程尚未指定教練，語意同 `GET /schedule/me` 的 `coach_name`。`venue`（同批新增）是**場次自身的場地快照**（`course_sessions.venue`）：場次物化當下從對應 slot 的 `venue` 抄入，之後不再回頭 JOIN `course_schedule_slots`。`PATCH /courses/{id}` 帶 `schedule_slots` 時，只有**未來**（`session_date` 晚於今天，studio 時區）且仍對應某 slot 的場次會同步成新 `venue`；今天與過去的場次保留物化當下的場地——slot 事後改開課時間或改場地，都不會讓已發生/今天的場次場地變 `null` 或被改名。slot 當時未設場地（或早於此欄位、backfill 時對不到 slot 的舊場次）時為 `null`。
 
 #### `GET /schedule/me` — 需登入
-回呼叫者「active enrolments 對應課程」的週模式（**不物化，直接讀 `course_schedule_slots`**——與上面兩個端點不同，這裡回的是週模式本身，不是實際日期場次）。回應（`MyScheduleEntryResponse[]`，純陣列，依 `day_of_week, start_time` 排序）：
-
-```jsonc
-[
-  { "course_id": "uuid", "course_name": "string", "coach_name": "string|null",
-    "day_of_week": 0, "start_time": "HH:MM:SS", "end_time": "HH:MM:SS",
-    "venue": "string|null" }
-]
-```
+回呼叫者「active enrolments 對應課程」的週模式（**不物化，直接讀 `course_schedule_slots`**——與上面兩個端點不同，這裡回的是週模式本身，不是實際日期場次）。回應：[`MyScheduleEntryResponse`](../../bindings/MyScheduleEntryResponse.ts)`[]`（純陣列，依 `day_of_week, start_time` 排序；`day_of_week` 編碼見裁決 3）。
 
 `coach_name` 為 `null` 表示該課程尚未指定教練（`courses.coach_id IS NULL`）。
 
@@ -935,43 +890,18 @@ Body：`{ "records": [ { "enrolment_id": "uuid", "status": "present|absent|leave
 - `makeup_session_id`/`makeup_session_date`/`makeup_start_time` 在假單尚未預約補課時皆為 `null`；只有 `POST /leave-requests/{id}/makeup` 成功後才會補上。
 
 #### `POST /leave-requests` — 需登入
-Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，選填）。伺服器由 `session_id` 找出所屬課程，再找呼叫者在該課程的 active enrolment。回應（`LeaveRequestResponse`）：
-
-```jsonc
-{
-  "id": "uuid", "course_id": "uuid", "course_name": "string",
-  "session_id": "uuid", "session_date": "YYYY-MM-DD", "start_time": "HH:MM:SS",
-  "reason": "string|null", "status": "pending",
-  "makeup_session_id": null, "makeup_session_date": null, "makeup_start_time": null,
-  "decided_at": null, "created_at": "ISO8601"
-}
-```
+Body：`{ session_id: "uuid", reason?: "string" }`（`reason` 最長 500 字，選填）。伺服器由 `session_id` 找出所屬課程，再找呼叫者在該課程的 active enrolment。回應：[`LeaveRequestResponse`](../../bindings/LeaveRequestResponse.ts)。新建假單的 `status` 恆為 `"pending"`，`makeup_session_id`/`makeup_session_date`/`makeup_start_time` 與 `decided_at` 皆為 `null`。
 
 錯誤：404（場次不存在；或呼叫者在該課程無 active enrolment，訊息「未報名此課程」——兩者是不同的 404 情境，各自獨立判定）；422（場次已開始，訊息「場次已開始，無法請假」）；409（`(enrolment_id, session_id)` 已有 `pending`/`approved` 的請假紀錄，訊息「此場次已有請假紀錄」）。
 
 #### `GET /leave-requests/me` — 需登入
-回應：`LeaveRequestResponse[]`（**純陣列，不分頁**，新到舊）——形狀同上，每筆皆含 `makeup_session_id`/`makeup_session_date`/`makeup_start_time`。
+回應：[`LeaveRequestResponse`](../../bindings/LeaveRequestResponse.ts)`[]`（**純陣列，不分頁**，新到舊）。
 
 #### `DELETE /leave-requests/{id}` — 需登入（僅本人 owner，無 admin 例外）
 無 body。僅 `status = "pending"` 的假單可取消 → 更新為 `cancelled`。回應：**204 No Content**。錯誤：404（不存在）；403（非本人）；409「僅待審核假單可取消」（非 pending，例如已核准/已駁回/已取消——含報名取消時被連帶取消的假單，見 §3.12）。
 
 #### `GET /leave-requests?status=&course_id=` — admin 或該課教練
-分頁列表；`status`（`pending`/`approved`/`rejected`/`cancelled`）與 `course_id` 皆選填。教練僅能看到自己教的課程（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者，含已下架課程，教練範圍口徑同 ADR-0012）；admin 看全部。回應（`LeaveRequestListResponse`）：
-
-```jsonc
-{
-  "leave_requests": [
-    { "id": "uuid", "course_id": "uuid", "course_name": "string",
-      "user_id": "uuid", "user_name": "string",
-      "session_id": "uuid", "session_date": "YYYY-MM-DD", "start_time": "HH:MM:SS",
-      "reason": "string|null", "status": "pending|approved|rejected|cancelled",
-      "makeup_session_id": "uuid|null", "makeup_session_date": "YYYY-MM-DD|null",
-      "makeup_start_time": "HH:MM:SS|null",
-      "decided_at": "ISO8601|null", "created_at": "ISO8601" }
-  ],
-  "total": "number", "page": "number", "per_page": "number"
-}
-```
+分頁列表；`status`（`pending`/`approved`/`rejected`/`cancelled`）與 `course_id` 皆選填。教練僅能看到自己教的課程（`courses.coach_id` 對應的 `coaches.user_id` = 呼叫者，含已下架課程，教練範圍口徑同 ADR-0012）；admin 看全部。回應：[`LeaveRequestListResponse`](../../bindings/LeaveRequestListResponse.ts)，列為 [`AdminLeaveRequestResponse`](../../bindings/AdminLeaveRequestResponse.ts)（`LeaveRequestResponse` 的欄位再加申請人 `user_id`/`user_name`）。
 
 呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列時回空頁（`leave_requests: []`, `total: 0`）而非錯誤，同 §3.18/§3.19 既有慣例。`status` 帶入無法辨識的值回 422。
 
