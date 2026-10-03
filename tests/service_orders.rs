@@ -1418,6 +1418,33 @@ async fn admin_list_orders_includes_items(db: PgPool) {
     assert_eq!(list.orders[0].items[0].quantity, 4);
 }
 
+/// `AdminOrderSummary.paid_at`: a checkout-created order carries the real
+/// payment time (the only runtime path that stamps it); a seeded `pending`
+/// order has none.
+#[sqlx::test]
+async fn admin_list_orders_exposes_paid_at(db: PgPool) {
+    let user = common::seed_member(&db, "admin-paid-at@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "admin-paid-at", 1000, Some(10)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    let checked_out = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
+        .await
+        .expect("checkout");
+    let pending_id = OrderSeed::new(user, OrderStatus::Pending).insert(&db).await;
+
+    let pagination = PaginationParams {
+        page: 1,
+        per_page: 10,
+    };
+    let list = service::list_all_orders(&db, &pagination)
+        .await
+        .expect("list_all_orders");
+    let paid = list.orders.iter().find(|o| o.id == checked_out.id).expect("checkout order listed");
+    assert!(paid.paid_at.is_some(), "checkout order must expose paid_at");
+    assert_eq!(paid.paid_at, checked_out.paid_at);
+    let pending = list.orders.iter().find(|o| o.id == pending_id).expect("pending order listed");
+    assert!(pending.paid_at.is_none(), "pending order has no paid_at");
+}
+
 #[sqlx::test]
 async fn update_order_status_transitions_and_notifies(db: PgPool) {
     // Checkout now creates the order already `paid` (checkout succeeding IS

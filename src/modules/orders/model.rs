@@ -162,6 +162,7 @@ pub struct AdminOrderRow {
     pub total_cents: i64,
     pub points_used: i64,
     pub coupon_code: Option<String>,
+    pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub items: sqlx::types::Json<Vec<OrderItemBrief>>,
 }

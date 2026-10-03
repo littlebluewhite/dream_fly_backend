@@ -152,6 +152,7 @@ pub struct AdminOrderSummary {
     pub total_cents: i64,
     pub points_used: i64,
     pub coupon_code: Option<String>,
+    pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// Same `items` brief as `OrderSummary` — see its doc comment.
     pub items: Vec<OrderItemBrief>,
@@ -168,6 +169,7 @@ impl From<AdminOrderRow> for AdminOrderSummary {
             total_cents: o.total_cents,
             points_used: o.points_used,
             coupon_code: o.coupon_code,
+            paid_at: o.paid_at,
             created_at: o.created_at,
             items: o.items.0,
         }

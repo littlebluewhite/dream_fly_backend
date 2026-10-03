@@ -228,7 +228,7 @@ pub async fn find_all_with_user(
 ) -> Result<Vec<AdminOrderRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminOrderRow>(
         "SELECT o.id, o.order_number, u.name AS user_name, u.email AS user_email, \
-                o.status, o.total_cents, o.points_used, o.coupon_code, o.created_at, \
+                o.status, o.total_cents, o.points_used, o.coupon_code, o.paid_at, o.created_at, \
                 COALESCE( \
                   (SELECT jsonb_agg(jsonb_build_object('name', oi.name, 'quantity', oi.quantity) ORDER BY oi.created_at) \
                    FROM order_items oi WHERE oi.order_id = o.id), \

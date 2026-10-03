@@ -631,7 +631,7 @@ Body（`CheckoutRequest`，**整包皆選填，可傳 `{}` 或完全不帶 body*
 #### `GET /orders?page=&per_page=` — admin
 回應（`AdminOrderListResponse`）：`{ "orders": [AdminOrderSummary], "total", "page", "per_page" }`。
 
-`AdminOrderSummary`：`{ id, order_number, user_name, user_email, status, total_cents, points_used, coupon_code, created_at, items }`（含買家姓名/信箱，一般 `OrderSummary` 沒有；`items` 同上）。
+`AdminOrderSummary`：`{ id, order_number, user_name, user_email, status, total_cents, points_used, coupon_code, paid_at, created_at, items }`（含買家姓名/信箱，一般 `OrderSummary` 沒有；`items` 同上）。`paid_at`：`ISO8601 | null`，同 `OrderResponse.paid_at`；結帳建立的訂單必有值（結帳是唯一寫入 `paid_at` 的路徑，狀態轉換不會改它，退款/取消後仍保留原值），seed 的 `pending` 對照單為 `null`。
 
 #### `PATCH /orders/{id}/status` — admin
 Body：`{ status: "pending"|"paid"|"processing"|"completed"|"cancelled"|"refunded" }`。回應：更新後的 `OrderResponse`。
