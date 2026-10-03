@@ -8,6 +8,8 @@
 //! Covers the 9 enums Phase 3 wires straight into the repository:
 //! attendance_status, cart_item_type, inquiry_status, course_level,
 //! leave_status, order_status, post_category, post_status, product_type.
+//! Plus `Role`, whose value domain is the `roles` table rather than a PG enum
+//! (`role_all_matches_roles_table`, ADR-0014).
 
 mod common;
 
@@ -19,6 +21,7 @@ use dream_fly_backend::modules::contact::model::InquiryStatus;
 use dream_fly_backend::modules::courses::model::CourseLevel;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::posts::model::{PostCategory, PostStatus};
 use dream_fly_backend::modules::products::model::ProductType;
 
@@ -90,4 +93,21 @@ async fn post_status_all_matches_enum_range(db: PgPool) {
 async fn product_type_all_matches_enum_range(db: PgPool) {
     let all: Vec<&str> = ProductType::ALL.map(|v| v.as_str()).to_vec();
     assert_all_matches_enum_range(&db, "product_type", &all).await;
+}
+
+/// `roles` is a table, not a PG enum, so there is no `enum_range` to compare
+/// against: `Role::ALL` must name exactly the rows the init migration seeds
+/// (as a set — the table has no inherent order).
+#[sqlx::test]
+async fn role_all_matches_roles_table(db: PgPool) {
+    let mut table: Vec<String> = sqlx::query_scalar("SELECT name FROM roles")
+        .fetch_all(&db)
+        .await
+        .expect("select role names");
+    table.sort();
+
+    let mut all: Vec<&str> = Role::ALL.map(|r| r.as_str()).to_vec();
+    all.sort();
+
+    assert_eq!(table, all, "roles table rows must equal Role::ALL's as_str() labels");
 }

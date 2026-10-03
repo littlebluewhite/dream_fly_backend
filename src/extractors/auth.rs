@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::modules::auth::access;
+use crate::modules::permissions::model::Role;
 use crate::state::AppState;
 use crate::utils::jwt;
 
@@ -15,16 +16,22 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
-    pub fn require_role(&self, role: &str) -> Result<(), AppError> {
-        if self.roles.iter().any(|r| r == role) {
+    /// Whether the user holds `role`. `roles` stays `Vec<String>` (wire and
+    /// access-cache shape); the comparison goes through `Role::as_str`.
+    pub fn has(&self, role: Role) -> bool {
+        self.roles.iter().any(|r| r == role.as_str())
+    }
+
+    pub fn require_role(&self, role: Role) -> Result<(), AppError> {
+        if self.has(role) {
             Ok(())
         } else {
             Err(AppError::Forbidden("insufficient permissions".into()))
         }
     }
 
-    pub fn require_any_role(&self, roles: &[&str]) -> Result<(), AppError> {
-        if roles.iter().any(|r| self.roles.iter().any(|ur| ur == r)) {
+    pub fn require_any_role(&self, roles: &[Role]) -> Result<(), AppError> {
+        if roles.iter().any(|&r| self.has(r)) {
             Ok(())
         } else {
             Err(AppError::Forbidden("insufficient permissions".into()))
@@ -32,7 +39,7 @@ impl AuthUser {
     }
 
     pub fn is_admin(&self) -> bool {
-        self.roles.iter().any(|r| r == "admin")
+        self.has(Role::Admin)
     }
 
     /// 資源所有權授權原語:呼叫者是 `owner_id` 本人或 admin 才放行,否則回傳

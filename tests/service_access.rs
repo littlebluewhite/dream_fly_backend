@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::modules::auth::access::{self, AccessCache, RedisAccessCache};
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 
 use common::mocks::{FailingAccessCache, InMemoryAccessCache};
@@ -23,9 +24,9 @@ async fn member(db: &PgPool) -> Uuid {
 
 /// A `user_roles` write that deliberately skips the witness flush, to make
 /// the cache observably stale.
-async fn grant_behind_cache(db: &PgPool, user_id: Uuid, role: &str) {
+async fn grant_behind_cache(db: &PgPool, user_id: Uuid, role: Role) {
     let mut conn = db.acquire().await.expect("acquire");
-    permissions_repository::assign_role_by_name(&mut conn, user_id, role)
+    permissions_repository::assign_role(&mut conn, user_id, role)
         .await
         .expect("grant")
         .assume_uncached();
@@ -47,7 +48,7 @@ async fn active_user_roles_are_cached(db: &PgPool, cache: &dyn AccessCache) {
     let user_id = member(db).await;
     assert_eq!(resolve(db, cache, user_id).await, roles(&["member"]));
 
-    grant_behind_cache(db, user_id, "coach").await;
+    grant_behind_cache(db, user_id, Role::Coach).await;
     assert_eq!(resolve(db, cache, user_id).await, roles(&["member"]));
 }
 
@@ -67,7 +68,7 @@ async fn empty_role_set_is_cached(db: &PgPool, cache: &dyn AccessCache) {
 
     assert_eq!(resolve(db, cache, user_id).await, roles(&[]));
 
-    grant_behind_cache(db, user_id, "member").await;
+    grant_behind_cache(db, user_id, Role::Member).await;
     assert_eq!(resolve(db, cache, user_id).await, roles(&[]));
 }
 
@@ -77,7 +78,7 @@ async fn flushed_role_grant_is_visible(db: &PgPool, cache: &dyn AccessCache) {
     assert_eq!(resolve(db, cache, user_id).await, roles(&["member"]));
 
     let mut conn = db.acquire().await.expect("acquire");
-    let dirty = permissions_repository::assign_role_by_name(&mut conn, user_id, "coach")
+    let dirty = permissions_repository::assign_role(&mut conn, user_id, Role::Coach)
         .await
         .expect("grant");
     dirty.flush(cache).await;
@@ -170,7 +171,7 @@ async fn failing_cache_fails_open_onto_the_db(db: PgPool) {
     assert_eq!(resolve(&db, &cache, user_id).await, roles(&["member"]));
 
     // No caching: a grant nothing flushed is visible straight away.
-    grant_behind_cache(&db, user_id, "coach").await;
+    grant_behind_cache(&db, user_id, Role::Coach).await;
     assert_eq!(
         resolve(&db, &cache, user_id).await,
         roles(&["coach", "member"])
@@ -183,4 +184,31 @@ async fn failing_cache_fails_open_onto_the_db(db: PgPool) {
     tx.commit().await.expect("commit");
     dirty.flush(&cache).await;
     assert_eq!(resolve(&db, &cache, user_id).await, None);
+}
+
+// --- assign_role -------------------------------------------------------
+
+/// `Role` is a closed set, but its rows live in the `roles` table: a variant
+/// whose row is missing must surface as `RowNotFound`, not as a silent no-op
+/// grant. A repeated grant of an existing role stays `Ok` (idempotent).
+#[sqlx::test]
+async fn assign_role_errors_when_role_row_missing(db: PgPool) {
+    let user_id = member(&db).await;
+    let mut conn = db.acquire().await.expect("acquire");
+
+    permissions_repository::assign_role(&mut conn, user_id, Role::Member)
+        .await
+        .expect("repeat grant is ok")
+        .assume_uncached();
+
+    sqlx::query("DELETE FROM roles WHERE name = 'guest'")
+        .execute(&mut *conn)
+        .await
+        .expect("delete guest role row");
+
+    let err = permissions_repository::assign_role(&mut conn, user_id, Role::Guest)
+        .await
+        .err()
+        .expect("missing role row must error");
+    assert!(matches!(err, sqlx::Error::RowNotFound), "got {err:?}");
 }

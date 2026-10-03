@@ -1159,7 +1159,7 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, description?, points_cost?,
 2. 「今日」與月份邊界一律採 `studio_timezone`（見 §3.18 裁決 2）的當地時間；`revenue.trend`/`members.new_this_month` 的月份切分也依此換算，而非 DB session 所在時區。
 3. `attendance_rate`（member）與 `attendance_rate_30d`（coach）定義相同：`present / (present + absent)`；`leave` 不計入分子、也不計入分母；無出勤資料時回 `null`（不是 `0`）。
 4. `fill_rate`（admin `courses[]`）定義為 `enrolled / max_students`。`max_students` 現有 `CHECK (max_students > 0)` 保證恆為正，但計算仍防禦性地在分母為 `0` 時回 `null`，不產生除以零（`NaN`/`Infinity` 無法序列化為合法 JSON）。
-5. `GET /reports/coach` 用 `require_role("coach")`——**單一角色檢查，無 admin 例外**（與部分教練資源端點如 `GET /sessions/today` 的「admin 或 coach」不同：admin 若未同時掛 `coach` 角色，呼叫本端點一律 403）。呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列 → **404**（訊息「coach not found」，比照 `coaches` 模組本身查無資料列時的既有慣例）——這點與 `GET /sessions/today`／`GET /coaches/me/students` 遇到同一資料異常時「降級回空陣列」不同：本端點回傳單一物件而非列表，沒有自然的「空」值可用，零值/null 會與「有效教練但剛好沒有學員」混淆，故改用 404 明確表達「找不到教練身分」。
+5. `GET /reports/coach` 用 `require_role(Role::Coach)`——**單一角色檢查，無 admin 例外**（與部分教練資源端點如 `GET /sessions/today` 的「admin 或 coach」不同：admin 若未同時掛 `coach` 角色，呼叫本端點一律 403）。呼叫者掛 `coach` 角色但查無對應 `coaches` 資料列 → **404**（訊息「coach not found」，比照 `coaches` 模組本身查無資料列時的既有慣例）——這點與 `GET /sessions/today`／`GET /coaches/me/students` 遇到同一資料異常時「降級回空陣列」不同：本端點回傳單一物件而非列表，沒有自然的「空」值可用，零值/null 會與「有效教練但剛好沒有學員」混淆，故改用 404 明確表達「找不到教練身分」。
 6. `GET /reports/admin/activity`（Round 4 Task B8 新增，見下）是本節唯一的例外：回應為 `{ "items": [...] }` 陣列包裝，不是單一物件；僅 admin（不是 admin/coach/member 三選一）。
 
 #### `GET /reports/admin` — admin

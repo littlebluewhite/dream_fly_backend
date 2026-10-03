@@ -40,6 +40,7 @@
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::permissions::model::Role;
 
 /// Domain-validation message for every way a `POST /conversations` role
 /// check can fail — same wording regardless of which side (or both) is
@@ -61,10 +62,11 @@ pub fn resolve_pair(
         return Err(AppError::Validation(ROLE_VIOLATION.into()));
     }
 
-    let caller_is_coach = caller_roles.iter().any(|r| r == "coach");
-    let caller_is_member = caller_roles.iter().any(|r| r == "member");
-    let target_is_coach = target_roles.iter().any(|r| r == "coach");
-    let target_is_member = target_roles.iter().any(|r| r == "member");
+    let holds = |roles: &[String], role: Role| roles.iter().any(|r| r == role.as_str());
+    let caller_is_coach = holds(caller_roles, Role::Coach);
+    let caller_is_member = holds(caller_roles, Role::Member);
+    let target_is_coach = holds(target_roles, Role::Coach);
+    let target_is_member = holds(target_roles, Role::Member);
 
     if caller_is_coach && target_is_member {
         Ok((target_id, caller_id)) // (member_id, coach_id)

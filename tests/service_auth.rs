@@ -50,6 +50,7 @@ use dream_fly_backend::modules::auth::dto::{
 use dream_fly_backend::modules::auth::repository;
 use dream_fly_backend::modules::auth::service;
 use dream_fly_backend::modules::auth::session;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::email::EmailSender;
 use dream_fly_backend::utils::ephemeral::EphemeralStore;
@@ -1372,7 +1373,7 @@ async fn google_auth_link_does_not_grant_member_to_seeded_admin(db: PgPool) {
     .expect("insert admin");
     // The user row was created in this very tx, so no access-cache entry can
     // exist for it yet.
-    permissions_repository::assign_role_by_name(&mut tx, admin.id, "admin")
+    permissions_repository::assign_role(&mut tx, admin.id, Role::Admin)
         .await
         .expect("assign admin")
         .assume_uncached();

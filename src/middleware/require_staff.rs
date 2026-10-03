@@ -3,7 +3,7 @@
 //! **為何是 route 層 middleware,而非逐 handler 首行**:~9 個 admin|coach
 //! 粗粒度 handler(leave 清單/核決、今日課程、點名名冊/登記、成績單/證書
 //! 建立、訂閱核銷、發文)過去每支開頭都重複
-//! `auth.require_any_role(&["admin", "coach"])?;` 一行——與 `require_admin`
+//! `auth.require_any_role(&[Role::Admin, Role::Coach])?;` 一行——與 `require_admin`
 //! (見該檔頭註解)同一種儀式重複問題,同一種解法:上移到 route seam,
 //! 授權判斷從「每支 handler 各自負責」收斂為掛在 staff 半邊 router 上的
 //! 單一 layer。Request-data-dependent 的細粒度檢查(`require_course_coach`、
@@ -16,7 +16,7 @@
 //! **Fail-closed**:與 `require_admin` 相同的兩步短路——先
 //! `AuthUser::from_request_parts`(401 平價),再角色判斷(403 平價),任一
 //! 失敗即短路回錯誤,`next` 不執行;僅第二步換成
-//! `require_any_role(&["admin", "coach"])`。驗證通過者才把 `AuthUser` 注入
+//! `require_any_role(&[Role::Admin, Role::Coach])`。驗證通過者才把 `AuthUser` 注入
 //! extensions,供 handler 端 extractor 走快路徑,細節見 `require_admin`
 //! 檔頭註解。
 //!
@@ -30,6 +30,7 @@ use axum::response::Response;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
+use crate::modules::permissions::model::Role;
 use crate::state::AppState;
 
 /// Route 層 staff 閘門:驗證 `AuthUser` 且具 `admin` 或 `coach` 角色,通過
@@ -42,7 +43,7 @@ pub async fn require_staff(
 ) -> Result<Response, AppError> {
     let (mut parts, body) = req.into_parts();
     let auth = AuthUser::from_request_parts(&mut parts, &state).await?; // 401 平價
-    auth.require_any_role(&["admin", "coach"])?; // 403 平價
+    auth.require_any_role(&[Role::Admin, Role::Coach])?; // 403 平價
     let mut req = Request::from_parts(parts, body);
     req.extensions_mut().insert(auth);
     Ok(next.run(req).await)

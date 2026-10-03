@@ -7,6 +7,7 @@ use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
 use crate::modules::auth::access::AccessCache;
 use crate::modules::notifications::service as notify;
+use crate::modules::permissions::model::Role;
 use crate::modules::permissions::repository as permissions_repository;
 use crate::utils::email::EmailSender;
 use crate::utils::ephemeral::EphemeralStore;
@@ -43,7 +44,7 @@ pub async fn register(
     // orphaned rows.
     let mut tx = db.begin().await?;
 
-    // Insert user + assign "member" role + queue the user_registered event —
+    // Insert user + assign `Role::Member` + queue the user_registered event —
     // see `provisioning::create_account` for why these three are one atomic
     // step (including the email normalization). Rely on the DB unique
     // constraint for the duplicate check so existence enumeration is not
@@ -153,13 +154,13 @@ pub async fn google_auth(
         }
     };
 
-    // 4. Assign "member" role — account birth (`Create`) only; Link/Refresh
+    // 4. Assign `Role::Member` — account birth (`Create`) only; Link/Refresh
     //    leave an existing account's roles alone (see `linking`'s module doc).
     //    Unlike `provisioning::create_account`, the witness is really flushed:
     //    the `ON CONFLICT (google_id)` upsert may have landed on a row a
     //    concurrent first login already committed, whose access may be cached.
     let dirty = if plan.grant_member {
-        Some(permissions_repository::assign_role_by_name(&mut tx, user.id, "member").await?)
+        Some(permissions_repository::assign_role(&mut tx, user.id, Role::Member).await?)
     } else {
         None
     };

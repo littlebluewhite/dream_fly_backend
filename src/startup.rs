@@ -22,15 +22,14 @@ pub fn build_router(state: AppState) -> Router {
 
     let cors = cors_layer(&state.config.server);
 
-    // Admin 半邊:17 個模組的 `admin_router()` 合併後,單點掛上 `require_admin`
+    // Admin 半邊:16 個模組的 `admin_router()` 合併後,單點掛上 `require_admin`
     // route_layer——admin 授權從 34 份 handler 首行儀式收斂為此一層。route_layer
     // 只包住 admin 方法(及其 per-path 405 fallback),與公開 router 帶入同路徑的
     // sibling 方法互不影響(共用路徑按 method 拆;見 `middleware::require_admin`
-    // 檔頭與各模組 `admin_router()` 註解)。permissions/settings 全數 admin,公開
-    // 半邊已無 `router()`,只在此出現。
+    // 檔頭與各模組 `admin_router()` 註解)。settings 全數 admin,公開半邊已無
+    // `router()`,只在此出現。
     let admin_api = Router::new()
         .merge(modules::settings::routes::admin_router())
-        .merge(modules::permissions::routes::admin_router())
         .merge(modules::contact::routes::admin_router())
         .merge(modules::schedule::routes::admin_router())
         .merge(modules::coupons::routes::admin_router())

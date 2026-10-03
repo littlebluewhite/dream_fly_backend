@@ -17,6 +17,7 @@ use dream_fly_backend::modules::coaches::repository as coaches_repository;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::products::model::ProductType;
@@ -29,7 +30,7 @@ use super::{add_course_to_cart, add_to_cart, seed_member};
 /// role, in the same transaction. Returns the coach id.
 ///
 /// Owner: delegates to `coaches::repository::insert_tx` /
-/// `permissions::repository::assign_role_by_name` rather than hand-rolling
+/// `permissions::repository::assign_role` rather than hand-rolling
 /// the `INSERT` — mirrors `seed_member` above.
 pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
     let mut tx = db.begin().await.expect("begin tx");
@@ -52,7 +53,7 @@ pub async fn seed_coach(db: &PgPool, user_id: Uuid, title: &str) -> Uuid {
 
     // Witness discarded: this helper has never invalidated the role/active
     // cache either, same rationale as `seed_member`.
-    let _ = permissions_repository::assign_role_by_name(&mut tx, user_id, "coach")
+    let _ = permissions_repository::assign_role(&mut tx, user_id, Role::Coach)
         .await
         .expect("assign coach role");
 

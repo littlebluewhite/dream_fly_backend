@@ -67,6 +67,7 @@ use dream_fly_backend::modules::coupons::repository as coupons_repository;
 use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
 use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::{LedgerDelta, OrderPointsFlow, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
@@ -151,7 +152,7 @@ async fn upsert_user(
 }
 
 /// Attach a role to a user — delegates to
-/// `permissions::repository::assign_role_by_name` (idempotent, `ON CONFLICT
+/// `permissions::repository::assign_role` (idempotent, `ON CONFLICT
 /// DO NOTHING`) via a pool-`acquire`d connection rather than hand-rolling the
 /// `INSERT` (seed has no ambient transaction to reuse).
 ///
@@ -161,12 +162,13 @@ async fn upsert_user(
 /// on a seed re-run the target user may already have a cached entry — but a
 /// stale entry just lives out its TTL (60s active flag / 15-minute roles)
 /// before self-correcting.
-async fn assign_role(db: &PgPool, user_id: Uuid, role_name: &str) -> anyhow::Result<()> {
+async fn assign_role(db: &PgPool, user_id: Uuid, role: Role) -> anyhow::Result<()> {
+    let role_name = role.as_str();
     let mut conn = db
         .acquire()
         .await
         .with_context(|| format!("acquire connection to assign role '{role_name}' to {user_id}"))?;
-    permissions_repository::assign_role_by_name(&mut conn, user_id, role_name)
+    permissions_repository::assign_role(&mut conn, user_id, role)
         .await
         .with_context(|| format!("assign role '{role_name}' to {user_id}"))?
         .assume_uncached();
@@ -1090,12 +1092,12 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     // -- admin -----------------------------------------------------------
     let admin_id = upsert_user(db, "admin@dreamfly.tw", "系統管理員", &admin_hash, 0).await?;
-    assign_role(db, admin_id, "admin").await?;
+    assign_role(db, admin_id, Role::Admin).await?;
     println!("[users]    admin ready: admin@dreamfly.tw / Admin#2026");
 
     // -- test member -------------------------------------------------------
     let member_id = upsert_user(db, "member@dreamfly.tw", "測試會員", &member_hash, 1250).await?;
-    assign_role(db, member_id, "member").await?;
+    assign_role(db, member_id, Role::Member).await?;
     println!("[users]    member ready: member@dreamfly.tw / Member#2026 (points_balance=1250)");
 
     // -- coaches -----------------------------------------------------------
@@ -1145,7 +1147,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     let mut coach_ids: HashMap<&'static str, Uuid> = HashMap::new();
     for seed in &coach_seeds {
         let user_id = upsert_user(db, seed.email, seed.user_name, &coach_hash, 0).await?;
-        assign_role(db, user_id, "coach").await?;
+        assign_role(db, user_id, Role::Coach).await?;
         let coach_id = upsert_coach(db, user_id, seed).await?;
         coach_ids.insert(seed.slug, coach_id);
         println!("[coaches]  {} ready: {} / Coach#2026", seed.user_name, seed.email);
@@ -1538,7 +1540,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
         let user_id = upsert_seed_member(db, &email, &name, &member_hash, birth_date).await?;
-        assign_role(db, user_id, "member").await?;
+        assign_role(db, user_id, Role::Member).await?;
         member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);
     }

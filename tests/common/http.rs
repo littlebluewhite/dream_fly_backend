@@ -53,6 +53,7 @@ use dream_fly_backend::config::{
 };
 use dream_fly_backend::health::HealthProbe;
 use dream_fly_backend::modules::auth::repository;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
 use dream_fly_backend::state::{AppState, Infra, Overrides};
@@ -211,7 +212,7 @@ impl TestApp {
     /// admin or coach without going through `/auth/register`.
     ///
     /// Owner: delegates to `auth::repository::create_user_tx` /
-    /// `permissions::repository::assign_role_by_name` rather than
+    /// `permissions::repository::assign_role` rather than
     /// hand-rolling the `INSERT` — see those for the real row shape.
     pub async fn seed_user_with_roles(
         &self,
@@ -227,9 +228,10 @@ impl TestApp {
             .expect("insert user");
 
         for role in roles {
+            let role: Role = role.parse().expect("known role name");
             // The user row was created in this very tx, so no access-cache
             // entry can exist for it yet.
-            permissions_repository::assign_role_by_name(&mut tx, user.id, role)
+            permissions_repository::assign_role(&mut tx, user.id, role)
                 .await
                 .expect("assign role")
                 .assume_uncached();

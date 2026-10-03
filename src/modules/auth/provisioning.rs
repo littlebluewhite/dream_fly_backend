@@ -17,7 +17,7 @@
 //!    Create/Link 共用的判斷,不是「新建帳號」獨有,把 Create 半條腿拆進
 //!    `create_account` 會把這個橫跨兩分支的判斷切開,違反 `linking`
 //!    模組存在的目的。google 的角色指派已在 Phase 6A 收斂到
-//!    `permissions::assign_role_by_name`,不需要再靠這裡收攏一次。
+//!    `permissions::repository::assign_role`,不需要再靠這裡收攏一次。
 //!
 //! 2. **`bin/seed/dataset.rs` 的開發種子資料**——`upsert_user`/`upsert_seed_member`
 //!    都是冪等 upsert(`ON CONFLICT DO NOTHING` + 條件式二次 `SELECT`),
@@ -39,6 +39,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::kafka::events::UserRegisteredPayload;
 use crate::kafka::outbox;
+use crate::modules::permissions::model::Role;
 use crate::modules::permissions::repository as permissions_repository;
 
 use super::model::{normalize_email, User};
@@ -95,7 +96,7 @@ pub async fn create_account(
 
     // The row was inserted a line above in this very tx, so no access-cache
     // entry can exist for its id — nothing to flush after commit.
-    permissions_repository::assign_role_by_name(tx, user.id, "member")
+    permissions_repository::assign_role(tx, user.id, Role::Member)
         .await?
         .assume_uncached();
 

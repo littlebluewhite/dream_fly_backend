@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
+use crate::modules::permissions::model::Role;
 use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
@@ -29,7 +30,7 @@ pub async fn list(
     // route 層 `require_admin`(否則會連 member 的 `?all=false` 一併擋成 403)。
     // 其餘 34 份純閘門已上移;此支原地保留為唯一例外。
     if all {
-        auth.require_role("admin")?;
+        auth.require_role(Role::Admin)?;
     }
     let result = service::list(&state.db, all).await?;
     Ok(Json(result))
