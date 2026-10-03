@@ -114,10 +114,11 @@ async fn coach_report_today_sessions_uses_taipei_date(db: PgPool) {
     let coach = app.seed_coach_user().await;
     let course = seed_course(&app.db, "Taipei Report", Some(coach.coach_id)).await;
     seed_course_session(&app.db, course, app.today(), t(9, 0), t(10, 0)).await;
+    seed_course_session(&app.db, course, app.today(), t(11, 0), t(12, 0)).await;
     seed_course_session(&app.db, course, app.today() - Duration::days(1), t(9, 0), t(10, 0)).await;
 
     let resp = app.get("/api/v1/reports/coach").authorization_bearer(&coach.token).await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["today_sessions"], 1);
+    assert_eq!(body["today_sessions"], 2);
 }

@@ -1036,7 +1036,7 @@ pub async fn seed_venue_rentals(
     slot_date: NaiveDate,
     rentals: &[(BookingStatus, i64)],
 ) -> Vec<Uuid> {
-    let slot_id = TimeSlotSeed::new(rentals.len() as i32, slot_date).on(slot_date).insert(db).await;
+    let slot_id = TimeSlotSeed::new(rentals.len() as i32, slot_date).insert(db).await;
     let mut booking_ids = Vec::with_capacity(rentals.len());
     for (status, price_cents) in rentals {
         let email = format!("venue-rental-{}@example.com", Uuid::now_v7());
