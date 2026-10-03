@@ -10,6 +10,17 @@ use super::model::TimeSlot;
 /// — input row for [`bulk_create`]. Aliased to keep the signature readable.
 pub type SlotRow = (NaiveDate, NaiveTime, NaiveTime, Option<Uuid>, Option<Uuid>, i32, i64);
 
+/// The [`TimeSlot`] projection, shared by every read and `RETURNING` in this
+/// file. `booked` is not a column (ADR-0015): it is counted at read time from
+/// the `occupying_bookings` view, the SQL twin of
+/// `bookings::model::BookingStatus::occupies_seat` — a view rather than an
+/// import because `bookings` already depends on `schedule`. Applied sites
+/// must have `time_slots` in scope unaliased.
+const SLOT_COLUMNS: &str =
+    "id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
+     (SELECT COUNT(*)::int FROM occupying_bookings ob WHERE ob.time_slot_id = time_slots.id) AS booked, \
+     is_closed, created_at, updated_at";
+
 pub async fn find_by_month(
     db: &PgPool,
     year: i32,
@@ -21,13 +32,12 @@ pub async fn find_by_month(
     let (first_day, last_day) = studio_clock::month_bounds(year, month)
         .ok_or_else(|| sqlx::Error::Protocol("invalid year/month".into()))?;
 
-    sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
-         booked, is_closed, created_at, updated_at \
+    sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
+        "SELECT {SLOT_COLUMNS} \
          FROM time_slots \
          WHERE date >= $1 AND date <= $2 \
-         ORDER BY date, start_time",
-    )
+         ORDER BY date, start_time"
+    )))
     .bind(first_day)
     .bind(last_day)
     .fetch_all(db)
@@ -38,13 +48,12 @@ pub async fn find_by_date(
     db: &PgPool,
     date: NaiveDate,
 ) -> Result<Vec<TimeSlot>, sqlx::Error> {
-    sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
-         booked, is_closed, created_at, updated_at \
+    sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
+        "SELECT {SLOT_COLUMNS} \
          FROM time_slots \
          WHERE date = $1 \
-         ORDER BY start_time",
-    )
+         ORDER BY start_time"
+    )))
     .bind(date)
     .fetch_all(db)
     .await
@@ -54,12 +63,11 @@ pub async fn find_by_id(
     db: &PgPool,
     id: Uuid,
 ) -> Result<Option<TimeSlot>, sqlx::Error> {
-    sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
-         booked, is_closed, created_at, updated_at \
+    sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
+        "SELECT {SLOT_COLUMNS} \
          FROM time_slots \
-         WHERE id = $1",
-    )
+         WHERE id = $1"
+    )))
     .bind(id)
     .fetch_optional(db)
     .await
@@ -71,13 +79,12 @@ pub async fn find_by_id_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
 ) -> Result<Option<TimeSlot>, sqlx::Error> {
-    sqlx::query_as::<_, TimeSlot>(
-        "SELECT id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
-         booked, is_closed, created_at, updated_at \
+    sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
+        "SELECT {SLOT_COLUMNS} \
          FROM time_slots \
          WHERE id = $1 \
-         FOR SHARE",
-    )
+         FOR SHARE"
+    )))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
@@ -118,14 +125,13 @@ pub async fn bulk_create_tx(
         price_cents_vec.push(*price_cents);
     }
 
-    sqlx::query_as::<_, TimeSlot>(
-        "INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, created_at, updated_at) \
+    sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, created_at, updated_at) \
          SELECT * FROM UNNEST($1::uuid[], $2::date[], $3::time[], $4::time[], $5::uuid[], $6::uuid[], $7::int[], $8::bigint[], \
-         ARRAY_FILL(0, ARRAY[$9::int])::int[], \
          ARRAY_FILL(now(), ARRAY[$9::int])::timestamptz[], \
          ARRAY_FILL(now(), ARRAY[$9::int])::timestamptz[]) \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, is_closed, created_at, updated_at",
-    )
+         RETURNING {SLOT_COLUMNS}"
+    )))
     .bind(&ids)
     .bind(&dates)
     .bind(&start_times)
@@ -146,13 +152,13 @@ pub async fn set_closed(
     id: Uuid,
     is_closed: bool,
 ) -> Result<Option<TimeSlot>, sqlx::Error> {
-    sqlx::query_as::<_, TimeSlot>(
+    sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
         "UPDATE time_slots SET \
          is_closed = $2, \
          updated_at = now() \
          WHERE id = $1 \
-         RETURNING id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, is_closed, created_at, updated_at",
-    )
+         RETURNING {SLOT_COLUMNS}"
+    )))
     .bind(id)
     .bind(is_closed)
     .fetch_optional(db)

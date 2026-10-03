@@ -18,7 +18,7 @@
 //! `reports::repository::venue_usage` 等)照「跨模組讀表」慣例留在各自模組,
 //! 只從這裡 import witness 型別。型別 `CourseScheduleSlot` 與讀取
 //! `find_slots_by_course` 仍歸 courses。前例:`bookings::occupancy` 把
-//! `time_slots.booked` 的寫入從 schedule 收走。
+//! 場租佔位的寫入從 schedule 收走。
 
 use chrono::{NaiveDate, NaiveTime};
 use sqlx::{PgPool, Postgres, Transaction};

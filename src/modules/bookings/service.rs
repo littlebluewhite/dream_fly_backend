@@ -27,12 +27,13 @@ pub async fn create_booking(
     // checks share a consistent snapshot.
     let mut tx = db.begin().await?;
 
-    // Atomically occupy the slot (fails if full). Returns a witness so we
-    // can check the start time without a second SELECT.
+    // Lock the slot row and count its occupying bookings (fails if full).
+    // Returns a witness so we can check the start time without a second
+    // SELECT.
     let hold = occupancy::occupy_slot_tx(&mut tx, req.time_slot_id).await?;
     let hold = match hold {
         Some(h) => h,
-        // `occupy_slot_tx`'s WHERE clause folds three causes into one
+        // `occupy_slot_tx` folds three causes into one
         // `None` — slot doesn't exist, already at capacity, or admin-closed
         // (`is_closed`) — so the message covers all three; codex 抓到現行是
         // 400 非 409,狀態碼不變。
@@ -107,8 +108,8 @@ pub async fn cancel_booking(
     auth.owns_or_admin(booking.user_id, "you can only cancel your own bookings")?;
 
     // 3. State machine: only pending/confirmed bookings can be cancelled.
-    //    Cancelling a Completed / NoShow booking would decrement the slot
-    //    counter for a session that already happened.
+    //    Cancelling a Completed / NoShow booking would free a seat on a
+    //    slot that already happened.
     if !booking.status.is_cancellable() {
         return Err(AppError::BadRequest(format!(
             "booking in state '{}' cannot be cancelled",
@@ -137,8 +138,9 @@ pub async fn cancel_booking(
     // 5. Conditional update. This is the authoritative race guard — if
     //    another concurrent cancel slipped through the pre-check, the
     //    `status <> 'cancelled'` clause makes it a no-op and we return 409.
-    //    A hit also releases the slot's occupied seat in the same call.
-    let updated = occupancy::cancel_and_release_tx(&mut tx, booking_id)
+    //    A hit is itself the seat release: occupancy is counted at read time
+    //    from `occupying_bookings`, so there is no slot counter to touch.
+    let updated = occupancy::cancel_occupying_booking_tx(&mut tx, booking_id)
         .await?
         .ok_or_else(|| AppError::Conflict("booking is already cancelled".into()))?;
 

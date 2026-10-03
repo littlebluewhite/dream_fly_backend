@@ -26,17 +26,17 @@ impl BookingStatus {
     /// True iff the booking is in a state that can still be cancelled by
     /// the user or an admin. Any "terminal" state (already cancelled,
     /// completed, or no-show) is explicitly rejected — cancelling a
-    /// completed booking must never decrement `time_slots.booked` again.
+    /// completed booking must never free its seat after the fact.
     pub fn is_cancellable(&self) -> bool {
         matches!(self, Self::Pending | Self::Confirmed)
     }
 
     /// Single owner of the "booked = 非 cancelled bookings 數" invariant:
     /// whether this booking currently occupies a seat on its time slot.
-    /// `time_slots.booked` is a denormalized read cache of this predicate
-    /// (maintained at runtime by the increment/decrement protocol on
-    /// create/cancel); `src/bin/seed/dataset.rs` consumes this same predicate
-    /// instead of hand-picking which literal statuses count as occupied.
+    /// Its SQL twin is the `occupying_bookings` view (ADR-0015), which every
+    /// slot's `booked` is counted from at read time — the view's status list
+    /// must equal the variants returning `true` here
+    /// (`tests/service_bookings.rs::occupying_bookings_view_matches_occupies_seat`).
     /// `Completed`/`NoShow` are terminal but still occupy — only
     /// `Cancelled` frees the seat.
     pub fn occupies_seat(&self) -> bool {

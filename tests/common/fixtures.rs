@@ -326,7 +326,7 @@ pub async fn seed_notification(db: &PgPool, user_id: Uuid, title: &str, is_read:
 
 /// Builder for a `time_slots` row inserted directly (bypassing the schedule
 /// service). Defaults: the day after tomorrow (+2 days — safely outside the
-/// 24-hour cancellation window), 10:00–11:00, no course/venue, `booked = 0`.
+/// 24-hour cancellation window), 10:00–11:00, no course/venue, no bookings.
 /// `on`/`start` place the slot at an exact (date, start_time), e.g. inside
 /// or outside the cancellation window. The end is start + 1 hour, clamped
 /// to end-of-day instead of wrapping past midnight.
@@ -383,8 +383,8 @@ impl TimeSlotSeed {
         };
         sqlx::query(
             r#"
-            INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, booked, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW(), NOW())
+            INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
             "#,
         )
         .bind(id)
@@ -561,9 +561,8 @@ impl<'a> OrderSeed<'a> {
 /// venue-rental report tests can set an exact `status` — including
 /// `cancelled`/`no_show`, which must NOT count as venue income — and an
 /// exact `price_cents` snapshot independent of the slot's live price.
-/// Keeps the `time_slots.booked` read cache consistent: a status that
-/// `occupies_seat()` bumps the slot's `booked` in the same tx, so a later
-/// cancel through the service decrements it back to where it started.
+/// Whether it occupies a seat is decided at read time by the
+/// `occupying_bookings` view (ADR-0015) — there is no slot counter to bump.
 /// Returns the booking id.
 pub async fn seed_booking(
     db: &PgPool,
@@ -573,8 +572,6 @@ pub async fn seed_booking(
     price_cents: i64,
 ) -> Uuid {
     let id = Uuid::now_v7();
-    let occupies_seat = status.occupies_seat();
-    let mut tx = db.begin().await.expect("begin tx");
     sqlx::query(
         r#"
         INSERT INTO bookings (id, user_id, time_slot_id, status, price_cents, created_at, updated_at)
@@ -586,17 +583,9 @@ pub async fn seed_booking(
     .bind(time_slot_id)
     .bind(status)
     .bind(price_cents)
-    .execute(&mut *tx)
+    .execute(db)
     .await
     .expect("insert booking");
-    if occupies_seat {
-        sqlx::query("UPDATE time_slots SET booked = booked + 1 WHERE id = $1")
-            .bind(time_slot_id)
-            .execute(&mut *tx)
-            .await
-            .expect("bump time_slot booked");
-    }
-    tx.commit().await.expect("commit seed_booking");
     id
 }
 

@@ -1,12 +1,13 @@
 //! Integration tests for `bookings::service`.
 //!
 //! Covers:
-//! - happy-path create_booking increments `time_slots.booked`
+//! - happy-path create_booking occupies a seat (slot reads `booked = 1`)
 //! - duplicate booking rejected by the `uq_bookings_user_slot_active` index
-//! - full slot rejected at the `booked < capacity` guard
-//! - cancel_booking is idempotent and decrements the slot exactly once
+//! - full slot rejected by the locked count (`occupying_bookings >= capacity`)
+//! - cancel_booking is idempotent and frees the seat exactly once
 //! - 24-hour cancellation rule blocks non-admin cancels of imminent slots
 //! - concurrent create_booking on a capacity=1 slot: only one wins
+//! - the `occupying_bookings` view's status list equals `occupies_seat()`
 
 mod common;
 
@@ -83,8 +84,8 @@ async fn duplicate_booking_same_slot_rejected_by_unique_index(db: PgPool) {
 
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
 
-    // Slot counter should reflect exactly one successful booking. The failed
-    // second attempt rolled back its increment.
+    // The slot should count exactly one booking. The failed second attempt
+    // rolled back its insert.
     assert_eq!(common::slot_booked(&db, slot).await, 1);
 }
 
@@ -123,7 +124,7 @@ async fn full_slot_rejects_new_booking(db: PgPool) {
 }
 
 /// Step 8: an admin-closed slot (`is_closed`) rejects new bookings the same
-/// way a full one does — `occupy_slot_tx`'s WHERE guard folds three causes
+/// way a full one does — `occupy_slot_tx` folds three causes
 /// (missing/full/closed) into the same `None` branch, so the message is
 /// shared across all three.
 #[sqlx::test]
@@ -152,12 +153,12 @@ async fn closed_slot_rejects_new_booking(db: PgPool) {
         matches!(err, AppError::BadRequest(ref m) if m == "time slot is full or closed"),
         "got: {err:?}"
     );
-    // The rejected attempt must not have touched the counter.
+    // The rejected attempt must not have occupied a seat.
     assert_eq!(common::slot_booked(&db, slot).await, 0);
 }
 
 #[sqlx::test]
-async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
+async fn cancel_booking_frees_seat_and_is_idempotent(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = TimeSlotSeed::new(5).insert(&db).await;
     let auth = common::member_auth(user);
@@ -188,8 +189,8 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
         .expect("booking cancellation notification row");
     assert_eq!(title, "Booking Cancelled");
 
-    // Second cancel of the same booking should fail cleanly (not underflow
-    // the slot's booked counter).
+    // Second cancel of the same booking should fail cleanly (not free the
+    // seat twice).
     let err = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
         .await
         .expect_err("second cancel should fail");
@@ -200,18 +201,6 @@ async fn cancel_booking_decrements_slot_and_is_idempotent(db: PgPool) {
         "got: {err:?}"
     );
     assert_eq!(common::slot_booked(&db, slot).await, 0);
-
-    // 對帳:`time_slots.booked` 必須等於同一 slot 下非 cancelled 的 bookings
-    // 列數(`BookingStatus::occupies_seat` 的 runtime 端不變量)。`COUNT(*)::int`
-    // 把 SQL 端型別對齊 `slot_booked` 的 i32,兩者才能直接比較。
-    let non_cancelled: i32 = sqlx::query_scalar(
-        "SELECT COUNT(*)::int FROM bookings WHERE time_slot_id = $1 AND status <> 'cancelled'::booking_status",
-    )
-    .bind(slot)
-    .fetch_one(&db)
-    .await
-    .expect("count non-cancelled bookings");
-    assert_eq!(non_cancelled, common::slot_booked(&db, slot).await);
 }
 
 #[sqlx::test]
@@ -343,8 +332,8 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
-    // Capacity 1, two users racing. Only one should succeed and
-    // time_slots.booked should end at 1.
+    // Capacity 1, two users racing. Only one should succeed and the slot
+    // should read booked = 1.
     let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
     let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
     let slot = TimeSlotSeed::new(1).insert(&db).await;
@@ -403,9 +392,9 @@ async fn concurrent_book_last_slot_only_one_wins(db: PgPool) {
 // 釘住行為不變,不是新行為。
 // ---------------------------------------------------------------------
 
-/// 現況無測試釘住的分類:佔位 UPDATE 的 `WHERE id = $1 AND booked <
-/// capacity AND is_closed = false` 把「slot 不存在」與「已滿/已關閉」摺
-/// 進同一個 `None`,一律報同一句 400,不升級為 404。
+/// 現況無測試釘住的分類:佔位的鎖列 `WHERE id = $1 AND is_closed = false`
+/// 與其後的計數把「slot 不存在」與「已滿/已關閉」摺進同一個 `None`,一律
+/// 報同一句 400,不升級為 404。
 #[sqlx::test]
 async fn create_booking_missing_slot_maps_to_full_or_closed_bad_request(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
@@ -438,11 +427,8 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
     let past_date = (Utc::now() - Duration::days(1)).date_naive();
     let past_time = (Utc::now() - Duration::days(1)).time();
     let slot = TimeSlotSeed::new(1).on(past_date).start(past_time).insert(&db).await;
-    sqlx::query("UPDATE time_slots SET booked = 1 WHERE id = $1")
-        .bind(slot)
-        .execute(&db)
-        .await
-        .expect("mark slot full");
+    let other = common::seed_member(&db, "other@example.com", "passw0rd!").await;
+    common::fixtures::seed_booking(&db, other, slot, BookingStatus::Confirmed, 0).await;
 
     let err = service::create_booking(
         &db,
@@ -518,4 +504,59 @@ async fn seeded_confirmed_booking_occupies_seat_so_cancel_frees_it(db: PgPool) {
         .expect("cancel seeded booking");
 
     assert_eq!(common::slot_booked(&db, slot).await, 0);
+}
+
+/// `occupying_bookings` view 的狀態清單必須恰為 `BookingStatus::occupies_seat()`
+/// 為真的變體——view 是 SQL 端的佔位謂詞,`occupies_seat` 是 Rust 端的,兩份
+/// 定義靠本測試鎖在一起。每個變體各插一筆 booking,view 讀出的 id 集合必須
+/// 等於 `occupies_seat()` 為真的那幾筆。
+#[sqlx::test]
+async fn occupying_bookings_view_matches_occupies_seat(db: PgPool) {
+    let all_statuses = [
+        BookingStatus::Pending,
+        BookingStatus::Confirmed,
+        BookingStatus::Cancelled,
+        BookingStatus::Completed,
+        BookingStatus::NoShow,
+    ];
+    for status in &all_statuses {
+        // Tripwire:窮盡 match、無 `_` arm。新增 BookingStatus 變體時本行
+        // 編譯錯誤——先決定它佔不佔位,同步 `occupies_seat()` 與
+        // `occupying_bookings` view(新 migration),再把它加進上面的清單。
+        match status {
+            BookingStatus::Pending
+            | BookingStatus::Confirmed
+            | BookingStatus::Cancelled
+            | BookingStatus::Completed
+            | BookingStatus::NoShow => {}
+        }
+    }
+    // DB 端的 tripwire:PG enum 多出 Rust 沒有的值(只加 migration、沒加
+    // 變體)時,上面的手列清單就不再窮盡。
+    let pg_labels: Vec<String> =
+        sqlx::query_scalar("SELECT unnest(enum_range(NULL::booking_status))::text")
+            .fetch_all(&db)
+            .await
+            .expect("booking_status labels");
+    let rust_labels: Vec<&str> = all_statuses.iter().map(BookingStatus::as_str).collect();
+    assert_eq!(pg_labels, rust_labels);
+
+    let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
+    let mut expected = Vec::new();
+    for status in all_statuses {
+        let slot = TimeSlotSeed::new(5).insert(&db).await;
+        let occupies_seat = status.occupies_seat();
+        let booking = common::fixtures::seed_booking(&db, user, slot, status, 0).await;
+        if occupies_seat {
+            expected.push(booking);
+        }
+    }
+
+    let mut in_view: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM occupying_bookings")
+        .fetch_all(&db)
+        .await
+        .expect("read occupying_bookings");
+    in_view.sort();
+    expected.sort();
+    assert_eq!(in_view, expected);
 }

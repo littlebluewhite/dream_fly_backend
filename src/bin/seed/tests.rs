@@ -10,7 +10,6 @@ use chrono_tz::Tz;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::service::apply_delta_tx;
@@ -29,11 +28,11 @@ async fn ledger_row_count(db: &PgPool) -> i64 {
         .expect("count point_ledger")
 }
 
-async fn total_booked(db: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT COALESCE(SUM(booked), 0) FROM time_slots")
+async fn total_occupying_bookings(db: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM occupying_bookings")
         .fetch_one(db)
         .await
-        .expect("sum time_slots.booked")
+        .expect("count occupying_bookings")
 }
 
 async fn user_id_by_email(db: &PgPool, email: &str) -> Uuid {
@@ -53,8 +52,8 @@ async fn points_balance(db: &PgPool, user_id: Uuid) -> i64 {
 }
 
 /// D = 2026-03-10T03:00Z (Asia/Taipei) run twice → row counts, `point_ledger`
-/// row count and `SUM(time_slots.booked)` all unchanged, `settled_members ==
-/// 0`. Then manually push seed-member-01 500 points above its points-tier
+/// row count and the `occupying_bookings` count all unchanged,
+/// `settled_members == 0`. Then manually push seed-member-01 500 points above its points-tier
 /// target (`member_points_target(1) == 150`) — the next run must settle
 /// exactly that one member back to 150 (regression d819e21: an earlier seed
 /// wrote `points_balance` directly instead of going through the ledger, so
@@ -68,13 +67,13 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
 
     let first = dataset::run(&db, at).await.expect("first run");
     let ledger_after_first = ledger_row_count(&db).await;
-    let booked_after_first = total_booked(&db).await;
+    let occupying_after_first = total_occupying_bookings(&db).await;
 
     let second = dataset::run(&db, at).await.expect("second run");
     assert_eq!(first.row_counts, second.row_counts);
     assert_eq!(second.settled_members, 0);
     assert_eq!(ledger_row_count(&db).await, ledger_after_first);
-    assert_eq!(total_booked(&db).await, booked_after_first);
+    assert_eq!(total_occupying_bookings(&db).await, occupying_after_first);
 
     let member_id = user_id_by_email(&db, "seed-member-01@dreamfly.tw").await;
     let mut tx = db.begin().await.expect("begin drift tx");
@@ -135,25 +134,7 @@ async fn later_run_keeps_invariants(db: PgPool) {
         assert_eq!(count, 6, "{tier:?}");
     }
 
-    // ③ every slot's `booked` == the number of bookings on it whose status
-    // occupies a seat — read the status back and judge it in Rust via
-    // `BookingStatus::occupies_seat`, not a hand-picked SQL status list.
-    let slots: Vec<(Uuid, i32)> = sqlx::query_as("SELECT id, booked FROM time_slots")
-        .fetch_all(&db)
-        .await
-        .expect("load time_slots");
-    for (slot_id, booked) in slots {
-        let statuses: Vec<(BookingStatus,)> =
-            sqlx::query_as("SELECT status FROM bookings WHERE time_slot_id = $1")
-                .bind(slot_id)
-                .fetch_all(&db)
-                .await
-                .expect("load bookings for slot");
-        let occupying = statuses.iter().filter(|(s,)| s.occupies_seat()).count() as i32;
-        assert_eq!(booked, occupying, "slot {slot_id}");
-    }
-
-    // ④ every `DF-SEED-%` order's `points_earned`/`points_used` match its
+    // ③ every `DF-SEED-%` order's `points_earned`/`points_used` match its
     // `point_ledger` rows exactly, a refunded order carries an equal
     // `refund_clawback`, and no ledger row anywhere has `delta = 0`.
     let zero_delta_rows: i64 =

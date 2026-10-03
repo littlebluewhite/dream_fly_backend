@@ -860,26 +860,15 @@ struct TimeSlotSeed {
     end_time: NaiveTime,
     capacity: i32,
     price_cents: i64,
-    booked: i32,
 }
 
 /// Insert a rental slot (idempotent by existence check on
 /// `(venue_id, date, start_time)` — the table's only guard is the GIST
 /// anti-overlap EXCLUDE, which bare ON CONFLICT DO NOTHING also covers as a
-/// belt) and return its id either way.
-///
-/// A slot inserted as future/unbooked on one run can cross into the past by
-/// a later run, so the caller recomputes `seed.booked` as occupied — but
-/// the existence check below short-circuits before that
-/// recomputation ever reaches the row. When this run wants a booking on it
-/// (`seed.booked > 0`), sync the existing row with one idempotent UPDATE
-/// guarded by `booked = 0`: that guard only ever matches a slot no real user
-/// has booked yet (this seed never computes `booked = 0` once a booking is
-/// due, so the guard can't misfire on its own writes), which is exactly what
-/// keeps `insert_booking_if_absent` below from attaching a completed/no_show
-/// booking to a row still reading booked=0/available — the invariant
-/// `bookings::occupancy::occupy_slot_tx` keeps atomic on the real booking
-/// path.
+/// belt) and return its id either way. The slot stores no occupancy count:
+/// its `booked` is counted at read time from the `occupying_bookings` view
+/// (ADR-0015), so a slot that crosses into the past and gains a booking on a
+/// later run needs no sync.
 async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uuid> {
     let existing: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM time_slots WHERE venue_id = $1 AND date = $2 AND start_time = $3",
@@ -891,27 +880,14 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     .await
     .context("check existing time_slot")?;
     if let Some(id) = existing {
-        if seed.booked > 0 {
-            sqlx::query(
-                "UPDATE time_slots SET booked = $2, updated_at = NOW() \
-                 WHERE id = $1 AND booked = 0",
-            )
-            .bind(id)
-            .bind(seed.booked)
-            .execute(db)
-            .await
-            .with_context(|| {
-                format!("sync existing time_slot {} {}", seed.date, seed.start_time)
-            })?;
-        }
         return Ok(id);
     }
 
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, booked, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, NOW(), NOW())
+        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NOW(), NOW())
         ON CONFLICT DO NOTHING
         "#,
     )
@@ -922,7 +898,6 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     .bind(seed.venue_id)
     .bind(seed.capacity)
     .bind(seed.price_cents)
-    .bind(seed.booked)
     .execute(db)
     .await
     .with_context(|| format!("insert time_slot {} {}", seed.date, seed.start_time))?;
@@ -1849,7 +1824,6 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                 } else {
                     None
                 };
-                let occupies = booking_status.as_ref().is_some_and(|s| s.occupies_seat());
                 let slot_id = upsert_time_slot(
                     db,
                     &TimeSlotSeed {
@@ -1859,7 +1833,6 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                         end_time: NaiveTime::from_hms_opt(end_h, 0, 0).expect("valid hour"),
                         capacity: 1,
                         price_cents: venue_prices[v],
-                        booked: if occupies { 1 } else { 0 },
                     },
                 )
                 .await?;

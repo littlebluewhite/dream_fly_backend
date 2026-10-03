@@ -236,13 +236,14 @@ pub async fn product_stock(db: &PgPool, product_id: Uuid) -> Option<i32> {
         .expect("fetch stock")
 }
 
-/// Fetch the current `booked` count of a time slot.
+/// Fetch a time slot's `booked` count through the production reader
+/// (`schedule::repository::find_by_id`, counted from `occupying_bookings`).
 pub async fn slot_booked(db: &PgPool, slot_id: Uuid) -> i32 {
-    sqlx::query_scalar::<_, i32>("SELECT booked FROM time_slots WHERE id = $1")
-        .bind(slot_id)
-        .fetch_one(db)
+    dream_fly_backend::modules::schedule::repository::find_by_id(db, slot_id)
         .await
-        .expect("fetch booked count")
+        .expect("fetch time slot")
+        .expect("time slot exists")
+        .booked
 }
 
 /// Fetch the newest `(title, message)` of a user's notifications matching

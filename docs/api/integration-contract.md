@@ -439,7 +439,7 @@ Update 為對應欄位皆選填的 PATCH：`{ name?, slug?, category_id?, descri
 #### `GET /schedule?year=&month=` — 公開
 回應：`DaySchedule[]`（每日一筆）：`{ date: "YYYY-MM-DD", slots: TimeSlotResponse[] }`。
 
-`TimeSlotResponse`：`{ id, date, start_time, end_time, venue_id, course_id, capacity, booked, status: "available"|"limited"|"full"|"closed", price_cents }`。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。
+`TimeSlotResponse`：`{ id, date, start_time, end_time, venue_id, course_id, capacity, booked, status: "available"|"limited"|"full"|"closed", price_cents }`。`price_cents`（Round 4 Task P4-B2）是該時段的場租定價，見 §1.5。`booked` 是該時段目前佔位的預約數（狀態為 `pending`/`confirmed`/`completed`/`no_show`，只有 `cancelled` 不計），每次讀取時計算、不落地儲存（ADR-0015）；欄位名稱與型別不變，`status` 依它推導。
 
 #### `GET /schedule/availability?date=YYYY-MM-DD` — 公開
 回應：`TimeSlotResponse[]`（純陣列，當日所有時段）。

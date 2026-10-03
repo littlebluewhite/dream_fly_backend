@@ -7,9 +7,9 @@ use uuid::Uuid;
 /// a status column or backing SQL enum type (dropped by migration
 /// `20260717000001_time_slots_status_read_time_derive`) — every read
 /// recomputes this from `booked`/`capacity`/`is_closed`, so it can never go
-/// stale the way the old stored CASE-expression status could (anything that
-/// touched `booked` outside `bookings::occupancy`'s `occupy_slot_tx`/
-/// `cancel_and_release_tx` protocol left the stored status out of sync).
+/// stale the way the old stored CASE-expression status could. `booked` is
+/// itself counted at read time from the `occupying_bookings` view
+/// (`schedule::repository::SLOT_COLUMNS`, ADR-0015) — no stored counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotStatus {
     Available,
@@ -70,6 +70,8 @@ pub struct TimeSlot {
     pub venue_id: Option<Uuid>,
     pub course_id: Option<Uuid>,
     pub capacity: i32,
+    /// Not a column: counted from `occupying_bookings` by every read
+    /// (`schedule::repository::SLOT_COLUMNS`, ADR-0015).
     pub booked: i32,
     /// Admin intent flag — see [`SlotStatus::derive`]. Replaces the old
     /// `status = 'closed'` variant; the booked/capacity-driven states
