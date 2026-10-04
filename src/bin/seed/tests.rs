@@ -126,7 +126,7 @@ async fn later_run_keeps_invariants(db: PgPool) {
     .await
     .expect("load seed member balances");
     assert_eq!(member_balances.len(), 24);
-    for tier in PointsTier::ALL {
+    for &tier in PointsTier::ALL {
         let count = member_balances
             .iter()
             .filter(|&&balance| PointsTier::from_balance(balance) == tier)

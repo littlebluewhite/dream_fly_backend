@@ -77,6 +77,10 @@ async-trait = "0.1"
 # into the committed `bindings/` dir the frontend consumes (ADR-0016).
 ts-rs = { version = "12", features = ["chrono-impl", "uuid-impl", "serde-json-impl"] }
 
+# Wire enums derive `VariantArray` so each `X::ALL` is generated from the
+# variant list instead of being hand-copied (and drifting).
+strum = { version = "0.28", features = ["derive"] }
+
 [dev-dependencies]
 # In-process Axum HTTP test client — spawns the real router/middleware stack
 # inside the test, without binding a TCP socket. Used by every `tests/http_*`.

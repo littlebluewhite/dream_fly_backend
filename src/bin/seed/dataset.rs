@@ -1963,7 +1963,7 @@ mod tests {
 
     #[test]
     fn member_points_targets_put_six_members_in_each_tier() {
-        for tier in PointsTier::ALL {
+        for &tier in PointsTier::ALL {
             let members = (1..=24usize)
                 .filter(|&i| PointsTier::from_balance(member_points_target(i)) == tier)
                 .count();

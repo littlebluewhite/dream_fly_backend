@@ -544,41 +544,22 @@ async fn seeded_confirmed_booking_occupies_seat_so_cancel_frees_it(db: PgPool) {
 /// 等於 `occupies_seat()` 為真的那幾筆。
 #[sqlx::test]
 async fn occupying_bookings_view_matches_occupies_seat(db: PgPool) {
-    let all_statuses = [
-        BookingStatus::Pending,
-        BookingStatus::Confirmed,
-        BookingStatus::Cancelled,
-        BookingStatus::Completed,
-        BookingStatus::NoShow,
-    ];
-    for status in &all_statuses {
-        // Tripwire:窮盡 match、無 `_` arm。新增 BookingStatus 變體時本行
-        // 編譯錯誤——先決定它佔不佔位,同步 `occupies_seat()` 與
-        // `occupying_bookings` view(新 migration),再把它加進上面的清單。
-        match status {
-            BookingStatus::Pending
-            | BookingStatus::Confirmed
-            | BookingStatus::Cancelled
-            | BookingStatus::Completed
-            | BookingStatus::NoShow => {}
-        }
-    }
     // DB 端的 tripwire:PG enum 多出 Rust 沒有的值(只加 migration、沒加
-    // 變體)時,上面的手列清單就不再窮盡。
+    // 變體)時,這裡失敗。
     let pg_labels: Vec<String> =
         sqlx::query_scalar("SELECT unnest(enum_range(NULL::booking_status))::text")
             .fetch_all(&db)
             .await
             .expect("booking_status labels");
-    let rust_labels: Vec<&str> = all_statuses.iter().map(BookingStatus::as_str).collect();
+    let rust_labels: Vec<&str> = BookingStatus::ALL.iter().map(BookingStatus::as_str).collect();
     assert_eq!(pg_labels, rust_labels);
 
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let mut expected = Vec::new();
-    for status in all_statuses {
+    for status in BookingStatus::ALL {
         let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
         let occupies_seat = status.occupies_seat();
-        let booking = common::fixtures::seed_booking(&db, user, slot, status, 0).await;
+        let booking = common::fixtures::seed_booking(&db, user, slot, status.clone(), 0).await;
         if occupies_seat {
             expected.push(booking);
         }

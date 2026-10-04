@@ -1,6 +1,7 @@
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
+use strum::VariantArray;
 use uuid::Uuid;
 
 use crate::utils::studio_clock;
@@ -9,7 +10,7 @@ use crate::utils::studio_clock;
 /// Not a database column and not a state machine: every read recomputes it
 /// from the current wall-clock time, so it can never go stale or need a
 /// migration when the studio's schedule changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS, VariantArray)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Upcoming,
@@ -20,7 +21,7 @@ pub enum SessionStatus {
 impl SessionStatus {
     /// Every variant, in declaration order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 3] = [Self::Upcoming, Self::Ongoing, Self::Done];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -128,18 +129,6 @@ pub struct MyScheduleRow {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-
-    #[test]
-    fn session_status_all_covers_every_variant() {
-        // Tripwire:窮盡 match、無 `_` arm。新增 SessionStatus 變體時本行
-        // 編譯錯誤,把人押回 `ALL`。
-        for status in SessionStatus::ALL {
-            match status {
-                SessionStatus::Upcoming | SessionStatus::Ongoing | SessionStatus::Done => {}
-            }
-        }
-        assert_eq!(SessionStatus::ALL.len(), 3, "ALL must list every variant exactly once");
-    }
 
     fn new_york() -> Tz {
         "America/New_York".parse::<Tz>().expect("valid IANA name")

@@ -1,8 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray,
+)]
 #[sqlx(type_name = "inquiry_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum InquiryStatus {
@@ -16,7 +19,7 @@ impl InquiryStatus {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` and the allowed-values text both derive from this
     /// instead of hand-copying the list.
-    pub const ALL: [Self; 4] = [Self::New, Self::InProgress, Self::Resolved, Self::Closed];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -34,7 +37,7 @@ impl std::str::FromStr for InquiryStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
         let s = s.to_lowercase();
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).cloned().ok_or(())
     }
 }
 
@@ -47,7 +50,7 @@ impl std::str::FromStr for InquiryStatus {
 /// strings `"general"`/`"trial"` are accepted, per
 /// docs/api/integration-contract.md §3.17), and this refactor preserves
 /// that behavior rather than silently loosening it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS, VariantArray)]
 #[serde(rename_all = "snake_case")]
 pub enum InquiryType {
     General,
@@ -57,7 +60,7 @@ pub enum InquiryType {
 impl InquiryType {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` derives from this instead of hand-copying the list.
-    pub const ALL: [Self; 2] = [Self::General, Self::Trial];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -71,7 +74,7 @@ impl std::str::FromStr for InquiryType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
     }
 }
 
@@ -103,15 +106,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inquiry_type_all_covers_every_variant() {
-        // Tripwire:窮盡 match、無 `_` arm。新增 InquiryType 變體時本行編譯
-        // 錯誤,把人押回 `ALL`。
-        for kind in InquiryType::ALL {
-            match kind {
-                InquiryType::General | InquiryType::Trial => {}
-            }
+    fn inquiry_type_from_str_round_trips_every_variant() {
+        for &kind in InquiryType::ALL {
             assert_eq!(kind.as_str().parse::<InquiryType>(), Ok(kind));
         }
-        assert_eq!(InquiryType::ALL.len(), 2, "ALL must list every variant exactly once");
     }
 }

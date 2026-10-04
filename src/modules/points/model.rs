@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use strum::VariantArray;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS, VariantArray)]
 #[sqlx(type_name = "point_reason", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum PointReason {
@@ -25,14 +26,7 @@ pub enum PointReason {
 impl PointReason {
     /// Every variant, in declaration (= PG label) order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 6] = [
-        Self::CheckoutEarn,
-        Self::CheckoutRedeem,
-        Self::AdminAdjust,
-        Self::Redeem,
-        Self::RefundRestore,
-        Self::RefundClawback,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -216,7 +210,7 @@ impl OrderPointsFlow {
 /// 的 SQL `CASE` 是它的 SQL 攣生面(報表在 DB 端分桶),兩者由交叉測試
 /// `points_tier_matches_sql_tier_distribution_case`(`tests/service_reports.rs`)
 /// 錨定,不是靠手抄保持一致。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, VariantArray)]
 pub enum PointsTier {
     Regular,
     Bronze,
@@ -226,7 +220,7 @@ pub enum PointsTier {
 
 impl PointsTier {
     /// 由低到高——與 `tier_distribution` 的 `tiers(bucket, ord)` 同序。
-    pub const ALL: [PointsTier; 4] = [Self::Regular, Self::Bronze, Self::Silver, Self::Gold];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     /// 該級距的下限(含)。`Regular` 的 0 是 `points_balance` 的 DB `CHECK
     /// (points_balance >= 0)` 下限。
@@ -243,7 +237,8 @@ impl PointsTier {
     /// 理論值)落 `Regular`,同 SQL `CASE` 的 `ELSE`。
     pub fn from_balance(balance: i64) -> Self {
         Self::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .rev()
             .find(|tier| balance >= tier.floor())
             .unwrap_or(Self::Regular)
@@ -404,7 +399,7 @@ mod tests {
     fn points_tier_all_is_ascending_and_each_floor_maps_back_to_its_tier() {
         let floors: Vec<i64> = PointsTier::ALL.iter().map(|t| t.floor()).collect();
         assert_eq!(floors, [0, 500, 2_000, 5_000]);
-        for tier in PointsTier::ALL {
+        for &tier in PointsTier::ALL {
             assert_eq!(PointsTier::from_balance(tier.floor()), tier);
         }
     }

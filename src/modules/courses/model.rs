@@ -1,10 +1,13 @@
 use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray,
+)]
 #[sqlx(type_name = "course_level", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum CourseLevel {
@@ -19,13 +22,7 @@ impl CourseLevel {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` and the allowed-values text both derive from this
     /// instead of hand-copying the list.
-    pub const ALL: [Self; 5] = [
-        Self::Foundation,
-        Self::Beginner,
-        Self::Intermediate,
-        Self::Advanced,
-        Self::Elite,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -44,7 +41,7 @@ impl std::str::FromStr for CourseLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
         let s = s.to_lowercase();
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).cloned().ok_or(())
     }
 }
 

@@ -19,7 +19,7 @@ use super::repository::{self, CourseCreate, CourseUpdate};
 fn invalid_course_level_message() -> String {
     format!(
         "invalid course level, must be one of: {}",
-        CourseLevel::ALL.map(|v| v.as_str()).join(", ")
+        CourseLevel::ALL.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", ")
     )
 }
 

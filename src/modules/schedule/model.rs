@@ -1,5 +1,6 @@
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::Serialize;
+use strum::VariantArray;
 use uuid::Uuid;
 
 /// A time slot's read-time-derived booking status — see [`SlotStatus::derive`].
@@ -10,7 +11,7 @@ use uuid::Uuid;
 /// stale the way the old stored CASE-expression status could. `booked` is
 /// itself counted at read time from the `occupying_bookings` view
 /// (`schedule::repository::SLOT_COLUMNS`, ADR-0015) — no stored counter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS, VariantArray)]
 #[serde(rename_all = "snake_case")]
 pub enum SlotStatus {
     Available,
@@ -22,7 +23,7 @@ pub enum SlotStatus {
 impl SlotStatus {
     /// Every variant, in declaration order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 4] = [Self::Available, Self::Limited, Self::Full, Self::Closed];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -94,21 +95,6 @@ pub struct TimeSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slot_status_all_covers_every_variant() {
-        // Tripwire:窮盡 match、無 `_` arm。新增 SlotStatus 變體時本行編譯
-        // 錯誤,把人押回 `ALL`。
-        for status in SlotStatus::ALL {
-            match status {
-                SlotStatus::Available
-                | SlotStatus::Limited
-                | SlotStatus::Full
-                | SlotStatus::Closed => {}
-            }
-        }
-        assert_eq!(SlotStatus::ALL.len(), 4, "ALL must list every variant exactly once");
-    }
 
     // --- SlotStatus::derive table (仿 courses::seats::remaining_table 款式) ---
 

@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray)]
 #[sqlx(type_name = "notification_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationType {
@@ -17,14 +18,7 @@ pub enum NotificationType {
 impl NotificationType {
     /// Every variant, in declaration (= PG label) order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 6] = [
-        Self::BookingConfirmed,
-        Self::BookingCancelled,
-        Self::OrderPlaced,
-        Self::OrderStatus,
-        Self::System,
-        Self::Promotion,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {

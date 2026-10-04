@@ -1,11 +1,14 @@
 use chrono::{NaiveDate, NaiveTime};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
 /// Closed status set for a single (session, enrolment) attendance mark.
 /// Mirrors `enrolments::model::EnrolmentStatus`'s derive set — the closest
 /// sibling "closed status enum" in this codebase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray,
+)]
 #[sqlx(type_name = "attendance_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum AttendanceStatus {
@@ -18,7 +21,7 @@ impl AttendanceStatus {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` and the allowed-values text (where one exists) both
     /// derive from this instead of hand-copying the list.
-    pub const ALL: [Self; 3] = [Self::Present, Self::Absent, Self::Leave];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -33,7 +36,7 @@ impl std::str::FromStr for AttendanceStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
     }
 }
 

@@ -1,11 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::modules::cart::model::LineTarget;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray,
+)]
 #[sqlx(type_name = "product_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ProductType {
@@ -18,12 +21,7 @@ pub enum ProductType {
 impl ProductType {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` derives from this instead of hand-copying the list.
-    pub const ALL: [Self; 4] = [
-        Self::Ticket,
-        Self::CoursePackage,
-        Self::Membership,
-        Self::Merchandise,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     /// The SQL string literal for this variant — matches the Postgres
     /// `product_type` enum's `snake_case` spelling.
@@ -41,7 +39,7 @@ impl std::str::FromStr for ProductType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
     }
 }
 
@@ -364,14 +362,14 @@ mod tests {
 
     #[test]
     fn from_str_roundtrips_every_all_entry() {
-        for v in ProductType::ALL {
+        for &v in ProductType::ALL {
             assert_eq!(v.as_str().parse::<ProductType>(), Ok(v));
         }
     }
 
     #[test]
     fn as_str_and_from_str_round_trip_for_every_variant() {
-        for v in ProductType::ALL {
+        for &v in ProductType::ALL {
             let s = v.as_str();
             let parsed: ProductType = s.parse().expect("as_str output must parse");
             assert_eq!(parsed.as_str(), s);

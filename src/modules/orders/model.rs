@@ -1,10 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
 use crate::modules::cart::model::CartItemType;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray,
+)]
 #[sqlx(type_name = "order_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
@@ -19,14 +22,7 @@ pub enum OrderStatus {
 impl OrderStatus {
     /// Every variant, in wire-spelling order — single owner of the value
     /// domain; `FromStr` derives from this instead of hand-copying the list.
-    pub const ALL: [Self; 6] = [
-        Self::Pending,
-        Self::Paid,
-        Self::Processing,
-        Self::Completed,
-        Self::Cancelled,
-        Self::Refunded,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -77,7 +73,7 @@ impl std::str::FromStr for OrderStatus {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
     }
 }
 
@@ -200,36 +196,12 @@ pub struct OrderSummaryRow {
 mod tests {
     use super::*;
 
-    /// 手列全部 6 個變體(repo 無 EnumIter,不為此加依賴)。固定長度的陣列
-    /// 型別本身擋不住「新變體忘了加進來」——真正的防線是下面
-    /// `revenue_predicate_matches_revenue_statuses_array` 內的窮盡 match
-    /// tripwire,新增變體時那裡先編譯錯誤,把人押回這裡補上一行。
-    const ALL_STATUSES: [OrderStatus; 6] = [
-        OrderStatus::Pending,
-        OrderStatus::Paid,
-        OrderStatus::Processing,
-        OrderStatus::Completed,
-        OrderStatus::Cancelled,
-        OrderStatus::Refunded,
-    ];
-
     #[test]
     fn revenue_predicate_matches_revenue_statuses_array() {
         // 交叉錨定 is_revenue()(窮盡 match,真正的謂詞 owner)與
         // REVENUE_STATUSES(SQL 綁定攣生面)——逐變體相等 + 長度相等,才是
         // 真正的集合相等,不只是「看起來一致」。
-        for status in ALL_STATUSES {
-            // Tripwire:窮盡 match、無 `_` arm。新增 OrderStatus 變體時本
-            // 行編譯錯誤——固定長度的 ALL_STATUSES 本身擋不住新變體被漏
-            // 列,靠這裡把人押回本 test mod。
-            match status {
-                OrderStatus::Pending
-                | OrderStatus::Paid
-                | OrderStatus::Processing
-                | OrderStatus::Completed
-                | OrderStatus::Cancelled
-                | OrderStatus::Refunded => {}
-            }
+        for status in OrderStatus::ALL {
             assert_eq!(
                 status.is_revenue(),
                 REVENUE_STATUSES.contains(&status.as_str()),
@@ -239,7 +211,7 @@ mod tests {
         // 長度斷言:逐變體比對防不了 REVENUE_STATUSES 裡混進重複或不對應
         // 任何變體的字串(這類元素不會讓上面任何一次比對失敗)——兩邊集合
         // 大小相等,才真正排除這個殘餘可能性。
-        let revenue_variant_count = ALL_STATUSES.into_iter().filter(|s| s.is_revenue()).count();
+        let revenue_variant_count = OrderStatus::ALL.iter().filter(|s| s.is_revenue()).count();
         assert_eq!(
             revenue_variant_count,
             REVENUE_STATUSES.len(),

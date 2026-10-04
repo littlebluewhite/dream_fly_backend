@@ -235,7 +235,7 @@ pub async fn income_by_source(
     .bind(months)
     .bind(&REVENUE_STATUSES[..])
     .bind(&VENUE_REVENUE_STATUSES[..])
-    .bind(IncomeSource::ALL.map(|s| s.as_str()).as_slice())
+    .bind(IncomeSource::ALL.iter().map(|s| s.as_str()).collect::<Vec<_>>())
     .fetch_all(db)
     .await
 }

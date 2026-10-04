@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use strum::VariantArray;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, ts_rs::TS, VariantArray)]
 #[sqlx(type_name = "booking_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum BookingStatus {
@@ -16,13 +17,7 @@ pub enum BookingStatus {
 impl BookingStatus {
     /// Every variant, in declaration (= PG label) order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 5] = [
-        Self::Pending,
-        Self::Confirmed,
-        Self::Cancelled,
-        Self::Completed,
-        Self::NoShow,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -89,25 +84,7 @@ mod tests {
 
     #[test]
     fn venue_revenue_statuses_track_booking_status_variants() {
-        // 手列全部 5 個變體(repo 無 EnumIter,不為此加依賴)。
-        let all_statuses = [
-            BookingStatus::Pending,
-            BookingStatus::Confirmed,
-            BookingStatus::Cancelled,
-            BookingStatus::Completed,
-            BookingStatus::NoShow,
-        ];
-        for status in all_statuses {
-            // Tripwire:窮盡 match、無 `_` arm。新增 BookingStatus 變體時
-            // 本行編譯錯誤,擋住上面手列的 5 變體清單悄悄過期(同
-            // orders::model 的 ALL_STATUSES 手法)。
-            match status {
-                BookingStatus::Pending
-                | BookingStatus::Confirmed
-                | BookingStatus::Cancelled
-                | BookingStatus::Completed
-                | BookingStatus::NoShow => {}
-            }
+        for status in BookingStatus::ALL {
             // 每個常數字串都必須對應到某個變體的 as_str(),且該集合恰為
             // Confirmed/Completed——本系統沒有 is_venue_revenue() 謂詞,
             // 這裡直接與字面上的 Confirmed|Completed 比對。

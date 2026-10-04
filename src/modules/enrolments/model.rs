@@ -1,11 +1,12 @@
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::Serialize;
+use strum::VariantArray;
 use uuid::Uuid;
 
 use crate::modules::attendance::model::AttendanceStatus;
 use crate::modules::courses::model::CourseLevel;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS, VariantArray)]
 #[sqlx(type_name = "enrolment_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum EnrolmentStatus {
@@ -16,7 +17,7 @@ pub enum EnrolmentStatus {
 impl EnrolmentStatus {
     /// Every variant, in declaration (= PG label) order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 2] = [Self::Active, Self::Cancelled];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {

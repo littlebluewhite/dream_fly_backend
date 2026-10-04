@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use strum::VariantArray;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type, ts_rs::TS, VariantArray)]
 #[sqlx(type_name = "subscription_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionStatus {
@@ -14,7 +15,7 @@ pub enum SubscriptionStatus {
 impl SubscriptionStatus {
     /// Every variant, in declaration (= PG label) order — single owner of the value
     /// domain.
-    pub const ALL: [Self; 3] = [Self::Active, Self::Expired, Self::Cancelled];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {

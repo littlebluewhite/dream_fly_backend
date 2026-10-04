@@ -14,6 +14,7 @@
 //! needed for a handful of primitive columns).
 
 use chrono::{DateTime, Utc};
+use strum::VariantArray;
 use uuid::Uuid;
 
 use crate::modules::products::model::ProductType;
@@ -130,7 +131,7 @@ pub struct KpiRow {
 /// `order_items.item_type = 'course'` line; the product sources mirror
 /// [`ProductType`]; `VenueRental` is the one source that is *not* an order
 /// line (bookings, not `order_items`). The DTOs keep `source` as a `String`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, VariantArray)]
 pub enum IncomeSource {
     Course,
     Ticket,
@@ -143,14 +144,7 @@ pub enum IncomeSource {
 impl IncomeSource {
     /// Every variant, in display order (`income_by_source` zero-fills and
     /// orders by this position).
-    pub const ALL: [Self; 6] = [
-        Self::Course,
-        Self::Ticket,
-        Self::Membership,
-        Self::CoursePackage,
-        Self::Merchandise,
-        Self::VenueRental,
-    ];
+    pub const ALL: &[Self] = Self::VARIANTS;
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -184,7 +178,7 @@ impl std::str::FromStr for IncomeSource {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.into_iter().find(|v| v.as_str() == s).ok_or(())
+        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
     }
 }
 
@@ -236,21 +230,10 @@ mod tests {
 
     #[test]
     fn income_source_all_covers_every_product_type() {
-        // Tripwire: exhaustive match, no `_` arm — a new IncomeSource variant
-        // fails to compile here, pointing back at `ALL`.
-        for source in IncomeSource::ALL {
-            match source {
-                IncomeSource::Course
-                | IncomeSource::Ticket
-                | IncomeSource::Membership
-                | IncomeSource::CoursePackage
-                | IncomeSource::Merchandise
-                | IncomeSource::VenueRental => {}
-            }
+        for &source in IncomeSource::ALL {
             assert_eq!(source.as_str().parse::<IncomeSource>(), Ok(source));
         }
-        assert_eq!(IncomeSource::ALL.len(), 6, "ALL must list every variant exactly once");
-        for product_type in ProductType::ALL {
+        for &product_type in ProductType::ALL {
             let source = IncomeSource::from_product_type(product_type);
             assert_eq!(source.as_str(), product_type.as_str());
             assert!(IncomeSource::ALL.contains(&source), "{product_type:?} maps outside ALL");
