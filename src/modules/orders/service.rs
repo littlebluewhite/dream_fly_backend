@@ -277,6 +277,7 @@ pub async fn checkout(
         },
         outcome.applied_coupon_code.as_deref(),
         intent.payment_method,
+        now,
     )
     .await?;
 

@@ -52,6 +52,7 @@ async fn seed_order(
         },
         None,
         "credit_card",
+        chrono::Utc::now(),
     )
     .await
     .expect("seed order")
@@ -294,6 +295,7 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
             },
             None,
             "credit_card",
+            chrono::Utc::now(),
         )
         .await
         .expect("seed order")

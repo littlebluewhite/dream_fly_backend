@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -22,6 +23,8 @@ pub struct OrderAmounts {
 /// payment-capture step — succeeding IS the payment — so the row is
 /// inserted already `status = 'paid'` with `paid_at` stamped, rather than
 /// starting `pending` and needing a follow-up transition.
+/// `paid_at`/`created_at` 是業務時間(報表依 `paid_at` 分桶),綁呼叫端取樣的
+/// `now`;`updated_at` 是稽核時間,留給 `NOW()`(ADR-0017)。
 pub async fn create_order(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
@@ -29,12 +32,13 @@ pub async fn create_order(
     amounts: OrderAmounts,
     coupon_code: Option<&str>,
     payment_method: &str,
+    now: DateTime<Utc>,
 ) -> Result<Order, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, \
          coupon_code, points_used, points_earned, payment_method, paid_at, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, 'paid'::order_status, $3, $4, $5, $6, $7, $8, NOW(), \
-         NOW(), NOW()) \
+         VALUES (gen_random_uuid(), $1, $2, 'paid'::order_status, $3, $4, $5, $6, $7, $8, $9, \
+         $9, NOW()) \
          RETURNING *",
     )
     .bind(user_id)
@@ -45,6 +49,7 @@ pub async fn create_order(
     .bind(amounts.points_used)
     .bind(amounts.points_earned)
     .bind(payment_method)
+    .bind(now)
     .fetch_one(&mut **tx)
     .await
 }

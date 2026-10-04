@@ -57,6 +57,7 @@ async fn seed_order(
         },
         None,
         "credit_card",
+        chrono::Utc::now(),
     )
     .await
     .expect("seed order")

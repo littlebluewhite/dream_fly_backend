@@ -92,6 +92,31 @@ async fn checkout_decrements_stock(db: PgPool) {
     assert_eq!(common::product_stock(&db, product).await, Some(1));
 }
 
+/// ADR-0017:訂單的 `paid_at`/`created_at` 是業務時間(報表依 `paid_at` 分桶),
+/// 必須等於 handler 取樣的 `now`,不是 DB 的 `NOW()`。
+#[sqlx::test]
+async fn checkout_stamps_paid_at_and_created_at_with_sampled_now(db: PgPool) {
+    use chrono::TimeZone;
+    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(t),
+    )
+    .await
+    .expect("checkout");
+
+    assert_eq!(resp.paid_at, Some(t));
+    assert_eq!(resp.created_at, t);
+}
+
 #[sqlx::test]
 async fn checkout_unlimited_stock_unchanged(db: PgPool) {
     // Products with NULL stock (tickets / memberships) are unlimited —
