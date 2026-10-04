@@ -36,7 +36,7 @@
   - W7-2 `enrolments` 的 `enrolled_at`(連同被報表分桶的 `created_at`);
   - W7-3 `contact_inquiries.created_at`;
   - W7-4 優惠券有效性判斷改成 `expires_at > $2`(呼叫端:`GET /coupons/{code}/validate`、結帳、seed);
-  - W7-5 `point_ledger.created_at`(本輪後續步驟);
+  - W7-5 `point_ledger.created_at`(`apply_delta_tx`／`try_spend_tx`／`reverse_order_tx`／`adjust_points`／`rewards::redeem`／`update_order_status` 一併改收 `now`);
   - W7-6 `users.created_at`(本輪後續步驟);
   - W7-7 `subscription_derived_status` 讀時狀態函式內的 `now()`:**延後**,等到有測試需要在固定時鐘下
     判斷訂閱狀態時再做。

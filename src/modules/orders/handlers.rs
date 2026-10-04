@@ -77,7 +77,14 @@ pub async fn update_status(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<UpdateOrderStatusRequest>,
 ) -> Result<Json<OrderResponse>, AppError> {
-    let order = service::update_order_status(&state.db, id, &req.status, request_id.0).await?;
+    let order = service::update_order_status(
+        &state.db,
+        id,
+        &req.status,
+        request_id.0,
+        state.clock.now(),
+    )
+    .await?;
     Ok(Json(order))
 }
 

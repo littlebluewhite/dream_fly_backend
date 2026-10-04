@@ -21,7 +21,7 @@ use dream_fly_backend::modules::points::repository as points_repo;
 use dream_fly_backend::modules::rewards::service;
 
 async fn attempt_redeem(db: PgPool, user_id: Uuid, reward_id: Uuid) -> bool {
-    service::redeem(&db, user_id, reward_id).await.is_ok()
+    service::redeem(&db, user_id, reward_id, chrono::Utc::now()).await.is_ok()
 }
 
 #[sqlx::test]
@@ -30,7 +30,7 @@ async fn redeem_success_updates_ledger_balance_stock_and_redemption(db: PgPool) 
     set_points_balance(&db, user_id, 100).await;
     let reward_id = seed_reward(&db, "Water Bottle", 30, Some(2), true, 0).await;
 
-    let resp = service::redeem(&db, user_id, reward_id)
+    let resp = service::redeem(&db, user_id, reward_id, chrono::Utc::now())
         .await
         .expect("redeem should succeed");
 
@@ -81,7 +81,7 @@ async fn redeem_unlimited_stock_leaves_stock_null(db: PgPool) {
     set_points_balance(&db, user_id, 50).await;
     let reward_id = seed_reward(&db, "Sticker", 10, None, true, 0).await;
 
-    service::redeem(&db, user_id, reward_id)
+    service::redeem(&db, user_id, reward_id, chrono::Utc::now())
         .await
         .expect("redeem should succeed");
 
@@ -99,7 +99,7 @@ async fn redeem_insufficient_balance_conflict_with_zero_side_effects(db: PgPool)
     set_points_balance(&db, user_id, 5).await;
     let reward_id = seed_reward(&db, "Hoodie", 100, Some(3), true, 0).await;
 
-    let err = service::redeem(&db, user_id, reward_id)
+    let err = service::redeem(&db, user_id, reward_id, chrono::Utc::now())
         .await
         .expect_err("insufficient balance must be rejected");
 
@@ -141,7 +141,7 @@ async fn redeem_zero_stock_returns_conflict(db: PgPool) {
     set_points_balance(&db, user_id, 1000).await;
     let reward_id = seed_reward(&db, "Limited Tee", 20, Some(0), true, 0).await;
 
-    let err = service::redeem(&db, user_id, reward_id)
+    let err = service::redeem(&db, user_id, reward_id, chrono::Utc::now())
         .await
         .expect_err("zero stock must be rejected");
 
@@ -163,7 +163,7 @@ async fn redeem_inactive_reward_returns_not_found(db: PgPool) {
     set_points_balance(&db, user_id, 1000).await;
     let reward_id = seed_reward(&db, "Disabled Reward", 20, None, false, 0).await;
 
-    let err = service::redeem(&db, user_id, reward_id)
+    let err = service::redeem(&db, user_id, reward_id, chrono::Utc::now())
         .await
         .expect_err("inactive reward must 404");
 
@@ -175,7 +175,7 @@ async fn redeem_unknown_reward_returns_not_found(db: PgPool) {
     let user_id = common::seed_member(&db, "redeem-unknown@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 1000).await;
 
-    let err = service::redeem(&db, user_id, Uuid::now_v7())
+    let err = service::redeem(&db, user_id, Uuid::now_v7(), chrono::Utc::now())
         .await
         .expect_err("unknown reward must 404");
 
@@ -233,7 +233,7 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
         .await;
 
     for _ in 0..3 {
-        service::redeem(&db, user_id, reward_id).await.expect("redeem");
+        service::redeem(&db, user_id, reward_id, chrono::Utc::now()).await.expect("redeem");
     }
 
     let page = service::my_redemptions(

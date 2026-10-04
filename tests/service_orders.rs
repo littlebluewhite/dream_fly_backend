@@ -1549,7 +1549,7 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
         .expect("checkout");
     assert_eq!(order.status, OrderStatus::Paid);
 
-    let updated = service::update_order_status(&db, order.id, "processing", None)
+    let updated = service::update_order_status(&db, order.id, "processing", None, chrono::Utc::now())
         .await
         .expect("update status");
     assert_eq!(updated.status, OrderStatus::Processing);
@@ -1589,7 +1589,7 @@ async fn update_order_status_mixed_case_returns_422(db: PgPool) {
     .await
     .expect("checkout");
 
-    let err = service::update_order_status(&db, order.id, "Paid", None)
+    let err = service::update_order_status(&db, order.id, "Paid", None, chrono::Utc::now())
         .await
         .unwrap_err();
     match err {
@@ -1783,7 +1783,7 @@ async fn assert_fully_compensated(
 async fn refund_reverses_stock_enrolment_subscription_and_points(db: PgPool) {
     let (user, order, limited) = checkout_mixed_with_points(&db, "refund-buyer@example.com").await;
 
-    let refunded = service::update_order_status(&db, order.id, "refunded", None)
+    let refunded = service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund");
     assert_eq!(refunded.status, OrderStatus::Refunded);
@@ -1802,7 +1802,7 @@ async fn refund_reverses_stock_enrolment_subscription_and_points(db: PgPool) {
 async fn cancel_compensates_identically_to_refund(db: PgPool) {
     let (user, order, limited) = checkout_mixed_with_points(&db, "cancel-buyer@example.com").await;
 
-    let cancelled = service::update_order_status(&db, order.id, "cancelled", None)
+    let cancelled = service::update_order_status(&db, order.id, "cancelled", None, chrono::Utc::now())
         .await
         .expect("cancel");
     assert_eq!(cancelled.status, OrderStatus::Cancelled);
@@ -1860,7 +1860,7 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
     // Member spent the earned points elsewhere — wipe the balance to 0.
     set_points_balance(&db, user, 0).await;
 
-    let err = service::update_order_status(&db, order.id, "refunded", None)
+    let err = service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect_err("clawback against a zero balance must conflict");
     match err {
@@ -1917,7 +1917,7 @@ async fn refunded_same_status_noop_does_not_compensate_twice(db: PgPool) {
     let (user, order, _limited) = checkout_mixed_with_points(&db, "noop-buyer@example.com").await;
 
     // First refund compensates.
-    service::update_order_status(&db, order.id, "refunded", None)
+    service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("first refund");
 
@@ -1934,7 +1934,7 @@ async fn refunded_same_status_noop_does_not_compensate_twice(db: PgPool) {
     .unwrap();
 
     // Second PATCH refunded → same-status no-op: returns Ok, writes nothing.
-    let again = service::update_order_status(&db, order.id, "refunded", None)
+    let again = service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("same-status noop is Ok");
     assert_eq!(again.status, OrderStatus::Refunded);
@@ -1989,10 +1989,10 @@ async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
     )
     .await
     .expect("checkout a");
-    service::update_order_status(&db, order_a.id, "refunded", None)
+    service::update_order_status(&db, order_a.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund a");
-    let err = service::update_order_status(&db, order_a.id, "processing", None)
+    let err = service::update_order_status(&db, order_a.id, "processing", None, chrono::Utc::now())
         .await
         .expect_err("refunded is terminal");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
@@ -2022,7 +2022,7 @@ async fn refund_keeps_unlimited_stock_null(db: PgPool) {
     .await
     .expect("checkout");
 
-    service::update_order_status(&db, order.id, "refunded", None)
+    service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund");
     assert_eq!(
@@ -2063,7 +2063,7 @@ async fn refund_skips_restock_when_sold_unlimited_then_stock_set(db: PgPool) {
         .await
         .unwrap();
 
-    service::update_order_status(&db, order.id, "refunded", None)
+    service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund");
     assert_eq!(
@@ -2086,7 +2086,7 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
         .insert(&db)
         .await;
 
-    let resp = service::update_order_status(&db, order_id, "refunded", None)
+    let resp = service::update_order_status(&db, order_id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund directly-built paid order");
     assert_eq!(resp.status, OrderStatus::Refunded);
@@ -2156,7 +2156,7 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
         .expect("self-cancel enrolment");
 
     // Now refund the whole order — must still succeed.
-    let refunded = service::update_order_status(&db, order.id, "refunded", None)
+    let refunded = service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund after self-cancel");
     assert_eq!(refunded.status, OrderStatus::Refunded);
@@ -2219,7 +2219,7 @@ async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
         seed_leave_request(&db, order.enrolments[0].id, approved_session, LeaveStatus::Approved)
             .await;
 
-    service::update_order_status(&db, order.id, "refunded", None)
+    service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund");
 
@@ -2310,7 +2310,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
     // 2. Same-status no-op: release → assemble. PATCH paid→paid drops the tx
     //    early, then assembles; on a 1-conn pool this only works if the tx was
     //    released first.
-    let noop = service::update_order_status(&pool, first.id, "paid", None)
+    let noop = service::update_order_status(&pool, first.id, "paid", None, chrono::Utc::now())
         .await
         .expect("same-status no-op must complete on a 1-connection pool (release→assemble)");
     assert_eq!(noop.status, OrderStatus::Paid);
@@ -2318,7 +2318,7 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
 
     // 3. Status transition: commit → assemble. paid→processing compensates
     //    nothing, updates, commits, then assembles.
-    let processing = service::update_order_status(&pool, first.id, "processing", None)
+    let processing = service::update_order_status(&pool, first.id, "processing", None, chrono::Utc::now())
         .await
         .expect("status transition must complete on a 1-connection pool (commit→assemble)");
     assert_eq!(processing.status, OrderStatus::Processing);

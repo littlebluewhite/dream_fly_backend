@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -31,6 +32,7 @@ pub async fn apply_delta_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     ld: LedgerDelta,
+    now: DateTime<Utc>,
 ) -> Result<i64, AppError> {
     let delta = ld.delta();
     if delta == 0 {
@@ -61,6 +63,7 @@ pub async fn apply_delta_tx(
         balance_after,
         ld.reason(),
         ld.order_id(),
+        now,
     )
     .await?;
 
@@ -177,6 +180,7 @@ pub async fn try_spend_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     cost: i64,
+    now: DateTime<Utc>,
 ) -> Result<i64, AppError> {
     if cost <= 0 {
         return Err(AppError::Validation("cost must be positive".into()));
@@ -188,7 +192,7 @@ pub async fn try_spend_tx(
         return Err(AppError::Conflict("點數不足".into()));
     }
 
-    apply_delta_tx(tx, user_id, LedgerDelta::redeem(cost)).await
+    apply_delta_tx(tx, user_id, LedgerDelta::redeem(cost), now).await
 }
 
 /// Reverse one order's checkout point flow inside the caller's transaction —
@@ -212,13 +216,14 @@ pub async fn reverse_order_tx(
     tx: &mut Transaction<'_, Postgres>,
     lock: &BalanceLock,
     order_id: Uuid,
+    now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let flow = repository::find_order_flow_sums_tx(tx, order_id)
         .await
         .map_err(AppError::Database)?;
 
     for delta in flow.reversal_deltas(order_id) {
-        apply_delta_tx(tx, lock.user_id(), delta).await?;
+        apply_delta_tx(tx, lock.user_id(), delta, now).await?;
     }
 
     Ok(())
@@ -287,6 +292,7 @@ pub async fn get_my_points(
 pub async fn adjust_points(
     db: &PgPool,
     req: &AdjustPointsRequest,
+    now: DateTime<Utc>,
 ) -> Result<PointsAdjustmentResponse, AppError> {
     let mut tx = db.begin().await?;
 
@@ -298,8 +304,13 @@ pub async fn adjust_points(
         )));
     }
 
-    let balance =
-        apply_delta_tx(&mut tx, req.user_id, LedgerDelta::admin_adjust(req.delta)).await?;
+    let balance = apply_delta_tx(
+        &mut tx,
+        req.user_id,
+        LedgerDelta::admin_adjust(req.delta),
+        now,
+    )
+    .await?;
 
     tx.commit().await?;
 

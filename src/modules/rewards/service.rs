@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -33,7 +34,12 @@ pub async fn list(db: &PgPool, all: bool) -> Result<RewardListResponse, AppError
 ///
 /// 鎖序：rewards → users（`try_spend_tx` 內的 `lock_balance_tx`）。安全前提與
 /// 完整鎖序圖見 `orders::locks` 模組文件（沒有任何路徑持有 users 再鎖 rewards）。
-pub async fn redeem(db: &PgPool, user_id: Uuid, reward_id: Uuid) -> Result<RedeemResponse, AppError> {
+pub async fn redeem(
+    db: &PgPool,
+    user_id: Uuid,
+    reward_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<RedeemResponse, AppError> {
     let mut tx = db.begin().await?;
 
     let reward = repository::lock_by_id_tx(&mut tx, reward_id)
@@ -59,7 +65,7 @@ pub async fn redeem(db: &PgPool, user_id: Uuid, reward_id: Uuid) -> Result<Redee
     // row lock until we commit or roll back. Insufficient balance surfaces
     // as `AppError::Conflict("點數不足")` from `try_spend_tx` itself.
     let balance_after =
-        points_service::try_spend_tx(&mut tx, user_id, reward.points_cost as i64).await?;
+        points_service::try_spend_tx(&mut tx, user_id, reward.points_cost as i64, now).await?;
 
     if reward.stock.is_some() {
         repository::decrement_stock_tx(&mut tx, reward.id).await?;

@@ -65,7 +65,7 @@ async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let balance_after =
-        service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_earn(50, order_id))
+        service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_earn(50, order_id), chrono::Utc::now())
             .await
             .expect("earn should succeed");
     tx.commit().await.expect("commit");
@@ -96,7 +96,7 @@ async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_i
 
     let mut tx = db.begin().await.expect("begin tx");
     let balance_after =
-        service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_redeem(30, order_id))
+        service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_redeem(30, order_id), chrono::Utc::now())
             .await
             .expect("redeem should succeed");
     tx.commit().await.expect("commit");
@@ -123,7 +123,7 @@ async fn apply_delta_insufficient_balance_returns_conflict_and_does_not_persist(
     let err = service::apply_delta_tx(
         &mut tx,
         user_id,
-        LedgerDelta::checkout_redeem(200, order_id),
+        LedgerDelta::checkout_redeem(200, order_id), chrono::Utc::now()
     )
     .await
     .expect_err("insufficient balance must be rejected");
@@ -156,7 +156,7 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-zero@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, user_id, LedgerDelta::admin_adjust(0))
+    let err = service::apply_delta_tx(&mut tx, user_id, LedgerDelta::admin_adjust(0), chrono::Utc::now())
         .await
         .expect_err("zero delta must be rejected");
     tx.rollback().await.expect("rollback");
@@ -175,7 +175,7 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
 #[sqlx::test]
 async fn apply_delta_nonexistent_user_returns_not_found(db: PgPool) {
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, Uuid::now_v7(), LedgerDelta::admin_adjust(10))
+    let err = service::apply_delta_tx(&mut tx, Uuid::now_v7(), LedgerDelta::admin_adjust(10), chrono::Utc::now())
         .await
         .expect_err("nonexistent user must 404");
     tx.rollback().await.expect("rollback");
@@ -234,7 +234,7 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
     .expect("add artificial cap constraint");
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::apply_delta_tx(&mut tx, user_id, LedgerDelta::admin_adjust(5000))
+    let err = service::apply_delta_tx(&mut tx, user_id, LedgerDelta::admin_adjust(5000), chrono::Utc::now())
         .await
         .expect_err("cap violation must be rejected");
     tx.rollback().await.expect("rollback");
@@ -274,10 +274,10 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_earn(10, order_id))
+    service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_earn(10, order_id), chrono::Utc::now())
         .await
         .expect("earn should succeed");
-    service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_redeem(30, order_id))
+    service::apply_delta_tx(&mut tx, user_id, LedgerDelta::checkout_redeem(30, order_id), chrono::Utc::now())
         .await
         .expect("redeem should succeed");
 
@@ -329,7 +329,7 @@ async fn lock_balance_tx_returns_witness_carrying_user_and_locked_balance(db: Pg
 /// below. Mirrors `service_rewards.rs`'s `attempt_redeem` helper.
 async fn attempt_spend(db: PgPool, user_id: Uuid, cost: i64) -> Result<i64, AppError> {
     let mut tx = db.begin().await.expect("begin tx");
-    let result = service::try_spend_tx(&mut tx, user_id, cost).await;
+    let result = service::try_spend_tx(&mut tx, user_id, cost, chrono::Utc::now()).await;
     match &result {
         Ok(_) => tx.commit().await.expect("commit"),
         Err(_) => tx.rollback().await.expect("rollback"),
@@ -343,7 +343,7 @@ async fn try_spend_success_returns_balance_after_and_writes_ledger_row(db: PgPoo
     set_points_balance(&db, user_id, 100).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let balance_after = service::try_spend_tx(&mut tx, user_id, 30)
+    let balance_after = service::try_spend_tx(&mut tx, user_id, 30, chrono::Utc::now())
         .await
         .expect("spend should succeed");
     tx.commit().await.expect("commit");
@@ -372,7 +372,7 @@ async fn try_spend_insufficient_balance_returns_conflict_and_does_not_persist(db
     set_points_balance(&db, user_id, 10).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::try_spend_tx(&mut tx, user_id, 50)
+    let err = service::try_spend_tx(&mut tx, user_id, 50, chrono::Utc::now())
         .await
         .expect_err("insufficient balance must be rejected");
     tx.rollback().await.expect("rollback");
@@ -446,14 +446,14 @@ async fn try_spend_nonpositive_cost_returns_validation_error(db: PgPool) {
     set_points_balance(&db, user_id, 100).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::try_spend_tx(&mut tx, user_id, 0)
+    let err = service::try_spend_tx(&mut tx, user_id, 0, chrono::Utc::now())
         .await
         .expect_err("zero cost must be rejected");
     tx.rollback().await.expect("rollback");
     assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
 
     let mut tx = db.begin().await.expect("begin tx");
-    let err = service::try_spend_tx(&mut tx, user_id, -10)
+    let err = service::try_spend_tx(&mut tx, user_id, -10, chrono::Utc::now())
         .await
         .expect_err("negative cost must be rejected");
     tx.rollback().await.expect("rollback");
@@ -496,7 +496,7 @@ async fn adjust_points_positive_delta_increases_balance_and_writes_admin_adjust_
             user_id,
             delta: 50,
             expected_balance: 100,
-        },
+        }, chrono::Utc::now()
     )
     .await
     .expect("adjustment should succeed");
@@ -533,7 +533,7 @@ async fn adjust_points_negative_delta_decreases_balance_and_writes_admin_adjust_
             user_id,
             delta: -30,
             expected_balance: 100,
-        },
+        }, chrono::Utc::now()
     )
     .await
     .expect("adjustment should succeed");
@@ -566,7 +566,7 @@ async fn adjust_points_balance_mismatch_returns_conflict_and_does_not_persist(db
             user_id,
             delta: 50,
             expected_balance: 999, // stale/incorrect caller expectation
-        },
+        }, chrono::Utc::now()
     )
     .await
     .expect_err("balance mismatch must be rejected");
@@ -613,7 +613,7 @@ async fn adjust_points_negative_delta_exceeding_balance_returns_conflict_and_doe
             user_id,
             delta: -50,
             expected_balance: 20, // CAS matches; the deduction itself is what fails
-        },
+        }, chrono::Utc::now()
     )
     .await
     .expect_err("insufficient balance must be rejected");
@@ -643,7 +643,7 @@ async fn adjust_points_nonexistent_user_returns_not_found(db: PgPool) {
             user_id: Uuid::now_v7(),
             delta: 10,
             expected_balance: 0,
-        },
+        }, chrono::Utc::now()
     )
     .await
     .expect_err("nonexistent user must 404");

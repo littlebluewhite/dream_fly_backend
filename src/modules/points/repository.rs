@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -138,7 +139,8 @@ pub async fn find_order_flow_sums_tx(
 }
 
 /// Insert the ledger row recording an applied delta, in the same
-/// transaction as the balance update.
+/// transaction as the balance update. `created_at` 是業務時間(`earned_this_month`
+/// 依它分桶),綁 handler 取樣的 `now`(ADR-0017)。
 pub async fn insert_ledger_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
@@ -146,10 +148,11 @@ pub async fn insert_ledger_tx(
     balance_after: i64,
     reason: PointReason,
     order_id: Option<Uuid>,
+    now: DateTime<Utc>,
 ) -> Result<PointLedgerEntry, sqlx::Error> {
     sqlx::query_as::<_, PointLedgerEntry>(
         "INSERT INTO point_ledger (id, user_id, delta, balance_after, reason, order_id, created_at) \
-         VALUES ($1, $2, $3, $4, $5::point_reason, $6, NOW()) \
+         VALUES ($1, $2, $3, $4, $5::point_reason, $6, $7) \
          RETURNING id, user_id, delta, balance_after, reason, order_id, created_at",
     )
     .bind(Uuid::now_v7())
@@ -158,6 +161,7 @@ pub async fn insert_ledger_tx(
     .bind(balance_after)
     .bind(reason)
     .bind(order_id)
+    .bind(now)
     .fetch_one(&mut **tx)
     .await
 }

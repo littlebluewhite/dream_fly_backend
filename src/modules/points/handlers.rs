@@ -31,6 +31,6 @@ pub async fn adjust(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<AdjustPointsRequest>,
 ) -> Result<Json<PointsAdjustmentResponse>, AppError> {
-    let result = service::adjust_points(&state.db, &req).await?;
+    let result = service::adjust_points(&state.db, &req, state.clock.now()).await?;
     Ok(Json(result))
 }

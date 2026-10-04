@@ -152,3 +152,45 @@ async fn points_me_earned_this_month_uses_studio_month_boundaries(db: PgPool) {
     assert_eq!(resp.status_code(), 200);
     assert_eq!(resp.json::<serde_json::Value>()["earned_this_month"], 21);
 }
+
+/// ADR-0017 W7-5:`point_ledger.created_at` 是業務時間(`earned_this_month` 依它
+/// 分桶),真的走結帳時必須蓋上 handler 取樣的 now,而不是 DB 的 `NOW()`。
+#[sqlx::test]
+async fn checkout_points_earned_lands_in_studio_month(db: PgPool) {
+    let app = taipei_app_at_half_past_midnight(db).await;
+    let user = app.register_member("pts-checkout@example.com", "Password!234").await;
+    let (_admin, admin_token) = app.seed_admin().await;
+    let product: serde_json::Value = app
+        .post("/api/v1/products")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "name": "Points Mug",
+            "product_type": "merchandise",
+            "price_cents": 100000,
+            "stock": 10,
+        }))
+        .await
+        .json();
+    app.post("/api/v1/cart/items")
+        .authorization_bearer(&user.access_token)
+        .json(&json!({ "item_type": "product", "item_id": product["id"], "quantity": 1 }))
+        .await;
+
+    let order = app
+        .post("/api/v1/orders")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(order.status_code(), 200, "body={}", order.text());
+    let points_earned = order.json::<serde_json::Value>()["points_earned"].as_i64().unwrap();
+    assert!(points_earned > 0);
+
+    let resp = app
+        .get("/api/v1/points/me")
+        .authorization_bearer(&user.access_token)
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(
+        resp.json::<serde_json::Value>()["earned_this_month"],
+        points_earned
+    );
+}

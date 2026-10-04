@@ -43,7 +43,7 @@ pub async fn redeem(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RedeemResponse>, AppError> {
-    let result = service::redeem(&state.db, auth.user_id, id).await?;
+    let result = service::redeem(&state.db, auth.user_id, id, state.clock.now()).await?;
     Ok(Json(result))
 }
 

@@ -102,6 +102,7 @@ async fn upsert_user(
     name: &str,
     password_hash: &str,
     points_balance: i64,
+    now: DateTime<Utc>,
 ) -> anyhow::Result<Uuid> {
     let mut tx = db
         .begin()
@@ -131,6 +132,7 @@ async fn upsert_user(
                     &mut tx,
                     id,
                     LedgerDelta::admin_adjust(points_balance),
+                    now,
                 )
                 .await
                 .with_context(|| format!("grant seed points to user {email}"))?;
@@ -700,7 +702,11 @@ struct SeedOrder {
 /// Also writes the order's `point_ledger` rows (see `SeedOrder`'s doc) in
 /// the same transaction, guarded by the same up-front existence check, so a
 /// re-run neither duplicates the order nor its ledger rows.
-async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result<()> {
+async fn insert_order_if_absent(
+    db: &PgPool,
+    seed: &SeedOrder,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE order_number = $1)")
             .bind(&seed.order_number)
@@ -797,7 +803,7 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
     // (`total_cents = 0`, earns 0) writes none rather than aborting the seed.
     for delta in ledger {
         let reason = delta.reason().as_str();
-        points_service::apply_delta_tx(&mut tx, seed.user_id, delta)
+        points_service::apply_delta_tx(&mut tx, seed.user_id, delta, now)
             .await
             .with_context(|| format!("{reason} ledger for order '{}'", seed.order_number))?;
     }
@@ -1066,12 +1072,14 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         .map_err(|e| anyhow::anyhow!("hashing seed coach password: {e}"))?;
 
     // -- admin -----------------------------------------------------------
-    let admin_id = upsert_user(db, "admin@dreamfly.tw", "系統管理員", &admin_hash, 0).await?;
+    let admin_id =
+        upsert_user(db, "admin@dreamfly.tw", "系統管理員", &admin_hash, 0, at.now).await?;
     assign_role(db, admin_id, Role::Admin).await?;
     println!("[users]    admin ready: admin@dreamfly.tw / Admin#2026");
 
     // -- test member -------------------------------------------------------
-    let member_id = upsert_user(db, "member@dreamfly.tw", "測試會員", &member_hash, 1250).await?;
+    let member_id =
+        upsert_user(db, "member@dreamfly.tw", "測試會員", &member_hash, 1250, at.now).await?;
     assign_role(db, member_id, Role::Member).await?;
     println!("[users]    member ready: member@dreamfly.tw / Member#2026 (points_balance=1250)");
 
@@ -1121,7 +1129,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     let mut coach_ids: HashMap<&'static str, Uuid> = HashMap::new();
     for seed in &coach_seeds {
-        let user_id = upsert_user(db, seed.email, seed.user_name, &coach_hash, 0).await?;
+        let user_id = upsert_user(db, seed.email, seed.user_name, &coach_hash, 0, at.now).await?;
         assign_role(db, user_id, Role::Coach).await?;
         let coach_id = upsert_coach(db, user_id, seed).await?;
         coach_ids.insert(seed.slug, coach_id);
@@ -1680,6 +1688,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                     lines,
                     pricing,
                 },
+                at.now,
             )
             .await?;
             order_total += 1;
@@ -1716,8 +1725,13 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                 .begin()
                 .await
                 .with_context(|| format!("begin points settlement tx for seed member {user_id}"))?;
-            points_service::apply_delta_tx(&mut tx, *user_id, LedgerDelta::admin_adjust(delta))
-                .await
+            points_service::apply_delta_tx(
+                &mut tx,
+                *user_id,
+                LedgerDelta::admin_adjust(delta),
+                at.now,
+            )
+            .await
                 .with_context(|| format!("settle points-tier balance for seed member {user_id}"))?;
             tx.commit()
                 .await

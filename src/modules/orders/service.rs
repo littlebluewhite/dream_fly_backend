@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -341,7 +342,7 @@ pub async fn checkout(
     // Points ledger — `PricingOutcome::ledger_deltas` owns the order
     // (redeem before earn) and the zero-skip.
     for delta in outcome.ledger_deltas(order.id) {
-        points_service::apply_delta_tx(&mut tx, user_id, delta).await?;
+        points_service::apply_delta_tx(&mut tx, user_id, delta, now).await?;
     }
 
     // Clear the cart within the same transaction.
@@ -470,6 +471,7 @@ pub async fn update_order_status(
     order_id: Uuid,
     status_str: &str,
     correlation_id: Option<String>,
+    now: DateTime<Utc>,
 ) -> Result<OrderResponse, AppError> {
     let target: OrderStatus = status_str
         .parse()
@@ -506,7 +508,7 @@ pub async fn update_order_status(
         // status flip included — so there is no half-applied refund
         // (Cancelled ≡ Refunded compensation semantics).
         TransitionDecision::FlipAndCompensate => {
-            compensate_order_artifacts_tx(&mut tx, &current).await?;
+            compensate_order_artifacts_tx(&mut tx, &current, now).await?;
         }
     }
 
@@ -577,9 +579,10 @@ pub async fn update_order_status(
 async fn compensate_order_artifacts_tx(
     tx: &mut Transaction<'_, Postgres>,
     order: &Order,
+    now: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let locks = locks::acquire_refund_locks(tx, order).await?;
-    points_service::reverse_order_tx(tx, locks.balance(), order.id).await?;
+    points_service::reverse_order_tx(tx, locks.balance(), order.id, now).await?;
     product_service::restore_for_order_tx(tx, locks.products(), order.id).await?;
     enrolments_service::cancel_by_order_tx(tx, order.id).await?;
     subscriptions_service::cancel_by_order_tx(tx, order.id).await?;

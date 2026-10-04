@@ -512,7 +512,7 @@ async fn redeem_after_refund_is_conflict(db: PgPool) {
     let sub_id = order.subscriptions[0].id;
 
     // Refund the order → cancels the subscription (order-scoped).
-    orders_service::update_order_status(&db, order.id, "refunded", None)
+    orders_service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
         .expect("refund");
 
