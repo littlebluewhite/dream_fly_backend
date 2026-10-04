@@ -178,7 +178,11 @@ impl std::str::FromStr for IncomeSource {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
+        Self::ALL
+            .iter()
+            .find(|v| v.as_str() == s)
+            .copied()
+            .ok_or(())
     }
 }
 

@@ -551,7 +551,10 @@ async fn occupying_bookings_view_matches_occupies_seat(db: PgPool) {
             .fetch_all(&db)
             .await
             .expect("booking_status labels");
-    let rust_labels: Vec<&str> = BookingStatus::ALL.iter().map(BookingStatus::as_str).collect();
+    let rust_labels: Vec<&str> = BookingStatus::ALL
+        .iter()
+        .map(BookingStatus::as_str)
+        .collect();
     assert_eq!(pg_labels, rust_labels);
 
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;

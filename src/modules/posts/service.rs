@@ -18,7 +18,11 @@ use super::repository;
 fn invalid_category_message() -> String {
     format!(
         "invalid category, must be one of: {}",
-        PostCategory::ALL.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", ")
+        PostCategory::ALL
+            .iter()
+            .map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 
@@ -27,7 +31,11 @@ fn invalid_category_message() -> String {
 fn invalid_status_message() -> String {
     format!(
         "invalid status, must be one of: {}",
-        PostStatus::ALL.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", ")
+        PostStatus::ALL
+            .iter()
+            .map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 

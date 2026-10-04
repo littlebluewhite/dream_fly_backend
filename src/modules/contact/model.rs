@@ -37,7 +37,11 @@ impl std::str::FromStr for InquiryStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // 既有 wire 政策：大小寫不敏感，先轉小寫再比對。
         let s = s.to_lowercase();
-        Self::ALL.iter().find(|v| v.as_str() == s).cloned().ok_or(())
+        Self::ALL
+            .iter()
+            .find(|v| v.as_str() == s)
+            .cloned()
+            .ok_or(())
     }
 }
 
@@ -74,7 +78,11 @@ impl std::str::FromStr for InquiryType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL.iter().find(|v| v.as_str() == s).copied().ok_or(())
+        Self::ALL
+            .iter()
+            .find(|v| v.as_str() == s)
+            .copied()
+            .ok_or(())
     }
 }
 

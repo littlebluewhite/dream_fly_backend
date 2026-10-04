@@ -21,8 +21,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use syn::punctuated::Punctuated;
 use syn::Token;
+use syn::punctuated::Punctuated;
 use ts_rs::{Config, Dependency, ExportError, TS};
 
 use dream_fly_backend::error;
@@ -308,12 +308,15 @@ fn every_serialize_dto_is_listed() {
 /// (or `serde::Serialize`).
 fn serialize_item_names(text: &str, file: &str) -> Vec<String> {
     fn derives_serialize(attrs: &[syn::Attribute], file: &str) -> bool {
-        attrs.iter().filter(|a| a.path().is_ident("derive")).any(|a| {
-            a.parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
-                .unwrap_or_else(|e| panic!("parse derive in {file}: {e}"))
-                .iter()
-                .any(|p| p.segments.last().is_some_and(|s| s.ident == "Serialize"))
-        })
+        attrs
+            .iter()
+            .filter(|a| a.path().is_ident("derive"))
+            .any(|a| {
+                a.parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
+                    .unwrap_or_else(|e| panic!("parse derive in {file}: {e}"))
+                    .iter()
+                    .any(|p| p.segments.last().is_some_and(|s| s.ident == "Serialize"))
+            })
     }
     fn collect(items: &[syn::Item], names: &mut Vec<String>, file: &str) {
         for item in items {
@@ -376,7 +379,10 @@ pub struct AfterPrivate {}
 #[derive(serde::Serialize)]
 pub struct Qualified {}
 ";
-    assert_eq!(serialize_item_names(sample, "sample"), ["OneLine", "MultiLine", "Crate", "Qualified"]);
+    assert_eq!(
+        serialize_item_names(sample, "sample"),
+        ["OneLine", "MultiLine", "Crate", "Qualified"]
+    );
 }
 
 /// `export type { X } from "./X";` per exported file, sorted by path.

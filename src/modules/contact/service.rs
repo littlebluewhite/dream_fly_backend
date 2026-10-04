@@ -17,7 +17,11 @@ use super::repository;
 fn invalid_status_message() -> String {
     format!(
         "status 僅接受 {}",
-        InquiryStatus::ALL.iter().map(|v| v.as_str()).collect::<Vec<_>>().join("/")
+        InquiryStatus::ALL
+            .iter()
+            .map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("/")
     )
 }
 
