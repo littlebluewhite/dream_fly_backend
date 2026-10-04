@@ -16,9 +16,18 @@
 //!
 //! This seam does **not** cover every wall-clock read in the codebase.
 //! Pinning a `MockClock` in a test has no effect on any of the following:
-//! - PostgreSQL `NOW()` — `created_at`/`updated_at`/`marked_at` column
-//!   defaults, and the coupon `expires_at > now()` predicate, all evaluate
-//!   against the database server's own clock, not this seam.
+//! - PostgreSQL `NOW()`——取的是資料庫伺服器自己的時鐘。ADR-0017:業務時間
+//!   (會被讀取拿去分桶、或拿去跟取樣時刻比較的欄位)要把 handler 取樣的
+//!   `StudioNow.now` 綁進 SQL;稽核時間(`updated_at` 等)刻意留給 `NOW()`,
+//!   attendance `marked_at`、leave `decided_at`、`clock_records`、messages、
+//!   waitlist `created_at` 這輪也一律當稽核時間。尚未改綁的業務時間站點:
+//!   - `orders` 的 `paid_at`、`created_at`(W7-1);
+//!   - `enrolments` 的 `enrolled_at`、`created_at`(W7-2);
+//!   - `contact_inquiries.created_at`(W7-3);
+//!   - 優惠券有效性判斷 `expires_at > now()`(W7-4);
+//!   - `point_ledger.created_at`(W7-5);
+//!   - `users.created_at`(W7-6);
+//!   - `subscription_derived_status` 內的 `now()`(W7-7,延後到有測試需要時)。
 //! - JWT `exp` — validated by the `jsonwebtoken` crate against the system
 //!   clock.
 //! - Short-lived state TTLs (`utils::ephemeral`: rate limits, OTP, reset
