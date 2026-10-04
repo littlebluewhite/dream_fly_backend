@@ -389,7 +389,7 @@ async fn add_course_item_inactive_course_is_rejected(db: PgPool) {
 
     let err = service::add_item(&db, user, "course", course, 1).await.unwrap_err();
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m.contains("not available")),
+        matches!(err, AppError::BadRequest(ref m) if m == "course is not available"),
         "got {err:?}"
     );
 }
@@ -403,6 +403,55 @@ async fn update_quantity_on_course_line_rejects_non_one(db: PgPool) {
 
     let err = service::update_quantity(&db, user, item_id, 2).await.unwrap_err();
     assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+}
+
+// `update_quantity` 的錯誤優先序（codex r2）：數量範圍 400 先於品項查詢 404、
+// 也先於課程行的 422；課程行數量錯的 422 則先於課程查詢 404。
+
+#[sqlx::test]
+async fn update_quantity_out_of_range_on_missing_item_is_400_not_404(db: PgPool) {
+    let user = seed_member(&db, "cc7@example.com", "Password!234").await;
+
+    let err = service::update_quantity(&db, user, Uuid::now_v7(), 0)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
+        "got {err:?}"
+    );
+}
+
+#[sqlx::test]
+async fn update_quantity_out_of_range_on_course_line_is_400_not_422(db: PgPool) {
+    let user = seed_member(&db, "cc8@example.com", "Password!234").await;
+    let course = seed_course(&db, "Tumbling Basics", None).await;
+    let cart = service::add_item(&db, user, "course", course, 1)
+        .await
+        .unwrap();
+    let item_id = cart.items[0].id;
+
+    let err = service::update_quantity(&db, user, item_id, 1000)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
+        "got {err:?}"
+    );
+}
+
+// `cart_items.course_id` 有 FK，課程行存在時課程不可能不存在，所以「課程不存在」
+// 這一支走 `add_item`（同樣是課程數量檢查先於課程查詢）。
+#[sqlx::test]
+async fn add_course_item_wrong_quantity_on_unknown_course_is_422_not_404(db: PgPool) {
+    let user = seed_member(&db, "cc9@example.com", "Password!234").await;
+
+    let err = service::add_item(&db, user, "course", Uuid::now_v7(), 2)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m == "course quantity must be 1"),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

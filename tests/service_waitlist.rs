@@ -105,7 +105,7 @@ async fn join_inactive_course_returns_400(db: PgPool) {
         .expect_err("inactive course must be rejected");
 
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m.contains("not available")),
+        matches!(err, AppError::BadRequest(ref m) if m == "course is not available"),
         "got {err:?}"
     );
 }
