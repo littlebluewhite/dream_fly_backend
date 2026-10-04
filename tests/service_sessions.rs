@@ -444,8 +444,9 @@ async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPo
 async fn today_sessions_coach_role_without_coach_row_returns_empty(db: PgPool) {
     // A user with the "coach" role but no matching `coaches` row (data
     // anomaly) must get an empty list, not an error.
-    let user_id = common::seed_member(&db, "phantom-coach@example.com", "hunter22-secret").await;
-    let auth = common::coach_auth(user_id);
+    let user_id =
+        common::seed_user_with_roles(&db, "phantom-coach@example.com", &[Role::Coach]).await;
+    let auth = common::auth_for(&db, user_id).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");

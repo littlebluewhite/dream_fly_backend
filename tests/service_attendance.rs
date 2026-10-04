@@ -23,7 +23,7 @@ use dream_fly_backend::modules::permissions::model::Role;
 use common::fixtures::{
     seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
 };
-use common::{auth_for, coach_auth, seed_member, seed_user_with_roles, studio_now_utc};
+use common::{auth_for, seed_member, seed_user_with_roles, studio_now_utc};
 
 fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -179,7 +179,7 @@ async fn bulk_upsert_forbidden_precedes_not_started(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user, "Head Coach").await;
     let course_id = seed_course(&db, "Bulk Forbidden Pin Course", Some(coach_id)).await;
     let session_id = seed_course_session(&db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let outsider = seed_member(&db, "att-pin-outsider@example.com", "Password!234").await;
+    let outsider = seed_user_with_roles(&db, "att-pin-outsider@example.com", &[Role::Coach]).await;
     let member = seed_member(&db, "att-pin-forbidden-member@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
@@ -187,7 +187,7 @@ async fn bulk_upsert_forbidden_precedes_not_started(db: PgPool) {
     let err = attendance_service::bulk_upsert_attendance(
         &db,
         studio_now_utc(Utc::now()),
-        &coach_auth(outsider),
+        &auth_for(&db, outsider).await,
         session_id,
         vec![present(enrolment_id)],
     )

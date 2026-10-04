@@ -27,7 +27,7 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::permissions::model::Role;
 
 use common::fixtures::{seed_coach, seed_course, seed_enrolment};
-use common::{auth_for, coach_auth, seed_member, seed_user_with_roles};
+use common::{auth_for, seed_member, seed_user_with_roles};
 
 fn issued_on() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
@@ -138,11 +138,11 @@ async fn create_certificate_by_coach_without_coach_row_returns_403(db: PgPool) {
     // tests always pair a coach token with a `seed_coach` row, so
     // `http_certificates.rs` never exercises this branch.
     let coach_user_id =
-        seed_member(&db, "cert-svc-no-coach-row@example.com", "Password!234").await;
+        seed_user_with_roles(&db, "cert-svc-no-coach-row@example.com", &[Role::Coach]).await;
     let member_id =
         seed_member(&db, "cert-svc-no-coach-row-target@example.com", "Password!234").await;
 
-    let auth = coach_auth(coach_user_id);
+    let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
         user_id: member_id,
         course_id: None,

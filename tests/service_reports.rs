@@ -36,6 +36,7 @@ use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::reports::model::IncomeSource;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::reports::repository as reports_repository;
@@ -52,7 +53,7 @@ use common::fixtures::{
     seed_leave_request, seed_marked_attendance, seed_member_created_at, seed_message,
     seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
 };
-use common::{seed_member, seed_product};
+use common::{seed_member, seed_product, seed_user_with_roles};
 
 fn t(h: u32, m: u32) -> chrono::NaiveTime {
     chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -1177,8 +1178,8 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
 
 #[sqlx::test]
 async fn coach_report_no_coach_row_returns_not_found(db: PgPool) {
-    let user_id = seed_member(&db, "no-coach-row@example.com", "Password!234").await;
-    let auth = common::coach_auth(user_id);
+    let user_id = seed_user_with_roles(&db, "no-coach-row@example.com", &[Role::Coach]).await;
+    let auth = common::auth_for(&db, user_id).await;
 
     let err = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await

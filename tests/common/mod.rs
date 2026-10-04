@@ -118,32 +118,6 @@ pub fn test_auth_config() -> AuthConfig {
     }
 }
 
-/// Build an `AuthUser` for a pre-seeded user id, carrying the given roles.
-/// Email is synthesized as `{user_id}@example.com` — safe because no
-/// service under test reads `AuthUser::email`.
-pub fn auth_with_roles(user_id: Uuid, roles: &[&str]) -> AuthUser {
-    AuthUser {
-        user_id,
-        email: format!("{user_id}@example.com"),
-        roles: roles.iter().map(|r| (*r).to_string()).collect(),
-    }
-}
-
-/// Convenience wrapper: a single `member`-role `AuthUser`.
-pub fn member_auth(user_id: Uuid) -> AuthUser {
-    auth_with_roles(user_id, &["member"])
-}
-
-/// Convenience wrapper: a single `coach`-role `AuthUser`.
-pub fn coach_auth(user_id: Uuid) -> AuthUser {
-    auth_with_roles(user_id, &["coach"])
-}
-
-/// Convenience wrapper: a single `admin`-role `AuthUser`.
-pub fn admin_auth(user_id: Uuid) -> AuthUser {
-    auth_with_roles(user_id, &["admin"])
-}
-
 /// Build the `AuthUser` the extractor would produce for a pre-seeded user:
 /// roles come from `access::resolve` (the production path, over a fresh
 /// `InMemoryAccessCache` so it always reads the DB) and the email from the
