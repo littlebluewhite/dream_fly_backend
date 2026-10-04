@@ -34,7 +34,9 @@ pub async fn validate(
 ) -> Result<Json<CouponValidateResponse>, AppError> {
     let Query(params) =
         params.map_err(|_| AppError::BadRequest("subtotal_cents must be an integer".into()))?;
-    let result = service::validate_coupon(&state.db, &code, params.subtotal_cents).await?;
+    let result =
+        service::validate_coupon(&state.db, &code, params.subtotal_cents, state.clock.now())
+            .await?;
     Ok(Json(result))
 }
 

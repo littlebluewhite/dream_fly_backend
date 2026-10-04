@@ -21,7 +21,6 @@
 //!   `StudioNow.now` 綁進 SQL;稽核時間(`updated_at` 等)刻意留給 `NOW()`,
 //!   attendance `marked_at`、leave `decided_at`、`clock_records`、messages、
 //!   waitlist `created_at` 這輪也一律當稽核時間。尚未改綁的業務時間站點:
-//!   - 優惠券有效性判斷 `expires_at > now()`(W7-4);
 //!   - `point_ledger.created_at`(W7-5);
 //!   - `users.created_at`(W7-6);
 //!   - `subscription_derived_status` 內的 `now()`(W7-7,延後到有測試需要時)。

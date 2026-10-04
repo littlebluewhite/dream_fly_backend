@@ -32,16 +32,22 @@ pub async fn create(
 
 /// Shared by [`find_valid_by_code`] and [`find_valid_by_code_tx`] so the
 /// pool and tx entry points can never drift apart on what "valid" means:
-/// active, and either no expiry or not yet expired.
+/// active, and either no expiry or not yet expired. 到期與否跟呼叫端取樣的
+/// `now`(`$2`)比,不跟 DB 的 `now()` 比——這是業務時間判斷(ADR-0017)。
 const FIND_VALID_BY_CODE_SQL: &str = "SELECT id, code, discount_cents, is_active, expires_at, created_at \
      FROM coupons \
-     WHERE code = $1 AND is_active = true AND (expires_at IS NULL OR expires_at > now())";
+     WHERE code = $1 AND is_active = true AND (expires_at IS NULL OR expires_at > $2)";
 
 /// Look up a coupon by code, applying the same "valid" rule the checkout
 /// path uses: active, and either no expiry or not yet expired.
-pub async fn find_valid_by_code(db: &PgPool, code: &str) -> Result<Option<Coupon>, sqlx::Error> {
+pub async fn find_valid_by_code(
+    db: &PgPool,
+    code: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<Coupon>, sqlx::Error> {
     sqlx::query_as::<_, Coupon>(FIND_VALID_BY_CODE_SQL)
         .bind(normalize_code(code))
+        .bind(now)
         .fetch_optional(db)
         .await
 }
@@ -51,9 +57,11 @@ pub async fn find_valid_by_code(db: &PgPool, code: &str) -> Result<Option<Coupon
 pub async fn find_valid_by_code_tx(
     tx: &mut Transaction<'_, Postgres>,
     code: &str,
+    now: DateTime<Utc>,
 ) -> Result<Option<Coupon>, sqlx::Error> {
     sqlx::query_as::<_, Coupon>(FIND_VALID_BY_CODE_SQL)
         .bind(normalize_code(code))
+        .bind(now)
         .fetch_optional(&mut **tx)
         .await
 }

@@ -67,7 +67,7 @@ async fn validate_coupon_returns_active_unexpired(db: PgPool) {
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "DREAMFLY100", None)
+    let resp = service::validate_coupon(&db, "DREAMFLY100", None, Utc::now())
         .await
         .expect("validate");
     assert_eq!(resp.code, "DREAMFLY100");
@@ -80,7 +80,7 @@ async fn validate_coupon_is_case_insensitive(db: PgPool) {
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "dreamfly100", None)
+    let resp = service::validate_coupon(&db, "dreamfly100", None, Utc::now())
         .await
         .expect("validate lowercase");
     assert_eq!(resp.code, "DREAMFLY100");
@@ -91,7 +91,7 @@ async fn validate_coupon_is_case_insensitive(db: PgPool) {
 async fn validate_coupon_expired_returns_not_found(db: PgPool) {
     seed_coupon(&db, "EXPIRED10", 100, true, Some(Utc::now() - Duration::days(1))).await;
 
-    let err = service::validate_coupon(&db, "EXPIRED10", None)
+    let err = service::validate_coupon(&db, "EXPIRED10", None, Utc::now())
         .await
         .expect_err("expired coupon must not validate");
     assert!(matches!(err, AppError::NotFound(_)));
@@ -101,7 +101,7 @@ async fn validate_coupon_expired_returns_not_found(db: PgPool) {
 async fn validate_coupon_inactive_returns_not_found(db: PgPool) {
     seed_coupon(&db, "DISABLED10", 100, false, None).await;
 
-    let err = service::validate_coupon(&db, "DISABLED10", None)
+    let err = service::validate_coupon(&db, "DISABLED10", None, Utc::now())
         .await
         .expect_err("inactive coupon must not validate");
     assert!(matches!(err, AppError::NotFound(_)));
@@ -109,7 +109,7 @@ async fn validate_coupon_inactive_returns_not_found(db: PgPool) {
 
 #[sqlx::test]
 async fn validate_coupon_nonexistent_returns_not_found(db: PgPool) {
-    let err = service::validate_coupon(&db, "NOSUCHCODE", None)
+    let err = service::validate_coupon(&db, "NOSUCHCODE", None, Utc::now())
         .await
         .expect_err("unknown coupon must not validate");
     assert!(matches!(err, AppError::NotFound(_)));
@@ -125,7 +125,7 @@ async fn validate_coupon_subtotal_below_face_value_clamps_applied_discount(db: P
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "CLAMPLOW", Some(400))
+    let resp = service::validate_coupon(&db, "CLAMPLOW", Some(400), Utc::now())
         .await
         .expect("validate");
     assert_eq!(resp.discount_cents, 1000, "face value is never clamped");
@@ -142,7 +142,7 @@ async fn validate_coupon_subtotal_at_or_above_face_value_applies_full_discount(d
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "CLAMPHIGH", Some(1500))
+    let resp = service::validate_coupon(&db, "CLAMPHIGH", Some(1500), Utc::now())
         .await
         .expect("validate");
     assert_eq!(resp.discount_cents, 1000);
@@ -159,7 +159,7 @@ async fn validate_coupon_without_subtotal_leaves_applied_discount_none(db: PgPoo
         .await
         .expect("create");
 
-    let resp = service::validate_coupon(&db, "NOPREVIEW", None)
+    let resp = service::validate_coupon(&db, "NOPREVIEW", None, Utc::now())
         .await
         .expect("validate");
     assert_eq!(resp.applied_discount_cents, None);
@@ -171,7 +171,7 @@ async fn validate_coupon_negative_subtotal_is_422_even_for_unknown_code(db: PgPo
     // lookup, so an unknown code plus a negative subtotal_cents must be a
     // Validation error (422), not a NotFound (404) — proves the check isn't
     // gated behind a successful coupon lookup.
-    let err = service::validate_coupon(&db, "DOES-NOT-EXIST", Some(-1))
+    let err = service::validate_coupon(&db, "DOES-NOT-EXIST", Some(-1), Utc::now())
         .await
         .expect_err("negative subtotal_cents must be rejected");
     assert!(
@@ -233,7 +233,7 @@ async fn find_valid_by_code_tx_normalizes_and_filters(db: PgPool) {
     seed_coupon(&db, "TXCODE1", 250, true, None).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let found = repository::find_valid_by_code_tx(&mut tx, "txcode1")
+    let found = repository::find_valid_by_code_tx(&mut tx, "txcode1", Utc::now())
         .await
         .expect("query")
         .expect("coupon found");
@@ -247,7 +247,7 @@ async fn find_valid_by_code_tx_excludes_expired(db: PgPool) {
     seed_coupon(&db, "TXEXPIRED", 250, true, Some(Utc::now() - Duration::days(1))).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let found = repository::find_valid_by_code_tx(&mut tx, "TXEXPIRED")
+    let found = repository::find_valid_by_code_tx(&mut tx, "TXEXPIRED", Utc::now())
         .await
         .expect("query");
     assert!(found.is_none());

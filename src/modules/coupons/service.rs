@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -21,10 +22,13 @@ use super::repository;
 /// precedence is unambiguous: an unknown/expired code combined with a
 /// negative `subtotal_cents` is a 422 (bad input), not a 404 (the coupon
 /// lookup never runs).
+///
+/// `now` 是 handler 取樣的時刻,判斷是否過期用(ADR-0017)。
 pub async fn validate_coupon(
     db: &PgPool,
     code: &str,
     subtotal_cents: Option<i64>,
+    now: DateTime<Utc>,
 ) -> Result<CouponValidateResponse, AppError> {
     if let Some(s) = subtotal_cents {
         if s < 0 {
@@ -32,7 +36,7 @@ pub async fn validate_coupon(
         }
     }
 
-    let coupon = repository::find_valid_by_code(db, code)
+    let coupon = repository::find_valid_by_code(db, code, now)
         .await?
         .ok_or_else(|| AppError::NotFound("coupon not found".into()))?;
 
@@ -54,8 +58,9 @@ pub async fn validate_coupon(
 pub async fn find_valid_by_code_tx(
     tx: &mut Transaction<'_, Postgres>,
     code: &str,
+    now: DateTime<Utc>,
 ) -> Result<Option<Coupon>, AppError> {
-    Ok(repository::find_valid_by_code_tx(tx, code).await?)
+    Ok(repository::find_valid_by_code_tx(tx, code, now).await?)
 }
 
 pub async fn create_coupon(

@@ -450,6 +450,31 @@ async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
     assert_eq!(resp.total_cents, 20_000);
 }
 
+/// ADR-0017:優惠券是否過期要跟 handler 取樣的 `now` 比,不是 DB 的 `NOW()`——
+/// 在 2020-06-01 結帳、2021 年才到期的券仍有效,要打折。
+#[sqlx::test]
+async fn checkout_coupon_expiry_is_judged_against_sampled_now(db: PgPool) {
+    use chrono::TimeZone;
+    let t = chrono::Utc.with_ymd_and_hms(2020, 6, 1, 3, 0, 0).unwrap();
+    let expires_at = chrono::Utc.with_ymd_and_hms(2021, 1, 1, 0, 0, 0).unwrap();
+    let user = common::seed_member(&db, "coupon-now@example.com", "passw0rd!").await;
+    let product = common::seed_product(&db, "coupon-now-prod", 30_000, Some(5)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+    common::fixtures::seed_coupon(&db, "FUTURE2021", 10_000, true, Some(expires_at)).await;
+
+    let req = CheckoutRequest {
+        coupon_code: Some("FUTURE2021".to_string()),
+        use_points: None,
+        payment_method: None,
+    };
+    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(t))
+        .await
+        .expect("checkout");
+
+    assert_eq!(resp.discount_cents, 10_000);
+    assert_eq!(resp.total_cents, 20_000);
+}
+
 #[sqlx::test]
 async fn checkout_coupon_over_half_subtotal_succeeds(db: PgPool) {
     // Regression (task-9 review): the original `orders_discount_bound`

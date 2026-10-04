@@ -197,7 +197,7 @@ pub async fn checkout(
     let mut coupon: Option<Coupon> = None;
     if let Some(code) = intent.coupon_code.as_deref() {
         coupon = Some(
-            coupons_service::find_valid_by_code_tx(&mut tx, code)
+            coupons_service::find_valid_by_code_tx(&mut tx, code, now)
                 .await?
                 .ok_or_else(|| AppError::Validation("invalid coupon".into()))?,
         );

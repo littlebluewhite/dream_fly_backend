@@ -1591,7 +1591,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     ];
     // Every seq-2 order applies DREAMFLY100 — loaded once, the way checkout
     // loads a code, so its discount comes from the `[coupons]` row above.
-    let seed_coupon = coupons_repository::find_valid_by_code(db, "DREAMFLY100")
+    let seed_coupon = coupons_repository::find_valid_by_code(db, "DREAMFLY100", at.now)
         .await
         .context("load seed coupon DREAMFLY100")?
         .context("seed coupon DREAMFLY100 is missing, inactive or expired")?;
