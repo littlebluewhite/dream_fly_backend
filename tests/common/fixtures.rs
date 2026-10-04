@@ -26,7 +26,7 @@ use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
 
 use super::mocks::InMemoryAccessCache;
-use super::{add_course_to_cart, add_to_cart, seed_member};
+use super::{add_course_to_cart, add_to_cart, seed_member, seed_member_at};
 
 /// Create a coach profile for the given user and attach the `coach` role.
 /// Returns the coach id.
@@ -787,17 +787,6 @@ pub async fn set_birth_date(db: &PgPool, user_id: Uuid, birth_date: Option<Naive
         .expect("set birth date");
 }
 
-/// Backdate a user's `created_at` so incidental fixture users don't leak
-/// into the KPI "new members this/last month" buckets.
-pub async fn backdate_user(db: &PgPool, user_id: Uuid, created_at: DateTime<Utc>) {
-    sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
-        .bind(user_id)
-        .bind(created_at)
-        .execute(db)
-        .await
-        .expect("backdate user");
-}
-
 /// Insert an `attendance_records` row directly (bypassing `PUT
 /// /sessions/{id}/attendance`), so tests can arrange present/absent/leave
 /// combinations without a real coach HTTP round trip. Returns the
@@ -968,14 +957,12 @@ pub fn slugify(s: &str) -> String {
 // 以下 builders 不直接碰 SQL,只是把上面/父模組既有的 leaf builders 按常見
 // 場景組裝成單一呼叫,收斂報表測試裡重複出現的多段式 inline arrange 序列。
 
-/// `seed_member` + `backdate_user` 的組合,取代「建會員、再另呼叫
-/// `backdate_user` 回填 created_at」的兩段式 inline 序列(報表 KPI 測試常
-/// 需要把輔助帳號的建立時間排除在「本月新會員」統計之外)。密碼沿用測試
-/// 共用密碼。Returns the user id.
+/// 以指定的 `users.created_at` 建會員(`create_account` 的 `now`),取代
+/// 「建會員、再另行回填 created_at」的兩段式序列(報表 KPI 測試常需要把
+/// 輔助帳號的建立時間排除在「本月新會員」統計之外)。密碼沿用測試共用密碼。
+/// Returns the user id.
 pub async fn seed_member_created_at(db: &PgPool, email: &str, created_at: DateTime<Utc>) -> Uuid {
-    let id = seed_member(db, email, "Password!234").await;
-    backdate_user(db, id, created_at).await;
-    id
+    seed_member_at(db, email, "Password!234", created_at).await
 }
 
 /// [`seed_marked_attendance`] 回傳的新建 member/enrolment/session/

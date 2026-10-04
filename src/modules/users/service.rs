@@ -132,6 +132,7 @@ pub async fn create_user(
             password_hash: &hashed,
         },
         correlation_id,
+        at.now,
     )
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "Email 已被使用"))?;

@@ -284,6 +284,7 @@ mod tests {
             None,
             "owner-test-hash",
             None,
+            Utc::now(),
         )
         .await
         .expect("insert bare user");

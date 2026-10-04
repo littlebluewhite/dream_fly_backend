@@ -18,7 +18,14 @@ pub async fn register(
     request_id: RequestId,
     ValidatedJson(req): ValidatedJson<RegisterRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let response = service::register(&state.db, &state.config.auth, req, request_id.0).await?;
+    let response = service::register(
+        &state.db,
+        &state.config.auth,
+        req,
+        request_id.0,
+        state.clock.now(),
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -45,6 +52,7 @@ pub async fn google_auth(
         state.google_identity.as_ref(),
         req,
         request_id.0,
+        state.clock.now(),
     )
     .await?;
     Ok(Json(response))

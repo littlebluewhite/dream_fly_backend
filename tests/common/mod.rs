@@ -163,6 +163,17 @@ pub async fn seed_user_with_roles(db: &PgPool, email: &str, extra: &[Role]) -> U
 /// Owner: delegates to `auth::provisioning::create_account` — the same
 /// birth path as `register` (lowercased email, `member` role, outbox event).
 pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> Uuid {
+    seed_member_at(db, email, plaintext_password, Utc::now()).await
+}
+
+/// [`seed_member`] with an explicit `users.created_at` (ADR-0017: business
+/// time is bound by the caller, as `register` does with the handler's `now`).
+pub async fn seed_member_at(
+    db: &PgPool,
+    email: &str,
+    plaintext_password: &str,
+    now: chrono::DateTime<Utc>,
+) -> Uuid {
     let hash = hashed(plaintext_password).await;
 
     let mut tx = db.begin().await.expect("begin tx");
@@ -177,6 +188,7 @@ pub async fn seed_member(db: &PgPool, email: &str, plaintext_password: &str) -> 
             password_hash: &hash,
         },
         None,
+        now,
     )
     .await
     .expect("create account");

@@ -479,3 +479,30 @@ async fn register_with_x_request_id_header_lands_in_outbox_correlation_id(db: Pg
             .expect("user_registered outbox row");
     assert_eq!(correlation_id, "rid-http-1");
 }
+
+/// ADR-0017:`users.created_at` 是業務時間(報表「本月新會員」依它分桶),
+/// 註冊必須蓋上 handler 取樣的時刻,不是 DB 的 `NOW()`。
+#[sqlx::test]
+async fn register_stamps_user_created_at_with_sampled_now(db: PgPool) {
+    use chrono::{DateTime, TimeZone, Utc};
+    let app = spawn_test_app(db).await;
+    let t = Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    app.clock.set(t);
+
+    let resp = app
+        .post("/api/v1/auth/register")
+        .json(&json!({
+            "email": "stamped@example.com",
+            "name": "Stamped",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let created_at: DateTime<Utc> =
+        sqlx::query_scalar("SELECT created_at FROM users WHERE email = 'stamped@example.com'")
+            .fetch_one(&app.db)
+            .await
+            .expect("users.created_at");
+    assert_eq!(created_at, t);
+}

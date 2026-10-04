@@ -34,7 +34,7 @@
 //! `"registration failed"`,`users::service::create_user` 是
 //! `"Email 已被使用"`,兩者是不同的已公告契約,刻意不在此處統一)。
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Postgres, Transaction};
 
 use crate::kafka::events::UserRegisteredPayload;
@@ -81,6 +81,7 @@ pub async fn create_account(
     tx: &mut Transaction<'_, Postgres>,
     account: NewAccount<'_>,
     correlation_id: Option<String>,
+    now: DateTime<Utc>,
 ) -> Result<User, sqlx::Error> {
     let email = normalize_email(account.email);
 
@@ -91,6 +92,7 @@ pub async fn create_account(
         account.phone,
         account.password_hash,
         account.birth_date,
+        now,
     )
     .await?;
 

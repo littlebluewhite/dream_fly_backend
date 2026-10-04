@@ -978,3 +978,32 @@ async fn admin_create_user_birth_date_today_in_taipei_accepted(db: PgPool) {
     let future = create("taipei-tomorrow@example.com", "2026-07-16").await;
     assert_eq!(future.status_code(), 422, "body={}", future.text());
 }
+
+/// ADR-0017:`users.created_at` 是業務時間,管理員建立帳號同樣蓋上
+/// handler 取樣的時刻。
+#[sqlx::test]
+async fn admin_create_user_stamps_created_at_with_sampled_now(db: PgPool) {
+    let app = spawn_test_app(db).await;
+    let (_admin_id, admin_token) = app.seed_admin().await;
+    let t = Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    app.clock.set(t);
+
+    let resp = app
+        .post("/api/v1/users")
+        .authorization_bearer(&admin_token)
+        .json(&json!({
+            "email": "admincreated-stamp@example.com",
+            "name": "Admin Created Stamp",
+            "password": "Password!234",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+
+    let created_at: chrono::DateTime<Utc> = sqlx::query_scalar(
+        "SELECT created_at FROM users WHERE email = 'admincreated-stamp@example.com'",
+    )
+    .fetch_one(&app.db)
+    .await
+    .expect("users.created_at");
+    assert_eq!(created_at, t);
+}

@@ -77,6 +77,7 @@ async fn register_creates_user_with_hashed_password(db: PgPool) {
             password: "sup3rsecret".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -136,6 +137,7 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
             password: "passw0rd!".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("first register");
@@ -151,6 +153,7 @@ async fn register_duplicate_email_returns_conflict(db: PgPool) {
             password: "passw0rd!".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect_err("second register should fail");
@@ -213,6 +216,7 @@ async fn refresh_token_rotates_and_revokes_old(db: PgPool) {
             password: "sup3rsecret".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -266,6 +270,7 @@ async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
             password: "sup3rsecret".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -334,6 +339,7 @@ async fn purge_expired_keeps_rotated_tokens_so_reuse_still_revokes_family(db: Pg
             password: "sup3rsecret".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -391,6 +397,7 @@ async fn purge_expired_deletes_expired_rows_revoked_or_not(db: PgPool) {
             password: "sup3rsecret".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -584,6 +591,7 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
             password: "Password!234".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -679,6 +687,7 @@ async fn stale_token_after_reset_password_does_not_kill_new_session(db: PgPool) 
             password: "Password!234".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -769,6 +778,7 @@ async fn refresh_waits_for_in_flight_deactivation(db: PgPool) {
             password: "sup3rsecret".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -1209,6 +1219,7 @@ async fn google_login(db: &PgPool, google: &FakeGoogleIdentity) -> Result<AuthRe
             code: "fake-authorization-code".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
 }
@@ -1253,6 +1264,37 @@ async fn google_auth_new_user_gets_welcome_notification(db: PgPool) {
     assert_eq!(welcome.0, "Welcome to Dream Fly");
 }
 
+/// ADR-0017:Google 首次登入建立的 `users.created_at` 是業務時間,
+/// 蓋上呼叫端傳入的 `now`,不是 DB 的 `NOW()`。
+#[sqlx::test]
+async fn google_auth_new_user_stamps_created_at_with_given_now(db: PgPool) {
+    use chrono::TimeZone;
+    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let google = FakeGoogleIdentity::verified("google-sub-stamped", "stamped-google@example.com");
+
+    let resp = service::google_auth(
+        &db,
+        &InMemoryAccessCache::new(),
+        &common::test_auth_config(),
+        &google,
+        GoogleAuthRequest {
+            code: "fake-authorization-code".into(),
+        },
+        None,
+        t,
+    )
+    .await
+    .expect("google login");
+
+    let created_at: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at FROM users WHERE id = $1")
+            .bind(resp.user.id)
+            .fetch_one(&db)
+            .await
+            .expect("users.created_at");
+    assert_eq!(created_at, t);
+}
+
 /// Deliberate asymmetry (see `auth::linking`'s module doc): linking Google to
 /// an existing password account resolves to that account and does not resend
 /// the welcome it already got at registration.
@@ -1267,6 +1309,7 @@ async fn google_auth_linking_existing_account_does_not_resend_welcome(db: PgPool
             password: "Password!234".into(),
         },
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("register");
@@ -1375,6 +1418,7 @@ async fn google_auth_link_does_not_grant_member_to_seeded_admin(db: PgPool) {
         None,
         &hash,
         None,
+        chrono::Utc::now(),
     )
     .await
     .expect("insert admin");

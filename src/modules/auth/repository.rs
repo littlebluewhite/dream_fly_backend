@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -17,11 +17,12 @@ pub async fn create_user_tx(
     phone: Option<&str>,
     password_hash: &str,
     birth_date: Option<NaiveDate>,
+    now: DateTime<Utc>,
 ) -> Result<User, sqlx::Error> {
     sqlx::query_as::<_, User>(
         r#"
         INSERT INTO users (id, email, name, phone, password_hash, phone_verified, is_active, birth_date, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, false, true, $6, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, false, true, $6, $7, NOW())
         RETURNING *
         "#,
     )
@@ -31,6 +32,7 @@ pub async fn create_user_tx(
     .bind(phone)
     .bind(password_hash)
     .bind(birth_date)
+    .bind(now)
     .fetch_one(&mut **tx)
     .await
 }
@@ -115,11 +117,12 @@ pub async fn create_or_update_google_user_tx(
     name: &str,
     google_id: &str,
     avatar_url: Option<&str>,
+    now: DateTime<Utc>,
 ) -> Result<User, sqlx::Error> {
     sqlx::query_as::<_, User>(
         r#"
         INSERT INTO users (id, email, name, google_id, avatar_url, phone_verified, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, false, true, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, false, true, $6, NOW())
         ON CONFLICT (google_id) DO UPDATE
         SET email = EXCLUDED.email,
             name = EXCLUDED.name,
@@ -133,6 +136,7 @@ pub async fn create_or_update_google_user_tx(
     .bind(name)
     .bind(google_id)
     .bind(avatar_url)
+    .bind(now)
     .fetch_one(&mut **tx)
     .await
 }

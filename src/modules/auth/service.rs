@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -34,6 +35,7 @@ pub async fn register(
     config: &AuthConfig,
     req: RegisterRequest,
     correlation_id: Option<String>,
+    now: DateTime<Utc>,
 ) -> Result<AuthResponse, AppError> {
     // Hash password (on a blocking thread so the Argon2 CPU burst doesn't
     // stall async workers).
@@ -59,6 +61,7 @@ pub async fn register(
             password_hash: &hashed,
         },
         correlation_id,
+        now,
     )
     .await
     .map_err(|e| AppError::conflict_on_unique(e, "registration failed"))?;
@@ -103,6 +106,7 @@ pub async fn google_auth(
     google: &dyn GoogleIdentityProvider,
     req: GoogleAuthRequest,
     correlation_id: Option<String>,
+    now: DateTime<Utc>,
 ) -> Result<AuthResponse, AppError> {
     // 1-2. Exchange the authorization code and verify the returned id_token
     //      (signature, iss/aud/exp, email_verified) — see
@@ -140,6 +144,7 @@ pub async fn google_auth(
                 &name,
                 &identity.sub,
                 identity.picture.as_deref(),
+                now,
             )
             .await?
         }

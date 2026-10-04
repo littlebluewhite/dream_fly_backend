@@ -47,11 +47,11 @@ use dream_fly_backend::utils::studio_clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use common::fixtures::{
-    CourseSeed, OrderSeed, SeedOrderLine, SessionSeed, SlotSeed, TimeSlotSeed, backdate_user,
-    seed_attendance, seed_booking, seed_coach, seed_course, seed_course_revenue,
-    seed_course_schedule_slot, seed_course_session, seed_enrolment, seed_entitlement_product,
-    seed_leave_request, seed_marked_attendance, seed_member_created_at, seed_message,
-    seed_venue_rentals, seed_waitlist_entry, set_birth_date, set_points_balance,
+    CourseSeed, OrderSeed, SeedOrderLine, SessionSeed, SlotSeed, TimeSlotSeed, seed_attendance,
+    seed_booking, seed_coach, seed_course, seed_course_revenue, seed_course_schedule_slot,
+    seed_course_session, seed_enrolment, seed_entitlement_product, seed_leave_request,
+    seed_marked_attendance, seed_member_created_at, seed_message, seed_venue_rentals,
+    seed_waitlist_entry, set_birth_date, set_points_balance,
 };
 use common::{seed_member, seed_product, seed_user_with_roles};
 
@@ -78,7 +78,7 @@ fn months_ago(now: DateTime<Utc>, n: i32) -> DateTime<Utc> {
 /// Insert a `contact_inquiries` row directly (no shared fixture exists for
 /// this table), so the activity tests can control `created_at`/
 /// `inquiry_type`/`subject`/`name` precisely. Unlike `seed_order` (now
-/// `OrderSeed`), `seed_attendance`, and `backdate_user` — which
+/// `OrderSeed`), `seed_attendance`, and `seed_member_created_at` — which
 /// graduated to `tests/common/fixtures.rs` once other reports tests needed
 /// them too — this one stays local: no other test file touches
 /// `contact_inquiries`.
@@ -280,11 +280,10 @@ async fn admin_report_revenue_trend_buckets_by_month(db: PgPool) {
 
 #[sqlx::test]
 async fn admin_report_members_total_new_and_active(db: PgPool) {
-    let old_user = seed_member(&db, "old-member@example.com", "Password!234").await;
+    let old_user =
+        seed_member_created_at(&db, "old-member@example.com", months_ago(Utc::now(), 3)).await;
     let new_active_user = seed_member(&db, "new-active-member@example.com", "Password!234").await;
     let _new_plain_user = seed_member(&db, "new-plain-member@example.com", "Password!234").await;
-
-    backdate_user(&db, old_user, months_ago(Utc::now(), 3)).await;
 
     let course_id = seed_course(&db, "Members Stats Course", None).await;
     seed_enrolment(&db, old_user, course_id, EnrolmentStatus::Active, Utc::now()).await;
@@ -1556,8 +1555,12 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
 async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
     let now = Utc::now();
     for i in 0..25i64 {
-        let user_id = seed_member(&db, &format!("activity-cap-{i}@example.com"), "Password!234").await;
-        backdate_user(&db, user_id, now - Duration::minutes(i)).await;
+        seed_member_created_at(
+            &db,
+            &format!("activity-cap-{i}@example.com"),
+            now - Duration::minutes(i),
+        )
+        .await;
     }
 
     let report = service::admin_activity(&db).await.expect("admin_activity");
@@ -1622,8 +1625,7 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
     // 訂單 A(上月)/ B(本月)。buyer 的 created_at 也 backdate 到兩個基準
     // 瞬間之一——本測試 seed 出的所有 user 一律如此,避免真實牆鐘「今天」
     // 污染 members.new_this_month。
-    let buyer = seed_member(&db, "tz-light-buyer@example.com", "Password!234").await;
-    backdate_user(&db, buyer, before_midnight).await;
+    let buyer = seed_member_created_at(&db, "tz-light-buyer@example.com", before_midnight).await;
     OrderSeed::new(buyer, OrderStatus::Paid)
         .total_cents(10_000)
         .paid_at(before_midnight)
@@ -1637,10 +1639,10 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
 
     // 會員 X(backdate 到本月瞬間)/ Y(backdate 到上月瞬間)。兩人同時充當
     // 出勤場景的當事人,省下再造兩個新帳號、還要各自 backdate 的重複。
-    let member_x = seed_member(&db, "tz-light-member-x@example.com", "Password!234").await;
-    backdate_user(&db, member_x, after_midnight).await;
-    let member_y = seed_member(&db, "tz-light-member-y@example.com", "Password!234").await;
-    backdate_user(&db, member_y, before_midnight).await;
+    let member_x =
+        seed_member_created_at(&db, "tz-light-member-x@example.com", after_midnight).await;
+    let member_y =
+        seed_member_created_at(&db, "tz-light-member-y@example.com", before_midnight).await;
 
     // 出勤:7/1(台北,本月)與 6/30(台北,上月)各一場 session + 各一筆
     // present。`session_date` 已是 studio-local 裸日期(contract §3.18),
