@@ -96,7 +96,7 @@ impl Product {
     /// The range half of [`Self::ensure_line_quantity`], for callers that
     /// must reject before any row is looked up (cart's pre-lookup guards,
     /// which keep this 400 ahead of the lookup's 404): `1..=999`, else
-    /// `BadRequest` (400) `"quantity must be between 1 and 999"`.
+    /// `BadRequest` (400) with [`quantity_range_msg`].
     pub fn ensure_quantity_in_range(quantity: i32) -> Result<(), AppError> {
         if !(1..=MAX_LINE_QUANTITY).contains(&quantity) {
             return Err(AppError::BadRequest(quantity_range_msg()));
@@ -123,7 +123,7 @@ impl Product {
     /// `is_active` or stock — see [`Self::ensure_purchasable`].
     ///
     /// Error strings are load-bearing (substring-matched in tests):
-    /// `"quantity must be between 1 and 999"`,
+    /// [`quantity_range_msg`],
     /// `"time-based subscription quantity must be 1"`.
     pub fn ensure_line_quantity(&self, quantity: i32) -> Result<(), AppError> {
         Self::ensure_quantity_in_range(quantity)?;

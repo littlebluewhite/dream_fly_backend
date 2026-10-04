@@ -291,7 +291,7 @@ fn every_serialize_dto_is_listed() {
     }
     for (file, module) in files {
         let text = fs::read_to_string(&file).unwrap();
-        for name in serialize_item_names(&text) {
+        for name in serialize_item_names(&text, &file.display().to_string()) {
             let short = format!("{}::{name}", module.trim_start_matches("modules::"));
             let full = format!("dream_fly_backend::{module}::{name}");
             assert!(
@@ -306,23 +306,23 @@ fn every_serialize_dto_is_listed() {
 /// Names of the `pub`/`pub(crate)` `struct`/`enum` items in `text` (inline
 /// `mod` blocks included) whose `#[derive(...)]` lists `Serialize`
 /// (or `serde::Serialize`).
-fn serialize_item_names(text: &str) -> Vec<String> {
-    fn derives_serialize(attrs: &[syn::Attribute]) -> bool {
+fn serialize_item_names(text: &str, file: &str) -> Vec<String> {
+    fn derives_serialize(attrs: &[syn::Attribute], file: &str) -> bool {
         attrs.iter().filter(|a| a.path().is_ident("derive")).any(|a| {
             a.parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
-                .unwrap()
+                .unwrap_or_else(|e| panic!("parse derive in {file}: {e}"))
                 .iter()
                 .any(|p| p.segments.last().is_some_and(|s| s.ident == "Serialize"))
         })
     }
-    fn collect(items: &[syn::Item], names: &mut Vec<String>) {
+    fn collect(items: &[syn::Item], names: &mut Vec<String>, file: &str) {
         for item in items {
             let (vis, ident, attrs) = match item {
                 syn::Item::Struct(i) => (&i.vis, &i.ident, &i.attrs),
                 syn::Item::Enum(i) => (&i.vis, &i.ident, &i.attrs),
                 syn::Item::Mod(m) => {
                     if let Some((_, inner)) = &m.content {
-                        collect(inner, names);
+                        collect(inner, names, file);
                     }
                     continue;
                 }
@@ -330,14 +330,15 @@ fn serialize_item_names(text: &str) -> Vec<String> {
             };
             let public = matches!(vis, syn::Visibility::Public(_))
                 || matches!(vis, syn::Visibility::Restricted(r) if r.path.is_ident("crate"));
-            if public && derives_serialize(attrs) {
+            if public && derives_serialize(attrs, file) {
                 names.push(ident.to_string());
             }
         }
     }
 
     let mut names = Vec::new();
-    collect(&syn::parse_file(text).unwrap().items, &mut names);
+    let parsed = syn::parse_file(text).unwrap_or_else(|e| panic!("parse {file}: {e}"));
+    collect(&parsed.items, &mut names, file);
     names
 }
 
@@ -375,7 +376,7 @@ pub struct AfterPrivate {}
 #[derive(serde::Serialize)]
 pub struct Qualified {}
 ";
-    assert_eq!(serialize_item_names(sample), ["OneLine", "MultiLine", "Crate", "Qualified"]);
+    assert_eq!(serialize_item_names(sample, "sample"), ["OneLine", "MultiLine", "Crate", "Qualified"]);
 }
 
 /// `export type { X } from "./X";` per exported file, sorted by path.
