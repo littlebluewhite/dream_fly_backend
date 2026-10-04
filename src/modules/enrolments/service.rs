@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -18,6 +19,7 @@ async fn enrol_one_tx(
     user_id: Uuid,
     course_id: Uuid,
     order_id: Uuid,
+    now: DateTime<Utc>,
 ) -> Result<Enrolment, AppError> {
     // The course row is already locked (`locks`), so a concurrent enrolment
     // for the same course can't read a stale capacity count (lock-then-count
@@ -36,7 +38,7 @@ async fn enrol_one_tx(
         return Err(AppError::Conflict("already enrolled".into()));
     }
 
-    repository::insert_tx(tx, user_id, course_id, order_id)
+    repository::insert_tx(tx, user_id, course_id, order_id, now)
         .await
         .map_err(|e| AppError::conflict_on_unique(e, "already enrolled"))
 }
@@ -61,12 +63,13 @@ pub async fn enrol_batch_from_purchase_tx(
     user_id: Uuid,
     course_ids: &[Uuid],
     order_id: Uuid,
+    now: DateTime<Utc>,
 ) -> Result<Vec<Enrolment>, AppError> {
     let ordered = locks.in_lock_order(course_ids.to_vec(), |course_id| *course_id)?;
 
     let mut enrolments = Vec::with_capacity(ordered.len());
     for course_id in ordered {
-        enrolments.push(enrol_one_tx(tx, locks, user_id, course_id, order_id).await?);
+        enrolments.push(enrol_one_tx(tx, locks, user_id, course_id, order_id, now).await?);
     }
 
     Ok(enrolments)

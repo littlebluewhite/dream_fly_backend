@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -21,21 +22,25 @@ pub async fn exists_active_tx(
     .await
 }
 
+/// `enrolled_at`/`created_at` 是業務時間(報表依 `created_at` 分桶),綁呼叫端
+/// 取樣的 `now`;`updated_at` 是稽核時間,留給 `NOW()`(ADR-0017)。
 pub async fn insert_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     course_id: Uuid,
     order_id: Uuid,
+    now: DateTime<Utc>,
 ) -> Result<Enrolment, sqlx::Error> {
     sqlx::query_as::<_, Enrolment>(
         "INSERT INTO enrolments (id, user_id, course_id, order_id, status, enrolled_at, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, 'active'::enrolment_status, NOW(), NOW(), NOW()) \
+         VALUES ($1, $2, $3, $4, 'active'::enrolment_status, $5, $5, NOW()) \
          RETURNING id, user_id, course_id, order_id, status, enrolled_at, created_at, updated_at",
     )
     .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(course_id)
     .bind(order_id)
+    .bind(now)
     .fetch_one(&mut **tx)
     .await
 }

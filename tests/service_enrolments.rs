@@ -69,8 +69,15 @@ async fn enrol(
     order_id: Uuid,
 ) -> Result<Enrolment, AppError> {
     let locks = seats::lock_courses_tx(tx, &[course_id]).await?;
-    let mut enrolments =
-        service::enrol_batch_from_purchase_tx(tx, &locks, user_id, &[course_id], order_id).await?;
+    let mut enrolments = service::enrol_batch_from_purchase_tx(
+        tx,
+        &locks,
+        user_id,
+        &[course_id],
+        order_id,
+        chrono::Utc::now(),
+    )
+    .await?;
     Ok(enrolments.remove(0))
 }
 
@@ -160,6 +167,7 @@ async fn enrol_course_outside_the_witness_is_internal(db: PgPool) {
         user_id,
         &[locked, unlocked],
         order_id,
+        chrono::Utc::now(),
     )
     .await
     .expect_err("a course the witness doesn't cover must be rejected");
@@ -214,14 +222,14 @@ async fn duplicate_active_insert_trips_partial_unique_index(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let order_a = seed_order(&mut tx, user_id, 50_000).await;
-    enrolments_repo::insert_tx(&mut tx, user_id, course_id, order_a)
+    enrolments_repo::insert_tx(&mut tx, user_id, course_id, order_a, chrono::Utc::now())
         .await
         .expect("first insert");
     tx.commit().await.expect("commit");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let order_b = seed_order(&mut tx2, user_id, 50_000).await;
-    let err = enrolments_repo::insert_tx(&mut tx2, user_id, course_id, order_b)
+    let err = enrolments_repo::insert_tx(&mut tx2, user_id, course_id, order_b, chrono::Utc::now())
         .await
         .expect_err("second active insert for the same user+course must violate uniq_enrolments_active");
     tx2.rollback().await.expect("rollback");

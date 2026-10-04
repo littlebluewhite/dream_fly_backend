@@ -307,6 +307,7 @@ pub async fn checkout(
         user_id,
         &plan.course_ids,
         order.id,
+        now,
     )
     .await?;
 

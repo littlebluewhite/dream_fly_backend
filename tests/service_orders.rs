@@ -117,6 +117,38 @@ async fn checkout_stamps_paid_at_and_created_at_with_sampled_now(db: PgPool) {
     assert_eq!(resp.created_at, t);
 }
 
+/// ADR-0017:報名的 `enrolled_at`/`created_at` 是業務時間(報表依 `created_at`
+/// 分桶),結帳買課必須蓋上 handler 取樣的 `now`。
+#[sqlx::test]
+async fn checkout_stamps_enrolment_with_sampled_now(db: PgPool) {
+    use chrono::TimeZone;
+    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let course = CourseSeed::new("Sampled Now Course").insert(&db).await;
+    let user = common::seed_member(&db, "enrol-now@example.com", "passw0rd!").await;
+    add_course_to_cart(&db, user, course).await;
+
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(t),
+    )
+    .await
+    .expect("checkout");
+
+    assert_eq!(resp.enrolments.len(), 1);
+    assert_eq!(resp.enrolments[0].enrolled_at, t);
+    let created_at: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at FROM enrolments WHERE id = $1")
+            .bind(resp.enrolments[0].id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(created_at, t);
+}
+
 #[sqlx::test]
 async fn checkout_unlimited_stock_unchanged(db: PgPool) {
     // Products with NULL stock (tickets / memberships) are unlimited —
