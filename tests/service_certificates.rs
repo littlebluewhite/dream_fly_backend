@@ -45,7 +45,7 @@ async fn create_certificate_by_owning_coach_succeeds_and_notifies(db: PgPool) {
     let member_id = seed_member(&db, "cert-svc-student@example.com", "Password!234").await;
     seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
-    let auth = coach_auth(coach_user_id);
+    let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
         user_id: member_id,
         course_id: Some(course_id),
@@ -81,7 +81,7 @@ async fn create_certificate_for_cancelled_enrolment_student_succeeds(db: PgPool)
     let member_id = seed_member(&db, "cert-svc-hist-student@example.com", "Password!234").await;
     seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Cancelled, Utc::now()).await;
 
-    let auth = coach_auth(coach_user_id);
+    let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
         user_id: member_id,
         course_id: None,
@@ -104,7 +104,7 @@ async fn create_certificate_by_non_owning_coach_returns_403_with_no_side_effects
     // Never enrolled in any course taught by this coach.
     let member_id = seed_member(&db, "cert-svc-cross-student@example.com", "Password!234").await;
 
-    let auth = coach_auth(coach_user_id);
+    let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
         user_id: member_id,
         course_id: None,
@@ -191,7 +191,7 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
     let enrolment_id =
         seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
-    let auth = coach_auth(coach_user_id);
+    let auth = auth_for(&db, coach_user_id).await;
     let req = CreateReportCardRequest {
         enrolment_id,
         term_label: "2026 Spring".to_string(),
@@ -223,7 +223,7 @@ async fn create_report_card_duplicate_term_returns_409_leaves_one_row(db: PgPool
     let enrolment_id =
         seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
-    let auth = coach_auth(coach_user_id);
+    let auth = auth_for(&db, coach_user_id).await;
     let first = CreateReportCardRequest {
         enrolment_id,
         term_label: "2026 Spring".to_string(),

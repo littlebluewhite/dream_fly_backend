@@ -426,7 +426,7 @@ async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPo
     seed_enrolment(&db, m2, own_course, EnrolmentStatus::Active, Utc::now()).await;
     seed_enrolment(&db, m3, own_course, EnrolmentStatus::Cancelled, Utc::now()).await;
 
-    let auth = common::coach_auth(coach_user);
+    let auth = common::auth_for(&db, coach_user).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");

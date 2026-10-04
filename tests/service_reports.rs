@@ -1191,7 +1191,7 @@ async fn coach_report_no_coach_row_returns_not_found(db: PgPool) {
 async fn coach_report_empty_domain_is_all_zero_or_null(db: PgPool) {
     let user_id = seed_member(&db, "empty-coach@example.com", "Password!234").await;
     seed_coach(&db, user_id, "Empty Coach").await;
-    let auth = common::coach_auth(user_id);
+    let auth = common::auth_for(&db, user_id).await;
 
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
@@ -1217,7 +1217,7 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
     let student = seed_member(&db, "today-student@example.com", "Password!234").await;
     seed_enrolment(&db, student, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
-    let auth = common::coach_auth(coach_user);
+    let auth = common::auth_for(&db, coach_user).await;
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report (before marking)");
@@ -1280,7 +1280,7 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
     // Outside the window: a present record that must not be counted.
     seed_attendance(&db, session_out, enrolment_a, AttendanceStatus::Present, coach_user).await;
 
-    let auth = common::coach_auth(coach_user);
+    let auth = common::auth_for(&db, coach_user).await;
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report");
@@ -1312,7 +1312,7 @@ async fn coach_report_scoped_to_own_domain(db: PgPool) {
     seed_enrolment(&db, student_a, course_a, EnrolmentStatus::Active, Utc::now()).await;
     seed_enrolment(&db, student_b, course_b, EnrolmentStatus::Active, Utc::now()).await;
 
-    let auth_a = common::coach_auth(coach_a_user);
+    let auth_a = common::auth_for(&db, coach_a_user).await;
     let report_a = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth_a)
         .await
         .expect("coach_report for coach A");
@@ -1348,7 +1348,7 @@ async fn coach_report_unread_messages_counts_only_incoming_unread(db: PgPool) {
     seed_message(&db, conversation_id, member_user, "please read", None, Utc::now()).await;
     seed_message(&db, conversation_id, member_user, "please read 2", None, Utc::now()).await;
 
-    let auth = common::coach_auth(coach_user);
+    let auth = common::auth_for(&db, coach_user).await;
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("coach_report");
@@ -1884,7 +1884,7 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
         .await
         .expect("delist course Y");
 
-    let auth = common::coach_auth(coach_user);
+    let auth = common::auth_for(&db, coach_user).await;
 
     // GET /coaches/me/students — s1, s2, s3 all appear; s3 shows both courses.
     let students = attendance_service::my_students(&db, &auth)

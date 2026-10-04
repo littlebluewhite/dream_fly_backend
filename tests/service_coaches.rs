@@ -255,7 +255,7 @@ async fn clock_in_twice_without_clock_out_returns_conflict(db: PgPool) {
     // DB error would surface as a 500 to the client.
     let user_id = common::seed_member(&db, "coach@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Coach").await;
-    let auth = common::coach_auth(user_id);
+    let auth = common::auth_for(&db, user_id).await;
 
     service::clock_in(&db, &auth, coach_id, Some("starting shift"))
         .await
@@ -275,7 +275,7 @@ async fn clock_out_with_no_open_record_returns_not_found(db: PgPool) {
     let user_id = common::seed_member(&db, "coach@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Coach").await;
 
-    let err = service::clock_out(&db, &common::coach_auth(user_id), coach_id)
+    let err = service::clock_out(&db, &common::auth_for(&db, user_id).await, coach_id)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
