@@ -21,7 +21,9 @@ use dream_fly_backend::modules::points::repository as points_repo;
 use dream_fly_backend::modules::rewards::service;
 
 async fn attempt_redeem(db: PgPool, user_id: Uuid, reward_id: Uuid) -> bool {
-    service::redeem(&db, user_id, reward_id, chrono::Utc::now()).await.is_ok()
+    service::redeem(&db, user_id, reward_id, chrono::Utc::now())
+        .await
+        .is_ok()
 }
 
 #[sqlx::test]
@@ -233,7 +235,9 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
         .await;
 
     for _ in 0..3 {
-        service::redeem(&db, user_id, reward_id, chrono::Utc::now()).await.expect("redeem");
+        service::redeem(&db, user_id, reward_id, chrono::Utc::now())
+            .await
+            .expect("redeem");
     }
 
     let page = service::my_redemptions(

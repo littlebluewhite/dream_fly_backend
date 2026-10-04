@@ -1549,9 +1549,10 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
         .expect("checkout");
     assert_eq!(order.status, OrderStatus::Paid);
 
-    let updated = service::update_order_status(&db, order.id, "processing", None, chrono::Utc::now())
-        .await
-        .expect("update status");
+    let updated =
+        service::update_order_status(&db, order.id, "processing", None, chrono::Utc::now())
+            .await
+            .expect("update status");
     assert_eq!(updated.status, OrderStatus::Processing);
 
     // Status persisted in the DB.
@@ -1783,9 +1784,10 @@ async fn assert_fully_compensated(
 async fn refund_reverses_stock_enrolment_subscription_and_points(db: PgPool) {
     let (user, order, limited) = checkout_mixed_with_points(&db, "refund-buyer@example.com").await;
 
-    let refunded = service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
-        .await
-        .expect("refund");
+    let refunded =
+        service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
+            .await
+            .expect("refund");
     assert_eq!(refunded.status, OrderStatus::Refunded);
 
     assert_fully_compensated(&db, user, &order, &refunded, limited).await;
@@ -1802,9 +1804,10 @@ async fn refund_reverses_stock_enrolment_subscription_and_points(db: PgPool) {
 async fn cancel_compensates_identically_to_refund(db: PgPool) {
     let (user, order, limited) = checkout_mixed_with_points(&db, "cancel-buyer@example.com").await;
 
-    let cancelled = service::update_order_status(&db, order.id, "cancelled", None, chrono::Utc::now())
-        .await
-        .expect("cancel");
+    let cancelled =
+        service::update_order_status(&db, order.id, "cancelled", None, chrono::Utc::now())
+            .await
+            .expect("cancel");
     assert_eq!(cancelled.status, OrderStatus::Cancelled);
 
     assert_fully_compensated(&db, user, &order, &cancelled, limited).await;
@@ -2156,9 +2159,10 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
         .expect("self-cancel enrolment");
 
     // Now refund the whole order — must still succeed.
-    let refunded = service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
-        .await
-        .expect("refund after self-cancel");
+    let refunded =
+        service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
+            .await
+            .expect("refund after self-cancel");
     assert_eq!(refunded.status, OrderStatus::Refunded);
     assert_eq!(
         refunded.enrolments[0].status, EnrolmentStatus::Cancelled,
@@ -2318,9 +2322,10 @@ async fn order_paths_complete_on_a_single_connection_pool(db: PgPool) {
 
     // 3. Status transition: commit → assemble. paid→processing compensates
     //    nothing, updates, commits, then assembles.
-    let processing = service::update_order_status(&pool, first.id, "processing", None, chrono::Utc::now())
-        .await
-        .expect("status transition must complete on a 1-connection pool (commit→assemble)");
+    let processing =
+        service::update_order_status(&pool, first.id, "processing", None, chrono::Utc::now())
+            .await
+            .expect("status transition must complete on a 1-connection pool (commit→assemble)");
     assert_eq!(processing.status, OrderStatus::Processing);
 
     // 4. Same-key replay: the idempotency pre-check returns the prior order

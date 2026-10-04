@@ -77,9 +77,14 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
 
     let member_id = user_id_by_email(&db, "seed-member-01@dreamfly.tw").await;
     let mut tx = db.begin().await.expect("begin drift tx");
-    apply_delta_tx(&mut tx, member_id, LedgerDelta::admin_adjust(500), chrono::Utc::now())
-        .await
-        .expect("apply drift");
+    apply_delta_tx(
+        &mut tx,
+        member_id,
+        LedgerDelta::admin_adjust(500),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("apply drift");
     tx.commit().await.expect("commit drift tx");
     assert_eq!(points_balance(&db, member_id).await, 650);
 

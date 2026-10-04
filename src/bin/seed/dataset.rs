@@ -1072,14 +1072,28 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         .map_err(|e| anyhow::anyhow!("hashing seed coach password: {e}"))?;
 
     // -- admin -----------------------------------------------------------
-    let admin_id =
-        upsert_user(db, "admin@dreamfly.tw", "系統管理員", &admin_hash, 0, at.now).await?;
+    let admin_id = upsert_user(
+        db,
+        "admin@dreamfly.tw",
+        "系統管理員",
+        &admin_hash,
+        0,
+        at.now,
+    )
+    .await?;
     assign_role(db, admin_id, Role::Admin).await?;
     println!("[users]    admin ready: admin@dreamfly.tw / Admin#2026");
 
     // -- test member -------------------------------------------------------
-    let member_id =
-        upsert_user(db, "member@dreamfly.tw", "測試會員", &member_hash, 1250, at.now).await?;
+    let member_id = upsert_user(
+        db,
+        "member@dreamfly.tw",
+        "測試會員",
+        &member_hash,
+        1250,
+        at.now,
+    )
+    .await?;
     assign_role(db, member_id, Role::Member).await?;
     println!("[users]    member ready: member@dreamfly.tw / Member#2026 (points_balance=1250)");
 
@@ -1732,7 +1746,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                 at.now,
             )
             .await
-                .with_context(|| format!("settle points-tier balance for seed member {user_id}"))?;
+            .with_context(|| format!("settle points-tier balance for seed member {user_id}"))?;
             tx.commit()
                 .await
                 .with_context(|| format!("commit points settlement for seed member {user_id}"))?;

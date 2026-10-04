@@ -158,7 +158,9 @@ async fn points_me_earned_this_month_uses_studio_month_boundaries(db: PgPool) {
 #[sqlx::test]
 async fn checkout_points_earned_lands_in_studio_month(db: PgPool) {
     let app = taipei_app_at_half_past_midnight(db).await;
-    let user = app.register_member("pts-checkout@example.com", "Password!234").await;
+    let user = app
+        .register_member("pts-checkout@example.com", "Password!234")
+        .await;
     let (_admin, admin_token) = app.seed_admin().await;
     let product: serde_json::Value = app
         .post("/api/v1/products")
@@ -181,7 +183,9 @@ async fn checkout_points_earned_lands_in_studio_month(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(order.status_code(), 200, "body={}", order.text());
-    let points_earned = order.json::<serde_json::Value>()["points_earned"].as_i64().unwrap();
+    let points_earned = order.json::<serde_json::Value>()["points_earned"]
+        .as_i64()
+        .unwrap();
     assert!(points_earned > 0);
 
     let resp = app
