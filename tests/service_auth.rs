@@ -1295,6 +1295,42 @@ async fn google_auth_new_user_stamps_created_at_with_given_now(db: PgPool) {
     assert_eq!(created_at, t);
 }
 
+/// 同一 Google 帳號再次登入走 Refresh 分支,`created_at` 維持首次建立的
+/// 時刻,不被後來的 `now` 覆寫。
+#[sqlx::test]
+async fn google_auth_repeat_login_keeps_created_at(db: PgPool) {
+    use chrono::TimeZone;
+    let t1 = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let t2 = chrono::Utc.with_ymd_and_hms(2021, 6, 1, 3, 0, 0).unwrap();
+    let google = FakeGoogleIdentity::verified("google-sub-repeat", "repeat-google@example.com");
+
+    let mut user_id = None;
+    for t in [t1, t2] {
+        let resp = service::google_auth(
+            &db,
+            &InMemoryAccessCache::new(),
+            &common::test_auth_config(),
+            &google,
+            GoogleAuthRequest {
+                code: "fake-authorization-code".into(),
+            },
+            None,
+            t,
+        )
+        .await
+        .expect("google login");
+        user_id = Some(resp.user.id);
+    }
+
+    let created_at: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .expect("users.created_at");
+    assert_eq!(created_at, t1);
+}
+
 /// Deliberate asymmetry (see `auth::linking`'s module doc): linking Google to
 /// an existing password account resolves to that account and does not resend
 /// the welcome it already got at registration.

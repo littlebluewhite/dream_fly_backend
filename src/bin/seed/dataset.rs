@@ -112,7 +112,7 @@ async fn upsert_user(
     let inserted: Option<Uuid> = sqlx::query_scalar(
         r#"
         INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, points_balance, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, 0, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, false, true, 0, $5, NOW())
         ON CONFLICT DO NOTHING
         RETURNING id
         "#,
@@ -121,6 +121,7 @@ async fn upsert_user(
     .bind(email)
     .bind(name)
     .bind(password_hash)
+    .bind(now)
     .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert user {email}"))?;
@@ -552,6 +553,7 @@ async fn upsert_seed_member(
     name: &str,
     password_hash: &str,
     birth_date: NaiveDate,
+    now: DateTime<Utc>,
 ) -> anyhow::Result<Uuid> {
     let mut tx = db
         .begin()
@@ -561,7 +563,7 @@ async fn upsert_seed_member(
     let inserted: Option<Uuid> = sqlx::query_scalar(
         r#"
         INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, points_balance, birth_date, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, 0, $5, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, false, true, 0, $5, $6, NOW())
         ON CONFLICT DO NOTHING
         RETURNING id
         "#,
@@ -571,6 +573,7 @@ async fn upsert_seed_member(
     .bind(name)
     .bind(password_hash)
     .bind(birth_date)
+    .bind(now)
     .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert seed member {email}"))?;
@@ -1536,7 +1539,8 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             .expect("valid seed birth_date");
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
-        let user_id = upsert_seed_member(db, &email, &name, &member_hash, birth_date).await?;
+        let user_id =
+            upsert_seed_member(db, &email, &name, &member_hash, birth_date, at.now).await?;
         assign_role(db, user_id, Role::Member).await?;
         member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);
