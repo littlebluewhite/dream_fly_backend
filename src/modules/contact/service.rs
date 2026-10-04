@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -25,9 +26,11 @@ fn invalid_status_message() -> String {
     )
 }
 
+/// `now` 是 handler 取樣的時刻,蓋在 `created_at`(ADR-0017)。
 pub async fn submit_inquiry(
     db: &PgPool,
     req: CreateInquiryRequest,
+    now: DateTime<Utc>,
 ) -> Result<InquiryResponse, AppError> {
     let inquiry = repository::create(
         db,
@@ -38,6 +41,7 @@ pub async fn submit_inquiry(
         &req.message,
         &req.inquiry_type,
         req.metadata,
+        now,
     )
     .await?;
 

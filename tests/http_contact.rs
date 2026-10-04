@@ -44,6 +44,32 @@ async fn submit_contact_is_public(db: PgPool) {
     assert!(body["metadata"].is_null());
 }
 
+/// ADR-0017:`contact_inquiries.created_at` 是業務時間(漏斗的 90 天窗拿它
+/// 比較),必須蓋上 handler 取樣的時刻,不是 DB 的 `NOW()`。
+#[sqlx::test]
+async fn submit_contact_stamps_created_at_with_sampled_now(db: PgPool) {
+    use chrono::{DateTime, TimeZone, Utc};
+    let app = spawn_test_app(db).await;
+    let t = Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    app.clock.set(t);
+
+    let resp = app
+        .post("/api/v1/contact")
+        .json(&json!({
+            "name": "Dave", "email": "dave@example.com",
+            "subject": "s", "message": "m",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body={}", resp.text());
+    let body: serde_json::Value = resp.json();
+    let created_at: DateTime<Utc> = body["created_at"]
+        .as_str()
+        .expect("created_at")
+        .parse()
+        .expect("parse created_at");
+    assert_eq!(created_at, t);
+}
+
 #[sqlx::test]
 async fn submit_contact_with_trial_type_and_metadata_round_trips(db: PgPool) {
     let app = spawn_test_app(db).await;

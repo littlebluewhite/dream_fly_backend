@@ -28,7 +28,7 @@ fn req(subject: &str) -> CreateInquiryRequest {
 
 #[sqlx::test]
 async fn submit_inquiry_persists_and_returns_new_row(db: PgPool) {
-    let resp = service::submit_inquiry(&db, req("Question about classes"))
+    let resp = service::submit_inquiry(&db, req("Question about classes"), chrono::Utc::now())
         .await
         .expect("submit_inquiry");
 
@@ -51,7 +51,7 @@ async fn submit_inquiry_persists_and_returns_new_row(db: PgPool) {
 #[sqlx::test]
 async fn list_inquiries_paginates_and_returns_total(db: PgPool) {
     for i in 0..5 {
-        service::submit_inquiry(&db, req(&format!("Subject {i}")))
+        service::submit_inquiry(&db, req(&format!("Subject {i}")), chrono::Utc::now())
             .await
             .unwrap();
     }
@@ -103,7 +103,7 @@ async fn list_inquiries_clamps_per_page(db: PgPool) {
 /// matching variant.
 #[sqlx::test]
 async fn update_inquiry_with_mixed_case_status_round_trips_pg_enum(db: PgPool) {
-    let created = service::submit_inquiry(&db, req("Mixed Case Status"))
+    let created = service::submit_inquiry(&db, req("Mixed Case Status"), chrono::Utc::now())
         .await
         .expect("submit_inquiry");
 

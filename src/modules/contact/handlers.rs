@@ -20,7 +20,7 @@ pub async fn submit(
     State(state): State<AppState>,
     ValidatedJson(req): ValidatedJson<CreateInquiryRequest>,
 ) -> Result<Json<InquiryResponse>, AppError> {
-    let inquiry = service::submit_inquiry(&state.db, req).await?;
+    let inquiry = service::submit_inquiry(&state.db, req, state.clock.now()).await?;
     Ok(Json(inquiry))
 }
 

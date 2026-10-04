@@ -1,8 +1,11 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::model::{ContactInquiry, InquiryStatus};
 
+/// `created_at` 是業務時間(漏斗的 90 天窗拿它比較),綁呼叫端取樣的 `now`;
+/// `updated_at` 是稽核時間,留給 `now()`(ADR-0017)。
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     db: &PgPool,
@@ -13,10 +16,11 @@ pub async fn create(
     message: &str,
     inquiry_type: &str,
     metadata: Option<serde_json::Value>,
+    now: DateTime<Utc>,
 ) -> Result<ContactInquiry, sqlx::Error> {
     sqlx::query_as::<_, ContactInquiry>(
         "INSERT INTO contact_inquiries (id, name, email, phone, subject, message, inquiry_type, metadata, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, now(), now()) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, now()) \
          RETURNING id, name, email, phone, subject, message, status, assigned_to, inquiry_type, metadata, created_at, updated_at",
     )
     .bind(name)
@@ -26,6 +30,7 @@ pub async fn create(
     .bind(message)
     .bind(inquiry_type)
     .bind(metadata)
+    .bind(now)
     .fetch_one(db)
     .await
 }
