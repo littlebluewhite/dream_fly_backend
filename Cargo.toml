@@ -95,6 +95,8 @@ wiremock = "0.6"
 # captures, so SMS tests can assert on the real Twilio request (To/From/Body)
 # instead of a mock's recorded call.
 url = "2"
+# Parses the `src/` files in `tests/wire_types.rs` to find `Serialize` DTOs.
+syn = { version = "2", default-features = false, features = ["full", "parsing", "derive"] }
 # Fake data generators for test fixtures.
 fake = { version = "5.1", features = ["derive", "chrono"] }
 # Already pulled in transitively by lettre (which only encodes, never

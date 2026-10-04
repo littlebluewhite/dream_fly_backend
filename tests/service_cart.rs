@@ -18,7 +18,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::cart::model::{CartItemType, LineTarget};
 use dream_fly_backend::modules::cart::service;
 use dream_fly_backend::modules::points::service as points_service;
-use dream_fly_backend::modules::products::model::{ProductType, QUANTITY_RANGE_MSG};
+use dream_fly_backend::modules::products::model::{ProductType, quantity_range_msg};
 
 #[sqlx::test]
 async fn add_item_first_time_creates_cart_item(db: PgPool) {
@@ -139,7 +139,7 @@ async fn add_item_onto_near_i32_max_quantity_is_400_and_cart_unchanged(db: PgPoo
 
     let err = service::add_item(&db, user, "product", product, 5).await.unwrap_err();
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
+        matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
         "got {err:?}"
     );
 
@@ -159,7 +159,7 @@ async fn add_item_merged_quantity_past_999_is_400_and_cart_unchanged(db: PgPool)
     service::add_item(&db, user, "product", product, 999).await.unwrap();
     let err = service::add_item(&db, user, "product", product, 1).await.unwrap_err();
     assert!(
-        matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
+        matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
         "got {err:?}"
     );
 

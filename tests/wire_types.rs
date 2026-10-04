@@ -21,6 +21,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use syn::punctuated::Punctuated;
+use syn::Token;
 use ts_rs::{Config, Dependency, ExportError, TS};
 
 use dream_fly_backend::error;
@@ -301,38 +303,41 @@ fn every_serialize_dto_is_listed() {
     }
 }
 
-/// Names of the `struct`/`enum` items in `text` whose `#[derive(...)]` lists
-/// `Serialize`. The derive may span several lines and the item may be
-/// `pub` or `pub(crate)`; attributes between the derive and the item are skipped.
+/// Names of the `pub`/`pub(crate)` `struct`/`enum` items in `text` (inline
+/// `mod` blocks included) whose `#[derive(...)]` lists `Serialize`
+/// (or `serde::Serialize`).
 fn serialize_item_names(text: &str) -> Vec<String> {
-    fn item_name(line: &str) -> Option<&str> {
-        let rest = line.strip_prefix("pub")?;
-        let rest = if rest.starts_with('(') { rest.split_once(')')?.1 } else { rest };
-        let rest = rest.trim_start();
-        let name = rest.strip_prefix("struct ").or_else(|| rest.strip_prefix("enum "))?;
-        name.split(|c: char| !c.is_alphanumeric() && c != '_').next()
+    fn derives_serialize(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().filter(|a| a.path().is_ident("derive")).any(|a| {
+            a.parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
+                .unwrap()
+                .iter()
+                .any(|p| p.segments.last().is_some_and(|s| s.ident == "Serialize"))
+        })
+    }
+    fn collect(items: &[syn::Item], names: &mut Vec<String>) {
+        for item in items {
+            let (vis, ident, attrs) = match item {
+                syn::Item::Struct(i) => (&i.vis, &i.ident, &i.attrs),
+                syn::Item::Enum(i) => (&i.vis, &i.ident, &i.attrs),
+                syn::Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content {
+                        collect(inner, names);
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            let public = matches!(vis, syn::Visibility::Public(_))
+                || matches!(vis, syn::Visibility::Restricted(r) if r.path.is_ident("crate"));
+            if public && derives_serialize(attrs) {
+                names.push(ident.to_string());
+            }
+        }
     }
 
     let mut names = Vec::new();
-    let mut serialize = false;
-    let mut open_derive: Option<String> = None;
-    for line in text.lines().map(str::trim) {
-        if let Some(derive) = open_derive.as_mut() {
-            derive.push_str(line);
-        } else if let Some(rest) = line.strip_prefix("#[derive(") {
-            open_derive = Some(rest.to_owned());
-        } else if let Some(name) = item_name(line) {
-            if serialize {
-                names.push(name.to_owned());
-            }
-            serialize = false;
-        }
-        if open_derive.as_ref().is_some_and(|d| d.contains(")]")) {
-            let derive = open_derive.take().unwrap();
-            let derives = derive.split(")]").next().unwrap();
-            serialize = derives.split(',').any(|d| d.trim() == "Serialize");
-        }
-    }
+    collect(&syn::parse_file(text).unwrap().items, &mut names);
     names
 }
 
@@ -361,8 +366,16 @@ pub(crate) struct Crate {}
 pub struct NotSerialized {}
 
 pub struct NoDerive {}
+
+#[derive(Serialize)]
+struct Private {}
+
+pub struct AfterPrivate {}
+
+#[derive(serde::Serialize)]
+pub struct Qualified {}
 ";
-    assert_eq!(serialize_item_names(sample), ["OneLine", "MultiLine", "Crate"]);
+    assert_eq!(serialize_item_names(sample), ["OneLine", "MultiLine", "Crate", "Qualified"]);
 }
 
 /// `export type { X } from "./X";` per exported file, sorted by path.

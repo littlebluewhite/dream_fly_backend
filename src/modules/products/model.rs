@@ -87,9 +87,10 @@ pub struct Product {
 pub const MAX_LINE_QUANTITY: i32 = 999;
 
 /// The 400 message for an out-of-range line quantity — single owner of the
-/// string (tests substring-match it). Keep it in step with
-/// [`MAX_LINE_QUANTITY`]; `quantity_range_message_names_the_max` pins that.
-pub const QUANTITY_RANGE_MSG: &str = "quantity must be between 1 and 999";
+/// string (tests match it), derived from [`MAX_LINE_QUANTITY`].
+pub fn quantity_range_msg() -> String {
+    format!("quantity must be between 1 and {MAX_LINE_QUANTITY}")
+}
 
 impl Product {
     /// The range half of [`Self::ensure_line_quantity`], for callers that
@@ -98,7 +99,7 @@ impl Product {
     /// `BadRequest` (400) `"quantity must be between 1 and 999"`.
     pub fn ensure_quantity_in_range(quantity: i32) -> Result<(), AppError> {
         if !(1..=MAX_LINE_QUANTITY).contains(&quantity) {
-            return Err(AppError::BadRequest(QUANTITY_RANGE_MSG.into()));
+            return Err(AppError::BadRequest(quantity_range_msg()));
         }
         Ok(())
     }
@@ -174,14 +175,6 @@ impl Product {
 mod tests {
     use super::*;
 
-    #[test]
-    fn quantity_range_message_names_the_max() {
-        assert!(
-            QUANTITY_RANGE_MSG.contains(&MAX_LINE_QUANTITY.to_string()),
-            "{QUANTITY_RANGE_MSG:?} must mention MAX_LINE_QUANTITY"
-        );
-    }
-
     /// Minimal fixture for `ensure_purchasable` tests — only `is_active` and
     /// `stock` are varied per case, everything else is filler.
     fn fixture_product(is_active: bool, stock: Option<i32>) -> Product {
@@ -241,7 +234,7 @@ mod tests {
         let product = fixture_product(true, Some(3));
         let err = product.ensure_purchasable(1000).expect_err("must reject");
         assert!(
-            matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
+            matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
             "got: {err:?}"
         );
 
@@ -276,7 +269,7 @@ mod tests {
         for quantity in [0, -1, 1000] {
             let err = product.ensure_line_quantity(quantity).expect_err("must reject");
             assert!(
-                matches!(err, AppError::BadRequest(ref m) if m == QUANTITY_RANGE_MSG),
+                matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
                 "quantity {quantity} got: {err:?}"
             );
         }
