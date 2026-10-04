@@ -27,9 +27,14 @@ use uuid::Uuid;
 
 use dream_fly_backend::config::AuthConfig;
 use dream_fly_backend::extractors::auth::AuthUser;
+use dream_fly_backend::modules::auth::access;
 use dream_fly_backend::modules::auth::provisioning::{self, NewAccount};
+use dream_fly_backend::modules::permissions::model::Role;
+use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
+
+use self::mocks::InMemoryAccessCache;
 
 /// Per-plaintext argon2 hash cache, shared across every test in this binary.
 /// Argon2 hashing costs ~50-100ms; a lot of tests seed a user with the same
@@ -137,6 +142,46 @@ pub fn coach_auth(user_id: Uuid) -> AuthUser {
 /// Convenience wrapper: a single `admin`-role `AuthUser`.
 pub fn admin_auth(user_id: Uuid) -> AuthUser {
     auth_with_roles(user_id, &["admin"])
+}
+
+/// Build the `AuthUser` the extractor would produce for a pre-seeded user:
+/// roles come from `access::resolve` (the production path, over a fresh
+/// `InMemoryAccessCache` so it always reads the DB) and the email from the
+/// `users` row. Panics if the user is missing or inactive.
+pub async fn auth_for(db: &PgPool, user_id: Uuid) -> AuthUser {
+    let roles = access::resolve(db, &InMemoryAccessCache::new(), user_id)
+        .await
+        .expect("resolve access")
+        .expect("user exists and is active");
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .expect("load user email");
+    AuthUser {
+        user_id,
+        email,
+        roles,
+    }
+}
+
+/// Seed a user directly in the DB and return its id. Every user is born a
+/// `member` (via `seed_member`'s owner, `create_account`, as in production);
+/// `extra` roles are granted on top.
+pub async fn seed_user_with_roles(db: &PgPool, email: &str, extra: &[Role]) -> Uuid {
+    let user_id = seed_member(db, email, "Password!234").await;
+
+    for role in extra {
+        let mut conn = db.acquire().await.expect("acquire conn");
+        // The user was created moments ago and has made no request, so
+        // no access-cache entry can exist for it yet.
+        permissions_repository::assign_role(&mut conn, user_id, *role)
+            .await
+            .expect("assign role")
+            .assume_uncached();
+    }
+
+    user_id
 }
 
 /// Insert a member user with a pre-hashed password. Returns the new user's id.

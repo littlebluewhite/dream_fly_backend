@@ -120,7 +120,7 @@ async fn update_post_by_non_author_non_admin_returns_forbidden(db: PgPool) {
     let err = service::update_post(
         &db,
         post.id,
-        &common::member_auth(other),
+        &common::auth_for(&db, other).await,
         UpdatePostRequest {
             title: Some("Pwned".into()),
             slug: None,
@@ -146,7 +146,7 @@ async fn update_post_by_author_succeeds(db: PgPool) {
     let updated = service::update_post(
         &db,
         post.id,
-        &common::member_auth(author),
+        &common::auth_for(&db, author).await,
         UpdatePostRequest {
             title: Some("Renamed".into()),
             slug: None,
@@ -202,7 +202,7 @@ async fn update_post_draft_to_published_sets_published_at(db: PgPool) {
     let updated = service::update_post(
         &db,
         post.id,
-        &common::member_auth(author),
+        &common::auth_for(&db, author).await,
         UpdatePostRequest {
             title: None,
             slug: None,
@@ -250,7 +250,7 @@ async fn update_duplicate_slug_returns_conflict(db: PgPool) {
     let err = service::update_post(
         &db,
         second.id,
-        &common::member_auth(author),
+        &common::auth_for(&db, author).await,
         UpdatePostRequest {
             title: None,
             slug: Some("update-shared".into()),
@@ -313,7 +313,7 @@ async fn update_post_mixed_case_category_round_trips_pg_enum(db: PgPool) {
     let updated = service::update_post(
         &db,
         post.id,
-        &common::member_auth(author),
+        &common::auth_for(&db, author).await,
         UpdatePostRequest {
             title: None,
             slug: None,

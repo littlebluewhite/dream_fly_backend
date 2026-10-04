@@ -2068,7 +2068,7 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
     assert_eq!(order.enrolments.len(), 1);
 
     // Member self-cancels the enrolment before the refund.
-    let auth = common::member_auth(user);
+    let auth = common::auth_for(&db, user).await;
     enrolments_service::cancel_enrolment(&db, &auth, order.enrolments[0].id)
         .await
         .expect("self-cancel enrolment");

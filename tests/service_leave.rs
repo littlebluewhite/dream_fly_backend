@@ -33,7 +33,7 @@ async fn attempt_makeup(
     leave_id: Uuid,
     target_session_id: Uuid,
 ) -> bool {
-    let auth = common::member_auth(user_id);
+    let auth = common::auth_for(&db, user_id).await;
     service::book_makeup(
         &db,
         common::studio_now_utc(Utc::now()),
@@ -164,7 +164,7 @@ async fn makeup(
     service::book_makeup(
         db,
         common::studio_now_utc(Utc::now()),
-        &common::member_auth(user_id),
+        &common::auth_for(&db, user_id).await,
         leave_id,
         MakeupRequest { session_id: target_session_id },
     )

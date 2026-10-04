@@ -54,7 +54,6 @@ use dream_fly_backend::config::{
 };
 use dream_fly_backend::health::HealthProbe;
 use dream_fly_backend::modules::permissions::model::Role;
-use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::startup;
 use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::studio_clock::StudioNow;
@@ -226,17 +225,7 @@ impl TestApp {
     /// top. Use this when a test needs an admin or coach without going
     /// through `/auth/register`.
     pub async fn seed_user_with_roles(&self, email: &str, extra: &[Role]) -> (Uuid, String) {
-        let user_id = super::seed_member(&self.db, email, "Password!234").await;
-
-        for role in extra {
-            let mut conn = self.db.acquire().await.expect("acquire conn");
-            // The user was created moments ago and has made no request, so
-            // no access-cache entry can exist for it yet.
-            permissions_repository::assign_role(&mut conn, user_id, *role)
-                .await
-                .expect("assign role")
-                .assume_uncached();
-        }
+        let user_id = super::seed_user_with_roles(&self.db, email, extra).await;
 
         // `create_account` lowercases the email; the token must carry the
         // stored form.

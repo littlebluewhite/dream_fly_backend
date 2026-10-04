@@ -161,7 +161,7 @@ async fn closed_slot_rejects_new_booking(db: PgPool) {
 async fn cancel_booking_frees_seat_and_is_idempotent(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
-    let auth = common::member_auth(user);
+    let auth = common::auth_for(&db, user).await;
 
     let booking = service::create_booking(
         &db,
@@ -206,7 +206,7 @@ async fn cancel_booking_frees_seat_and_is_idempotent(db: PgPool) {
 #[sqlx::test]
 async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
-    let auth = common::member_auth(user);
+    let auth = common::auth_for(&db, user).await;
 
     // Schedule a slot for a few hours from now (within 24h window, but
     // still in the future so create_booking doesn't reject it for being
@@ -305,7 +305,7 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
         .execute(&db)
         .await
         .expect("bump slot price");
-    let auth = common::member_auth(user);
+    let auth = common::auth_for(&db, user).await;
 
     let booking = service::create_booking(
         &db,
@@ -401,7 +401,7 @@ async fn concurrent_cancel_and_create_never_oversell(db: PgPool) {
         .expect("A takes the only seat");
 
     let (db_c, db_b) = (Arc::new(db.clone()), Arc::new(db.clone()));
-    let auth_a = common::member_auth(user_a);
+    let auth_a = common::auth_for(&db, user_a).await;
     let cancel = tokio::spawn(async move {
         service::cancel_booking(db_c.as_ref(), common::studio_now_utc(Utc::now()), &auth_a, held.id, None).await
     });
@@ -487,7 +487,7 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
 async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
-    let auth = common::member_auth(user);
+    let auth = common::auth_for(&db, user).await;
 
     let booking = service::create_booking(
         &db,
@@ -521,7 +521,7 @@ async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
 async fn seeded_confirmed_booking_occupies_seat_so_cancel_frees_it(db: PgPool) {
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let slot = TimeSlotSeed::new(5, common::today_utc()).insert(&db).await;
-    let auth = common::member_auth(user);
+    let auth = common::auth_for(&db, user).await;
     let booking =
         common::fixtures::seed_booking(&db, user, slot, BookingStatus::Confirmed, 1_000).await;
     assert_eq!(

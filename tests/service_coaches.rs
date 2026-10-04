@@ -100,7 +100,7 @@ async fn update_schedules_by_owner_succeeds(db: PgPool) {
         },
     ];
 
-    let auth = common::auth_with_roles(user_id, &["member", "coach"]);
+    let auth = common::auth_for(&db, user_id).await;
     let resp = service::update_schedules(&db, &auth, coach_id, &entries)
         .await
         .expect("owner may replace their schedule");
@@ -119,7 +119,7 @@ async fn update_schedules_by_stranger_returns_forbidden(db: PgPool) {
 
     let err = service::update_schedules(
         &db,
-        &common::member_auth(stranger_id),
+        &common::auth_for(&db, stranger_id).await,
         coach_id,
         &[],
     )
@@ -158,7 +158,7 @@ async fn update_schedules_invalid_time_returns_422(db: PgPool) {
     // AppError::Database, not Validation).
     let user_id = common::seed_member(&db, "badtime@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Owner").await;
-    let auth = common::auth_with_roles(user_id, &["member", "coach"]);
+    let auth = common::auth_for(&db, user_id).await;
 
     let err = service::update_schedules(
         &db,
@@ -205,7 +205,7 @@ async fn update_schedules_end_not_after_start_returns_422(db: PgPool) {
     // — surfacing as a bare 500 (AppError::Database) instead of Validation.
     let user_id = common::seed_member(&db, "badrange@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Owner").await;
-    let auth = common::auth_with_roles(user_id, &["member", "coach"]);
+    let auth = common::auth_for(&db, user_id).await;
 
     // end_time == start_time
     let err = service::update_schedules(

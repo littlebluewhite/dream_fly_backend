@@ -367,11 +367,12 @@ async fn cancel_enrolment_vs_in_flight_approval_does_not_deadlock(db: PgPool) {
     let t1_pid = common::backend_pid(&mut t1).await;
 
     let db_cancel = db.clone();
+    let member_auth = common::auth_for(&db, member).await;
     let handle = tokio::runtime::Handle::current();
     let cancel = tokio::task::spawn_blocking(move || {
         handle.block_on(service::cancel_enrolment(
             &db_cancel,
-            &common::member_auth(member),
+            &member_auth,
             enrolment_id,
         ))
     });
