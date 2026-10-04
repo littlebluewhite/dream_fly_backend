@@ -24,9 +24,10 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::certificates::dto::{CreateCertificateRequest, CreateReportCardRequest};
 use dream_fly_backend::modules::certificates::service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::permissions::model::Role;
 
 use common::fixtures::{seed_coach, seed_course, seed_enrolment};
-use common::{admin_auth, coach_auth, seed_member};
+use common::{auth_for, coach_auth, seed_member, seed_user_with_roles};
 
 fn issued_on() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 7, 1).unwrap()
@@ -157,10 +158,11 @@ async fn create_certificate_by_coach_without_coach_row_returns_403(db: PgPool) {
 
 #[sqlx::test]
 async fn create_certificate_by_admin_succeeds_without_course(db: PgPool) {
-    let admin_user_id = seed_member(&db, "cert-svc-admin@example.com", "Password!234").await;
+    let admin_user_id =
+        seed_user_with_roles(&db, "cert-svc-admin@example.com", &[Role::Admin]).await;
     let member_id = seed_member(&db, "cert-svc-admin-target@example.com", "Password!234").await;
 
-    let auth = admin_auth(admin_user_id);
+    let auth = auth_for(&db, admin_user_id).await;
     let req = CreateCertificateRequest {
         user_id: member_id,
         course_id: None,

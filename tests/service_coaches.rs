@@ -22,6 +22,7 @@ use uuid::Uuid;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::coaches::dto::ScheduleEntry;
 use dream_fly_backend::modules::coaches::service;
+use dream_fly_backend::modules::permissions::model::Role;
 
 async fn set_coach_active(db: &PgPool, coach_id: Uuid, active: bool) {
     sqlx::query("UPDATE coaches SET is_active = $1 WHERE id = $2")
@@ -131,12 +132,12 @@ async fn update_schedules_by_stranger_returns_forbidden(db: PgPool) {
 #[sqlx::test]
 async fn update_schedules_by_admin_on_other_coach_succeeds(db: PgPool) {
     let owner_id = common::seed_member(&db, "owner@example.com", "hunter22-secret").await;
-    let admin_id = common::seed_member(&db, "admin@example.com", "hunter22-secret").await;
+    let admin_id = common::seed_user_with_roles(&db, "admin@example.com", &[Role::Admin]).await;
     let coach_id = common::fixtures::seed_coach(&db, owner_id, "Owner").await;
 
     service::update_schedules(
         &db,
-        &common::auth_with_roles(admin_id, &["member", "admin"]),
+        &common::auth_for(&db, admin_id).await,
         coach_id,
         &[ScheduleEntry {
             day_of_week: 2,

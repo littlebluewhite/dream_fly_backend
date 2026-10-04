@@ -18,11 +18,12 @@ use dream_fly_backend::modules::attendance::service as attendance_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
+use dream_fly_backend::modules::permissions::model::Role;
 
 use common::fixtures::{
     seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
 };
-use common::{admin_auth, coach_auth, seed_member, studio_now_utc};
+use common::{auth_for, coach_auth, seed_member, seed_user_with_roles, studio_now_utc};
 
 fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
@@ -64,7 +65,7 @@ async fn attendance_status(db: &PgPool, session_id: Uuid, enrolment_id: Uuid) ->
 async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
     let course_id = seed_course(&db, "Mid Batch Approval Course", None).await;
     let session_id = seed_course_session(&db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
-    let admin = seed_member(&db, "att-race-admin@example.com", "Password!234").await;
+    let admin = seed_user_with_roles(&db, "att-race-admin@example.com", &[Role::Admin]).await;
     let member_a = seed_member(&db, "att-race-a@example.com", "Password!234").await;
     let member_b = seed_member(&db, "att-race-b@example.com", "Password!234").await;
     let enrolment_a =
@@ -89,12 +90,13 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
     let t_block_pid = common::backend_pid(&mut t_block).await;
 
     let db_batch = db.clone();
+    let admin_auth = auth_for(&db, admin).await;
     let handle = tokio::runtime::Handle::current();
     let batch = tokio::task::spawn_blocking(move || {
         handle.block_on(attendance_service::bulk_upsert_attendance(
             &db_batch,
             studio_now_utc(Utc::now()),
-            &admin_auth(admin),
+            &admin_auth,
             session_id,
             vec![present(enrolment_a), present(enrolment_b)],
         ))
@@ -106,7 +108,7 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
         "batch must be blocked on A's uncommitted row, after its approved-set read"
     );
 
-    leave_service::decide_leave_request(&db, &admin_auth(admin), leave_b, "approved")
+    leave_service::decide_leave_request(&db, &auth_for(&db, admin).await, leave_b, "approved")
         .await
         .expect("approve B while the batch is blocked");
 
@@ -141,7 +143,8 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
 async fn bulk_present_over_verbal_leave_overwrites(db: PgPool) {
     let course_id = seed_course(&db, "Bulk Verbal Leave Course", None).await;
     let session_id = seed_course_session(&db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
-    let admin = seed_member(&db, "att-bulk-verbal-admin@example.com", "Password!234").await;
+    let admin =
+        seed_user_with_roles(&db, "att-bulk-verbal-admin@example.com", &[Role::Admin]).await;
     let member = seed_member(&db, "att-bulk-verbal@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
@@ -150,7 +153,7 @@ async fn bulk_present_over_verbal_leave_overwrites(db: PgPool) {
     attendance_service::bulk_upsert_attendance(
         &db,
         studio_now_utc(Utc::now()),
-        &admin_auth(admin),
+        &auth_for(&db, admin).await,
         session_id,
         vec![present(enrolment_id)],
     )
@@ -201,7 +204,7 @@ async fn bulk_upsert_forbidden_precedes_not_started(db: PgPool) {
 async fn bulk_upsert_not_started_precedes_invalid_status(db: PgPool) {
     let course_id = seed_course(&db, "Bulk Not Started Pin Course", None).await;
     let session_id = seed_course_session(&db, course_id, tomorrow(), t(9, 0), t(10, 0)).await;
-    let admin = seed_member(&db, "att-pin-admin@example.com", "Password!234").await;
+    let admin = seed_user_with_roles(&db, "att-pin-admin@example.com", &[Role::Admin]).await;
     let member = seed_member(&db, "att-pin-status-member@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
@@ -209,7 +212,7 @@ async fn bulk_upsert_not_started_precedes_invalid_status(db: PgPool) {
     let err = attendance_service::bulk_upsert_attendance(
         &db,
         studio_now_utc(Utc::now()),
-        &admin_auth(admin),
+        &auth_for(&db, admin).await,
         session_id,
         vec![AttendanceRecordEntry {
             enrolment_id,

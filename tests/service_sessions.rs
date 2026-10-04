@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::sessions::dto::SessionsRangeQuery;
 use dream_fly_backend::modules::sessions::{calendar, service};
 
@@ -471,8 +472,9 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
         seed_session_scene(&db, "Course Without Coach Today", None, today, t(11, 0), None).await;
     let without_coach = without_scene.course;
 
-    let admin_id = common::seed_member(&db, "coach-name-admin@example.com", "hunter22-secret").await;
-    let auth = common::admin_auth(admin_id);
+    let admin_id =
+        common::seed_user_with_roles(&db, "coach-name-admin@example.com", &[Role::Admin]).await;
+    let auth = common::auth_for(&db, admin_id).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
@@ -499,8 +501,9 @@ async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
     .await;
     let course_id = scene.course;
 
-    let admin_id = common::seed_member(&db, "venue-match-admin@example.com", "hunter22-secret").await;
-    let auth = common::admin_auth(admin_id);
+    let admin_id =
+        common::seed_user_with_roles(&db, "venue-match-admin@example.com", &[Role::Admin]).await;
+    let auth = common::auth_for(&db, admin_id).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
@@ -533,8 +536,8 @@ async fn today_session_keeps_venue_after_slot_start_time_edit(db: PgPool) {
     .unwrap();
 
     let admin_id =
-        common::seed_member(&db, "venue-kept-admin@example.com", "hunter22-secret").await;
-    let auth = common::admin_auth(admin_id);
+        common::seed_user_with_roles(&db, "venue-kept-admin@example.com", &[Role::Admin]).await;
+    let auth = common::auth_for(&db, admin_id).await;
     let sessions = service::today_sessions(&db, at, &auth)
         .await
         .expect("today sessions");
@@ -557,8 +560,9 @@ async fn today_sessions_venue_is_null_when_no_matching_slot(db: PgPool) {
     let today = Utc::now().date_naive();
     seed_course_session(&db, course_id, today, t(9, 0), t(10, 0)).await;
 
-    let admin_id = common::seed_member(&db, "venue-no-match-admin@example.com", "hunter22-secret").await;
-    let auth = common::admin_auth(admin_id);
+    let admin_id =
+        common::seed_user_with_roles(&db, "venue-no-match-admin@example.com", &[Role::Admin]).await;
+    let auth = common::auth_for(&db, admin_id).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");
@@ -580,8 +584,9 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
     let scene_b = seed_session_scene(&db, "Course B Admin Today", None, today, t(9, 0), None).await;
     let course_b = scene_b.course;
 
-    let admin_id = common::seed_member(&db, "admin-today@example.com", "hunter22-secret").await;
-    let auth = common::admin_auth(admin_id);
+    let admin_id =
+        common::seed_user_with_roles(&db, "admin-today@example.com", &[Role::Admin]).await;
+    let auth = common::auth_for(&db, admin_id).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("admin today sessions");
@@ -603,8 +608,9 @@ async fn today_sessions_materializes_todays_slot_without_preexisting_session(db:
     seed_course_schedule_slot(&db, course_id, dow_of(today), t(9, 0), t(10, 0)).await;
 
     let admin_id =
-        common::seed_member(&db, "materialize-today-admin@example.com", "hunter22-secret").await;
-    let auth = common::admin_auth(admin_id);
+        common::seed_user_with_roles(&db, "materialize-today-admin@example.com", &[Role::Admin])
+            .await;
+    let auth = common::auth_for(&db, admin_id).await;
     let sessions = service::today_sessions(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
         .expect("today sessions");

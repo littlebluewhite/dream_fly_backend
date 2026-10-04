@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::posts::dto::{CreatePostRequest, UpdatePostRequest};
 use dream_fly_backend::modules::posts::model::{PostCategory, PostStatus};
 use dream_fly_backend::modules::posts::service;
@@ -166,7 +167,7 @@ async fn update_post_by_author_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn update_post_by_admin_on_other_author_succeeds(db: PgPool) {
     let author = common::seed_member(&db, "a@example.com", "hunter22-secret").await;
-    let admin = common::seed_member(&db, "admin@example.com", "hunter22-secret").await;
+    let admin = common::seed_user_with_roles(&db, "admin@example.com", &[Role::Admin]).await;
     let post = service::create_post(&db, author, create_req("Mine", "article"))
         .await
         .unwrap();
@@ -174,7 +175,7 @@ async fn update_post_by_admin_on_other_author_succeeds(db: PgPool) {
     service::update_post(
         &db,
         post.id,
-        &common::admin_auth(admin),
+        &common::auth_for(&db, admin).await,
         UpdatePostRequest {
             title: Some("Admin Fixed".into()),
             slug: None,
