@@ -410,7 +410,11 @@ async fn concurrent_cancel_and_create_never_oversell(db: PgPool) {
     });
     let (cancelled, created) = tokio::join!(cancel, create);
     cancelled.expect("cancel task panicked").expect("A's cancel always succeeds");
-    let b_got_seat = created.expect("create task panicked").is_ok();
+    let b_got_seat = match created.expect("create task panicked") {
+        Ok(_) => true,
+        Err(AppError::BadRequest(ref m)) if m == "time slot is full or closed" => false,
+        Err(err) => panic!("B may only lose the race to a full slot, got: {err:?}"),
+    };
 
     assert_eq!(common::slot_booked(&db, slot).await, i32::from(b_got_seat));
 }
