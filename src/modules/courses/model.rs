@@ -78,6 +78,32 @@ pub struct Course {
     pub waitlist_count: i64,
 }
 
+impl Course {
+    /// 課程行的合法數量：一堂課只能買一份，否則 `Validation` (422)
+    /// `"course quantity must be 1"`。不需要課程列（cart 在查課程前就先擋，
+    /// 讓 422 排在查無課程的 404 之前）。
+    ///
+    /// 年齡規則若要在加入購物車／候補時檢查，也歸這裡（與
+    /// [`Self::ensure_purchasable`] 同一個 owner）。
+    pub fn ensure_line_quantity(quantity: i32) -> Result<(), AppError> {
+        if quantity != 1 {
+            return Err(AppError::Validation("course quantity must be 1".into()));
+        }
+        Ok(())
+    }
+
+    /// 課程現在能不能買／排候補：下架則 `BadRequest` (400)
+    /// `"course is not available"`。cart 加入與 waitlist 加入共用；結帳的
+    /// 下架 gate（422、整批）與公開瀏覽的 404 是刻意不同的分流，不走這裡
+    /// （CONTEXT「上架可見性」）。
+    pub fn ensure_purchasable(&self) -> Result<(), AppError> {
+        if !self.is_active {
+            return Err(AppError::BadRequest("course is not available".into()));
+        }
+        Ok(())
+    }
+}
+
 /// A course's structured weekly meeting pattern — one row per (day_of_week,
 /// start_time). Mirrors `coach_schedules`' shape. `day_of_week` is 0=Sunday
 /// .. 6=Saturday (PostgreSQL `EXTRACT(DOW)` convention — see
@@ -207,6 +233,23 @@ mod tests {
         match err {
             AppError::Validation(msg) => assert_eq!(msg, "max_age must be between 0 and 150"),
             other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+    // --- ensure_line_quantity ---
+
+    #[test]
+    fn course_line_quantity_of_one_is_ok() {
+        assert!(Course::ensure_line_quantity(1).is_ok());
+    }
+
+    #[test]
+    fn course_line_quantity_other_than_one_is_validation_error() {
+        for qty in [i32::MIN, -1, 0, 2, 999, 1000, i32::MAX] {
+            let err = Course::ensure_line_quantity(qty).expect_err("must reject");
+            assert!(
+                matches!(err, AppError::Validation(ref m) if m == "course quantity must be 1"),
+                "got: {err:?} for qty={qty}"
+            );
         }
     }
 }

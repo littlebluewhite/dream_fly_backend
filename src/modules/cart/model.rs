@@ -5,9 +5,6 @@ use sqlx::postgres::PgRow;
 use strum::VariantArray;
 use uuid::Uuid;
 
-use crate::error::AppError;
-use crate::modules::products::model::Product;
-
 /// Discriminates whether a cart (or checkout) line targets a product or a
 /// course. Maps to the Postgres `cart_item_type` enum.
 #[derive(
@@ -59,30 +56,6 @@ impl CartItemType {
             Self::Product => "product",
             Self::Course => "course",
         }
-    }
-
-    /// The per-type quantity rule for the requested quantity, before any
-    /// row is looked up: `Product` delegates to
-    /// `products::model::Product::ensure_quantity_in_range`, `Course` allows
-    /// only `1`. For a product this is only an early range guard (it keeps
-    /// the 400 ahead of the product lookup's 404); the owner of a product
-    /// line's legal quantity — range, the time-based entitlement rule, and
-    /// judged on the merged/final quantity — is
-    /// `products::model::Product::ensure_line_quantity`.
-    ///
-    /// `update_quantity`'s pre-lookup guard is a separate, deliberately
-    /// duplicated inline check — see the comment there for why it isn't
-    /// just a call to this method.
-    pub fn validate_quantity(&self, qty: i32) -> Result<(), AppError> {
-        match self {
-            Self::Product => Product::ensure_quantity_in_range(qty)?,
-            Self::Course => {
-                if qty != 1 {
-                    return Err(AppError::Validation("course quantity must be 1".into()));
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -220,49 +193,6 @@ pub fn checked_line_subtotal(price_cents: i64, quantity: i32) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::products::model::quantity_range_msg;
-
-    // --- validate_quantity: Product (1..=999) ---
-
-    #[test]
-    fn product_quantity_within_1_to_999_is_ok() {
-        assert!(CartItemType::Product.validate_quantity(1).is_ok());
-        assert!(CartItemType::Product.validate_quantity(500).is_ok());
-        assert!(CartItemType::Product.validate_quantity(999).is_ok());
-    }
-
-    #[test]
-    fn product_quantity_outside_1_to_999_is_bad_request() {
-        for qty in [i32::MIN, -1, 0, 1000, i32::MAX] {
-            let err = CartItemType::Product
-                .validate_quantity(qty)
-                .expect_err("must reject");
-            assert!(
-                matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
-                "got: {err:?} for qty={qty}"
-            );
-        }
-    }
-
-    // --- validate_quantity: Course (== 1) ---
-
-    #[test]
-    fn course_quantity_of_one_is_ok() {
-        assert!(CartItemType::Course.validate_quantity(1).is_ok());
-    }
-
-    #[test]
-    fn course_quantity_other_than_one_is_validation_error() {
-        for qty in [i32::MIN, -1, 0, 2, 999, 1000, i32::MAX] {
-            let err = CartItemType::Course
-                .validate_quantity(qty)
-                .expect_err("must reject");
-            assert!(
-                matches!(err, AppError::Validation(ref m) if m == "course quantity must be 1"),
-                "got: {err:?} for qty={qty}"
-            );
-        }
-    }
 
     // --- LineTarget decode (the one place the item_type/id union is read) ---
 

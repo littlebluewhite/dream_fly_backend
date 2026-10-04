@@ -24,10 +24,7 @@ pub async fn join_waitlist(
     let course = crate::modules::courses::repository::find_by_id(db, course_id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
-
-    if !course.is_active {
-        return Err(AppError::BadRequest("course is not available".into()));
-    }
+    course.ensure_purchasable()?;
 
     let seats = seats::course_seats(db, course_id)
         .await?

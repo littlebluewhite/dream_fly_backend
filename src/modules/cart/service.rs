@@ -2,6 +2,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::courses::model::Course;
 use crate::modules::points::service::BalanceLock;
 use crate::modules::products::model::Product;
 
@@ -39,7 +40,7 @@ async fn add_product_item(
 ) -> Result<CartResponse, AppError> {
     // The increment's own range, so a bad request is 400 before the
     // product lookup's 404.
-    CartItemType::Product.validate_quantity(quantity)?;
+    Product::ensure_quantity_in_range(quantity)?;
 
     let product = crate::modules::products::repository::find_by_id(db, product_id)
         .await?
@@ -64,16 +65,13 @@ async fn add_course_item(
     course_id: Uuid,
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
-    CartItemType::Course.validate_quantity(quantity)?;
+    Course::ensure_line_quantity(quantity)?;
 
     // Verify course exists and is active
     let course = crate::modules::courses::repository::find_by_id(db, course_id)
         .await?
         .ok_or_else(|| AppError::NotFound("course not found".into()))?;
-
-    if !course.is_active {
-        return Err(AppError::BadRequest("course is not available".into()));
-    }
+    course.ensure_purchasable()?;
 
     let inserted = repository::add_course_item(db, user_id, course_id).await?;
     if inserted.is_none() {
@@ -89,10 +87,10 @@ pub async fn update_quantity(
     item_id: Uuid,
     quantity: i32,
 ) -> Result<CartResponse, AppError> {
-    // Wire-compat guard — kept in place ahead of the item lookup, not
-    // deferred into `CartItemType::validate_quantity` below. A product
+    // Wire-compat guard — kept in place ahead of the item lookup. A product
     // line's legal quantity is owned by `Product::ensure_line_quantity`
-    // (reached via `ensure_purchasable` below); this guard runs only its
+    // (reached via `ensure_purchasable` below), a course line's by
+    // `Course::ensure_line_quantity`; this guard runs only the product
     // range half, and only to preserve error-code priority (codex r2).
     // Moving it entirely after the lookup would change observable
     // behavior: "qty out of range + item doesn't exist" would flip
@@ -105,7 +103,7 @@ pub async fn update_quantity(
 
     match item.target {
         LineTarget::Course(_) => {
-            CartItemType::Course.validate_quantity(quantity)?;
+            Course::ensure_line_quantity(quantity)?;
         }
         LineTarget::Product(product_id) => {
             // Re-check the product on quantity updates (active, line

@@ -185,7 +185,7 @@ _Avoid_: 在 `new` 之外手寫 `AppState { .. }` literal、為測試再開第�
 
 **上架可見性(Listing Visibility)**:
 `products`/`courses`/`venues`/`coaches` 四模組的公開明細端點統一收斂:owner 是各自 repository 的 scoped finder——`find_active_by_slug`/`find_active_by_id`(products、courses 兩者皆備;venues 僅 `find_active_by_slug`,因其明細端點本就 slug-only;coaches 僅 `find_active_by_id`,因其明細端點是 UUID-only),`is_active = true` 直接寫進 SQL WHERE,不是 fetch 後再濾——service 端(`get_by_slug`/`get_by_id`/`get_detail`)拿到 `None` 就地回 `NotFound`,已下架資源因此與不存在同形(契約用語見各端點的「已下架資源走公開明細一律 404」註記,含 coaches 的公開班表端點同一謂詞下沉)。公開列表端點(`find_all_active`)本已濾,這輪收斂補的是明細/班表側先前敞開的側門。
-Cart 加入購物車路徑刻意不重用這條謂詞:`cart::service::add_product_item`/`add_course_item` 走一般(未限定 active)的 `find_by_id`,改由 `Product::ensure_purchasable`(`products/model.rs`)回 400「product is not available」——已登入買家主動加入購物車時,「這項目目前不可購買」比對外瀏覽用的遮蔽性 404 更有用。結帳自己的下架 gate(甲案,見「結帳快照」詞條)是第三種形狀(422、整批、列名)。同一件事(下架)在三個操作站點各自對應不同狀態碼,是刻意分流,不是三套裁決漂移。教練自己(或 admin 代管視角)看到的課程/學員範圍不受這條謂詞影響——那是「教練範圍」的獨立語意,見該詞條與 ADR-0012。
+Cart 加入購物車路徑刻意不重用這條謂詞:`cart::service::add_product_item`/`add_course_item` 走一般(未限定 active)的 `find_by_id`,改由 `Product::ensure_purchasable`(`products/model.rs`)回 400「product is not available」、課程行改由 `Course::ensure_purchasable`(`courses/model.rs`)回 400「course is not available」(候補加入 `waitlist::service::join_waitlist` 共用同一個)——課程行的數量規則(只能是 1,422)同在 `Course::ensure_line_quantity`;年齡規則將來若要在加入購物車/候補時檢查,也該放在 `Course` 這裡,不要散在 cart/waitlist service。已登入買家主動加入購物車時,「這項目目前不可購買」比對外瀏覽用的遮蔽性 404 更有用。結帳自己的下架 gate(甲案,見「結帳快照」詞條)是第三種形狀(422、整批、列名)。同一件事(下架)在三個操作站點各自對應不同狀態碼,是刻意分流,不是三套裁決漂移。教練自己(或 admin 代管視角)看到的課程/學員範圍不受這條謂詞影響——那是「教練範圍」的獨立語意,見該詞條與 ADR-0012。
 _Avoid_: 把 cart 的 400 或結帳的 422 誤認為上架可見性謂詞沒收乾淨的殘留破口——三者是刻意不同語意,不該收斂成同一種寫法。
 
 **結帳快照(Checkout Snapshot)**:
