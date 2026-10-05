@@ -44,7 +44,7 @@ user 鎖僅無條件化不夠、必須前移到購物車讀取之前；庫存回
 match；`refund::compensation_required(current, target) = current.is_revenue() &&
 matches!(target, Cancelled | Refunded)`。選擇耦合到既有常數（而非獨立定義「哪些狀態算已成
 交」），理由是這條規則本來就該只有一個 owner：`REVENUE_STATUSES` 已經是
-`products::repository::find_sold_counts`（售出計數）與報表營收聚合的單一事實來源（CONTEXT.md
+`products::repository::find_sold_counts`（售出計數）與報表營收聚合的單一事實來源（GLOSSARY.md
 「營收狀態集」詞條），退款補償問的正是同一個問題的鏡像——「這筆訂單現在算不算已經計入營
 收」。兩份獨立 match 遲早會在新增狀態時漂移（一份加了、另一份忘記加），用同一個常數消滅這個風
 險類別。

@@ -84,7 +84,7 @@ pub struct SlotEntry {
 }
 
 /// `PATCH /schedule/slots/{id}` body — admin sets/clears the closed intent
-/// flag (see `SlotStatus::derive`; CONTEXT.md「時段狀態」詞條). No
+/// flag (see `SlotStatus::derive`; GLOSSARY.md「時段狀態」詞條). No
 /// field-level constraint needed on a single bool; `Validate` is still
 /// derived (as a no-op) so this type satisfies `ValidatedJson<T>`'s bound.
 #[derive(Debug, Deserialize, Validate)]

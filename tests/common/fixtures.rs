@@ -1087,7 +1087,7 @@ pub struct FullCourse {
 /// 「某課程剛好坐滿」:`CourseSeed`(max_students,不掛
 /// coach)+ 等量的 `seed_member`/`seed_enrolment`(active, now)各造一位占位
 /// 會員填滿座位,取代「建課、逐一造會員、逐一造 active enrolment」的多段式
-/// inline 序列。參數名沿用 `courses` 表欄位 `max_students`(CONTEXT.md 座位
+/// inline 序列。參數名沿用 `courses` 表欄位 `max_students`(GLOSSARY.md 座位
 /// 詞條——_Avoid_: capacity)。Returns the new course id and its occupants'
 /// member ids, in creation order.
 pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> FullCourse {
