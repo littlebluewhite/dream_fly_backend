@@ -6,5 +6,6 @@
 .DS_Store
 *.log
 /CLAUDE.md
+/AGENTS.md
 /graphify-out/
 /.understand-anything/
