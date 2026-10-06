@@ -6,5 +6,10 @@
 #   chmod +x "$h.tmp"; mv -f "$h.tmp" "$h"   # mv replaces an old symlink instead of writing through it
 # Bypass for a WIP commit: git commit --no-verify
 set -e
+# The check reads files on disk, so they must be exactly what is being committed.
+if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+	echo 'pre-commit: unstaged or untracked changes would make the check lie; stage or set them aside, or use --no-verify' >&2
+	exit 1
+fi
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 cargo clippy --all-targets --quiet -- -D warnings
