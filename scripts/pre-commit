@@ -1,6 +1,8 @@
 #!/bin/sh
-# Guardrail: block commits that add clippy lints. Install once per clone:
-#   ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+# Guardrail: block commits that add clippy lints. Install once per clone (any worktree);
+# the shim runs the committing worktree's own copy and skips branches that predate it:
+#   h=$(git rev-parse --git-path hooks)/pre-commit
+#   printf '#!/bin/sh\n[ -x scripts/pre-commit ] || exit 0\nexec scripts/pre-commit\n' > "$h"; chmod +x "$h"
 # Bypass for a WIP commit: git commit --no-verify
 set -e
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
