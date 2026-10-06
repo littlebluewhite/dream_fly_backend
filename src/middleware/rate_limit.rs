@@ -38,19 +38,15 @@ const AUTH_MAX_REQUESTS_PER_WINDOW: i64 = 10;
 /// `APP__SERVER__TRUST_PROXY=true`, because an untrusted XFF header can be
 /// trivially spoofed to either bypass or amplify rate limits.
 fn extract_client_ip(req: &Request, trust_proxy: bool) -> Option<IpAddr> {
-    if trust_proxy {
-        if let Some(hdr) = req
+    if trust_proxy
+        && let Some(hdr) = req
             .headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-        {
-            if let Some(first) = hdr.split(',').next() {
-                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+            && let Some(first) = hdr.split(',').next()
+                && let Ok(ip) = first.trim().parse::<IpAddr>() {
                     return Some(ip);
                 }
-            }
-        }
-    }
 
     req.extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -95,6 +91,7 @@ async fn bump_auth(store: &dyn EphemeralStore, identity: &str) -> anyhow::Result
 /// `is_auth_endpoint` prefix-sniffing; it now lives in
 /// [`strict_rate_limit`], mounted separately via `route_layer` on the auth
 /// throttled route group.
+#[allow(clippy::result_large_err)]
 pub async fn rate_limit_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
     req: Request,
@@ -141,6 +138,7 @@ pub async fn rate_limit_middleware(
 ///     `/api/v1/auth/loginXYZ`) used to charge this bucket via
 ///     `starts_with`; it now falls through to the 404 handler without
 ///     charging it (the global bucket still charges).
+#[allow(clippy::result_large_err)]
 pub async fn strict_rate_limit(
     axum::extract::State(state): axum::extract::State<AppState>,
     req: Request,

@@ -50,11 +50,10 @@ pub async fn redeem(
         return Err(AppError::NotFound("獎勵不存在".into()));
     }
 
-    if let Some(stock) = reward.stock {
-        if stock <= 0 {
+    if let Some(stock) = reward.stock
+        && stock <= 0 {
             return Err(AppError::Conflict("已兌換完畢".into()));
         }
-    }
 
     // The one true points mechanism (裁決 7): lock the balance, compare
     // against `points_cost`, and spend it atomically — ledger insert +

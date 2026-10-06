@@ -177,11 +177,9 @@ async fn e2e_shopping_flow(db: PgPool) {
         .await;
     assert_eq!(my.status_code(), 200);
     assert!(
-        my.json::<serde_json::Value>()["orders"]
+        !my.json::<serde_json::Value>()["orders"]
             .as_array()
-            .unwrap()
-            .len()
-            >= 1
+            .unwrap().is_empty()
     );
 }
 

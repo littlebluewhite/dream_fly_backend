@@ -292,16 +292,14 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
-        if let Some(handle) = consumer_handle {
-            if let Err(e) = handle.await {
+        if let Some(handle) = consumer_handle
+            && let Err(e) = handle.await {
                 tracing::warn!("Kafka consumer task exited with error: {e}");
             }
-        }
-        if let Some(handle) = outbox_handle {
-            if let Err(e) = handle.await {
+        if let Some(handle) = outbox_handle
+            && let Err(e) = handle.await {
                 tracing::warn!("Kafka outbox dispatcher exited with error: {e}");
             }
-        }
         if let Err(e) = cleanup_handle.await {
             tracing::warn!("token cleanup task exited with error: {e}");
         }

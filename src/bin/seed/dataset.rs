@@ -1647,7 +1647,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                 OrderStatus::Refunded
             } else if seq == 7 {
                 OrderStatus::Pending
-            } else if g % 2 == 0 {
+            } else if g.is_multiple_of(2) {
                 OrderStatus::Completed
             } else {
                 OrderStatus::Paid
@@ -1658,7 +1658,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             // merchandise line (unless the main line already is the tee —
             // checkout's cart can't produce two lines of one product).
             let mut lines: Vec<CheckoutLine> = Vec::new();
-            if g % 5 == 0 {
+            if g.is_multiple_of(5) {
                 let k = (g / 5) % 6;
                 lines.push(CheckoutLine {
                     target: LineTarget::Course(course_ids[k]),
@@ -1677,7 +1677,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                     is_active: true,
                 });
             }
-            if g % 3 == 0 && (g % 5 == 0 || g % 7 != 6) {
+            if g.is_multiple_of(3) && (g.is_multiple_of(5) || g % 7 != 6) {
                 lines.push(CheckoutLine {
                     target: LineTarget::Product(product_ids[6]),
                     quantity: 1 + (g % 2) as i32,
@@ -1842,9 +1842,8 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     for w in 0..14i64 {
         let week_start = monday + Duration::weeks(w - 8);
         for v in 0..4usize {
-            for j in 0..3usize {
+            for (j, &(start_h, end_h)) in slot_hours.iter().enumerate() {
                 let date = week_start + Days::new(((v + j * 2) % 7) as u64);
-                let (start_h, end_h) = slot_hours[j];
                 let s = date.num_days_from_ce() as usize * 12 + v * 3 + j;
                 let booking_status = if date < today {
                     match s % 20 {

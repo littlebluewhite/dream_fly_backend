@@ -164,7 +164,7 @@ async fn makeup(
     service::book_makeup(
         db,
         common::studio_now_utc(Utc::now()),
-        &common::auth_for(&db, user_id).await,
+        &common::auth_for(db, user_id).await,
         leave_id,
         MakeupRequest { session_id: target_session_id },
     )

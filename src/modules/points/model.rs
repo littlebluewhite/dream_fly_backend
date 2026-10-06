@@ -70,7 +70,7 @@ impl PointReason {
 /// 改型別化收進 `MaterializedDay`——同判準、相反結論,詳見 ADR-0007 第四
 /// 則 Addendum)。斷言用 `>=` 不用 `>`:零幅度被放行通過建構子,交給
 /// `apply_delta_tx` 既有的 zero-delta `Validation` guard 處理(該 guard 不
-/// 動)——建構子不搶在前面用 panic 攔零。
+/// > 動)——建構子不搶在前面用 panic 攔零。
 ///
 /// 欄位全私有:`points::service` 是本檔(`model`)的兄弟模組,不能透過任何
 /// 後門讀到私有欄位,只能經 `delta()`/`reason()`/`order_id()` 三個唯讀存取

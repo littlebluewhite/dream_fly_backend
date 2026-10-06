@@ -303,6 +303,7 @@ async fn update_product_clears_nullable_fields_to_null(db: PgPool) {
     assert!(body["valid_days"].is_null());
     assert!(body["session_count"].is_null());
 
+    #[allow(clippy::type_complexity)]
     let row: (Option<i64>, Option<String>, Option<i32>, Option<i32>, Option<i32>) = sqlx::query_as(
         "SELECT original_price_cents, badge, stock, valid_days, session_count FROM products WHERE id = $1",
     )

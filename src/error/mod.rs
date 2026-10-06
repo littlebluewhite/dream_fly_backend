@@ -68,11 +68,10 @@ impl AppError {
     /// caller-supplied and is the only thing that reaches the HTTP body —
     /// no constraint name or bound value is ever surfaced.
     pub fn conflict_on_unique(e: sqlx::Error, msg: impl Into<String>) -> Self {
-        if let Some(db_err) = e.as_database_error() {
-            if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
+        if let Some(db_err) = e.as_database_error()
+            && db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
                 return AppError::Conflict(msg.into());
             }
-        }
         AppError::Database(e)
     }
 
@@ -84,11 +83,10 @@ impl AppError {
     /// caller-supplied and is the only thing that reaches the HTTP body —
     /// no constraint name or bound value is ever surfaced.
     pub fn conflict_on_exclusion(e: sqlx::Error, msg: impl Into<String>) -> Self {
-        if let Some(db_err) = e.as_database_error() {
-            if db_err.code().as_deref() == Some(PG_EXCLUSION_VIOLATION) {
+        if let Some(db_err) = e.as_database_error()
+            && db_err.code().as_deref() == Some(PG_EXCLUSION_VIOLATION) {
                 return AppError::Conflict(msg.into());
             }
-        }
         AppError::Database(e)
     }
 
@@ -98,13 +96,12 @@ impl AppError {
     /// a different message. `e` is SQLSTATE 23505 *and* its constraint name
     /// is `constraint` → `Conflict(msg)`; anything else → `Database(e)`.
     pub fn conflict_on_constraint(e: sqlx::Error, constraint: &str, msg: impl Into<String>) -> Self {
-        if let Some(db_err) = e.as_database_error() {
-            if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION)
+        if let Some(db_err) = e.as_database_error()
+            && db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION)
                 && db_err.constraint() == Some(constraint)
             {
                 return AppError::Conflict(msg.into());
             }
-        }
         AppError::Database(e)
     }
 }

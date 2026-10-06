@@ -37,11 +37,10 @@ pub async fn update_me(
     // `dto::UpdateProfileRequest`'s doc comment), so it's checked here
     // instead. Only the "set to a date" branch is checked — clearing to
     // NULL (`Some(None)`) is always allowed.
-    if let Some(Some(date)) = req.birth_date {
-        if let Some(msg) = birth_date_range_error(date, at.today()) {
+    if let Some(Some(date)) = req.birth_date
+        && let Some(msg) = birth_date_range_error(date, at.today()) {
             return Err(AppError::Validation(msg.to_string()));
         }
-    }
 
     let user = repository::update_profile(
         db,
@@ -113,11 +112,10 @@ pub async fn create_user(
     correlation_id: Option<String>,
     at: StudioNow,
 ) -> Result<UserResponse, AppError> {
-    if let Some(date) = req.birth_date {
-        if let Some(msg) = birth_date_range_error(date, at.today()) {
+    if let Some(date) = req.birth_date
+        && let Some(msg) = birth_date_range_error(date, at.today()) {
             return Err(validation::field_error("birth_date", msg));
         }
-    }
     let hashed = password::hash_for_storage(req.password.clone()).await?;
 
     let mut tx = db.begin().await?;

@@ -454,6 +454,7 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     assert!(body["category"].is_null());
     assert!(body["schedule_text"].is_null());
 
+    #[allow(clippy::type_complexity)]
     let row: (Option<i32>, Option<i32>, Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT min_age, max_age, coach_id, category, schedule_text FROM courses WHERE id = $1",
     )

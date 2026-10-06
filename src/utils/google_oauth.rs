@@ -212,11 +212,10 @@ async fn get_jwks(
 
     if !force_refresh {
         let guard = slot.read().await;
-        if let Some((jwks, fetched_at)) = guard.as_ref() {
-            if (Utc::now() - *fetched_at).num_seconds() < JWKS_TTL_SECONDS {
+        if let Some((jwks, fetched_at)) = guard.as_ref()
+            && (Utc::now() - *fetched_at).num_seconds() < JWKS_TTL_SECONDS {
                 return Ok(jwks.clone());
             }
-        }
     }
 
     let fresh = fetch_jwks(jwks_url, http).await?;

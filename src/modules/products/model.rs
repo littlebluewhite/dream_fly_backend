@@ -163,13 +163,12 @@ impl Product {
 
         self.ensure_line_quantity(quantity)?;
 
-        if let Some(stock) = self.stock {
-            if quantity > stock {
+        if let Some(stock) = self.stock
+            && quantity > stock {
                 return Err(AppError::Conflict(format!(
                     "insufficient stock: only {stock} available"
                 )));
             }
-        }
 
         Ok(())
     }

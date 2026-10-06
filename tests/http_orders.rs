@@ -63,7 +63,7 @@ async fn checkout_happy_path_creates_order_and_clears_cart(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert!(body["total_cents"].as_i64().unwrap() > 0);
-    assert!(body["items"].as_array().unwrap().len() >= 1);
+    assert!(!body["items"].as_array().unwrap().is_empty());
     // Checkout creates the order already `paid` — there's no separate
     // payment-capture step in this application.
     assert_eq!(body["status"], "paid");
@@ -188,7 +188,7 @@ async fn my_orders_returns_only_mine(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = resp.json();
-    assert!(body["orders"].as_array().unwrap().len() >= 1);
+    assert!(!body["orders"].as_array().unwrap().is_empty());
 
     // OrderSummary.items brief — name comes from the order_items snapshot,
     // not a live product join.

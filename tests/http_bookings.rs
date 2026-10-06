@@ -162,5 +162,5 @@ async fn list_all_bookings_as_admin_sees_everything(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    assert!(body["bookings"].as_array().unwrap().len() >= 1);
+    assert!(!body["bookings"].as_array().unwrap().is_empty());
 }

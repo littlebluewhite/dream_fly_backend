@@ -974,8 +974,8 @@ pub struct AttendanceScene {
     pub attendance: Uuid,
 }
 
-/// 「某課程在某日某時段有一筆已點名出勤」:`seed_member`(自動編號 email)
-/// + `seed_enrolment`(active, now)+ `seed_course_session`(`start_time` 起
+/// 「某課程在某日某時段有一筆已點名出勤」:`seed_member`(自動編號 email) +
+/// `seed_enrolment`(active, now)+ `seed_course_session`(`start_time` 起
 /// 一小時)+ `seed_attendance`(status, marked_by=member),取代四段式 inline
 /// 序列。`start_time` 顯式入參:`course_sessions` 有 UNIQUE(course_id,
 /// session_date, start_time),固定時間會讓同課同日的第二筆場景直接撞鍵,

@@ -31,6 +31,7 @@ use super::repository;
 /// `judge` 的判決:`Accept` 帶已驗證且啟用的帳號;`Reject.counts` 是否要
 /// 算進登入失敗計數——停用帳號密碼驗證正確時不計(帳號本身沒問題,計了
 /// 只會冤枉地把它鎖死)。
+#[allow(clippy::large_enum_variant)]
 enum Verdict {
     Accept(User),
     Reject { counts: bool },
