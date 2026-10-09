@@ -65,10 +65,12 @@ pub async fn create_order(
 /// whether this line actually decremented `products.stock` — the caller
 /// (`service::checkout`) now gets it pre-derived per line from
 /// `fulfilment::order_lines`; always `false` for course lines.
+/// `created_at` 綁呼叫端傳入的付款時間,與訂單列的 `paid_at` 同一刻(ADR-0017)。
 pub async fn create_order_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     order_id: Uuid,
     items: &[OrderLine],
+    created_at: DateTime<Utc>,
 ) -> Result<Vec<OrderItem>, sqlx::Error> {
     let len = items.len();
     let mut ids: Vec<Uuid> = Vec::with_capacity(len);
@@ -96,7 +98,7 @@ pub async fn create_order_items(
          unit_price_cents, name, stock_decremented, created_at) \
          SELECT u.id, $2, u.item_type, \
                 u.product_id, u.course_id, u.quantity, u.unit_price_cents, u.name, \
-                u.stock_decremented, NOW() \
+                u.stock_decremented, $10 \
          FROM unnest($1::uuid[], $3::uuid[], $4::uuid[], $5::int[], $6::bigint[], $7::text[], $8::bool[], \
                      $9::cart_item_type[]) \
               AS u(id, product_id, course_id, quantity, unit_price_cents, name, stock_decremented, \
@@ -112,6 +114,7 @@ pub async fn create_order_items(
     .bind(&names)
     .bind(&stock_decremented)
     .bind(&item_types)
+    .bind(created_at)
     .fetch_all(&mut **tx)
     .await
 }

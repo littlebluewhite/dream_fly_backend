@@ -117,6 +117,53 @@ async fn checkout_stamps_paid_at_and_created_at_with_sampled_now(db: PgPool) {
     assert_eq!(resp.created_at, t);
 }
 
+/// ADR-0017:`order_items.created_at` 跟訂單列、結帳點數帳同屬一個付款時間,
+/// 必須等於 handler 取樣的 `now`,不是 DB 的 `NOW()`。
+#[sqlx::test]
+async fn checkout_stamps_items_and_ledger_with_sampled_now(db: PgPool) {
+    use chrono::TimeZone;
+    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
+    set_points_balance(&db, user, 500).await;
+    let first = common::seed_product(&db, "prod-1", 300_000, Some(3)).await;
+    let second = common::seed_product(&db, "prod-2", 100_000, Some(3)).await;
+    common::add_to_cart(&db, user, first, 1).await;
+    common::add_to_cart(&db, user, second, 1).await;
+
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest {
+            coupon_code: None,
+            use_points: Some(true),
+            payment_method: None,
+        },
+        None,
+        common::studio_now_utc(t),
+    )
+    .await
+    .expect("checkout");
+
+    let item_times: Vec<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT created_at FROM order_items WHERE order_id = $1")
+            .bind(resp.id)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(item_times.len(), 2);
+    assert!(item_times.iter().all(|&at| at == t), "got: {item_times:?}");
+
+    let ledger_times: Vec<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT created_at FROM point_ledger WHERE order_id = $1")
+            .bind(resp.id)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(ledger_times.len(), 2, "redeem + earn");
+    assert!(ledger_times.iter().all(|&at| at == t), "got: {ledger_times:?}");
+}
+
 /// ADR-0017:報名的 `enrolled_at`/`created_at` 是業務時間(報表依 `created_at`
 /// 分桶),結帳買課必須蓋上 handler 取樣的 `now`。
 #[sqlx::test]

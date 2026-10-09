@@ -291,7 +291,7 @@ pub async fn checkout(
     // `reserved`'s post-decrement rows — see that function's doc for
     // the exact rule.
     let lines = fulfilment::order_lines(&cart, &reserved);
-    repository::create_order_items(&mut tx, order.id, &lines).await?;
+    repository::create_order_items(&mut tx, order.id, &lines, now).await?;
 
     // Artifacts.
     // Enrolments — course lines. `enrol_batch_from_purchase_tx` walks

@@ -59,3 +59,14 @@
   把既有稽核欄位拿去分桶,等於把它升格成業務時間,寫入端要一併改綁。
 - `src/utils/clock.rs` 的未覆蓋清單隨每一步縮短;清單剩下的是尚未處理的業務時間站點與本 ADR 刻意留給
   `NOW()` 的稽核時間。
+
+## Addendum（2026-10-09）：歷史列綁自己的業務時間
+
+兩點,原決策敘述維持當時快照、不改寫:
+
+- **seed 寫歷史列時,傳那一列自己的時間,不傳 `at.now`。** 上面「呼叫慣例」說 seed 呼叫 repository 傳
+  `at.now`,那只適用於「現在發生」的列;歷史訂單的 `paid_at` 是過去的某一刻,其 order_items、結帳點數帳也
+  必須蓋同一刻。蓋 `at.now` 會讓歷史列的點數帳落進當月,灌水 `GET /points/me` 的 `earned_this_month`。
+- **`order_items.created_at` 由「稽核時間」改成綁付款時間。** 決策的判準段把它列為「排序用」的稽核欄位、
+  維持 `NOW()`;自此 `create_order_items` 收 `created_at` 並綁定,結帳傳取樣的 `now`,與 `paid_at` 同一刻。
+  它仍然只用在同一張單內的排序(`ORDER BY oi.created_at`),同一張單的行時間本來就相同,所以行為不變。
