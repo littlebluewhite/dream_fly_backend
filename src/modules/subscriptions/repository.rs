@@ -5,7 +5,9 @@ use uuid::Uuid;
 use super::model::{Subscription, SubscriptionWithProduct};
 
 /// Insert a new subscription row inside the caller's transaction. `status`
-/// is left to the column default (`'active'`).
+/// is left to the column default (`'active'`). `started_at`/`created_at`
+/// bind the caller's `now` (ADR-0017: the purchase instant, not the DB's
+/// `NOW()`), the same instant `expires_at` was computed from.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_tx(
     tx: &mut Transaction<'_, Postgres>,
@@ -16,12 +18,13 @@ pub async fn insert_tx(
     total_sessions: Option<i32>,
     remaining_sessions: Option<i32>,
     price_cents: i64,
+    now: DateTime<Utc>,
 ) -> Result<Subscription, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         "INSERT INTO subscriptions \
          (id, user_id, product_id, order_id, expires_at, total_sessions, remaining_sessions, \
-          price_cents, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW()) \
+          price_cents, started_at, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, NOW()) \
          RETURNING *, subscription_derived_status(status, expires_at, remaining_sessions) AS derived_status",
     )
     .bind(Uuid::now_v7())
@@ -32,6 +35,7 @@ pub async fn insert_tx(
     .bind(total_sessions)
     .bind(remaining_sessions)
     .bind(price_cents)
+    .bind(now)
     .fetch_one(&mut **tx)
     .await
 }

@@ -77,7 +77,9 @@ use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
+use dream_fly_backend::modules::products::repository as products_repository;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
+use dream_fly_backend::modules::subscriptions::service as subscriptions_service;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -795,6 +797,32 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
             .await
             .with_context(|| format!("record paid order '{}'", seed.order_number))?;
 
+            // Checkout's grant step: every product line is offered to
+            // `grant_from_purchase_tx`, which grants only ticket/membership
+            // products — started at the order's `paid_at`.
+            for p in &fulfilment::plan(&seed.lines).products {
+                let product = products_repository::find_by_id(db, p.product_id)
+                    .await
+                    .with_context(|| format!("load product for order '{}'", seed.order_number))?
+                    .with_context(|| {
+                        format!("product of order '{}' is missing", seed.order_number)
+                    })?;
+                product
+                    .ensure_line_quantity(p.quantity)
+                    .with_context(|| format!("line quantity of order '{}'", seed.order_number))?;
+                subscriptions_service::grant_from_purchase_tx(
+                    &mut tx,
+                    seed.user_id,
+                    &product,
+                    p.quantity,
+                    p.price_cents,
+                    order.id,
+                    seed.created_at,
+                )
+                .await
+                .with_context(|| format!("grant subscription for order '{}'", seed.order_number))?;
+            }
+
             if seed.status != OrderStatus::Paid {
                 orders_repository::update_status_tx(&mut tx, order.id, &seed.status)
                     .await
@@ -804,6 +832,11 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
                 points_service::reverse_order_tx(&mut tx, &lock, order.id, seed.created_at)
                     .await
                     .with_context(|| format!("refund ledger for order '{}'", seed.order_number))?;
+                subscriptions_service::cancel_by_order_tx(&mut tx, order.id)
+                    .await
+                    .with_context(|| {
+                        format!("cancel subscriptions of order '{}'", seed.order_number)
+                    })?;
             }
         }
     }
@@ -1011,7 +1044,7 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
     // `format!`-built string so sqlx's `SqlSafeStr` compile-time check (no
     // dynamic SQL strings) is satisfied without an `AssertSqlSafe` escape
     // hatch.
-    const QUERIES: [(&str, &str); 16] = [
+    const QUERIES: [(&str, &str); 17] = [
         ("users", "SELECT COUNT(*) FROM users"),
         ("coaches", "SELECT COUNT(*) FROM coaches"),
         ("courses", "SELECT COUNT(*) FROM courses"),
@@ -1022,6 +1055,7 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
         ("venues", "SELECT COUNT(*) FROM venues"),
         ("orders", "SELECT COUNT(*) FROM orders"),
         ("order_items", "SELECT COUNT(*) FROM order_items"),
+        ("subscriptions", "SELECT COUNT(*) FROM subscriptions"),
         ("enrolments", "SELECT COUNT(*) FROM enrolments"),
         ("attendance_records", "SELECT COUNT(*) FROM attendance_records"),
         ("course_sessions", "SELECT COUNT(*) FROM course_sessions"),

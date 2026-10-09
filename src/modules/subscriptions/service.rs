@@ -47,6 +47,7 @@ pub async fn grant_from_purchase_tx(
         grant.total_sessions,
         grant.remaining_sessions,
         price_cents,
+        now,
     )
     .await
     .map_err(AppError::Database)?;

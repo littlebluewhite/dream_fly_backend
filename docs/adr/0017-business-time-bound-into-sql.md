@@ -70,3 +70,10 @@
 - **`order_items.created_at` 由「稽核時間」改成綁付款時間。** 決策的判準段把它列為「排序用」的稽核欄位、
   維持 `NOW()`;自此 `create_order_items` 收 `created_at` 並綁定,結帳傳取樣的 `now`,與 `paid_at` 同一刻。
   它仍然只用在同一張單內的排序(`ORDER BY oi.created_at`),同一張單的行時間本來就相同,所以行為不變。
+
+## Addendum（2026-10-10）：訂閱的起始時間綁授權的 `now`
+
+- **`subscriptions.started_at`/`created_at` 由 `NOW()` 改成綁 `grant_from_purchase_tx` 收到的 `now`。** `started_at`
+  是業務時間:它是訂閱的起點,和由同一個 `now` 算出的 `expires_at` 成對,也經 API 回給會員;`created_at` 是
+  `GET /subscriptions/me` 的排序鍵。結帳傳取樣的 `now`,行為不變;seed 的已付訂單改走 checkout 的授權函式後傳
+  訂單的 `paid_at`,歷史訂閱才不會「今天才開始、卻早已到期」。`updated_at` 仍是稽核時間,維持 `NOW()`。

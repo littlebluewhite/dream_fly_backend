@@ -6,10 +6,11 @@
 //!   pure-core tested in `subscriptions::entitlement::plan`'s own
 //!   `#[cfg(test)]` module (the time-based quantity-must-be-1 rule lives in
 //!   `products::model::Product::ensure_line_quantity`'s tests) — no DB,
-//!   exact `expires_at` values, no ±1 day window. The two cases kept here
+//!   exact `expires_at` values, no ±1 day window. The three cases kept here
 //!   guard what only a real DB can: the session+valid_days combo through
-//!   `insert_tx` + `derived_status`, and that a non-entitlement product
-//!   writes no row at all.
+//!   `insert_tx` + `derived_status`, `started_at`/`created_at` binding the
+//!   caller's `now`, and that a non-entitlement product writes no row at
+//!   all.
 //! - `redeem`: successful decrement, zero-remaining conflict, expired-by-date
 //!   conflict, no-session-quota conflict (exact message), cancelled conflict,
 //!   and not-found.
@@ -104,6 +105,40 @@ async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
     assert_eq!(sub.remaining_sessions, Some(10));
     // ...and expires_at is populated too, since valid_days was also set —
     // exact value now that `now` is fixed and DB-precision-aligned.
+    assert_eq!(sub.expires_at, Some(now + Duration::days(90)));
+}
+
+/// ADR-0017: the grant starts at the caller's sampled `now` (the purchase
+/// instant `expires_at` is computed from), not the DB's `NOW()` — a seed
+/// order paid months ago must not start its pass today.
+#[sqlx::test]
+async fn grant_starts_at_the_callers_now_not_the_db_clock(db: PgPool) {
+    use chrono::TimeZone;
+    let now = Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let user_id = common::seed_member(&db, "grant-t@example.com", "Password!234").await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-past",
+        ProductType::Ticket,
+        8_000,
+        Some(90),
+        Some(5),
+    )
+    .await;
+    let product = products_repo::find_by_id(&db, product_id)
+        .await
+        .expect("query product")
+        .expect("product exists");
+    let mut tx = db.begin().await.expect("begin tx");
+    let order_id = seed_order(&mut tx, user_id, 8_000).await;
+    let sub = service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 8_000, order_id, now)
+        .await
+        .expect("grant")
+        .expect("expected Some(subscription)");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(sub.started_at, now);
+    assert_eq!(sub.created_at, now);
     assert_eq!(sub.expires_at, Some(now + Duration::days(90)));
 }
 

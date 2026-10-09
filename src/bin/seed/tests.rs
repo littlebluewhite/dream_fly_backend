@@ -439,3 +439,58 @@ async fn seeded_users_exist_before_rows_that_reference_them(db: PgPool) {
     let (_, new_this_month, _) = member_stats(&db, at).await.expect("member stats");
     assert_eq!(new_this_month, 0);
 }
+
+/// Every paid `DF-SEED-%` order's ticket/membership line carries the
+/// subscription checkout would have granted, started at the order's
+/// `paid_at`; a refunded order's grant is cancelled; a never-paid order
+/// grants nothing. Regression: seed orders skipped checkout's grant step, so
+/// a seed member who "bought" a pass had no subscription at all
+/// (`GET /subscriptions/me` empty, admin order detail without artifacts).
+#[sqlx::test]
+async fn paid_seed_orders_grant_their_entitlements(db: PgPool) {
+    let at = StudioNow {
+        tz: taipei(),
+        now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
+    };
+    dataset::run(&db, at).await.expect("run");
+
+    // Non-vacuous: paid seed orders do sell ticket/membership lines.
+    let grantable_paid_lines: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM order_items oi \
+         JOIN orders o ON o.id = oi.order_id \
+         JOIN products p ON p.id = oi.product_id \
+         WHERE o.order_number LIKE 'DF-SEED-%' AND o.paid_at IS NOT NULL \
+           AND p.product_type IN ('ticket'::product_type, 'membership'::product_type)",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count grantable paid seed lines");
+    assert!(grantable_paid_lines > 0);
+
+    let lines_without_matching_grant: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM order_items oi \
+         JOIN orders o ON o.id = oi.order_id \
+         JOIN products p ON p.id = oi.product_id \
+         WHERE o.order_number LIKE 'DF-SEED-%' AND o.paid_at IS NOT NULL \
+           AND p.product_type IN ('ticket'::product_type, 'membership'::product_type) \
+           AND (SELECT COUNT(*) FROM subscriptions s \
+                WHERE s.order_id = o.id AND s.product_id = oi.product_id \
+                  AND s.user_id = o.user_id \
+                  AND s.started_at = o.paid_at AND s.created_at = o.paid_at \
+                  AND (s.status = 'cancelled'::subscription_status) \
+                      = (o.status = 'refunded'::order_status)) <> 1",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count grantable lines without their grant");
+    assert_eq!(lines_without_matching_grant, 0);
+
+    let grants_on_unpaid_orders: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM subscriptions s JOIN orders o ON o.id = s.order_id \
+         WHERE o.paid_at IS NULL",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count grants on unpaid orders");
+    assert_eq!(grants_on_unpaid_orders, 0);
+}

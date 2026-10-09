@@ -64,3 +64,9 @@ seed,不是本 ADR 原本討論的 seed + 測試 fixtures 這一對。
 - `tests/common/fixtures.rs` 的 `OrderSeed` 不變:仍直寫列、不產 points ledger,重開條件 1 仍未成立。
 - seed 沒有改走 `orders::service::checkout`(重開條件 2 未成立):待付/取消訂單照舊直寫訂單列,報名與訂閱授權
   也不經 checkout 編排(見 GLOSSARY「Seed 資料集」的已知缺口)。
+
+## Addendum (2026-10-10)
+
+seed 已付訂單的訂閱授權改走 checkout 的 `subscriptions::service::grant_from_purchase_tx`(起始時間 = `paid_at`,
+退款訂單再以 `cancel_by_order_tx` 取消)——同上一則,是借用既有 production seam,不是新建共用 history writer。
+上一則「報名與訂閱授權也不經 checkout 編排」只剩報名一半成立(見 GLOSSARY「Seed 資料集」的已知缺口)。
