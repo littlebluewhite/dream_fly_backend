@@ -57,7 +57,9 @@ at: StudioNow) -> SeedReport`),只是路徑搬遷與型別化取樣時鐘,不是
 結帳點數帳,同一個 `paid_at`)。兩個 adapter——`orders::service::checkout` 與 `bin/seed/dataset.rs` 的
 `insert_order_if_absent`——所以這個 seam 是真的,不是假設的。起因是 seed 手抄的那份抄歪了:點數帳蓋執行當下
 `at.now`,`paid_at` 卻是歷史時間,seed 會員 `GET /points/me` 的 `earned_this_month` 因此灌水。seed 的退款訂單
-也改走 `points::service::reverse_order_tx`。
+也改走 `points::service::reverse_order_tx`。上列兩個重開條件其實都沒成立;仍稱「部分重開」,是因為觸發的是第三個
+理由——seed 手抄的已付訂單寫入漂移了(點數帳蓋 `at.now`,`paid_at` 是歷史時間)——而且共用寫入的是 checkout +
+seed,不是本 ADR 原本討論的 seed + 測試 fixtures 這一對。
 
 - `tests/common/fixtures.rs` 的 `OrderSeed` 不變:仍直寫列、不產 points ledger,重開條件 1 仍未成立。
 - seed 沒有改走 `orders::service::checkout`(重開條件 2 未成立):待付/取消訂單照舊直寫訂單列,報名與訂閱授權

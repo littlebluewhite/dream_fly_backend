@@ -12,7 +12,9 @@
 //! locking the points balance (`points::service::lock_balance_tx`, `FOR
 //! UPDATE`, 404 on a missing user), lock ordering, stock decrement,
 //! order/order_items creation, enrolment/subscription artifacts, the points
-//! ledger, idempotency, and the outbox. This module only prices an
+//! ledger, idempotency, and the outbox (the order/order_items/points-ledger
+//! writes themselves now live in `orders::paid_order::record_paid_order_tx`,
+//! which checkout calls). This module only prices an
 //! already-assembled cart — pure function, zero DB, zero async, same shape
 //! as `utils::studio_clock`.
 

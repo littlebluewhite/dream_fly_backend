@@ -62,10 +62,12 @@ pub async fn create_order(
 /// `name` is the checkout-time display name (from the cart snapshot) —
 /// stored verbatim so later reads never need to join the live
 /// product/course catalog. `stock_decremented` is the checkout-time fact of
-/// whether this line actually decremented `products.stock` — the caller
-/// (`service::checkout`) now gets it pre-derived per line from
-/// `fulfilment::order_lines`; always `false` for course lines.
-/// `created_at` 綁呼叫端傳入的付款時間,與訂單列的 `paid_at` 同一刻(ADR-0017)。
+/// whether this line actually decremented `products.stock` — the callers
+/// (`paid_order::record_paid_order_tx`, and the dev seed's
+/// `insert_order_if_absent` for pending/cancelled orders) get it
+/// pre-derived per line from `fulfilment::order_lines`; always `false` for
+/// course lines.
+/// `created_at` 綁呼叫端傳入的時間,與訂單列的 `created_at` 同一刻(已付訂單即 `paid_at`;ADR-0017)。
 pub async fn create_order_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     order_id: Uuid,
