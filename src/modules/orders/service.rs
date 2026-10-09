@@ -27,9 +27,10 @@ use super::fulfilment;
 use super::idempotency::{self, IdempotencyKey, Recorded};
 use super::locks;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
+use super::paid_order;
 use super::pricing;
 use super::refund::{self, TransitionDecision};
-use super::repository::{self, OrderAmounts};
+use super::repository;
 use super::tx_witness::TxReleased;
 
 /// The checkout request after every check that needs no database: the
@@ -103,10 +104,11 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 ///   order is replayed (`idempotency::record`).
 ///
 /// Every rejection after the transaction opens rolls the whole checkout
-/// back. On success the order is created already `paid`, followed by its
-/// order_items, enrolments, subscriptions, points ledger rows, the cart
-/// clear, the idempotency row and the outbox event — one transaction — then
-/// the inline notification.
+/// back. On success the order is created already `paid` together with its
+/// order_items and points ledger rows (`paid_order::record_paid_order_tx`),
+/// followed by enrolments, subscriptions, the cart clear, the idempotency
+/// row and the outbox event — one transaction — then the inline
+/// notification.
 ///
 /// The transactional cart/coupon reads and the enrolment/subscription DTO
 /// assembly go through their owning modules' service seams (ADR-0005), so
@@ -264,24 +266,6 @@ pub async fn checkout(
         )
     };
 
-    // Create the order row FIRST, already `paid` — order_id is needed
-    // before enrolments/subscriptions/ledger rows can link to it.
-    let order = repository::create_order(
-        &mut tx,
-        user_id,
-        &order_number,
-        OrderAmounts {
-            total_cents: outcome.total_cents,
-            discount_cents: outcome.discount_cents,
-            points_used: outcome.points_used,
-            points_earned: outcome.points_earned,
-        },
-        outcome.applied_coupon_code.as_deref(),
-        intent.payment_method,
-        now,
-    )
-    .await?;
-
     // order_items from the (locked) cart snapshot — both product and
     // course lines. `fulfilment::order_lines` (plan()'s sister pure
     // function) turns the snapshot into named `OrderLine`s: `name`
@@ -291,7 +275,24 @@ pub async fn checkout(
     // `reserved`'s post-decrement rows — see that function's doc for
     // the exact rule.
     let lines = fulfilment::order_lines(&cart, &reserved);
-    repository::create_order_items(&mut tx, order.id, &lines, now).await?;
+
+    // Record the paid order FIRST — order_id is needed before
+    // enrolments/subscriptions can link to it. `record_paid_order_tx`
+    // writes the order row (already `paid`), its order_items and the
+    // checkout points ledger at the one sampled `now`
+    // (`orders::paid_order`); `locks.balance()` proves the buyer's
+    // `users` row is already locked, so the ledger writes add no lock
+    // dependency.
+    let order = paid_order::record_paid_order_tx(
+        &mut tx,
+        locks.balance(),
+        &order_number,
+        intent.payment_method,
+        &lines,
+        &outcome,
+        now,
+    )
+    .await?;
 
     // Artifacts.
     // Enrolments — course lines. `enrol_batch_from_purchase_tx` walks
@@ -300,7 +301,7 @@ pub async fn checkout(
     // for product lines above; see `orders::locks`). A full course or
     // a duplicate active
     // enrolment rolls back the *entire* checkout (order, order_items,
-    // stock decrement — all of it), which is correct: partially
+    // points ledger, stock decrement — all of it), which is correct: partially
     // fulfilling a cart is not an acceptable outcome.
     enrolments_service::enrol_batch_from_purchase_tx(
         &mut tx,
@@ -337,12 +338,6 @@ pub async fn checkout(
             now,
         )
         .await?;
-    }
-
-    // Points ledger — `PricingOutcome::ledger_deltas` owns the order
-    // (redeem before earn) and the zero-skip.
-    for delta in outcome.ledger_deltas(order.id) {
-        points_service::apply_delta_tx(&mut tx, user_id, delta, now).await?;
     }
 
     // Clear the cart within the same transaction.

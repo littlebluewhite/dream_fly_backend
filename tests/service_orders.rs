@@ -13,6 +13,7 @@
 mod common;
 
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -33,9 +34,12 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
+use dream_fly_backend::modules::orders::fulfilment;
 use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::orders::paid_order;
+use dream_fly_backend::modules::orders::pricing;
 use dream_fly_backend::modules::orders::service;
 use dream_fly_backend::modules::products::model::{ProductType, quantity_range_msg};
 use dream_fly_backend::modules::products::service as product_service;
@@ -162,6 +166,76 @@ async fn checkout_stamps_items_and_ledger_with_sampled_now(db: PgPool) {
             .unwrap();
     assert_eq!(ledger_times.len(), 2, "redeem + earn");
     assert!(ledger_times.iter().all(|&at| at == t), "got: {ledger_times:?}");
+}
+
+/// 已付訂單落帳:訂單列、訂單行、結帳點數帳同一個付款時間,點數帳照
+/// `ledger_deltas` 的內容與順序寫入。
+#[sqlx::test]
+async fn record_paid_order_tx_writes_row_items_and_ledger_at_one_instant(db: PgPool) {
+    use chrono::TimeZone;
+    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
+    let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
+    set_points_balance(&db, user, 500).await;
+    let product = common::seed_product(&db, "prod-1", 300_000, Some(3)).await;
+    common::add_to_cart(&db, user, product, 1).await;
+
+    let mut tx = db.begin().await.unwrap();
+    let checkout_locks = locks::acquire_checkout_locks(&mut tx, user).await.unwrap();
+    let cart_items =
+        cart_service::find_cart_items_for_checkout_tx(&mut tx, checkout_locks.balance())
+            .await
+            .unwrap();
+    let cart = fulfilment::ensure_all_purchasable(cart_items).unwrap();
+    let outcome = pricing::price(&cart, None, 500, true).unwrap();
+    let lines = fulfilment::order_lines(&cart, &HashMap::new());
+
+    let order = paid_order::record_paid_order_tx(
+        &mut tx,
+        checkout_locks.balance(),
+        "DF-PAIDORDER01",
+        "credit_card",
+        &lines,
+        &outcome,
+        t,
+    )
+    .await
+    .expect("record paid order");
+    tx.commit().await.unwrap();
+
+    assert_eq!(order.paid_at, Some(t));
+    assert_eq!(order.created_at, t);
+
+    let item_times: Vec<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT created_at FROM order_items WHERE order_id = $1")
+            .bind(order.id)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(item_times, vec![t]);
+
+    // Redeem (negative) sorts before earn (positive) — the apply order.
+    let ledger: Vec<(String, i64, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT reason::text, delta, created_at FROM point_ledger \
+         WHERE order_id = $1 ORDER BY delta",
+    )
+    .bind(order.id)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    let expected: Vec<(String, i64)> = outcome
+        .ledger_deltas(order.id)
+        .iter()
+        .map(|d| (d.reason().as_str().to_string(), d.delta()))
+        .collect();
+    assert_eq!(expected.len(), 2, "redeem + earn");
+    let written: Vec<(String, i64)> = ledger.iter().map(|(r, d, _)| (r.clone(), *d)).collect();
+    assert_eq!(written, expected);
+    assert!(ledger.iter().all(|(_, _, at)| *at == t), "got: {ledger:?}");
+
+    assert_eq!(
+        common::points_balance_of(&db, user).await,
+        500 - outcome.points_used + outcome.points_earned
+    );
 }
 
 /// ADR-0017:報名的 `enrolled_at`/`created_at` 是業務時間(報表依 `created_at`
@@ -687,10 +761,10 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
 async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     let full_course = seed_full_course(&db, "Full Class", 1).await;
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
-    // Also request points redemption so, if the failure did NOT roll back
-    // everything, a stray point_ledger row or balance mutation would show
-    // up below. The enrolment check (course capacity) runs before the
-    // points-ledger step, so this must never be reached either.
+    // Also request points redemption: `record_paid_order_tx` has already
+    // written the points ledger by the time the enrolment check (course
+    // capacity) fails, so a stray point_ledger row or balance mutation
+    // below would mean the rollback missed it.
     let user = seed_carted_member(
         &db,
         "latecomer@example.com",

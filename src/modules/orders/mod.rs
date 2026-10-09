@@ -4,6 +4,7 @@ pub mod handlers;
 pub mod idempotency;
 pub mod locks;
 pub mod model;
+pub mod paid_order;
 pub mod pricing;
 pub mod refund;
 pub mod repository;
