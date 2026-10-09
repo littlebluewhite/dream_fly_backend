@@ -83,7 +83,10 @@
 //! `products::service::lock_restock_for_order_tx`). No courses — refund
 //! never writes a seat count. Its writes take the witnesses the same way:
 //! `points::service::reverse_order_tx` takes `&BalanceLock`,
-//! `products::service::restore_for_order_tx` takes `&ProductLocks`.
+//! `products::service::restore_for_order_tx` takes `&RestockLocks` — the
+//! lock plus the lines to restore, decided once when the lock was taken
+//! (the trace is read there and not again), so what is restocked is exactly
+//! what is locked.
 //!
 //! Each lock is taken at the strength its later write needs (`FOR NO KEY
 //! UPDATE` for the stock UPDATE, `FOR UPDATE` for the seat count), so no
@@ -115,7 +118,7 @@
 //!   3. refund's lock step and restore — [`acquire_refund_locks`] locks the
 //!      order's restock products via `lock_restock_for_order_tx` (ascending,
 //!      through `lock_products_tx`), and `restore_for_order_tx` writes them in
-//!      witness order (`in_lock_order`)
+//!      the `RestockLocks` witness's order (`in_lock_order`)
 //!
 //! Regression tests: `checkout_locks_take_products_ascending_no_cross_buyer_deadlock`,
 //! `checkout_same_product_two_buyers_queue_instead_of_deadlocking`,
@@ -128,7 +131,7 @@ use crate::error::AppError;
 use crate::modules::cart::service as cart_service;
 use crate::modules::courses::seats::{self, CourseLocks};
 use crate::modules::points::service::{self as points_service, BalanceLock};
-use crate::modules::products::service::{self as product_service, ProductLocks};
+use crate::modules::products::service::{self as product_service, ProductLocks, RestockLocks};
 
 use super::model::Order;
 
@@ -182,7 +185,7 @@ pub async fn acquire_checkout_locks(
 #[derive(Debug)]
 pub struct RefundLocks {
     balance: BalanceLock,
-    products: ProductLocks,
+    restock: RestockLocks,
 }
 
 impl RefundLocks {
@@ -190,8 +193,8 @@ impl RefundLocks {
         &self.balance
     }
 
-    pub fn products(&self) -> &ProductLocks {
-        &self.products
+    pub fn restock(&self) -> &RestockLocks {
+        &self.restock
     }
 }
 
@@ -205,7 +208,7 @@ pub async fn acquire_refund_locks(
     order: &Order,
 ) -> Result<RefundLocks, AppError> {
     let balance = points_service::lock_balance_tx(tx, order.user_id).await?;
-    let products = product_service::lock_restock_for_order_tx(tx, order.id).await?;
+    let restock = product_service::lock_restock_for_order_tx(tx, order.id).await?;
 
-    Ok(RefundLocks { balance, products })
+    Ok(RefundLocks { balance, restock })
 }

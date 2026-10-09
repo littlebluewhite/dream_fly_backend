@@ -727,3 +727,24 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 `checkout_time_based_entitlement_quantity_over_one_is_422_before_course_409`（(b) 由 409 翻成
 422）；新增 `checkout_time_based_entitlement_quantity_over_one_is_422_before_stock_409`、
 `checkout_legacy_line_quantity_over_999_is_400_before_stock_409`。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-10-09）：回補行在取鎖時決定一次——`RestockLocks`，restore 不再讀痕跡
+
+**遷移登記**（行為零變更：狀態碼、錯誤字串、錯誤優先序、鎖序、庫存寫入順序逐位元等價）：
+
+- 本檔 2026-09-26 Addendum 的決策 8（庫存）寫「`restore_for_order_tx(tx, &ProductLocks, order_id)`
+  再讀一次痕跡、依 `in_lock_order` 回補」——同一份 `order_items` 痕跡讀兩次，「要補哪幾行」也決定兩次
+  （取鎖時決定要鎖哪些商品、restore 時又決定要補哪些行），兩處只靠都呼叫 `restock_lines` 對齊。
+- 新增 `products::service::RestockLocks { locks: ProductLocks, lines: Vec<(Uuid, i32)> }`（欄位私有，
+  只有 `lock_restock_for_order_tx` 建得出來）。`lock_restock_for_order_tx` 讀痕跡一次、`restock_lines`
+  決定回補行、`lock_products_tx` 升序上鎖，把鎖和行一起回傳；`restore_for_order_tx(tx, &RestockLocks)`
+  不再收 `order_id`、不再讀痕跡。「鎖的商品」與「補的行」不可能對不上——這個狀態現在建不出來。
+- `orders::locks::RefundLocks` 的 `products: ProductLocks` 改為 `restock: RestockLocks`，accessor
+  `products()` 改 `restock()`；上面 Addendum 的 `RefundLocks { balance, products }` 即此欄位。
+- `in_lock_order` 仍留在 restore 裡（對 `RestockLocks` 內的 `ProductLocks` 走訪），所以「商品不存在」的
+  Internal 照舊排在 409「點數不足」之後（錯誤優先序不變）。
+- 兩次讀痕跡之間本來就不會有差異：整段在同一 tx，`orders` 列已 `FOR UPDATE`，`order_items` 不會變。
+  所以砍掉第二次讀不改任何可觀察行為。
+
+**測試**：不新增。現有的退款端到端測試（`service_orders.rs` 的退款／取消補償、`http_orders.rs` 的
+`update_status_refund_via_http_returns_cancelled_artifacts`）就是閘門。本檔其餘敘述維持決策當下狀態。

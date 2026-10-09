@@ -578,7 +578,7 @@ async fn compensate_order_artifacts_tx(
 ) -> Result<(), AppError> {
     let locks = locks::acquire_refund_locks(tx, order).await?;
     points_service::reverse_order_tx(tx, locks.balance(), order.id, now).await?;
-    product_service::restore_for_order_tx(tx, locks.products(), order.id).await?;
+    product_service::restore_for_order_tx(tx, locks.restock()).await?;
     enrolments_service::cancel_by_order_tx(tx, order.id).await?;
     subscriptions_service::cancel_by_order_tx(tx, order.id).await?;
 

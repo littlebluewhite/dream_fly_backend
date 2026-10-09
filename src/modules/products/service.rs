@@ -356,27 +356,44 @@ fn restock_lines(traces: &[OrderStockTrace]) -> Vec<(Uuid, i32)> {
     lines
 }
 
+/// Witness that `lock_restock_for_order_tx` has locked the products an
+/// order's refund will restock — the products stage of the refund half of the
+/// order lock protocol (`orders::locks::acquire_refund_locks`) — and decided,
+/// from the order's stock traces read once under that lock, which lines to
+/// restore. Fields are private; only `lock_restock_for_order_tx` can
+/// construct one, so the locked set and the lines `restore_for_order_tx`
+/// writes cannot disagree: restore reads no trace of its own.
+///
+/// `lines` are in trace (line-creation) order, not sorted: walking them in
+/// lock order is [`ProductLocks::in_lock_order`]'s job, done at restore.
+#[derive(Debug)]
+pub struct RestockLocks {
+    locks: ProductLocks,
+    lines: Vec<(Uuid, i32)>,
+}
+
 /// Lock the products an order's refund will restock — refund's products
 /// stage (`orders::locks::acquire_refund_locks`), taken right after the
-/// buyer's `users` row. Reads the order's own stock traces
-/// (`order_items`, ADR-0007 決策 8). Locks via [`lock_products_tx`] (ascending, `FOR NO KEY UPDATE`) even
-/// when nothing needs restocking.
+/// buyer's `users` row. Reads the order's own stock traces (`order_items`,
+/// ADR-0007 決策 8) once, decides the lines to restock (`restock_lines`),
+/// and locks their products via [`lock_products_tx`] (ascending, `FOR NO KEY
+/// UPDATE`) — even when nothing needs restocking. Returns the lock together
+/// with those lines as a [`RestockLocks`].
 pub async fn lock_restock_for_order_tx(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
-) -> Result<ProductLocks, AppError> {
+) -> Result<RestockLocks, AppError> {
     let traces = repository::find_stock_traces_by_order_tx(tx, order_id).await?;
-    let ids: Vec<Uuid> = restock_lines(&traces)
-        .into_iter()
-        .map(|(product_id, _)| product_id)
-        .collect();
-    lock_products_tx(tx, &ids).await
+    let lines = restock_lines(&traces);
+    let ids: Vec<Uuid> = lines.iter().map(|(product_id, _)| *product_id).collect();
+    let locks = lock_products_tx(tx, &ids).await?;
+    Ok(RestockLocks { locks, lines })
 }
 
 /// Undo an order's checkout stock decrement inside the caller's transaction —
 /// refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
-/// mirror of `reserve_stock_tx`. Re-reads the order's stock traces and
-/// restores each `stock_decremented` line, walked in `locks`' lock order
+/// mirror of `reserve_stock_tx`. Restores each line `restock` decided at lock
+/// time (no trace is read here), walked in the lock's order
 /// ([`ProductLocks::in_lock_order`], ascending `product_id`) — ordering
 /// rationale: the "Cross-buyer dimension" anchor in `orders::locks`
 /// (ADR-0007 決策 5). A line outside the witness is `AppError::Internal`.
@@ -388,11 +405,11 @@ pub async fn lock_restock_for_order_tx(
 /// data-integrity bug, not a legitimate business-rule rejection.
 pub async fn restore_for_order_tx(
     tx: &mut Transaction<'_, Postgres>,
-    locks: &ProductLocks,
-    order_id: Uuid,
+    restock: &RestockLocks,
 ) -> Result<(), AppError> {
-    let traces = repository::find_stock_traces_by_order_tx(tx, order_id).await?;
-    let lines = locks.in_lock_order(restock_lines(&traces), |(product_id, _)| *product_id)?;
+    let lines = restock
+        .locks
+        .in_lock_order(restock.lines.clone(), |(product_id, _)| *product_id)?;
 
     for (product_id, quantity) in lines {
         repository::restore_stock_tx(tx, product_id, quantity)
