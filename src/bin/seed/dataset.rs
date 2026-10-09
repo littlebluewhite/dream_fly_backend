@@ -92,7 +92,9 @@ fn vs(items: &[&str]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Insert a user (idempotent on `email`) and return its id whether the row
-/// was just inserted or already existed. Takes an already-hashed password
+/// was just inserted or already existed. `created_at` is the account's
+/// historical join instant (`run`'s `joined_at`), not the run instant — the
+/// user must predate the seeded rows that reference it. Takes an already-hashed password
 /// (see `run`'s one-Argon2-per-plaintext precompute of the Admin/Member/
 /// Coach hashes) rather than hashing here, so callers sharing a plaintext
 /// share the hash instead of re-hashing it per call. The INSERT always
@@ -108,6 +110,7 @@ async fn upsert_user(
     name: &str,
     password_hash: &str,
     points_balance: i64,
+    created_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> anyhow::Result<Uuid> {
     let mut tx = db
@@ -127,7 +130,7 @@ async fn upsert_user(
     .bind(email)
     .bind(name)
     .bind(password_hash)
-    .bind(now)
+    .bind(created_at)
     .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert user {email}"))?;
@@ -553,13 +556,14 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
 /// caller applies, every run, once every order is inserted (see the module
 /// doc) — so this function doesn't need to report whether the row was newly
 /// inserted; the settlement step runs for every member regardless.
+/// `created_at` is the member's historical join instant, as in `upsert_user`.
 async fn upsert_seed_member(
     db: &PgPool,
     email: &str,
     name: &str,
     password_hash: &str,
     birth_date: NaiveDate,
-    now: DateTime<Utc>,
+    created_at: DateTime<Utc>,
 ) -> anyhow::Result<Uuid> {
     let mut tx = db
         .begin()
@@ -579,7 +583,7 @@ async fn upsert_seed_member(
     .bind(name)
     .bind(password_hash)
     .bind(birth_date)
-    .bind(now)
+    .bind(created_at)
     .fetch_optional(&mut *tx)
     .await
     .with_context(|| format!("insert seed member {email}"))?;
@@ -1067,6 +1071,21 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         .await
         .map_err(|e| anyhow::anyhow!("hashing seed coach password: {e}"))?;
 
+    // Every seed account joins on the first of the month one month before
+    // the oldest `[orders]` month (11 months back), so each user predates
+    // every seeded row that references it — its orders, enrolments, ledger
+    // rows and bookings, the admin's posts and attendance marks. A re-run
+    // keeps an existing row's `created_at` (`ON CONFLICT DO NOTHING`).
+    let joined_at = at_utc(
+        at.today()
+            .with_day(1)
+            .expect("day 1 always valid")
+            .checked_sub_months(Months::new(12))
+            .expect("valid seed join month"),
+        4,
+        at.now,
+    );
+
     // -- admin -----------------------------------------------------------
     let admin_id = upsert_user(
         db,
@@ -1074,6 +1093,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         "系統管理員",
         &admin_hash,
         0,
+        joined_at,
         at.now,
     )
     .await?;
@@ -1087,6 +1107,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         "測試會員",
         &member_hash,
         1250,
+        joined_at,
         at.now,
     )
     .await?;
@@ -1139,7 +1160,16 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     let mut coach_ids: HashMap<&'static str, Uuid> = HashMap::new();
     for seed in &coach_seeds {
-        let user_id = upsert_user(db, seed.email, seed.user_name, &coach_hash, 0, at.now).await?;
+        let user_id = upsert_user(
+            db,
+            seed.email,
+            seed.user_name,
+            &coach_hash,
+            0,
+            joined_at,
+            at.now,
+        )
+        .await?;
         assign_role(db, user_id, Role::Coach).await?;
         let coach_id = upsert_coach(db, user_id, seed).await?;
         coach_ids.insert(seed.slug, coach_id);
@@ -1533,7 +1563,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
         let user_id =
-            upsert_seed_member(db, &email, &name, &member_hash, birth_date, at.now).await?;
+            upsert_seed_member(db, &email, &name, &member_hash, birth_date, joined_at).await?;
         assign_role(db, user_id, Role::Member).await?;
         member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);

@@ -16,6 +16,7 @@ use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::repository::sum_earned_in_studio_month;
 use dream_fly_backend::modules::points::service::apply_delta_tx;
+use dream_fly_backend::modules::reports::repository::member_stats;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use crate::dataset;
@@ -375,4 +376,66 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
     .await
     .expect("count order items off the order's created_at");
     assert_eq!(items_off_order_created_at, 0);
+}
+
+/// Every seeded user exists before every seeded row that points at them —
+/// regression: `upsert_user`/`upsert_seed_member` stamped `users.created_at`
+/// with the run instant while the same users' orders, enrolments, ledger,
+/// bookings, attendance marks, posts and inquiry assignments carry
+/// historical timestamps, so every seed account "joined today": the admin
+/// KPI `new_members_this` and `member_stats`' `new_this_month` counted all
+/// of them as this month's sign-ups. The referencing columns are the
+/// historical timestamps `seeded_timestamps_never_exceed_run_instant`
+/// checks.
+#[sqlx::test]
+async fn seeded_users_exist_before_rows_that_reference_them(db: PgPool) {
+    let at = StudioNow {
+        tz: taipei(),
+        now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
+    };
+    dataset::run(&db, at).await.expect("run");
+
+    let referenced: i64 = sqlx::query_scalar(
+        "WITH refs (user_id, ts) AS ( \
+           SELECT user_id, created_at FROM orders \
+           UNION ALL SELECT user_id, created_at FROM enrolments \
+           UNION ALL SELECT user_id, created_at FROM point_ledger \
+           UNION ALL SELECT user_id, created_at FROM bookings \
+           UNION ALL SELECT marked_by, marked_at FROM attendance_records \
+           UNION ALL SELECT author_id, published_at FROM posts \
+           UNION ALL SELECT assigned_to, created_at FROM contact_inquiries \
+         ) \
+         SELECT COUNT(DISTINCT user_id) FROM refs WHERE user_id IS NOT NULL AND ts IS NOT NULL",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count referenced users");
+    // Non-vacuous: members, coaches and the admin are all referenced.
+    assert!(referenced > 24, "only {referenced} users referenced");
+
+    let joined_after_history: i64 = sqlx::query_scalar(
+        "WITH refs (user_id, ts) AS ( \
+           SELECT user_id, created_at FROM orders \
+           UNION ALL SELECT user_id, created_at FROM enrolments \
+           UNION ALL SELECT user_id, created_at FROM point_ledger \
+           UNION ALL SELECT user_id, created_at FROM bookings \
+           UNION ALL SELECT marked_by, marked_at FROM attendance_records \
+           UNION ALL SELECT author_id, published_at FROM posts \
+           UNION ALL SELECT assigned_to, created_at FROM contact_inquiries \
+         ) \
+         SELECT COUNT(*) FROM users u \
+         WHERE u.created_at > (SELECT MIN(r.ts) FROM refs r WHERE r.user_id = u.id)",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count users created after their earliest referencing row");
+    assert_eq!(
+        joined_after_history, 0,
+        "users created after their own history"
+    );
+
+    // The user-visible symptom: no seed account counts as this month's
+    // sign-up.
+    let (_, new_this_month, _) = member_stats(&db, at).await.expect("member stats");
+    assert_eq!(new_this_month, 0);
 }
