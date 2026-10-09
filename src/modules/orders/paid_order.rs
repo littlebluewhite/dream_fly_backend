@@ -9,10 +9,12 @@
 //! 買家以 [`BalanceLock`] 傳入而不是 `user_id`：點數帳只動買家的 `users`
 //! 列，要求持有那把鎖的證明，「替沒鎖住的會員記帳」在型別上就做不到。
 //!
-//! 錯誤：sqlx 錯誤經 `AppError::Database` 上拋。`apply_delta_tx` 的業務錯誤
-//! （零 delta、點數不足）在這裡走不到——`PricingOutcome::ledger_deltas` 跳過
-//! 零幅度，`pricing::price` 以鎖到的餘額封頂折抵。任何錯誤都由呼叫端回滾整個
-//! 交易，本函式不 commit。
+//! 錯誤：sqlx 錯誤經 `AppError::Database` 上拋。`apply_delta_tx` 的零 delta
+//! 在這裡走不到——`PricingOutcome::ledger_deltas` 跳過零幅度；點數不足則是
+//! 呼叫端前提：`outcome.points_used` 不得超過 `buyer` 鎖到的餘額，否則折抵
+//! 那筆回 `Conflict("點數不足")`（checkout 以鎖到的餘額呼叫 `pricing::price`
+//! 封頂折抵，seed 以 `use_points = false` 定價、不折抵）。任何錯誤都由呼叫端
+//! 回滾整個交易，本函式不 commit。
 
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};

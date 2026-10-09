@@ -25,19 +25,23 @@
 //! SUM(point_ledger.delta)` holds for every seeded user — but only on a
 //! freshly migrated database: rows left over from an older run of this seed
 //! (which wrote the column directly, with no backing ledger) are not
-//! backfilled, an accepted legacy shape in the same spirit as the direct
-//! order-insert block's `points_earned` (`insert_order_if_absent`). Orders
-//! created by an older version of this seed binary (before it wrote
-//! `checkout_earn`/`refund_clawback` rows) similarly keep no ledger rows on
-//! a re-run — reset the dev database to pick up the new shape from scratch.
+//! backfilled, an accepted legacy shape. Orders created by an older version
+//! of this seed binary (before it wrote `checkout_earn`/`refund_clawback`
+//! rows, or while it still stamped them with the run instant instead of the
+//! order's `paid_at`) similarly keep their old ledger shape on a re-run —
+//! idempotency is keyed on `order_number`, so existing rows are never
+//! rewritten; reset the dev database to pick up the new shape from scratch.
 //! Named accounts (`upsert_user`) get their whole balance via one
 //! `LedgerDelta::admin_adjust` in the same transaction as the INSERT. The 24
 //! reporting members (`upsert_seed_member`) instead earn theirs the way a
 //! real member would: `insert_order_if_absent` writes a `checkout_earn` row
 //! (and, for refunded orders, a `refund_clawback` row on top) for every
 //! seeded order touching that member, in the same transaction as the order
-//! — amounts priced by `orders::pricing::price`, rows taken from
-//! `PricingOutcome::ledger_deltas` / `OrderPointsFlow::reversal_deltas`;
+//! — amounts priced by `orders::pricing::price`, rows written by checkout's
+//! own `orders::paid_order::record_paid_order_tx`
+//! (`PricingOutcome::ledger_deltas`) and, for refunds,
+//! `points::service::reverse_order_tx`, all stamped with the order's
+//! `paid_at` rather than the run instant;
 //! once every order is inserted, **every** member (not just ones newly
 //! created this run) gets a `admin_adjust(target − balance)` settling it to
 //! its points-tier target (`member_points_target`, derived from
@@ -66,10 +70,12 @@ use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::coupons::repository as coupons_repository;
 use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
+use dream_fly_backend::modules::orders::paid_order::record_paid_order_tx;
 use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
+use dream_fly_backend::modules::orders::repository as orders_repository;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
-use dream_fly_backend::modules::points::model::{LedgerDelta, OrderPointsFlow, PointsTier};
+use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
@@ -681,13 +687,15 @@ async fn insert_enrolment_if_absent(
 /// `points_earned` come from the pricing owner, not a seed-side copy of its
 /// arithmetic. `insert_order_if_absent` maps `status` exhaustively: the
 /// paid family (and refunded, which keeps its original `paid_at`, as the
-/// refund path never clears it) records `paid_at = created_at`, the
-/// priced `points_earned` and `PricingOutcome::ledger_deltas` (a
-/// `checkout_earn` row); refunded additionally applies
-/// `OrderPointsFlow::reversal_deltas` for that flow (a `refund_clawback` of
-/// the same magnitude — net zero); pending contrast rows record
-/// `paid_at = NULL`, `points_earned = 0` and no ledger rows. Both delta
-/// owners skip zero magnitudes, so a fully-discounted order writes none.
+/// refund path never clears it) goes through
+/// `orders::paid_order::record_paid_order_tx` at `created_at` — order row
+/// (`paid_at = created_at`), order items and `PricingOutcome::ledger_deltas`
+/// (a `checkout_earn` row) all stamped with that one instant; refunded
+/// additionally runs `points::service::reverse_order_tx` at the same instant
+/// (a `refund_clawback` of the same magnitude — net zero); pending contrast
+/// rows record `paid_at = NULL`, `points_earned = 0` and no ledger rows.
+/// Both delta owners skip zero magnitudes, so a fully-discounted order
+/// writes none.
 struct SeedOrder {
     order_number: String,
     user_id: Uuid,
@@ -700,16 +708,17 @@ struct SeedOrder {
 
 /// Insert an order + its order_items (idempotent by existence check on
 /// `order_number` — order_items has no unique key of its own, so the parent
-/// check guards both). Direct INSERT rather than the checkout service (no
-/// cart dependency), but column-for-column the same shape checkout writes.
-/// Also writes the order's `point_ledger` rows (see `SeedOrder`'s doc) in
-/// the same transaction, guarded by the same up-front existence check, so a
-/// re-run neither duplicates the order nor its ledger rows.
-async fn insert_order_if_absent(
-    db: &PgPool,
-    seed: &SeedOrder,
-    now: DateTime<Utc>,
-) -> anyhow::Result<()> {
+/// check guards both). Not the checkout service (no cart dependency), but
+/// the paid family is written by the same paid-order record checkout uses,
+/// under the buyer's `BalanceLock`; a status other than paid is then set
+/// with a direct `update_status_tx` — not the order state machine, this is
+/// dev data. Pending/cancelled keep a direct `orders` INSERT
+/// (`record_paid_order_tx` only writes `status = 'paid'`) and share
+/// `create_order_items`. The order's `point_ledger` rows (see `SeedOrder`'s
+/// doc) land in the same transaction, guarded by the same up-front
+/// existence check, so a re-run neither duplicates the order nor its ledger
+/// rows.
+async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result<()> {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE order_number = $1)")
             .bind(&seed.order_number)
@@ -721,94 +730,78 @@ async fn insert_order_if_absent(
     }
 
     let mut tx = db.begin().await.context("begin order tx")?;
-    let order_id = Uuid::now_v7();
+    // Seed never decrements stock, so no line is marked `stock_decremented`.
+    let lines = fulfilment::order_lines(&seed.lines, &HashMap::new());
 
-    // Exhaustive over `OrderStatus` — a new variant must decide here what
-    // it means for `paid_at`, the recorded `points_earned`/`points_used`,
-    // and the ledger. The seed itself only produces pending / paid /
+    // Exhaustive over `OrderStatus` — a new variant must decide here
+    // whether it was ever paid (and so goes through the paid-order record
+    // and the ledger). The seed itself only produces pending / paid /
     // completed / refunded.
-    let (paid_at, points_earned, points_used, ledger) = match seed.status {
+    match seed.status {
         // Never paid (`Cancelled` read as the `Pending → Cancelled` edge):
         // no `paid_at`, nothing earned or redeemed, no ledger rows.
-        OrderStatus::Pending | OrderStatus::Cancelled => (None, 0, 0, Vec::new()),
-        OrderStatus::Paid | OrderStatus::Processing | OrderStatus::Completed => (
-            Some(seed.created_at),
-            seed.pricing.points_earned,
-            seed.pricing.points_used,
-            seed.pricing.ledger_deltas(order_id),
-        ),
-        // Refunded keeps its original `paid_at` (the
-        // refund path never clears it) and its checkout ledger rows,
-        // then the refund reverses that flow on top.
-        OrderStatus::Refunded => {
-            let mut ledger = seed.pricing.ledger_deltas(order_id);
-            let flow = OrderPointsFlow {
-                earned: seed.pricing.points_earned,
-                redeemed: seed.pricing.points_used,
-            };
-            ledger.extend(flow.reversal_deltas(order_id));
-            (
-                Some(seed.created_at),
-                seed.pricing.points_earned,
-                seed.pricing.points_used,
-                ledger,
+        OrderStatus::Pending | OrderStatus::Cancelled => {
+            let order_id = Uuid::now_v7();
+            sqlx::query(
+                r#"
+                INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
+                                    coupon_code, points_used, points_earned, payment_method, paid_at,
+                                    created_at, updated_at)
+                VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, 0, 0, $8, NULL, $9, $9)
+                "#,
             )
-        }
-    };
-
-    sqlx::query(
-        r#"
-        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
-                            coupon_code, points_used, points_earned, payment_method, paid_at,
-                            created_at, updated_at)
-        VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, $8, $9, $10, $11, $12, $12)
-        "#,
-    )
-    .bind(order_id)
-    .bind(seed.user_id)
-    .bind(&seed.order_number)
-    .bind(seed.status.as_str())
-    .bind(seed.pricing.total_cents)
-    .bind(seed.pricing.discount_cents)
-    .bind(&seed.pricing.applied_coupon_code)
-    .bind(points_used)
-    .bind(points_earned)
-    .bind(seed.payment_method)
-    .bind(paid_at)
-    .bind(seed.created_at)
-    .execute(&mut *tx)
-    .await
-    .with_context(|| format!("insert order '{}'", seed.order_number))?;
-
-    for line in seed.lines.lines() {
-        sqlx::query(
-            r#"
-            INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, name, created_at)
-            VALUES ($1, $2, $9, $3, $4, $5, $6, $7, $8)
-            "#,
-        )
-        .bind(Uuid::now_v7())
-        .bind(order_id)
-        .bind(line.target.product_id())
-        .bind(line.target.course_id())
-        .bind(line.quantity)
-        .bind(line.price_cents)
-        .bind(&line.name)
-        .bind(seed.created_at)
-        .bind(line.target.item_type())
-        .execute(&mut *tx)
-        .await
-        .with_context(|| format!("insert order_item for '{}'", seed.order_number))?;
-    }
-
-    // Ledger rows in vec order — both owners already skip zero magnitudes
-    // (`apply_delta_tx` rejects a zero delta), so a fully-discounted order
-    // (`total_cents = 0`, earns 0) writes none rather than aborting the seed.
-    for delta in ledger {
-        let reason = delta.reason().as_str();
-        points_service::apply_delta_tx(&mut tx, seed.user_id, delta, now)
+            .bind(order_id)
+            .bind(seed.user_id)
+            .bind(&seed.order_number)
+            .bind(seed.status.as_str())
+            .bind(seed.pricing.total_cents)
+            .bind(seed.pricing.discount_cents)
+            .bind(&seed.pricing.applied_coupon_code)
+            .bind(seed.payment_method)
+            .bind(seed.created_at)
+            .execute(&mut *tx)
             .await
-            .with_context(|| format!("{reason} ledger for order '{}'", seed.order_number))?;
+            .with_context(|| format!("insert order '{}'", seed.order_number))?;
+
+            orders_repository::create_order_items(&mut tx, order_id, &lines, seed.created_at)
+                .await
+                .with_context(|| format!("insert order_items for '{}'", seed.order_number))?;
+        }
+        // Recorded paid at `created_at` first. Refunded keeps that original
+        // `paid_at` (the refund path never clears it) and its checkout
+        // ledger rows, then reverses that flow on top. Seed prices with
+        // `use_points = false`, so there is never a redeem for the locked
+        // balance to cover.
+        OrderStatus::Paid
+        | OrderStatus::Processing
+        | OrderStatus::Completed
+        | OrderStatus::Refunded => {
+            let lock = points_service::lock_balance_tx(&mut tx, seed.user_id)
+                .await
+                .with_context(|| format!("lock balance for order '{}'", seed.order_number))?;
+            let order = record_paid_order_tx(
+                &mut tx,
+                &lock,
+                &seed.order_number,
+                seed.payment_method,
+                &lines,
+                &seed.pricing,
+                seed.created_at,
+            )
+            .await
+            .with_context(|| format!("record paid order '{}'", seed.order_number))?;
+
+            if seed.status != OrderStatus::Paid {
+                orders_repository::update_status_tx(&mut tx, order.id, &seed.status)
+                    .await
+                    .with_context(|| format!("set status of order '{}'", seed.order_number))?;
+            }
+            if seed.status == OrderStatus::Refunded {
+                points_service::reverse_order_tx(&mut tx, &lock, order.id, seed.created_at)
+                    .await
+                    .with_context(|| format!("refund ledger for order '{}'", seed.order_number))?;
+            }
+        }
     }
 
     tx.commit().await.context("commit order tx")?;
@@ -1595,6 +1588,9 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     // Idempotency key: order_number `DF-SEED-{YYYYMM}-{seq:02}`. Month m
     // (0 = current .. 11 = oldest) gets 8 + ((m*7+3)%5) orders; every month
     // carries one refunded (seq 4) and one pending (seq 7) contrast row.
+    // Months run oldest first, so each member's ledger `balance_after`
+    // moves forward with the rows' `paid_at`; nothing below depends on the
+    // visiting order (`g`, member and status derive from `(m, seq)` alone).
     let mut product_ids: Vec<Uuid> = Vec::with_capacity(product_seeds.len());
     for seed in &product_seeds {
         product_ids.push(product_id_by_slug(db, seed.slug).await?);
@@ -1622,7 +1618,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         .context("load seed coupon DREAMFLY100")?
         .context("seed coupon DREAMFLY100 is missing, inactive or expired")?;
     let mut order_total = 0usize;
-    for m in 0..12u32 {
+    for m in (0..12u32).rev() {
         let month_first = today
             .with_day(1)
             .expect("day 1 always valid")
@@ -1706,7 +1702,6 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                     lines,
                     pricing,
                 },
-                at.now,
             )
             .await?;
             order_total += 1;

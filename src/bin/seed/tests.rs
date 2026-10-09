@@ -231,7 +231,7 @@ async fn seeded_timestamps_never_exceed_run_instant(db: PgPool) {
     };
     dataset::run(&db, at).await.expect("run");
 
-    let checks: [(&str, &str); 8] = [
+    let checks: [(&str, &str); 9] = [
         ("posts.published_at", "SELECT MAX(published_at) FROM posts"),
         (
             "enrolments.created_at",
@@ -242,6 +242,10 @@ async fn seeded_timestamps_never_exceed_run_instant(db: PgPool) {
         (
             "order_items.created_at",
             "SELECT MAX(created_at) FROM order_items",
+        ),
+        (
+            "point_ledger.created_at",
+            "SELECT MAX(created_at) FROM point_ledger",
         ),
         (
             "bookings.created_at",
@@ -269,4 +273,62 @@ async fn seeded_timestamps_never_exceed_run_instant(db: PgPool) {
             );
         }
     }
+}
+
+/// Every `DF-SEED-%` order is recorded at its own `paid_at`, not at the run
+/// instant — regression: seed stamped its checkout ledger rows `at.now`
+/// while the order kept a historical `paid_at`, so a seed member's
+/// `GET /points/me` `earned_this_month` counted a whole year of
+/// `checkout_earn` as this month's. Checkout ledger rows equal `paid_at`,
+/// refund rows land in `[paid_at, at.now]`, order items share the order's
+/// `created_at`.
+#[sqlx::test]
+async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
+    let at = StudioNow {
+        tz: taipei(),
+        now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
+    };
+    dataset::run(&db, at).await.expect("run");
+
+    // Non-vacuous: the seed orders do write ledger rows.
+    let seed_ledger_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
+         WHERE o.order_number LIKE 'DF-SEED-%'",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count seed order ledger rows");
+    assert!(seed_ledger_rows > 0);
+
+    let checkout_rows_off_paid_at: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
+         WHERE o.order_number LIKE 'DF-SEED-%' \
+           AND pl.reason IN ('checkout_earn'::point_reason, 'checkout_redeem'::point_reason) \
+           AND pl.created_at IS DISTINCT FROM o.paid_at",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count checkout ledger rows off paid_at");
+    assert_eq!(checkout_rows_off_paid_at, 0);
+
+    let refund_rows_out_of_range: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
+         WHERE o.order_number LIKE 'DF-SEED-%' \
+           AND pl.reason IN ('refund_restore'::point_reason, 'refund_clawback'::point_reason) \
+           AND NOT (pl.created_at BETWEEN o.paid_at AND $1)",
+    )
+    .bind(at.now)
+    .fetch_one(&db)
+    .await
+    .expect("count refund ledger rows outside [paid_at, at.now]");
+    assert_eq!(refund_rows_out_of_range, 0);
+
+    let items_off_order_created_at: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id = oi.order_id \
+         WHERE o.order_number LIKE 'DF-SEED-%' AND oi.created_at <> o.created_at",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("count order items off the order's created_at");
+    assert_eq!(items_off_order_created_at, 0);
 }

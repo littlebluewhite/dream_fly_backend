@@ -50,3 +50,15 @@ at: StudioNow) -> SeedReport`),只是路徑搬遷與型別化取樣時鐘,不是
   `leave::service::decide_tx`(`decide_leave_request` 也用它),所以 Approved 假單帶有與真實核准相同的出勤
   `leave` 投影。這是借用既有 production seam,不是新建共用 history writer;Pending 照舊直接 INSERT,
   Cancelled 也直接 INSERT(取消走 `cancel_if_pending_tx`,無投影可帶)。
+
+## Addendum (2026-10-09)
+
+部分重開:已付訂單的寫入改由 checkout 與 seed 共用 `orders::paid_order::record_paid_order_tx`(訂單列+訂單行+
+結帳點數帳,同一個 `paid_at`)。兩個 adapter——`orders::service::checkout` 與 `bin/seed/dataset.rs` 的
+`insert_order_if_absent`——所以這個 seam 是真的,不是假設的。起因是 seed 手抄的那份抄歪了:點數帳蓋執行當下
+`at.now`,`paid_at` 卻是歷史時間,seed 會員 `GET /points/me` 的 `earned_this_month` 因此灌水。seed 的退款訂單
+也改走 `points::service::reverse_order_tx`。
+
+- `tests/common/fixtures.rs` 的 `OrderSeed` 不變:仍直寫列、不產 points ledger,重開條件 1 仍未成立。
+- seed 沒有改走 `orders::service::checkout`(重開條件 2 未成立):待付/取消訂單照舊直寫訂單列,報名與訂閱授權
+  也不經 checkout 編排(見 GLOSSARY「Seed 資料集」的已知缺口)。
