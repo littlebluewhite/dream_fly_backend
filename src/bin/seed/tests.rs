@@ -5,13 +5,16 @@
 //! module's doc for the shape being pinned (per-table idempotency keys,
 //! the points-tier settlement loop).
 
-use chrono::{TimeZone, Utc};
+use std::collections::HashMap;
+
+use chrono::{Datelike, TimeZone, Utc};
 use chrono_tz::Tz;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
+use dream_fly_backend::modules::points::repository::sum_earned_in_studio_month;
 use dream_fly_backend::modules::points::service::apply_delta_tx;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -279,9 +282,10 @@ async fn seeded_timestamps_never_exceed_run_instant(db: PgPool) {
 /// instant — regression: seed stamped its checkout ledger rows `at.now`
 /// while the order kept a historical `paid_at`, so a seed member's
 /// `GET /points/me` `earned_this_month` counted a whole year of
-/// `checkout_earn` as this month's. Checkout ledger rows equal `paid_at`,
-/// refund rows land in `[paid_at, at.now]`, order items share the order's
-/// `created_at`.
+/// `checkout_earn` as this month's. Each member's `earned_this_month` counts
+/// only orders paid in `at`'s studio month, checkout ledger rows equal
+/// `paid_at`, refund rows land in `[paid_at, at.now]`, order items share the
+/// order's `created_at`.
 #[sqlx::test]
 async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
     let at = StudioNow {
@@ -299,6 +303,46 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
     .await
     .expect("count seed order ledger rows");
     assert!(seed_ledger_rows > 0);
+
+    // The user-visible symptom: each member's `earned_this_month`
+    // (`sum_earned_in_studio_month`, behind `GET /points/me`) sums only the
+    // `checkout_earn` of seed orders paid in `at`'s studio month. Expected
+    // sums bucket `paid_at` by studio month in Rust, not through the SQL
+    // under test.
+    let seed_order_earn: Vec<(Uuid, Option<chrono::DateTime<Utc>>, i64)> = sqlx::query_as(
+        "SELECT o.user_id, o.paid_at, COALESCE(pl.delta, 0)::BIGINT FROM orders o \
+         LEFT JOIN point_ledger pl \
+           ON pl.order_id = o.id AND pl.reason = 'checkout_earn'::point_reason \
+         WHERE o.order_number LIKE 'DF-SEED-%'",
+    )
+    .fetch_all(&db)
+    .await
+    .expect("load seed order checkout_earn");
+    let studio_month = |ts: chrono::DateTime<Utc>| {
+        let local = ts.with_timezone(&at.tz);
+        (local.year(), local.month())
+    };
+    let mut expected_this_month: HashMap<Uuid, i64> = HashMap::new();
+    let mut earlier_month_earn = 0i64;
+    for (user_id, paid_at, delta) in seed_order_earn {
+        let this_month = expected_this_month.entry(user_id).or_insert(0);
+        // Pending/cancelled orders: no `paid_at`, no earn row.
+        let Some(paid_at) = paid_at else { continue };
+        if studio_month(paid_at) == studio_month(at.now) {
+            *this_month += delta;
+        } else {
+            earlier_month_earn += delta;
+        }
+    }
+    // Non-vacuous: earn from earlier months exists, so stamping it `at.now`
+    // would inflate `earned_this_month`.
+    assert!(earlier_month_earn > 0);
+    for (user_id, expected) in expected_this_month {
+        let earned = sum_earned_in_studio_month(&db, user_id, at)
+            .await
+            .expect("sum earned this studio month");
+        assert_eq!(earned, expected, "member {user_id} earned_this_month");
+    }
 
     let checkout_rows_off_paid_at: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
