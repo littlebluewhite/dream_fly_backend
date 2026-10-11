@@ -85,8 +85,8 @@ seed 已付訂單的訂閱授權改走 checkout 的 `subscriptions::service::gra
   寫入)、場次 backfill(`sessions::calendar::backfill_for_seed`)、場租預約(`bookings`)、洽詢
   (`contact_inquiries`)、待付款訂單(`insert_pending_order_if_absent`——checkout 只建已付訂單)。
 - **副作用**:checkout 與狀態機照常寫 outbox 事件與站內通知,dev 資料庫因此多出 `events_outbox`/`notifications`
-  列(DB 時鐘,稽核欄位,ADR-0017)。舊 seed 直寫的資料——種子會員沒有訂單的報名、非待付款的 `DF-SEED-…`
-  訂單——沒有 idempotency key,會被再買一次,所以 `dataset::run` 在任何寫入前拒絕這種資料庫,要先重置 dev DB。
+  列(DB 時鐘,稽核欄位,ADR-0017)。舊 seed 直寫的資料——種子會員沒有訂單的報名、付過款(非待付、非取消)的
+  `DF-SEED-…` 訂單——沒有 idempotency key,會被再買一次,所以 `dataset::run` 在任何寫入前拒絕這種資料庫,要先重置 dev DB。
 - **共用「歷史寫入」module 仍然延後**:重開條件 1 未達成——`tests/common/fixtures.rs` 的 `OrderSeed` 照舊直寫
   列、不產 points ledger,沒有第二個需要造「已結帳、已結算」歷史訂單的測試族群。條件 2 則由結帳路徑本身取代了
   這個 seam 的必要性,不必另建。

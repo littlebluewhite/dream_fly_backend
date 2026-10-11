@@ -746,11 +746,13 @@ async fn buy_seed_purchase(
 /// Walk a seed order from its current status to `purchase.target` through
 /// `orders::service::update_order_status` — the real transition rules,
 /// outbox event and notification, and for a refund the full refund
-/// compensation (`refund_clawback`, grant cancellation). Each step runs at
-/// `min(ts + offset, at.now)`: completed is processing (+1 day) then
-/// completed (+3 days), refunded is refunded (+3 days), paid stays put.
+/// compensation (`refund_clawback`, grant and enrolment cancellation). Each
+/// step runs at `min(ts + offset, at.now)`: completed is processing (+1 day)
+/// then completed (+3 days), refunded is refunded (+3 days), paid stays put.
 /// Steps already passed are skipped, so a rerun only finishes an
-/// interrupted walk; a current status off the path is an error.
+/// interrupted walk. An order already refunded or cancelled off its path —
+/// a developer moved it, say from the admin UI — is left as it is; any
+/// other current status off the path is an error.
 async fn advance_status(
     db: &PgPool,
     at: StudioNow,
@@ -775,6 +777,9 @@ async fn advance_status(
         }
     };
     let Some(reached) = path.iter().position(|&(status, _)| status == order.status) else {
+        if matches!(order.status, OrderStatus::Refunded | OrderStatus::Cancelled) {
+            return Ok(order);
+        }
         anyhow::bail!(
             "seed order '{}' is {}, not on its path to {}",
             purchase.key,
@@ -1109,14 +1114,17 @@ pub struct SeedReport {
 /// members' enrolments directly (`order_id IS NULL`) and its paid orders
 /// directly under `DF-SEED-…` order numbers, with no idempotency key —
 /// checkout would buy all of them a second time. Scoped to seed rows: an
-/// enrolment a developer made by hand for another account doesn't trip it.
+/// enrolment a developer made by hand for another account doesn't trip it,
+/// and neither does a `DF-SEED-…` pending order an admin cancelled (the
+/// legal Pending → Cancelled edge) — only a status that was paid does.
 async fn refuse_legacy_seed_rows(db: &PgPool) -> anyhow::Result<()> {
     let (orderless_enrolments, direct_orders): (i64, i64) = sqlx::query_as(
         "SELECT \
            (SELECT COUNT(*) FROM enrolments e JOIN users u ON u.id = e.user_id \
             WHERE u.email LIKE 'seed-member-%@dreamfly.tw' AND e.order_id IS NULL), \
            (SELECT COUNT(*) FROM orders \
-            WHERE order_number LIKE 'DF-SEED-%' AND status <> 'pending'::order_status)",
+            WHERE order_number LIKE 'DF-SEED-%' \
+              AND status NOT IN ('pending'::order_status, 'cancelled'::order_status))",
     )
     .fetch_one(db)
     .await
@@ -1124,7 +1132,7 @@ async fn refuse_legacy_seed_rows(db: &PgPool) -> anyhow::Result<()> {
     if orderless_enrolments > 0 || direct_orders > 0 {
         anyhow::bail!(
             "this database was seeded by an older seed ({orderless_enrolments} seed-member \
-             enrolments without an order, {direct_orders} non-pending DF-SEED-… orders); \
+             enrolments without an order, {direct_orders} paid DF-SEED-… orders); \
              reset the dev DB (drop & recreate) and rerun"
         );
     }

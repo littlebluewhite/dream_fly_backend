@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::orders::service::update_order_status;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::repository::sum_earned_in_studio_month;
 use dream_fly_backend::modules::points::service::apply_delta_tx;
@@ -576,9 +577,10 @@ async fn seed_course_orders_enrol_their_buyer(db: PgPool) {
 
 /// A database an older seed wrote is refused before `run` writes anything:
 /// a seed member's enrolment with no order, or a `DF-SEED-%`-numbered order
-/// past pending, is a row the old seed wrote directly, and checkout would
-/// buy it a second time. A hand-made enrolment of a non-seed account is not
-/// a seed row and does not trip the guard.
+/// that was paid, is a row the old seed wrote directly, and checkout would
+/// buy it a second time. Neither a hand-made enrolment of a non-seed account
+/// nor a seed pending order an admin cancelled through the state machine is
+/// legacy data, so neither trips the guard.
 #[sqlx::test]
 async fn run_refuses_a_database_seeded_by_an_older_seed(db: PgPool) {
     let at = StudioNow {
@@ -598,6 +600,21 @@ async fn run_refuses_a_database_seeded_by_an_older_seed(db: PgPool) {
     dataset::run(&db, at)
         .await
         .expect("a non-seed enrolment without an order is not legacy seed data");
+
+    // An admin cancels a seed pending order: Pending → Cancelled is legal.
+    let pending_order: Uuid = sqlx::query_scalar(
+        "SELECT id FROM orders \
+         WHERE order_number LIKE 'DF-SEED-%' AND status = 'pending'::order_status LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .expect("load a seed pending order");
+    update_order_status(&db, pending_order, "cancelled", None, at.now)
+        .await
+        .expect("cancel the seed pending order");
+    dataset::run(&db, at)
+        .await
+        .expect("a seed pending order an admin cancelled is not legacy seed data");
 
     // An old seed's enrolment: a seed member's, with no order.
     let legacy_enrolment: Uuid = sqlx::query_scalar(
@@ -623,7 +640,9 @@ async fn run_refuses_a_database_seeded_by_an_older_seed(db: PgPool) {
     // An old seed's paid order: written directly under a DF-SEED number.
     sqlx::query(
         "UPDATE orders SET status = 'paid'::order_status \
-         WHERE id = (SELECT id FROM orders WHERE order_number LIKE 'DF-SEED-%' LIMIT 1)",
+         WHERE id = (SELECT id FROM orders \
+                     WHERE order_number LIKE 'DF-SEED-%' AND status = 'pending'::order_status \
+                     LIMIT 1)",
     )
     .execute(&db)
     .await
@@ -633,4 +652,53 @@ async fn run_refuses_a_database_seeded_by_an_older_seed(db: PgPool) {
         .err()
         .expect("a non-pending DF-SEED-numbered order is refused");
     assert!(err.to_string().contains("reset the dev DB"), "{err:#}");
+}
+
+/// A seed checkout order a developer already refunded or cancelled through
+/// the state machine (say from the admin UI) sits off its walk in a terminal
+/// status; the next run leaves it as it is instead of failing. One
+/// completed-target order is refunded, one paid-target order cancelled —
+/// each picked so the buyer's balance covers its `refund_clawback`.
+#[sqlx::test]
+async fn rerun_leaves_seed_orders_a_developer_refunded_or_cancelled(db: PgPool) {
+    let at = StudioNow {
+        tz: taipei(),
+        now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
+    };
+    dataset::run(&db, at).await.expect("first run");
+
+    let mut moved: Vec<(Uuid, OrderStatus)> = Vec::new();
+    for (reached, moved_to) in [
+        (OrderStatus::Completed, OrderStatus::Refunded),
+        (OrderStatus::Paid, OrderStatus::Cancelled),
+    ] {
+        let order_id: Uuid = sqlx::query_scalar(
+            "SELECT o.id FROM orders o \
+             JOIN order_idempotency k ON k.order_id = o.id \
+             JOIN users u ON u.id = o.user_id \
+             WHERE k.idempotency_key LIKE 'DF-SEED-%' AND o.status = $1 \
+               AND o.points_earned <= u.points_balance \
+             ORDER BY o.paid_at, o.id LIMIT 1",
+        )
+        .bind(reached)
+        .fetch_one(&db)
+        .await
+        .expect("load a seed checkout order");
+        update_order_status(&db, order_id, moved_to.as_str(), None, at.now)
+            .await
+            .expect("move the seed order by hand");
+        moved.push((order_id, moved_to));
+    }
+
+    dataset::run(&db, at)
+        .await
+        .expect("rerun beside seed orders a developer refunded or cancelled");
+    for (order_id, moved_to) in moved {
+        let status: OrderStatus = sqlx::query_scalar("SELECT status FROM orders WHERE id = $1")
+            .bind(order_id)
+            .fetch_one(&db)
+            .await
+            .expect("load the order's status");
+        assert_eq!(status, moved_to, "order {order_id}");
+    }
 }
