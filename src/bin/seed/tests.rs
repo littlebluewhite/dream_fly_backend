@@ -45,6 +45,17 @@ async fn seed_order_ids(db: &PgPool) -> Vec<Uuid> {
     .expect("load seed order ids")
 }
 
+/// Cart lines still held by the 24 reporting members.
+async fn seed_member_cart_items(db: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cart_items ci JOIN users u ON u.id = ci.user_id \
+         WHERE u.email LIKE 'seed-member-%@dreamfly.tw'",
+    )
+    .fetch_one(db)
+    .await
+    .expect("count seed member cart items")
+}
+
 async fn total_occupying_bookings(db: &PgPool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM occupying_bookings")
         .fetch_one(db)
@@ -68,9 +79,12 @@ async fn points_balance(db: &PgPool, user_id: Uuid) -> i64 {
         .expect("fetch points_balance")
 }
 
-/// D = 2026-03-10T03:00Z (Asia/Taipei) run twice → row counts, `point_ledger`
-/// row count and the `occupying_bookings` count all unchanged,
-/// `settled_members == 0`. Then manually push seed-member-01 500 points above its points-tier
+/// D = 2026-03-10T03:00Z (Asia/Taipei) run twice → row counts (checkout's
+/// `order_idempotency`/`notifications`/`events_outbox` among them),
+/// `point_ledger` row count and the `occupying_bookings` count all unchanged,
+/// `settled_members == 0`, and no seed member is left holding cart lines (a
+/// rerun replays its keys before refilling any cart). Then manually push
+/// seed-member-01 500 points above its points-tier
 /// target (`member_points_target(1) == 150`) — the next run must settle
 /// exactly that one member back to 150 (regression d819e21: an earlier seed
 /// wrote `points_balance` directly instead of going through the ledger, so
@@ -88,6 +102,16 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
 
     let second = dataset::run(&db, at).await.expect("second run");
     assert_eq!(first.row_counts, second.row_counts);
+    // Non-vacuous: checkout's side-effect tables are counted, and written.
+    for table in ["order_idempotency", "notifications", "events_outbox"] {
+        let n = second
+            .row_counts
+            .iter()
+            .find(|(t, _)| *t == table)
+            .map(|(_, n)| *n);
+        assert!(n.is_some_and(|n| n > 0), "{table}: {n:?}");
+    }
+    assert_eq!(seed_member_cart_items(&db).await, 0);
     assert_eq!(second.settled_members, 0);
     assert_eq!(ledger_row_count(&db).await, ledger_after_first);
     assert_eq!(total_occupying_bookings(&db).await, occupying_after_first);
@@ -156,9 +180,9 @@ async fn later_run_keeps_invariants(db: PgPool) {
         assert_eq!(count, 6, "{tier:?}");
     }
 
-    // ③ every `DF-SEED-%` order's `points_earned`/`points_used` match its
-    // `point_ledger` rows exactly, a refunded order carries an equal
-    // `refund_clawback`, and no ledger row anywhere has `delta = 0`.
+    // ③ every seed order's (`seed_order_ids`) `points_earned`/`points_used`
+    // match its `point_ledger` rows exactly, a refunded order carries an
+    // equal `refund_clawback`, and no ledger row anywhere has `delta = 0`.
     let zero_delta_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE delta = 0")
             .fetch_one(&db)
@@ -233,6 +257,38 @@ async fn later_run_keeps_invariants(db: PgPool) {
             );
         }
     }
+
+    // ⑤ paid seed orders are bought through checkout under their own
+    // `DF-SEED-%` idempotency key — every non-pending seed order carries
+    // one — and no key is recorded for two buyers: a key's buyer derives
+    // from the absolute month, so the D+40d run replays the overlapping
+    // months instead of buying them again for another member.
+    let keys_on_two_buyers: Vec<String> = sqlx::query_scalar(
+        "SELECT idempotency_key FROM order_idempotency \
+         WHERE idempotency_key LIKE 'DF-SEED-%' \
+         GROUP BY idempotency_key HAVING COUNT(DISTINCT user_id) > 1",
+    )
+    .fetch_all(&db)
+    .await
+    .expect("load keys recorded for two buyers");
+    assert!(
+        keys_on_two_buyers.is_empty(),
+        "keys on two buyers: {keys_on_two_buyers:?}"
+    );
+
+    let (non_pending, unkeyed): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE NOT EXISTS ( \
+                  SELECT 1 FROM order_idempotency k \
+                  WHERE k.order_id = o.id AND k.idempotency_key LIKE 'DF-SEED-%')) \
+         FROM orders o \
+         WHERE o.id = ANY($1) AND o.status <> 'pending'::order_status",
+    )
+    .bind(&seed_ids)
+    .fetch_one(&db)
+    .await
+    .expect("count non-pending seed orders without a key");
+    assert!(non_pending > 0);
+    assert_eq!(unkeyed, 0, "non-pending seed orders without a DF-SEED key");
 }
 
 /// `at = 2026-03-10T20:00Z` is already 2026-03-11 04:00 Asia/Taipei — every
@@ -294,9 +350,9 @@ async fn seeded_timestamps_never_exceed_run_instant(db: PgPool) {
     }
 }
 
-/// Every `DF-SEED-%` order is recorded at its own `paid_at`, not at the run
-/// instant — regression: seed stamped its checkout ledger rows `at.now`
-/// while the order kept a historical `paid_at`, so a seed member's
+/// Every seed order (`seed_order_ids`) is recorded at its own `paid_at`,
+/// not at the run instant — regression: seed stamped its checkout ledger
+/// rows `at.now` while the order kept a historical `paid_at`, so a seed member's
 /// `GET /points/me` `earned_this_month` counted a whole year of
 /// `checkout_earn` as this month's. Each member's `earned_this_month` counts
 /// only orders paid in `at`'s studio month, checkout ledger rows equal
@@ -462,9 +518,9 @@ async fn seeded_users_exist_before_rows_that_reference_them(db: PgPool) {
     assert_eq!(new_this_month, 0);
 }
 
-/// Every paid `DF-SEED-%` order's ticket/membership line carries the
-/// subscription checkout would have granted, started at the order's
-/// `paid_at`; a refunded order's grant is cancelled; a never-paid order
+/// Every paid seed order's (`seed_order_ids`) ticket/membership line
+/// carries the subscription checkout would have granted, started at the
+/// order's `paid_at`; a refunded order's grant is cancelled; a never-paid order
 /// grants nothing. Regression: seed orders skipped checkout's grant step, so
 /// a seed member who "bought" a pass had no subscription at all
 /// (`GET /subscriptions/me` empty, admin order detail without artifacts).

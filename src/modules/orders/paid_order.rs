@@ -13,8 +13,7 @@
 //! 在這裡走不到——`PricingOutcome::ledger_deltas` 跳過零幅度；點數不足則是
 //! 呼叫端前提：`outcome.points_used` 不得超過 `buyer` 鎖到的餘額，否則折抵
 //! 那筆回 `Conflict("點數不足")`（checkout 以鎖到的餘額呼叫 `pricing::price`
-//! 封頂折抵，seed 以 `use_points = false` 定價、不折抵）。任何錯誤都由呼叫端
-//! 回滾整個交易，本函式不 commit。
+//! 封頂折抵）。任何錯誤都由呼叫端回滾整個交易，本函式不 commit。
 
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};

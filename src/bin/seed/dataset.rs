@@ -9,10 +9,11 @@
 //! NOTHING` (no explicit target) no-ops on ANY unique-constraint violation on
 //! that table, so this is safe regardless of whether the unique constraint is
 //! a plain column or a functional `LOWER(slug)` index. Where a table has no
-//! usable unique key (rewards, enrolments, orders, time_slots, bookings,
-//! contact_inquiries), idempotency is a SELECT-existence check on the seed's
-//! deterministic natural key (name / user+course / `DF-SEED-…` order number /
-//! venue+date+start / user+slot / `df-seed-…` email) instead. Running this
+//! usable unique key (rewards, enrolments, pending orders, time_slots,
+//! bookings, contact_inquiries), idempotency is a SELECT-existence check on
+//! the seed's deterministic natural key (name / user+course / `DF-SEED-…`
+//! order number / venue+date+start / user+slot / `df-seed-…` email) instead;
+//! paid orders are keyed by checkout's own idempotency (below). Running this
 //! binary twice must therefore leave row counts unchanged on the second run.
 //!
 //! The 12-month reporting dataset (members / enrolments / orders / sessions /
@@ -20,29 +21,38 @@
 //! every value derives from fixed index formulas over the run date — no
 //! randomness — so re-running on the same day produces the identical set.
 //!
+//! **Paid orders are bought through the real checkout.** Every paid,
+//! completed or refunded seed order is a `SeedPurchase` (buyer, lines,
+//! instant `ts`) that `buy_seed_purchase` places the way a member would:
+//! `cart::service::add_item` per line, then `orders::service::checkout`
+//! under the `Idempotency-Key` `DF-SEED-{YYYYMM}-{seq}` at
+//! `StudioNow { now: ts }`. Pricing, order lines, the paid-order record and
+//! its points ledger, the subscription grants, the outbox event and the
+//! notification are checkout's own, all at `ts`. `advance_status` then
+//! walks completed and refunded orders through
+//! `orders::service::update_order_status` — a refund runs checkout's full
+//! compensation (`refund_clawback`, grant cancellation). A rerun finds each
+//! key with `orders::idempotency::replay` and buys nothing again, so it
+//! adds no order, ledger, outbox or notification row. Pending contrast
+//! orders are the one bypass left on this path — checkout only creates
+//! paid orders — and `insert_pending_order_if_absent` writes them directly.
+//! A database seeded by an older version of this binary, whose paid
+//! `DF-SEED-…`-numbered orders were written directly and carry no key,
+//! would have them bought a second time: reset the dev database first.
+//!
 //! `points_balance` is granted through `points::service::apply_delta_tx`,
 //! never written to the column directly, so `points_balance ==
 //! SUM(point_ledger.delta)` holds for every seeded user — but only on a
 //! freshly migrated database: rows left over from an older run of this seed
 //! (which wrote the column directly, with no backing ledger) are not
-//! backfilled, an accepted legacy shape. Orders created by an older version
-//! of this seed binary (before it wrote `checkout_earn`/`refund_clawback`
-//! rows, or while it still stamped them with the run instant instead of the
-//! order's `paid_at`) similarly keep their old ledger shape on a re-run —
-//! idempotency is keyed on `order_number`, so existing rows are never
-//! rewritten; reset the dev database to pick up the new shape from scratch.
+//! backfilled, an accepted legacy shape.
 //! Named accounts (`upsert_user`) get their whole balance via one
 //! `LedgerDelta::admin_adjust` in the same transaction as the INSERT. The 24
 //! reporting members (`upsert_seed_member`) instead earn theirs the way a
-//! real member would: `insert_order_if_absent` writes a `checkout_earn` row
-//! (and, for refunded orders, a `refund_clawback` row on top) for every
-//! seeded order touching that member, in the same transaction as the order
-//! — amounts priced by `orders::pricing::price`, rows written by checkout's
-//! own `orders::paid_order::record_paid_order_tx`
-//! (`PricingOutcome::ledger_deltas`) and, for refunds,
-//! `points::service::reverse_order_tx`, all stamped with the order's
-//! `paid_at` rather than the run instant;
-//! once every order is inserted, **every** member (not just ones newly
+//! real member does: checkout writes a `checkout_earn` row at `paid_at` for
+//! every paid seed order touching that member, and a refund a
+//! `refund_clawback` on top at the refund instant — never the run instant;
+//! once every order is bought, **every** member (not just ones newly
 //! created this run) gets a `admin_adjust(target − balance)` settling it to
 //! its points-tier target (`member_points_target`, derived from
 //! `PointsTier`), every run — new-month orders keep adding
@@ -66,20 +76,20 @@ use uuid::Uuid;
 
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
+use dream_fly_backend::modules::cart::service as cart_service;
 use dream_fly_backend::modules::contact::model::InquiryType;
-use dream_fly_backend::modules::coupons::repository as coupons_repository;
+use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
+use dream_fly_backend::modules::orders::idempotency::{self, IdempotencyKey};
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
-use dream_fly_backend::modules::orders::paid_order::record_paid_order_tx;
-use dream_fly_backend::modules::orders::pricing::{self, PricingOutcome};
+use dream_fly_backend::modules::orders::pricing;
 use dream_fly_backend::modules::orders::repository as orders_repository;
+use dream_fly_backend::modules::orders::service as orders_service;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::service as points_service;
-use dream_fly_backend::modules::products::repository as products_repository;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
-use dream_fly_backend::modules::subscriptions::service as subscriptions_service;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -553,8 +563,9 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
 /// writes `birth_date`, which backs the age-bracket report bucket. Unlike
 /// `upsert_user`, this function grants no points itself: the points-tier
 /// target balance is instead reached through the member's seeded orders'
-/// `checkout_earn`/`refund_clawback` rows (written by
-/// `insert_order_if_absent`) plus a settling `LedgerDelta::admin_adjust` the
+/// `checkout_earn`/`refund_clawback` rows (written by checkout and its
+/// refund compensation, see `buy_seed_purchase`) plus a settling
+/// `LedgerDelta::admin_adjust` the
 /// caller applies, every run, once every order is inserted (see the module
 /// doc) — so this function doesn't need to report whether the row was newly
 /// inserted; the settlement step runs for every member regardless.
@@ -685,46 +696,156 @@ async fn insert_enrolment_if_absent(
     Ok(id)
 }
 
-/// A checkout-shaped order. `lines` is the same `PurchasableCart` checkout
-/// prices (built through `fulfilment::ensure_all_purchasable`, its only
-/// constructor), and `pricing` is `orders::pricing::price`'s outcome for them
-/// (the optional coupon loaded via `coupons::repository::find_valid_by_code`,
-/// never redeeming points) — so amounts, discount, applied code and
-/// `points_earned` come from the pricing owner, not a seed-side copy of its
-/// arithmetic. `insert_order_if_absent` maps `status` exhaustively: the
-/// paid family (and refunded, which keeps its original `paid_at`, as the
-/// refund path never clears it) goes through
-/// `orders::paid_order::record_paid_order_tx` at `created_at` — order row
-/// (`paid_at = created_at`), order items and `PricingOutcome::ledger_deltas`
-/// (a `checkout_earn` row) all stamped with that one instant; refunded
-/// additionally runs `points::service::reverse_order_tx` at the same instant
-/// (a `refund_clawback` of the same magnitude — net zero); pending contrast
-/// rows record `paid_at = NULL`, `points_earned = 0` and no ledger rows.
-/// Both delta owners skip zero magnitudes, so a fully-discounted order
-/// writes none.
-struct SeedOrder {
+/// One paid seed order as its buyer places it — what to buy, for whom, when
+/// — bought by `buy_seed_purchase` through the real cart and
+/// `orders::service::checkout`, so pricing, order lines, the points ledger
+/// and every artifact come from checkout itself, not a seed-side copy of
+/// its steps. `key` is the checkout `Idempotency-Key` (`DF-SEED-…`) and the
+/// purchase's identity across runs; `buyer` is `seed-member-{member_idx:02}`;
+/// `ts` is the instant it is paid at. `target` is where `advance_status`
+/// then walks the order: paid, completed or refunded.
+struct SeedPurchase {
+    key: String,
+    buyer: Uuid,
+    member_idx: usize,
+    ts: DateTime<Utc>,
+    lines: Vec<(LineTarget, i32)>,
+    coupon: Option<&'static str>,
+    payment_method: &'static str,
+    target: OrderStatus,
+}
+
+/// Buy one `SeedPurchase` and walk it to its target status; returns the
+/// order as it then stands. Idempotent on `key`: `idempotency::replay` is
+/// asked first and a hit is that order — before the cart is touched, since
+/// a replayed checkout returns without clearing the cart and would leave
+/// re-added lines behind. On a miss the buyer's cart is cleared, every line
+/// goes through `cart::service::add_item`, and `checkout` runs at
+/// `StudioNow { now: ts }` — the order row, its items, its `checkout_earn`
+/// row and its grants all carry `ts` as their business time (ADR-0017).
+/// Checkout also writes its outbox event and notification, once per key.
+async fn buy_seed_purchase(
+    db: &PgPool,
+    at: StudioNow,
+    purchase: &SeedPurchase,
+) -> anyhow::Result<OrderResponse> {
+    let SeedPurchase {
+        key,
+        buyer,
+        member_idx,
+        ..
+    } = purchase;
+    let parsed = IdempotencyKey::parse(key)
+        .with_context(|| format!("parse seed idempotency key '{key}'"))?;
+    let replayed = idempotency::replay(db, *buyer, Some(&parsed))
+        .await
+        .with_context(|| format!("replay seed purchase '{key}'"))?;
+    let order = match replayed {
+        Some(order) => order,
+        None => {
+            cart_service::clear(db, *buyer).await.with_context(|| {
+                format!("clear cart of seed-member-{member_idx:02} for '{key}'")
+            })?;
+            for &(target, quantity) in &purchase.lines {
+                let (LineTarget::Product(id) | LineTarget::Course(id)) = target;
+                cart_service::add_item(db, *buyer, target.item_type().as_str(), id, quantity)
+                    .await
+                    .with_context(|| format!("add {target:?} to the cart for '{key}'"))?;
+            }
+            orders_service::checkout(
+                db,
+                *buyer,
+                Some(parsed),
+                CheckoutRequest {
+                    coupon_code: purchase.coupon.map(str::to_owned),
+                    use_points: Some(false),
+                    payment_method: Some(purchase.payment_method.to_owned()),
+                },
+                None,
+                StudioNow {
+                    tz: at.tz,
+                    now: purchase.ts,
+                },
+            )
+            .await
+            .with_context(|| format!("checkout seed purchase '{key}'"))?
+        }
+    };
+    advance_status(db, at, purchase, order).await
+}
+
+/// Walk a seed order from its current status to `purchase.target` through
+/// `orders::service::update_order_status` — the real transition rules,
+/// outbox event and notification, and for a refund the full refund
+/// compensation (`refund_clawback`, grant cancellation). Each step runs at
+/// `min(ts + offset, at.now)`: completed is processing (+1 day) then
+/// completed (+3 days), refunded is refunded (+3 days), paid stays put.
+/// Steps already passed are skipped, so a rerun only finishes an
+/// interrupted walk; a current status off the path is an error.
+async fn advance_status(
+    db: &PgPool,
+    at: StudioNow,
+    purchase: &SeedPurchase,
+    mut order: OrderResponse,
+) -> anyhow::Result<OrderResponse> {
+    // `(status, days after ts)`, starting from checkout's `paid`.
+    let path: &[(OrderStatus, i64)] = match purchase.target {
+        OrderStatus::Paid => &[(OrderStatus::Paid, 0)],
+        OrderStatus::Completed => &[
+            (OrderStatus::Paid, 0),
+            (OrderStatus::Processing, 1),
+            (OrderStatus::Completed, 3),
+        ],
+        OrderStatus::Refunded => &[(OrderStatus::Paid, 0), (OrderStatus::Refunded, 3)],
+        OrderStatus::Pending | OrderStatus::Processing | OrderStatus::Cancelled => {
+            anyhow::bail!(
+                "seed purchase '{}' cannot target {}",
+                purchase.key,
+                purchase.target.as_str()
+            )
+        }
+    };
+    let Some(reached) = path.iter().position(|&(status, _)| status == order.status) else {
+        anyhow::bail!(
+            "seed order '{}' is {}, not on its path to {}",
+            purchase.key,
+            order.status.as_str(),
+            purchase.target.as_str()
+        );
+    };
+    for &(status, days) in &path[reached + 1..] {
+        let now = (purchase.ts + Duration::days(days)).min(at.now);
+        order = orders_service::update_order_status(db, order.id, status.as_str(), None, now)
+            .await
+            .with_context(|| {
+                format!("move seed order '{}' to {}", purchase.key, status.as_str())
+            })?;
+    }
+    Ok(order)
+}
+
+/// A never-paid contrast order. Checkout only creates orders already paid,
+/// so this stays a direct `orders` INSERT — the one documented bypass left
+/// on the order path (ADR-0010): `lines` is the `PurchasableCart` checkout
+/// would price (built through `fulfilment::ensure_all_purchasable`), priced
+/// by `orders::pricing::price` with no coupon and no points; `paid_at =
+/// NULL`, `points_earned = 0`, no ledger rows, no grants.
+struct PendingSeedOrder {
     order_number: String,
     user_id: Uuid,
-    status: OrderStatus,
     created_at: DateTime<Utc>,
     payment_method: &'static str,
     lines: PurchasableCart,
-    pricing: PricingOutcome,
 }
 
-/// Insert an order + its order_items (idempotent by existence check on
-/// `order_number` — order_items has no unique key of its own, so the parent
-/// check guards both). Not the checkout service (no cart dependency), but
-/// the paid family is written by the same paid-order record checkout uses,
-/// under the buyer's `BalanceLock`; a status other than paid is then set
-/// with a direct `update_status_tx` — not the order state machine, this is
-/// dev data. Pending/cancelled keep a direct `orders` INSERT
-/// (`record_paid_order_tx` only writes `status = 'paid'`) and share
-/// `create_order_items`. The order's `point_ledger` rows (see `SeedOrder`'s
-/// doc) land in the same transaction, guarded by the same up-front
-/// existence check, so a re-run neither duplicates the order nor its ledger
-/// rows.
-async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result<()> {
+/// Insert a pending order + its order_items (idempotent by existence check
+/// on `order_number` — order_items has no unique key of its own, so the
+/// parent check guards both). The items go through checkout's own
+/// `fulfilment::order_lines` and `create_order_items`, at `created_at`.
+async fn insert_pending_order_if_absent(
+    db: &PgPool,
+    seed: &PendingSeedOrder,
+) -> anyhow::Result<()> {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE order_number = $1)")
             .bind(&seed.order_number)
@@ -735,111 +856,37 @@ async fn insert_order_if_absent(db: &PgPool, seed: &SeedOrder) -> anyhow::Result
         return Ok(());
     }
 
+    let pricing = pricing::price(&seed.lines, None, 0, false)
+        .with_context(|| format!("price seed order '{}'", seed.order_number))?;
     let mut tx = db.begin().await.context("begin order tx")?;
     // Seed never decrements stock, so no line is marked `stock_decremented`.
     let lines = fulfilment::order_lines(&seed.lines, &HashMap::new());
 
-    // Exhaustive over `OrderStatus` — a new variant must decide here
-    // whether it was ever paid (and so goes through the paid-order record
-    // and the ledger). The seed itself only produces pending / paid /
-    // completed / refunded.
-    match seed.status {
-        // Never paid (`Cancelled` read as the `Pending → Cancelled` edge):
-        // no `paid_at`, nothing earned or redeemed, no ledger rows.
-        OrderStatus::Pending | OrderStatus::Cancelled => {
-            let order_id = Uuid::now_v7();
-            sqlx::query(
-                r#"
-                INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
-                                    coupon_code, points_used, points_earned, payment_method, paid_at,
-                                    created_at, updated_at)
-                VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, 0, 0, $8, NULL, $9, $9)
-                "#,
-            )
-            .bind(order_id)
-            .bind(seed.user_id)
-            .bind(&seed.order_number)
-            .bind(seed.status.as_str())
-            .bind(seed.pricing.total_cents)
-            .bind(seed.pricing.discount_cents)
-            .bind(&seed.pricing.applied_coupon_code)
-            .bind(seed.payment_method)
-            .bind(seed.created_at)
-            .execute(&mut *tx)
-            .await
-            .with_context(|| format!("insert order '{}'", seed.order_number))?;
+    let order_id = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
+                            coupon_code, points_used, points_earned, payment_method, paid_at,
+                            created_at, updated_at)
+        VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, 0, 0, $8, NULL, $9, $9)
+        "#,
+    )
+    .bind(order_id)
+    .bind(seed.user_id)
+    .bind(&seed.order_number)
+    .bind(OrderStatus::Pending.as_str())
+    .bind(pricing.total_cents)
+    .bind(pricing.discount_cents)
+    .bind(&pricing.applied_coupon_code)
+    .bind(seed.payment_method)
+    .bind(seed.created_at)
+    .execute(&mut *tx)
+    .await
+    .with_context(|| format!("insert order '{}'", seed.order_number))?;
 
-            orders_repository::create_order_items(&mut tx, order_id, &lines, seed.created_at)
-                .await
-                .with_context(|| format!("insert order_items for '{}'", seed.order_number))?;
-        }
-        // Recorded paid at `created_at` first. Refunded keeps that original
-        // `paid_at` (the refund path never clears it) and its checkout
-        // ledger rows, then reverses that flow on top. Seed prices with
-        // `use_points = false`, so there is never a redeem for the locked
-        // balance to cover.
-        OrderStatus::Paid
-        | OrderStatus::Processing
-        | OrderStatus::Completed
-        | OrderStatus::Refunded => {
-            let lock = points_service::lock_balance_tx(&mut tx, seed.user_id)
-                .await
-                .with_context(|| format!("lock balance for order '{}'", seed.order_number))?;
-            let order = record_paid_order_tx(
-                &mut tx,
-                &lock,
-                &seed.order_number,
-                seed.payment_method,
-                &lines,
-                &seed.pricing,
-                seed.created_at,
-            )
-            .await
-            .with_context(|| format!("record paid order '{}'", seed.order_number))?;
-
-            // Checkout's grant step: every product line is offered to
-            // `grant_from_purchase_tx`, which grants only ticket/membership
-            // products — started at the order's `paid_at`.
-            for p in &fulfilment::plan(&seed.lines).products {
-                let product = products_repository::find_by_id(db, p.product_id)
-                    .await
-                    .with_context(|| format!("load product for order '{}'", seed.order_number))?
-                    .with_context(|| {
-                        format!("product of order '{}' is missing", seed.order_number)
-                    })?;
-                product
-                    .ensure_line_quantity(p.quantity)
-                    .with_context(|| format!("line quantity of order '{}'", seed.order_number))?;
-                subscriptions_service::grant_from_purchase_tx(
-                    &mut tx,
-                    seed.user_id,
-                    &product,
-                    p.quantity,
-                    p.price_cents,
-                    order.id,
-                    seed.created_at,
-                )
-                .await
-                .with_context(|| format!("grant subscription for order '{}'", seed.order_number))?;
-            }
-
-            if seed.status != OrderStatus::Paid {
-                orders_repository::update_status_tx(&mut tx, order.id, &seed.status)
-                    .await
-                    .with_context(|| format!("set status of order '{}'", seed.order_number))?;
-            }
-            if seed.status == OrderStatus::Refunded {
-                points_service::reverse_order_tx(&mut tx, &lock, order.id, seed.created_at)
-                    .await
-                    .with_context(|| format!("refund ledger for order '{}'", seed.order_number))?;
-                subscriptions_service::cancel_by_order_tx(&mut tx, order.id)
-                    .await
-                    .with_context(|| {
-                        format!("cancel subscriptions of order '{}'", seed.order_number)
-                    })?;
-            }
-        }
-    }
+    orders_repository::create_order_items(&mut tx, order_id, &lines, seed.created_at)
+        .await
+        .with_context(|| format!("insert order_items for '{}'", seed.order_number))?;
 
     tx.commit().await.context("commit order tx")?;
     Ok(())
@@ -1044,7 +1091,7 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
     // `format!`-built string so sqlx's `SqlSafeStr` compile-time check (no
     // dynamic SQL strings) is satisfied without an `AssertSqlSafe` escape
     // hatch.
-    const QUERIES: [(&str, &str); 17] = [
+    const QUERIES: [(&str, &str); 20] = [
         ("users", "SELECT COUNT(*) FROM users"),
         ("coaches", "SELECT COUNT(*) FROM coaches"),
         ("courses", "SELECT COUNT(*) FROM courses"),
@@ -1055,6 +1102,7 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
         ("venues", "SELECT COUNT(*) FROM venues"),
         ("orders", "SELECT COUNT(*) FROM orders"),
         ("order_items", "SELECT COUNT(*) FROM order_items"),
+        ("order_idempotency", "SELECT COUNT(*) FROM order_idempotency"),
         ("subscriptions", "SELECT COUNT(*) FROM subscriptions"),
         ("enrolments", "SELECT COUNT(*) FROM enrolments"),
         ("attendance_records", "SELECT COUNT(*) FROM attendance_records"),
@@ -1062,6 +1110,8 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
         ("time_slots", "SELECT COUNT(*) FROM time_slots"),
         ("bookings", "SELECT COUNT(*) FROM bookings"),
         ("contact_inquiries", "SELECT COUNT(*) FROM contact_inquiries"),
+        ("notifications", "SELECT COUNT(*) FROM notifications"),
+        ("events_outbox", "SELECT COUNT(*) FROM events_outbox"),
     ];
     let mut row_counts = Vec::with_capacity(QUERIES.len());
     for (table, sql) in QUERIES {
@@ -1648,13 +1698,18 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         enrolment_cancelled
     );
 
-    // -- orders + order_items (~119 across 12 months) -----------------------
-    // Idempotency key: order_number `DF-SEED-{YYYYMM}-{seq:02}`. Month m
-    // (0 = current .. 11 = oldest) gets 8 + ((m*7+3)%5) orders; every month
-    // carries one refunded (seq 4) and one pending (seq 7) contrast row.
-    // Months run oldest first, so each member's ledger `balance_after`
-    // moves forward with the rows' `paid_at`; nothing below depends on the
-    // visiting order (`g`, member and status derive from `(m, seq)` alone).
+    // -- orders + order_items (~120 across 12 months) -----------------------
+    // Identity: `DF-SEED-{YYYYMM}-{seq:02}` — the checkout idempotency key of
+    // a paid/completed/refunded `SeedPurchase`, the order_number of a
+    // pending one. Month `abs` (absolute month, `year * 12 + month0`) gets
+    // 8 + ((abs*7+3)%5) orders; every month carries one refunded (seq 4) and
+    // one pending (seq 7) contrast row. `g`, count, member and status
+    // derive from `(abs, seq)` alone, never from how many months back the
+    // month sits: `order_idempotency` is per (buyer, key), so a key whose
+    // buyer shifted as the 12-month window slides would miss its replay and
+    // be bought again for another member. Purchases are collected oldest
+    // month first and bought in that order, so each member's ledger
+    // `balance_after` moves forward with the rows' `paid_at`.
     let mut product_ids: Vec<Uuid> = Vec::with_capacity(product_seeds.len());
     for seed in &product_seeds {
         product_ids.push(product_id_by_slug(db, seed.slug).await?);
@@ -1675,12 +1730,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         PAYMENT_METHODS[0], // credit_card
         PAYMENT_METHODS[4], // cash
     ];
-    // Every seq-2 order applies DREAMFLY100 — loaded once, the way checkout
-    // loads a code, so its discount comes from the `[coupons]` row above.
-    let seed_coupon = coupons_repository::find_valid_by_code(db, "DREAMFLY100", at.now)
-        .await
-        .context("load seed coupon DREAMFLY100")?
-        .context("seed coupon DREAMFLY100 is missing, inactive or expired")?;
+    let mut purchases: Vec<SeedPurchase> = Vec::new();
     let mut order_total = 0usize;
     for m in (0..12u32).rev() {
         let month_first = today
@@ -1689,14 +1739,15 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             .checked_sub_months(Months::new(m))
             .expect("valid seed month");
         let ym = month_first.format("%Y%m");
-        let count = 8 + ((m as usize * 7 + 3) % 5); // 8..12
+        let abs = month_first.year() as usize * 12 + month_first.month0() as usize;
+        let count = 8 + ((abs * 7 + 3) % 5); // 8..12
         for seq in 1..=count {
-            let g = m as usize * 12 + seq; // globally unique (count ≤ 12)
+            let g = abs * 12 + seq; // globally unique (count ≤ 12)
             let day = if m == 0 {
                 // current month: never date an order in the future
                 1 + ((seq * 3) % today.day() as usize)
             } else {
-                1 + ((seq * 3 + m as usize * 5) % 28)
+                1 + ((seq * 3 + abs * 5) % 28)
             };
             let ts = at_utc(
                 month_first.with_day(day as u32).expect("day ≤ 28/today"),
@@ -1735,29 +1786,41 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                 });
             }
 
-            // Amounts and points through checkout's own pricing owner —
-            // seed orders never redeem points.
-            let coupon = if seq == 2 { Some(&seed_coupon) } else { None };
-            let lines = fulfilment::ensure_all_purchasable(lines)
-                .with_context(|| format!("gate seed order DF-SEED-{ym}-{seq:02}"))?;
-            let pricing = pricing::price(&lines, coupon, 0, false)
-                .with_context(|| format!("price seed order DF-SEED-{ym}-{seq:02}"))?;
-
-            insert_order_if_absent(
-                db,
-                &SeedOrder {
-                    order_number: format!("DF-SEED-{ym}-{seq:02}"),
-                    user_id: member_ids[(g * 11) % 24],
-                    status,
-                    created_at: ts,
+            let member_idx = (g * 11) % 24 + 1;
+            if status == OrderStatus::Pending {
+                let lines = fulfilment::ensure_all_purchasable(lines)
+                    .with_context(|| format!("gate seed order DF-SEED-{ym}-{seq:02}"))?;
+                insert_pending_order_if_absent(
+                    db,
+                    &PendingSeedOrder {
+                        order_number: format!("DF-SEED-{ym}-{seq:02}"),
+                        user_id: member_ids[member_idx - 1],
+                        created_at: ts,
+                        payment_method: PM_CYCLE[g % 10],
+                        lines,
+                    },
+                )
+                .await?;
+            } else {
+                // Every seq-2 order applies DREAMFLY100 — checkout loads
+                // the code from the `[coupons]` row above. Seed purchases
+                // never redeem points.
+                purchases.push(SeedPurchase {
+                    key: format!("DF-SEED-{ym}-{seq:02}"),
+                    buyer: member_ids[member_idx - 1],
+                    member_idx,
+                    ts,
+                    lines: lines.iter().map(|l| (l.target, l.quantity)).collect(),
+                    coupon: (seq == 2).then_some("DREAMFLY100"),
                     payment_method: PM_CYCLE[g % 10],
-                    lines,
-                    pricing,
-                },
-            )
-            .await?;
+                    target: status,
+                });
+            }
             order_total += 1;
         }
+    }
+    for purchase in &purchases {
+        buy_seed_purchase(db, at, purchase).await?;
     }
     println!("[orders]   {order_total} seed orders across 12 months ready (DF-SEED-*)");
 

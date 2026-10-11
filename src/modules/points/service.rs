@@ -198,7 +198,7 @@ pub async fn try_spend_tx(
 /// Reverse one order's checkout point flow inside the caller's transaction —
 /// refund/cancel compensation's (`orders::service::compensate_order_artifacts_tx`)
 /// points step, and the only refund path into [`apply_delta_tx`] (the dev
-/// seed's refunded orders reverse through here too). Reads the
+/// seed's refunds reach it through that same compensation). Reads the
 /// order's own ledger trace (`repository::find_order_flow_sums_tx`, ADR-0007
 /// 決策 8 — never `orders.points_earned`/`points_used`) and applies
 /// `OrderPointsFlow::reversal_deltas` in vec order: RESTORE first, CLAWBACK

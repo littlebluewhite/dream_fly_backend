@@ -82,7 +82,9 @@ pub(super) enum Recorded {
 /// user returns that order, before any other check. Runs before the checkout
 /// transaction opens (`TxReleased::no_open_tx`). `Ok(None)` — no key, or no
 /// row for `(user_id, key)` yet — means carry on with the checkout.
-pub(super) async fn replay(
+/// `pub` for the dev seed, which pre-checks its keys with it before
+/// refilling a buyer's cart (a replayed checkout leaves that cart untouched).
+pub async fn replay(
     db: &PgPool,
     user_id: Uuid,
     key: Option<&IdempotencyKey>,

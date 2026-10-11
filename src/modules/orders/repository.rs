@@ -64,7 +64,7 @@ pub async fn create_order(
 /// product/course catalog. `stock_decremented` is the checkout-time fact of
 /// whether this line actually decremented `products.stock` — the callers
 /// (`paid_order::record_paid_order_tx`, and the dev seed's
-/// `insert_order_if_absent` for pending/cancelled orders) get it
+/// `insert_pending_order_if_absent` for pending orders) get it
 /// pre-derived per line from `fulfilment::order_lines`; always `false` for
 /// course lines.
 /// `created_at` 綁呼叫端傳入的時間,與訂單列的 `created_at` 同一刻(已付訂單即 `paid_at`;ADR-0017)。
