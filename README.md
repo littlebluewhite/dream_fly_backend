@@ -158,6 +158,8 @@ cargo run --bin seed
 - 4 位教練帳號（`coach1..coach4@dreamfly.tw` / `Coach#2026`，各附教練資料）
 - 6 門課程、5 筆商品/方案（單堂體驗券／十堂票／月票／季票／年卡）、3 組優惠碼（`DREAMFLY100`/`NEWYEAR500`/`WELCOME50`）、3 篇公告、4 個場館
 
+舊版 seed 灌過的資料庫會被拒絕執行（報名與已付訂單現在都經真實結帳產生）：請先重置 dev DB（drop 後重建資料庫）再跑。
+
 前端任務（Task 11 起）皆假設此指令已執行過。
 
 ### 執行 API 端對端 Smoke Test

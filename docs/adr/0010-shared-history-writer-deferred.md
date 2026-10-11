@@ -70,3 +70,23 @@ seed,不是本 ADR 原本討論的 seed + 測試 fixtures 這一對。
 seed 已付訂單的訂閱授權改走 checkout 的 `subscriptions::service::grant_from_purchase_tx`(起始時間 = `paid_at`,
 退款訂單再以 `cancel_by_order_tx` 取消)——同上一則,是借用既有 production seam,不是新建共用 history writer。
 上一則「報名與訂閱授權也不經 checkout 編排」只剩報名一半成立(見 GLOSSARY「Seed 資料集」的已知缺口)。
+
+## Addendum (2026-10-11)
+
+重開條件 2 已達成:seed 改當真實結帳的呼叫者。已付/處理中/完成/退款種子訂單都是一筆 `SeedPurchase`,經
+`cart::service::add_item` → `orders::service::checkout`(`Idempotency-Key` 為 `DF-SEED-…`,`now` 為該筆的歷史
+付款時間)下單,再經 `orders::service::update_order_status` 推到目標狀態。報名資料集也改為 39 筆課程購買:每筆
+種子報名都是 checkout 為課程行建立的那筆,帶著自己的 `order_id`。定價、訂單行、點數帳、訂閱授權、報名與退款
+補償全由 checkout 與訂單狀態機產生,seed 不再抄任何一步——上兩則增補裡 seed 直呼的 `record_paid_order_tx`、
+`grant_from_purchase_tx`、`reverse_order_tx` 隨之刪除,`record_paid_order_tx` 回到只有 checkout 一個呼叫端。
+
+- **仍保留的 bypass**(seed 直寫,不經 runtime 流程):使用者(`upsert_user`/`upsert_seed_member`)、目錄(課程、
+  商品、優惠碼、獎勵、公告、場館)、時段(課程週課表時段、場租 `time_slots`)、出勤(`attendance_records` 批次
+  寫入)、場次 backfill(`sessions::calendar::backfill_for_seed`)、場租預約(`bookings`)、洽詢
+  (`contact_inquiries`)、待付款訂單(`insert_pending_order_if_absent`——checkout 只建已付訂單)。
+- **副作用**:checkout 與狀態機照常寫 outbox 事件與站內通知,dev 資料庫因此多出 `events_outbox`/`notifications`
+  列(DB 時鐘,稽核欄位,ADR-0017)。舊 seed 直寫的資料——種子會員沒有訂單的報名、非待付款的 `DF-SEED-…`
+  訂單——沒有 idempotency key,會被再買一次,所以 `dataset::run` 在任何寫入前拒絕這種資料庫,要先重置 dev DB。
+- **共用「歷史寫入」module 仍然延後**:重開條件 1 未達成——`tests/common/fixtures.rs` 的 `OrderSeed` 照舊直寫
+  列、不產 points ledger,沒有第二個需要造「已結帳、已結算」歷史訂單的測試族群。條件 2 則由結帳路徑本身取代了
+  這個 seam 的必要性,不必另建。
