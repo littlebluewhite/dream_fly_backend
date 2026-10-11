@@ -40,7 +40,8 @@
 //! (audit columns, ADR-0017). `advance_status` then walks completed and
 //! refunded orders through `orders::service::update_order_status` — a
 //! refund runs checkout's full compensation (`refund_clawback`, grant and
-//! enrolment cancellation). A rerun finds each key with
+//! enrolment cancellation) — each walk once the purchases reach its first
+//! step's instant, so the points ledger is written in time order. A rerun finds each key with
 //! `orders::idempotency::replay` and buys nothing again, so it adds no
 //! order, ledger, enrolment, outbox or notification row. Pending contrast
 //! orders are the one bypass left on this path — checkout only creates
@@ -76,7 +77,8 @@
 //! points_balance = ...` against a seed-member row is reset back to its
 //! tier target the next time the seed runs.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 
 use anyhow::Context;
 use chrono::{DateTime, Datelike, Days, Duration, Months, NaiveDate, NaiveTime, Utc};
@@ -683,8 +685,8 @@ struct SeedPurchase {
     target: OrderStatus,
 }
 
-/// Buy one `SeedPurchase` and walk it to its target status; returns the
-/// order as it then stands. Idempotent on `key`: `idempotency::replay` is
+/// Buy one `SeedPurchase`; returns the order as checkout (or its replay)
+/// left it, for `advance_status` to walk. Idempotent on `key`: `idempotency::replay` is
 /// asked first and a hit is that order — before the cart is touched, since
 /// a replayed checkout returns without clearing the cart and would leave
 /// re-added lines behind. On a miss the buyer's cart is cleared, every line
@@ -740,29 +742,14 @@ async fn buy_seed_purchase(
             .with_context(|| format!("checkout seed purchase '{key}'"))?
         }
     };
-    advance_status(db, at, purchase, order).await
+    Ok(order)
 }
 
-/// Walk a seed order from its current status to `purchase.target` through
-/// `orders::service::update_order_status` — the real transition rules,
-/// outbox event and notification, and for a refund the full refund
-/// compensation (`refund_clawback`, grant and enrolment cancellation). Each
-/// step runs at `min(paid_at + offset, at.now)` (`ts` when no `paid_at`; the
-/// two are equal on a fresh run, and `paid_at` keeps a rerun on a later day
-/// from stamping a step before the payment): completed is processing (+1 day)
-/// then completed (+3 days), refunded is refunded (+3 days), paid stays put.
-/// Steps already passed are skipped, so a rerun only finishes an
-/// interrupted walk. An order whose status is off its path — a developer
-/// moved it, say from the admin UI, to processing, refunded or cancelled —
-/// is left as it is.
-async fn advance_status(
-    db: &PgPool,
-    at: StudioNow,
-    purchase: &SeedPurchase,
-    mut order: OrderResponse,
-) -> anyhow::Result<OrderResponse> {
-    // `(status, days after ts)`, starting from checkout's `paid`.
-    let path: &[(OrderStatus, i64)] = match purchase.target {
+/// `(status, days after paid_at)` from checkout's `paid` to
+/// `purchase.target`: completed is processing (+1 day) then completed
+/// (+3 days), refunded is refunded (+3 days), paid stays put.
+fn status_path(purchase: &SeedPurchase) -> anyhow::Result<&'static [(OrderStatus, i64)]> {
+    Ok(match purchase.target {
         OrderStatus::Paid => &[(OrderStatus::Paid, 0)],
         OrderStatus::Completed => &[
             (OrderStatus::Paid, 0),
@@ -777,7 +764,40 @@ async fn advance_status(
                 purchase.target.as_str()
             )
         }
-    };
+    })
+}
+
+/// When `order`'s walk is due: its first step's instant, `None` for a paid
+/// target (no walk).
+fn walk_due(
+    at: StudioNow,
+    purchase: &SeedPurchase,
+    order: &OrderResponse,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let base = order.paid_at.unwrap_or(purchase.ts);
+    Ok(status_path(purchase)?
+        .get(1)
+        .map(|&(_, days)| (base + Duration::days(days)).min(at.now)))
+}
+
+/// Walk a seed order from its current status to `purchase.target` through
+/// `orders::service::update_order_status` — the real transition rules,
+/// outbox event and notification, and for a refund the full refund
+/// compensation (`refund_clawback`, grant and enrolment cancellation). Each
+/// step of `status_path` runs at `min(paid_at + offset, at.now)` (`ts` when
+/// no `paid_at`; the two are equal on a fresh run, and `paid_at` keeps a
+/// rerun on a later day from stamping a step before the payment).
+/// Steps already passed are skipped, so a rerun only finishes an
+/// interrupted walk. An order whose status is off its path — a developer
+/// moved it, say from the admin UI, to processing, refunded or cancelled —
+/// is left as it is.
+async fn advance_status(
+    db: &PgPool,
+    at: StudioNow,
+    purchase: &SeedPurchase,
+    mut order: OrderResponse,
+) -> anyhow::Result<OrderResponse> {
+    let path = status_path(purchase)?;
     let Some(reached) = path.iter().position(|&(status, _)| status == order.status) else {
         return Ok(order);
     };
@@ -1822,14 +1842,45 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         }
     }
 
-    // Buy both sets oldest first (a stable sort on `ts`), so each member's
-    // ledger `balance_after` moves forward with the rows' `paid_at`. The
-    // active enrolments attendance is marked against are the ones checkout
-    // (or its replay) returns.
+    // Buy both sets oldest first (a stable sort on `ts`) and walk each
+    // completed or refunded order once the purchases reach its first step
+    // (`walk_due`), so each member's ledger `balance_after` moves forward
+    // with the rows' `created_at`: a refund's clawback lands after every
+    // purchase paid before it. The active enrolments attendance is marked
+    // against are the ones each order holds once walked, in purchase order.
     purchases.sort_by_key(|purchase| purchase.ts);
-    let mut active_enrolments: Vec<(usize, usize, Uuid)> = Vec::new();
-    for purchase in &purchases {
+    let mut bought: Vec<Option<OrderResponse>> = Vec::with_capacity(purchases.len());
+    let mut due: BinaryHeap<Reverse<(DateTime<Utc>, usize)>> = BinaryHeap::new();
+    let mut walked: Vec<(usize, OrderResponse)> = Vec::with_capacity(purchases.len());
+    for i in 0..=purchases.len() {
+        let next_ts = purchases.get(i).map(|purchase| purchase.ts);
+        while let Some(&Reverse((when, j))) = due.peek() {
+            if next_ts.is_some_and(|ts| when > ts) {
+                break;
+            }
+            due.pop();
+            let order = bought[j].take().expect("a due walk's order was bought");
+            walked.push((j, advance_status(db, at, &purchases[j], order).await?));
+        }
+        let Some(purchase) = purchases.get(i) else {
+            break;
+        };
         let order = buy_seed_purchase(db, at, purchase).await?;
+        match walk_due(at, purchase, &order)? {
+            Some(when) => {
+                due.push(Reverse((when, i)));
+                bought.push(Some(order));
+            }
+            None => {
+                bought.push(None);
+                walked.push((i, order));
+            }
+        }
+    }
+    walked.sort_by_key(|&(i, _)| i);
+    let mut active_enrolments: Vec<(usize, usize, Uuid)> = Vec::new();
+    for (i, order) in walked {
+        let purchase = &purchases[i];
         for enrolment in order.enrolments {
             if enrolment.status == EnrolmentStatus::Active {
                 let k = course_ids
