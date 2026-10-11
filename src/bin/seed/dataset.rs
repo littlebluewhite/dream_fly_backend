@@ -1713,31 +1713,19 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
                 OrderStatus::Paid
             };
 
-            // Lines: every 5th order is a course enrolment purchase, the
-            // rest cycle the 7-product pool; every 3rd order appends a
+            // Lines: monthly orders sell products only — the main line
+            // cycles the 7-product pool; every 3rd order appends a
             // merchandise line (unless the main line already is the tee —
             // checkout's cart can't produce two lines of one product).
-            let mut lines: Vec<CheckoutLine> = Vec::new();
-            if g.is_multiple_of(5) {
-                let k = (g / 5) % 6;
-                lines.push(CheckoutLine {
-                    target: LineTarget::Course(course_ids[k]),
-                    quantity: 1,
-                    price_cents: course_seeds[k].price_cents,
-                    name: course_seeds[k].name.to_string(),
-                    is_active: true,
-                });
-            } else {
-                let p = g % 7;
-                lines.push(CheckoutLine {
-                    target: LineTarget::Product(product_ids[p]),
-                    quantity: 1,
-                    price_cents: product_seeds[p].price_cents,
-                    name: product_seeds[p].name.to_string(),
-                    is_active: true,
-                });
-            }
-            if g.is_multiple_of(3) && (g.is_multiple_of(5) || g % 7 != 6) {
+            let p = g % 7;
+            let mut lines: Vec<CheckoutLine> = vec![CheckoutLine {
+                target: LineTarget::Product(product_ids[p]),
+                quantity: 1,
+                price_cents: product_seeds[p].price_cents,
+                name: product_seeds[p].name.to_string(),
+                is_active: true,
+            }];
+            if g.is_multiple_of(3) && g % 7 != 6 {
                 lines.push(CheckoutLine {
                     target: LineTarget::Product(product_ids[6]),
                     quantity: 1 + (g % 2) as i32,
