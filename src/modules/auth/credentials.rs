@@ -174,7 +174,7 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO users (id, email, name, password_hash, google_id, phone_verified, is_active, created_at, updated_at)
-            VALUES ($1, $2, 'Credential Check Test User', $3, $4, false, $5, NOW(), NOW())
+            VALUES ($1, $2, 'Credential Check Test User', $3, $4, false, $5, $6, NOW())
             "#,
         )
         .bind(uuid::Uuid::now_v7())
@@ -182,6 +182,7 @@ mod tests {
         .bind(password_hash)
         .bind(google_id)
         .bind(is_active)
+        .bind(chrono::Utc::now())
         .execute(db)
         .await
         .expect("insert test user");
