@@ -78,31 +78,37 @@ const AUDIT_COLUMNS: &[(&str, &str)] = &[
 
 /// DB-clock tokens the scan cannot map to a column, keyed by
 /// `(file, substring of the SQL literal)` so unrelated edits don't make an
-/// entry stale.
-const UNMAPPED: &[(&str, &str, &str)] = &[
+/// entry stale, with how many hits the entry covers — a further clock added
+/// to an exempt statement fails instead of riding its exemption.
+const UNMAPPED: &[(&str, &str, usize, &str)] = &[
     (
         "src/bin/seed/dataset.rs",
         "INSERT INTO attendance_records",
+        1,
         "INSERT … SELECT FROM UNNEST: NOW() lands in attendance_records.created_at",
     ),
     (
         "src/kafka/outbox.rs",
         "next_attempt_at <= NOW()",
+        1,
         "claim predicate: compares next_attempt_at with the DB clock that wrote it",
     ),
     (
         "src/modules/auth/session.rs",
         "expires_at < NOW()",
+        1,
         "purge_expired: refresh-token retention sweep (token lifetimes are a clock-seam carve-out)",
     ),
     (
         "src/modules/schedule/repository.rs",
         "INSERT INTO time_slots",
+        2,
         "UNNEST batch insert: ARRAY_FILL(now()) lands in time_slots.created_at/updated_at",
     ),
     (
         "src/modules/sessions/calendar.rs",
         "INSERT INTO course_sessions",
+        1,
         "UNNEST batch insert: ARRAY_FILL(now()) lands in course_sessions.created_at",
     ),
 ];
@@ -114,41 +120,13 @@ fn db_clock_is_written_only_into_audit_columns() {
     for dir in ["src", "tests/common"] {
         rust_files(&root.join(dir), &mut files);
     }
-    let mut audit_seen = vec![false; AUDIT_COLUMNS.len()];
-    let mut unmapped_seen = vec![false; UNMAPPED.len()];
-    let mut problems = Vec::new();
+    let mut sites = Vec::new();
     for path in files {
         let file = slash_path(path.strip_prefix(root).unwrap());
         let text = fs::read_to_string(&path).unwrap();
-        for site in clock_sites(&text, &file) {
-            let at = format!("{file}:{}", site.line);
-            match &site.target {
-                Some(col) => match AUDIT_COLUMNS.iter().position(|(c, _)| {
-                    c == col || c.strip_prefix('*').is_some_and(|suffix| col.ends_with(suffix))
-                }) {
-                    Some(i) => audit_seen[i] = true,
-                    None => problems.push(format!("  {at}  writes the DB clock into {col}")),
-                },
-                None => match UNMAPPED
-                    .iter()
-                    .position(|(f, needle, _)| *f == file && site.sql.contains(needle))
-                {
-                    Some(i) => unmapped_seen[i] = true,
-                    None => problems.push(format!("  {at}  DB clock the scan cannot map")),
-                },
-            }
-        }
+        sites.extend(clock_sites(&text, &file).into_iter().map(|site| (file.clone(), site)));
     }
-    for ((col, _), seen) in AUDIT_COLUMNS.iter().zip(audit_seen) {
-        if !seen {
-            problems.push(format!("  stale AUDIT_COLUMNS entry {col}: nothing writes it"));
-        }
-    }
-    for ((file, needle, _), seen) in UNMAPPED.iter().zip(unmapped_seen) {
-        if !seen {
-            problems.push(format!("  stale UNMAPPED entry {file} {needle:?}: matches nothing"));
-        }
-    }
+    let problems = audit_problems(&sites, AUDIT_COLUMNS, UNMAPPED);
     assert!(
         problems.is_empty(),
         "DB clock outside the audit set (ADR-0017):\n{}\n\
@@ -156,6 +134,51 @@ fn db_clock_is_written_only_into_audit_columns() {
          the scan cannot map to UNMAPPED, with a reason; drop stale entries.",
         problems.join("\n")
     );
+}
+
+/// What `sites` (`(file, site)`) break against the two lists: a mapped
+/// column not in `audit`, an unmapped hit no `unmapped` entry covers, an
+/// `audit` entry that matches nothing, and an `unmapped` entry whose hit
+/// count is not the one it pins.
+fn audit_problems(
+    sites: &[(String, ClockSite)],
+    audit: &[(&str, &str)],
+    unmapped: &[(&str, &str, usize, &str)],
+) -> Vec<String> {
+    let mut audit_seen = vec![false; audit.len()];
+    let mut unmapped_hits = vec![0; unmapped.len()];
+    let mut problems = Vec::new();
+    for (file, site) in sites {
+        let at = format!("{file}:{}", site.line);
+        match &site.target {
+            Some(col) => match audit.iter().position(|(c, _)| {
+                c == col || c.strip_prefix('*').is_some_and(|suffix| col.ends_with(suffix))
+            }) {
+                Some(i) => audit_seen[i] = true,
+                None => problems.push(format!("  {at}  writes the DB clock into {col}")),
+            },
+            None => match unmapped
+                .iter()
+                .position(|(f, needle, _, _)| f == file && site.sql.contains(needle))
+            {
+                Some(i) => unmapped_hits[i] += 1,
+                None => problems.push(format!("  {at}  DB clock the scan cannot map")),
+            },
+        }
+    }
+    for ((col, _), seen) in audit.iter().zip(audit_seen) {
+        if !seen {
+            problems.push(format!("  stale AUDIT_COLUMNS entry {col}: nothing writes it"));
+        }
+    }
+    for ((file, needle, hits, _), found) in unmapped.iter().zip(unmapped_hits) {
+        if found != *hits {
+            problems.push(format!(
+                "  UNMAPPED entry {file} {needle:?}: {found} DB-clock hits, expects {hits}"
+            ));
+        }
+    }
+    problems
 }
 
 /// `.rs` files under `dir`, sorted.
@@ -493,4 +516,22 @@ fn f() {
 }
 "##;
     assert_eq!(hits(sample), ["3 ?", "4 ?", "5 q.next_at", "5 ?"]);
+}
+
+#[test]
+fn unmapped_entry_does_not_cover_a_second_clock_in_its_statement() {
+    let sample = r##"
+fn f() {
+    sqlx::query("INSERT INTO s (id, made_on, created_at) SELECT id, CURRENT_DATE, now() FROM UNNEST($1::uuid[]) AS id");
+}
+"##;
+    let sites: Vec<(String, ClockSite)> = clock_sites(sample, "sample")
+        .into_iter()
+        .map(|site| ("sample".to_owned(), site))
+        .collect();
+    let unmapped = [("sample", "INSERT INTO s", 1, "UNNEST batch insert: now() lands in s.created_at")];
+    assert_eq!(
+        audit_problems(&sites, &[], &unmapped),
+        ["  UNMAPPED entry sample \"INSERT INTO s\": 2 DB-clock hits, expects 1"]
+    );
 }
