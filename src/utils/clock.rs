@@ -18,9 +18,10 @@
 //! Pinning a `MockClock` in a test has no effect on any of the following:
 //! - PostgreSQL `NOW()`——取的是資料庫伺服器自己的時鐘。ADR-0017:業務時間
 //!   (會被讀取拿去分桶、或拿去跟取樣時刻比較的欄位)要把 handler 取樣的
-//!   `StudioNow.now` 綁進 SQL;稽核時間(`updated_at` 等)刻意留給 `NOW()`,
-//!   attendance `marked_at`、leave `decided_at`、`clock_records`、messages、
-//!   waitlist `created_at` 這輪也一律當稽核時間。尚未改綁的業務時間站點:
+//!   `StudioNow.now` 綁進 SQL;只有稽核時間可以寫 `NOW()`。哪些欄位是稽核
+//!   時間由 `tests/business_time.rs` 的 `AUDIT_COLUMNS` 持有(掃描 `src/`
+//!   與 `tests/common/` 的 SQL 字串;對應不到欄位的站點列在同檔
+//!   `UNMAPPED`)。掃描不到 migrations,所以尚未改綁的業務時間站點仍列在這裡:
 //!   - `subscription_derived_status` 內的 `now()`(W7-7,延後到有測試需要時)。
 //! - JWT `exp` — validated by the `jsonwebtoken` crate against the system
 //!   clock.

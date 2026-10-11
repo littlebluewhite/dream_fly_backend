@@ -1057,6 +1057,7 @@ dependencies = [
  "lettre",
  "oauth2",
  "pretty_assertions",
+ "proc-macro2",
  "quoted_printable",
  "rand 0.10.1",
  "rdkafka",
