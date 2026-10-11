@@ -654,13 +654,14 @@ async fn run_refuses_a_database_seeded_by_an_older_seed(db: PgPool) {
     assert!(err.to_string().contains("reset the dev DB"), "{err:#}");
 }
 
-/// A seed checkout order a developer already refunded or cancelled through
-/// the state machine (say from the admin UI) sits off its walk in a terminal
-/// status; the next run leaves it as it is instead of failing. One
-/// completed-target order is refunded, one paid-target order cancelled —
-/// each picked so the buyer's balance covers its `refund_clawback`.
+/// A seed checkout order a developer already moved through the state machine
+/// (say from the admin UI) sits off its walk; the next run leaves it as it is
+/// instead of failing. One completed-target order is refunded, one
+/// paid-target order cancelled — each picked so the buyer's balance covers
+/// its `refund_clawback` — and another paid-target order shipped to
+/// processing, a non-terminal status off its `[paid]` path.
 #[sqlx::test]
-async fn rerun_leaves_seed_orders_a_developer_refunded_or_cancelled(db: PgPool) {
+async fn rerun_leaves_seed_orders_a_developer_moved_off_their_path(db: PgPool) {
     let at = StudioNow {
         tz: taipei(),
         now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
@@ -671,16 +672,20 @@ async fn rerun_leaves_seed_orders_a_developer_refunded_or_cancelled(db: PgPool) 
     for (reached, moved_to) in [
         (OrderStatus::Completed, OrderStatus::Refunded),
         (OrderStatus::Paid, OrderStatus::Cancelled),
+        (OrderStatus::Paid, OrderStatus::Processing),
     ] {
+        let taken: Vec<Uuid> = moved.iter().map(|(id, _)| *id).collect();
         let order_id: Uuid = sqlx::query_scalar(
             "SELECT o.id FROM orders o \
              JOIN order_idempotency k ON k.order_id = o.id \
              JOIN users u ON u.id = o.user_id \
              WHERE k.idempotency_key LIKE 'DF-SEED-%' AND o.status = $1 \
                AND o.points_earned <= u.points_balance \
+               AND o.id <> ALL($2) \
              ORDER BY o.paid_at, o.id LIMIT 1",
         )
         .bind(reached)
+        .bind(&taken)
         .fetch_one(&db)
         .await
         .expect("load a seed checkout order");
@@ -692,7 +697,7 @@ async fn rerun_leaves_seed_orders_a_developer_refunded_or_cancelled(db: PgPool) 
 
     dataset::run(&db, at)
         .await
-        .expect("rerun beside seed orders a developer refunded or cancelled");
+        .expect("rerun beside seed orders a developer moved off their path");
     for (order_id, moved_to) in moved {
         let status: OrderStatus = sqlx::query_scalar("SELECT status FROM orders WHERE id = $1")
             .bind(order_id)

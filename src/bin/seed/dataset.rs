@@ -747,12 +747,14 @@ async fn buy_seed_purchase(
 /// `orders::service::update_order_status` — the real transition rules,
 /// outbox event and notification, and for a refund the full refund
 /// compensation (`refund_clawback`, grant and enrolment cancellation). Each
-/// step runs at `min(ts + offset, at.now)`: completed is processing (+1 day)
+/// step runs at `min(paid_at + offset, at.now)` (`ts` when no `paid_at`; the
+/// two are equal on a fresh run, and `paid_at` keeps a rerun on a later day
+/// from stamping a step before the payment): completed is processing (+1 day)
 /// then completed (+3 days), refunded is refunded (+3 days), paid stays put.
 /// Steps already passed are skipped, so a rerun only finishes an
-/// interrupted walk. An order already refunded or cancelled off its path —
-/// a developer moved it, say from the admin UI — is left as it is; any
-/// other current status off the path is an error.
+/// interrupted walk. An order whose status is off its path — a developer
+/// moved it, say from the admin UI, to processing, refunded or cancelled —
+/// is left as it is.
 async fn advance_status(
     db: &PgPool,
     at: StudioNow,
@@ -777,18 +779,11 @@ async fn advance_status(
         }
     };
     let Some(reached) = path.iter().position(|&(status, _)| status == order.status) else {
-        if matches!(order.status, OrderStatus::Refunded | OrderStatus::Cancelled) {
-            return Ok(order);
-        }
-        anyhow::bail!(
-            "seed order '{}' is {}, not on its path to {}",
-            purchase.key,
-            order.status.as_str(),
-            purchase.target.as_str()
-        );
+        return Ok(order);
     };
+    let base = order.paid_at.unwrap_or(purchase.ts);
     for &(status, days) in &path[reached + 1..] {
-        let now = (purchase.ts + Duration::days(days)).min(at.now);
+        let now = (base + Duration::days(days)).min(at.now);
         order = orders_service::update_order_status(db, order.id, status.as_str(), None, now)
             .await
             .with_context(|| {
