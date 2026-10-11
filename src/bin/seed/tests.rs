@@ -32,6 +32,19 @@ async fn ledger_row_count(db: &PgPool) -> i64 {
         .expect("count point_ledger")
 }
 
+/// Ids of the seed's orders: those placed through checkout carry a
+/// `DF-SEED-%` idempotency key, the rest are `DF-SEED-%`-numbered.
+async fn seed_order_ids(db: &PgPool) -> Vec<Uuid> {
+    sqlx::query_scalar(
+        "SELECT order_id FROM order_idempotency WHERE idempotency_key LIKE 'DF-SEED-%' \
+         UNION \
+         SELECT id FROM orders WHERE order_number LIKE 'DF-SEED-%'",
+    )
+    .fetch_all(db)
+    .await
+    .expect("load seed order ids")
+}
+
 async fn total_occupying_bookings(db: &PgPool) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM occupying_bookings")
         .fetch_one(db)
@@ -165,10 +178,12 @@ async fn later_run_keeps_invariants(db: PgPool) {
     .expect("load over-capacity slots");
     assert!(over_capacity.is_empty(), "over-capacity slots: {over_capacity:?}");
 
+    let seed_ids = seed_order_ids(&db).await;
     let orders: Vec<(Uuid, i64, i64, OrderStatus)> = sqlx::query_as(
         "SELECT id, points_earned, points_used, status FROM orders \
-         WHERE order_number LIKE 'DF-SEED-%'",
+         WHERE id = ANY($1)",
     )
+    .bind(&seed_ids)
     .fetch_all(&db)
     .await
     .expect("load seed orders");
@@ -295,11 +310,14 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
     };
     dataset::run(&db, at).await.expect("run");
 
+    let seed_ids = seed_order_ids(&db).await;
+
     // Non-vacuous: the seed orders do write ledger rows.
     let seed_ledger_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
-         WHERE o.order_number LIKE 'DF-SEED-%'",
+         WHERE o.id = ANY($1)",
     )
+    .bind(&seed_ids)
     .fetch_one(&db)
     .await
     .expect("count seed order ledger rows");
@@ -314,8 +332,9 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
         "SELECT o.user_id, o.paid_at, COALESCE(pl.delta, 0)::BIGINT FROM orders o \
          LEFT JOIN point_ledger pl \
            ON pl.order_id = o.id AND pl.reason = 'checkout_earn'::point_reason \
-         WHERE o.order_number LIKE 'DF-SEED-%'",
+         WHERE o.id = ANY($1)",
     )
+    .bind(&seed_ids)
     .fetch_all(&db)
     .await
     .expect("load seed order checkout_earn");
@@ -347,10 +366,11 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
 
     let checkout_rows_off_paid_at: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
-         WHERE o.order_number LIKE 'DF-SEED-%' \
+         WHERE o.id = ANY($1) \
            AND pl.reason IN ('checkout_earn'::point_reason, 'checkout_redeem'::point_reason) \
            AND pl.created_at IS DISTINCT FROM o.paid_at",
     )
+    .bind(&seed_ids)
     .fetch_one(&db)
     .await
     .expect("count checkout ledger rows off paid_at");
@@ -358,10 +378,11 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
 
     let refund_rows_out_of_range: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM point_ledger pl JOIN orders o ON o.id = pl.order_id \
-         WHERE o.order_number LIKE 'DF-SEED-%' \
+         WHERE o.id = ANY($1) \
            AND pl.reason IN ('refund_restore'::point_reason, 'refund_clawback'::point_reason) \
-           AND NOT (pl.created_at BETWEEN o.paid_at AND $1)",
+           AND NOT (pl.created_at BETWEEN o.paid_at AND $2)",
     )
+    .bind(&seed_ids)
     .bind(at.now)
     .fetch_one(&db)
     .await
@@ -370,8 +391,9 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
 
     let items_off_order_created_at: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id = oi.order_id \
-         WHERE o.order_number LIKE 'DF-SEED-%' AND oi.created_at <> o.created_at",
+         WHERE o.id = ANY($1) AND oi.created_at <> o.created_at",
     )
+    .bind(&seed_ids)
     .fetch_one(&db)
     .await
     .expect("count order items off the order's created_at");
@@ -454,14 +476,17 @@ async fn paid_seed_orders_grant_their_entitlements(db: PgPool) {
     };
     dataset::run(&db, at).await.expect("run");
 
+    let seed_ids = seed_order_ids(&db).await;
+
     // Non-vacuous: paid seed orders do sell ticket/membership lines.
     let grantable_paid_lines: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM order_items oi \
          JOIN orders o ON o.id = oi.order_id \
          JOIN products p ON p.id = oi.product_id \
-         WHERE o.order_number LIKE 'DF-SEED-%' AND o.paid_at IS NOT NULL \
+         WHERE o.id = ANY($1) AND o.paid_at IS NOT NULL \
            AND p.product_type IN ('ticket'::product_type, 'membership'::product_type)",
     )
+    .bind(&seed_ids)
     .fetch_one(&db)
     .await
     .expect("count grantable paid seed lines");
@@ -471,7 +496,7 @@ async fn paid_seed_orders_grant_their_entitlements(db: PgPool) {
         "SELECT COUNT(*) FROM order_items oi \
          JOIN orders o ON o.id = oi.order_id \
          JOIN products p ON p.id = oi.product_id \
-         WHERE o.order_number LIKE 'DF-SEED-%' AND o.paid_at IS NOT NULL \
+         WHERE o.id = ANY($1) AND o.paid_at IS NOT NULL \
            AND p.product_type IN ('ticket'::product_type, 'membership'::product_type) \
            AND (SELECT COUNT(*) FROM subscriptions s \
                 WHERE s.order_id = o.id AND s.product_id = oi.product_id \
@@ -480,6 +505,7 @@ async fn paid_seed_orders_grant_their_entitlements(db: PgPool) {
                   AND (s.status = 'cancelled'::subscription_status) \
                       = (o.status = 'refunded'::order_status)) <> 1",
     )
+    .bind(&seed_ids)
     .fetch_one(&db)
     .await
     .expect("count grantable lines without their grant");
