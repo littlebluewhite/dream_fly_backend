@@ -77,3 +77,25 @@
   是業務時間:它是訂閱的起點,和由同一個 `now` 算出的 `expires_at` 成對,也經 API 回給會員;`created_at` 是
   `GET /subscriptions/me` 的排序鍵。結帳傳取樣的 `now`,行為不變;seed 的已付訂單改走 checkout 的授權函式後傳
   訂單的 `paid_at`,歷史訂閱才不會「今天才開始、卻早已到期」。`updated_at` 仍是稽核時間,維持 `NOW()`。
+
+## Addendum（2026-10-11）：稽核欄位清單改由源碼掃描持有
+
+- **「哪些欄位可以寫 DB 時鐘」改由 `tests/business_time.rs` 的 `AUDIT_COLUMNS` 持有**,取代 Consequences 所說、
+  隨每一步縮短的 `src/utils/clock.rs` 未覆蓋清單。判準不變,仍是判斷;清單是判斷的結果,每筆附理由。
+  `*.updated_at` 是一筆通配:`set_updated_at` trigger 在 UPDATE 時一律覆寫成 `NOW()`,綁值也沒用。
+- **掃描範圍**:`src/**` 與 `tests/common/**` 的每個字串 literal(raw string、`format!`、`QueryBuilder` 片段都算;
+  attribute 與 doc comment 略過),解跳脫後找 DB 時鐘字樣(`now()`、`current_timestamp`、`current_date`、
+  `localtimestamp`、`clock_timestamp()`、`statement_timestamp()`、`transaction_timestamp()`),以括號深度對應到
+  `table.column`:`INSERT` 欄位清單對 `VALUES` 位置(含 CTE 內的 `INSERT`),或 `UPDATE … SET col =`、
+  `ON CONFLICT … DO UPDATE SET col =`。runtime、seed、測試 fixture 一視同仁;寫進清單外的欄位,測試失敗並附
+  `file:line`。
+- **`UNMAPPED` 的用途**:對應不到欄位的站點——`WHERE` 裡比較 `NOW()`(refresh token 清理、outbox 認領)、
+  `INSERT … SELECT` 的來源(`UNNEST` 批次寫入、seed 出勤)——逐筆登記,以「檔案 + SQL 片段」辨識、不靠行號,
+  各附理由。新出現對應不到的站點沒登記、或任一清單有已不存在的項目,測試都失敗。
+- **升級一個欄位 = 從 `AUDIT_COLUMNS` 刪掉它。** 新的讀取開始拿某個稽核欄位分桶或比較時,刪掉那一筆,掃描就列出
+  所有仍寫 DB 時鐘的寫入端,逐一改綁 `now`;不必再等 seed 資料看起來不對才發現。
+- **掃描不涵蓋**:
+  - migrations 的 `DEFAULT now()` 與 trigger;
+  - W7-7:`subscription_derived_status` 內的 `now()` 在 migration 裡,仍列在 `clock.rs` 模組文件;
+  - `INSERT` 省略時間欄位、由 `DEFAULT` 填值的情況(例如 runtime 的 `notifications`);
+  - 綁了值但綁錯時刻的情況(例如歷史列傳 `at.now`,見 2026-10-09 Addendum)——仍靠逐欄釘時鐘的測試與 seed 不變量。
