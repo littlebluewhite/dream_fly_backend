@@ -258,7 +258,7 @@ async fn later_run_keeps_invariants(db: PgPool) {
         }
     }
 
-    // ⑤ paid seed orders are bought through checkout under their own
+    // Keys: paid seed orders are bought through checkout under their own
     // `DF-SEED-%` idempotency key — every non-pending seed order carries
     // one — and no key is recorded for two buyers: a key's buyer derives
     // from the absolute month, so the D+40d run replays the overlapping
@@ -518,14 +518,15 @@ async fn seeded_users_exist_before_rows_that_reference_them(db: PgPool) {
     assert_eq!(new_this_month, 0);
 }
 
-/// Every paid seed order's (`seed_order_ids`) ticket/membership line
-/// carries the subscription checkout would have granted, started at the
-/// order's `paid_at`; a refunded order's grant is cancelled; a never-paid order
-/// grants nothing. Regression: seed orders skipped checkout's grant step, so
-/// a seed member who "bought" a pass had no subscription at all
-/// (`GET /subscriptions/me` empty, admin order detail without artifacts).
+/// Every course line of a seed order (`seed_order_ids`) that checkout
+/// placed enrols its buyer: exactly one enrolment carrying the order's id,
+/// buyer and course, enrolled and created at the order's `paid_at`, and
+/// cancelled exactly when the order is refunded; no enrolment anywhere lacks
+/// an order. The enrolment dataset is 39 course purchases, 3 of them
+/// refunded. Regression: the seed wrote its enrolments directly with
+/// `order_id = NULL`, so a seed member sat in a course nobody had bought.
 #[sqlx::test]
-async fn paid_seed_orders_grant_their_entitlements(db: PgPool) {
+async fn seed_course_orders_enrol_their_buyer(db: PgPool) {
     let at = StudioNow {
         tz: taipei(),
         now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
@@ -534,45 +535,102 @@ async fn paid_seed_orders_grant_their_entitlements(db: PgPool) {
 
     let seed_ids = seed_order_ids(&db).await;
 
-    // Non-vacuous: paid seed orders do sell ticket/membership lines.
-    let grantable_paid_lines: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM order_items oi \
-         JOIN orders o ON o.id = oi.order_id \
-         JOIN products p ON p.id = oi.product_id \
-         WHERE o.id = ANY($1) AND o.paid_at IS NOT NULL \
-           AND p.product_type IN ('ticket'::product_type, 'membership'::product_type)",
+    // Non-vacuous: every enrolment pick is a course line, refunds included.
+    let (course_lines, refunded_course_lines): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE o.status = 'refunded'::order_status) \
+         FROM order_items oi JOIN orders o ON o.id = oi.order_id \
+         WHERE o.id = ANY($1) AND o.status <> 'pending'::order_status \
+           AND oi.course_id IS NOT NULL",
     )
     .bind(&seed_ids)
     .fetch_one(&db)
     .await
-    .expect("count grantable paid seed lines");
-    assert!(grantable_paid_lines > 0);
+    .expect("count seed course lines");
+    assert_eq!((course_lines, refunded_course_lines), (39, 3));
 
-    let lines_without_matching_grant: i64 = sqlx::query_scalar(
+    let lines_without_matching_enrolment: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM order_items oi \
          JOIN orders o ON o.id = oi.order_id \
-         JOIN products p ON p.id = oi.product_id \
-         WHERE o.id = ANY($1) AND o.paid_at IS NOT NULL \
-           AND p.product_type IN ('ticket'::product_type, 'membership'::product_type) \
-           AND (SELECT COUNT(*) FROM subscriptions s \
-                WHERE s.order_id = o.id AND s.product_id = oi.product_id \
-                  AND s.user_id = o.user_id \
-                  AND s.started_at = o.paid_at AND s.created_at = o.paid_at \
-                  AND (s.status = 'cancelled'::subscription_status) \
+         WHERE o.id = ANY($1) AND o.status <> 'pending'::order_status \
+           AND oi.course_id IS NOT NULL \
+           AND (SELECT COUNT(*) FROM enrolments e \
+                WHERE e.order_id = o.id AND e.course_id = oi.course_id \
+                  AND e.user_id = o.user_id \
+                  AND e.enrolled_at = o.paid_at AND e.created_at = o.paid_at \
+                  AND (e.status = 'cancelled'::enrolment_status) \
                       = (o.status = 'refunded'::order_status)) <> 1",
     )
     .bind(&seed_ids)
     .fetch_one(&db)
     .await
-    .expect("count grantable lines without their grant");
-    assert_eq!(lines_without_matching_grant, 0);
+    .expect("count course lines without their enrolment");
+    assert_eq!(lines_without_matching_enrolment, 0);
 
-    let grants_on_unpaid_orders: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM subscriptions s JOIN orders o ON o.id = s.order_id \
-         WHERE o.paid_at IS NULL",
+    let enrolments_without_order: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM enrolments WHERE order_id IS NULL")
+            .fetch_one(&db)
+            .await
+            .expect("count enrolments without an order");
+    assert_eq!(enrolments_without_order, 0);
+}
+
+/// A database an older seed wrote is refused before `run` writes anything:
+/// a seed member's enrolment with no order, or a `DF-SEED-%`-numbered order
+/// past pending, is a row the old seed wrote directly, and checkout would
+/// buy it a second time. A hand-made enrolment of a non-seed account is not
+/// a seed row and does not trip the guard.
+#[sqlx::test]
+async fn run_refuses_a_database_seeded_by_an_older_seed(db: PgPool) {
+    let at = StudioNow {
+        tz: taipei(),
+        now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
+    };
+    dataset::run(&db, at).await.expect("first run");
+
+    sqlx::query(
+        "INSERT INTO enrolments (user_id, course_id, order_id) \
+         SELECT u.id, c.id, NULL FROM users u, courses c \
+         WHERE u.email = 'member@dreamfly.tw' AND c.slug = 'parkour-intro'",
+    )
+    .execute(&db)
+    .await
+    .expect("enrol the test member by hand");
+    dataset::run(&db, at)
+        .await
+        .expect("a non-seed enrolment without an order is not legacy seed data");
+
+    // An old seed's enrolment: a seed member's, with no order.
+    let legacy_enrolment: Uuid = sqlx::query_scalar(
+        "INSERT INTO enrolments (user_id, course_id, order_id, status) \
+         SELECT u.id, c.id, NULL, 'cancelled'::enrolment_status FROM users u, courses c \
+         WHERE u.email = 'seed-member-01@dreamfly.tw' AND c.slug = 'parkour-intro' \
+         RETURNING id",
     )
     .fetch_one(&db)
     .await
-    .expect("count grants on unpaid orders");
-    assert_eq!(grants_on_unpaid_orders, 0);
+    .expect("plant a legacy seed enrolment");
+    let err = dataset::run(&db, at)
+        .await
+        .err()
+        .expect("a seed enrolment without an order is refused");
+    assert!(err.to_string().contains("reset the dev DB"), "{err:#}");
+    sqlx::query("DELETE FROM enrolments WHERE id = $1")
+        .bind(legacy_enrolment)
+        .execute(&db)
+        .await
+        .expect("remove the legacy enrolment");
+
+    // An old seed's paid order: written directly under a DF-SEED number.
+    sqlx::query(
+        "UPDATE orders SET status = 'paid'::order_status \
+         WHERE id = (SELECT id FROM orders WHERE order_number LIKE 'DF-SEED-%' LIMIT 1)",
+    )
+    .execute(&db)
+    .await
+    .expect("plant a legacy paid seed order");
+    let err = dataset::run(&db, at)
+        .await
+        .err()
+        .expect("a non-pending DF-SEED-numbered order is refused");
+    assert!(err.to_string().contains("reset the dev DB"), "{err:#}");
 }

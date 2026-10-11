@@ -9,36 +9,46 @@
 //! NOTHING` (no explicit target) no-ops on ANY unique-constraint violation on
 //! that table, so this is safe regardless of whether the unique constraint is
 //! a plain column or a functional `LOWER(slug)` index. Where a table has no
-//! usable unique key (rewards, enrolments, pending orders, time_slots,
-//! bookings, contact_inquiries), idempotency is a SELECT-existence check on
-//! the seed's deterministic natural key (name / user+course / `DF-SEED-…`
-//! order number / venue+date+start / user+slot / `df-seed-…` email) instead;
-//! paid orders are keyed by checkout's own idempotency (below). Running this
-//! binary twice must therefore leave row counts unchanged on the second run.
+//! usable unique key (rewards, pending orders, time_slots, bookings,
+//! contact_inquiries), idempotency is a SELECT-existence check on the seed's
+//! deterministic natural key (name / `DF-SEED-…` order number /
+//! venue+date+start / user+slot / `df-seed-…` email) instead; paid orders,
+//! and the enrolments they carry, are keyed by checkout's own idempotency
+//! (below). Running this binary twice must therefore leave row counts
+//! unchanged on the second run.
 //!
 //! The 12-month reporting dataset (members / enrolments / orders / sessions /
 //! attendance / venue-rental slots+bookings / inquiries) is **deterministic**:
 //! every value derives from fixed index formulas over the run date — no
-//! randomness — so re-running on the same day produces the identical set.
+//! randomness — so re-running on the same day produces the identical set,
+//! save the `DF-{YYYYMMDD}{suffix}` number checkout issues each paid order
+//! (its identity across runs is its idempotency key, not that number).
 //!
 //! **Paid orders are bought through the real checkout.** Every paid,
 //! completed or refunded seed order is a `SeedPurchase` (buyer, lines,
 //! instant `ts`) that `buy_seed_purchase` places the way a member would:
 //! `cart::service::add_item` per line, then `orders::service::checkout`
-//! under the `Idempotency-Key` `DF-SEED-{YYYYMM}-{seq}` at
-//! `StudioNow { now: ts }`. Pricing, order lines, the paid-order record and
-//! its points ledger, the subscription grants, the outbox event and the
-//! notification are checkout's own, all at `ts`. `advance_status` then
-//! walks completed and refunded orders through
-//! `orders::service::update_order_status` — a refund runs checkout's full
-//! compensation (`refund_clawback`, grant cancellation). A rerun finds each
-//! key with `orders::idempotency::replay` and buys nothing again, so it
-//! adds no order, ledger, outbox or notification row. Pending contrast
+//! under its `Idempotency-Key` at `StudioNow { now: ts }`. Two sets of
+//! purchases are merged and bought in `ts` order: the monthly product
+//! orders (`DF-SEED-{YYYYMM}-{seq}`) and the 39 course purchases
+//! (`DF-SEED-ENR-{i}-{k}`) that make up the enrolment dataset — every seed
+//! enrolment is the one checkout makes for a bought course line, so every
+//! one has its order. Pricing, order lines, the paid-order record and its
+//! points ledger, the subscription grants and the enrolments are
+//! checkout's own, all at `ts`; checkout also writes its outbox event,
+//! notification and `order_idempotency` row, which keep the DB clock
+//! (audit columns, ADR-0017). `advance_status` then walks completed and
+//! refunded orders through `orders::service::update_order_status` — a
+//! refund runs checkout's full compensation (`refund_clawback`, grant and
+//! enrolment cancellation). A rerun finds each key with
+//! `orders::idempotency::replay` and buys nothing again, so it adds no
+//! order, ledger, enrolment, outbox or notification row. Pending contrast
 //! orders are the one bypass left on this path — checkout only creates
 //! paid orders — and `insert_pending_order_if_absent` writes them directly.
-//! A database seeded by an older version of this binary, whose paid
-//! `DF-SEED-…`-numbered orders were written directly and carry no key,
-//! would have them bought a second time: reset the dev database first.
+//! `run` refuses, before any write, a database an older version of this
+//! binary seeded (`refuse_legacy_seed_rows`): its seed enrolments and paid
+//! `DF-SEED-…`-numbered orders were written directly, carry no key, and
+//! would be bought a second time — reset the dev database first.
 //!
 //! `points_balance` is granted through `points::service::apply_delta_tx`,
 //! never written to the column directly, so `points_balance ==
@@ -78,6 +88,7 @@ use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
 use dream_fly_backend::modules::cart::service as cart_service;
 use dream_fly_backend::modules::contact::model::InquiryType;
+use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
 use dream_fly_backend::modules::orders::idempotency::{self, IdempotencyKey};
@@ -565,10 +576,10 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
 /// target balance is instead reached through the member's seeded orders'
 /// `checkout_earn`/`refund_clawback` rows (written by checkout and its
 /// refund compensation, see `buy_seed_purchase`) plus a settling
-/// `LedgerDelta::admin_adjust` the
-/// caller applies, every run, once every order is inserted (see the module
-/// doc) — so this function doesn't need to report whether the row was newly
-/// inserted; the settlement step runs for every member regardless.
+/// `LedgerDelta::admin_adjust` the caller applies, every run, once every
+/// order is bought (see the module doc) — so this function doesn't need to
+/// report whether the row was newly inserted; the settlement step runs for
+/// every member regardless.
 /// `created_at` is the member's historical join instant, as in `upsert_user`.
 async fn upsert_seed_member(
     db: &PgPool,
@@ -653,49 +664,6 @@ async fn venue_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
         .with_context(|| format!("fetch id for venue '{slug}'"))
 }
 
-/// Insert an enrolment (idempotent by existence check on `(user_id,
-/// course_id)` — the table's only unique index is partial on `status =
-/// 'active'`, so cancelled rows have no ON CONFLICT target) and return the
-/// row's id whether just inserted or pre-existing. The seed assigns at most
-/// one enrolment per (member, course) pair, so any-status existence is the
-/// right key.
-async fn insert_enrolment_if_absent(
-    db: &PgPool,
-    user_id: Uuid,
-    course_id: Uuid,
-    status: &str,
-    created_at: DateTime<Utc>,
-) -> anyhow::Result<Uuid> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM enrolments WHERE user_id = $1 AND course_id = $2 LIMIT 1",
-    )
-    .bind(user_id)
-    .bind(course_id)
-    .fetch_optional(db)
-    .await
-    .context("check existing enrolment")?;
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO enrolments (id, user_id, course_id, order_id, status, enrolled_at, created_at, updated_at)
-        VALUES ($1, $2, $3, NULL, $4::enrolment_status, $5, $5, $5)
-        "#,
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(course_id)
-    .bind(status)
-    .bind(created_at)
-    .execute(db)
-    .await
-    .with_context(|| format!("insert enrolment {user_id}/{course_id}"))?;
-    Ok(id)
-}
-
 /// One paid seed order as its buyer places it — what to buy, for whom, when
 /// — bought by `buy_seed_purchase` through the real cart and
 /// `orders::service::checkout`, so pricing, order lines, the points ledger
@@ -722,8 +690,9 @@ struct SeedPurchase {
 /// re-added lines behind. On a miss the buyer's cart is cleared, every line
 /// goes through `cart::service::add_item`, and `checkout` runs at
 /// `StudioNow { now: ts }` — the order row, its items, its `checkout_earn`
-/// row and its grants all carry `ts` as their business time (ADR-0017).
-/// Checkout also writes its outbox event and notification, once per key.
+/// row, its grants and its enrolments all carry `ts` as their business time
+/// (ADR-0017). Checkout also writes its outbox event and notification, once
+/// per key.
 async fn buy_seed_purchase(
     db: &PgPool,
     at: StudioNow,
@@ -1136,11 +1105,39 @@ pub struct SeedReport {
     pub settled_members: usize,
 }
 
+/// Bail if an older version of this binary seeded `db`: it wrote the seed
+/// members' enrolments directly (`order_id IS NULL`) and its paid orders
+/// directly under `DF-SEED-…` order numbers, with no idempotency key —
+/// checkout would buy all of them a second time. Scoped to seed rows: an
+/// enrolment a developer made by hand for another account doesn't trip it.
+async fn refuse_legacy_seed_rows(db: &PgPool) -> anyhow::Result<()> {
+    let (orderless_enrolments, direct_orders): (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM enrolments e JOIN users u ON u.id = e.user_id \
+            WHERE u.email LIKE 'seed-member-%@dreamfly.tw' AND e.order_id IS NULL), \
+           (SELECT COUNT(*) FROM orders \
+            WHERE order_number LIKE 'DF-SEED-%' AND status <> 'pending'::order_status)",
+    )
+    .fetch_one(db)
+    .await
+    .context("check for rows an older seed wrote")?;
+    if orderless_enrolments > 0 || direct_orders > 0 {
+        anyhow::bail!(
+            "this database was seeded by an older seed ({orderless_enrolments} seed-member \
+             enrolments without an order, {direct_orders} non-pending DF-SEED-… orders); \
+             reset the dev DB (drop & recreate) and rerun"
+        );
+    }
+    Ok(())
+}
+
 /// The seed dataset itself — everything `bin/seed/main.rs`'s entry point
 /// (env/config/pool/migrate, one sampled `at: StudioNow`) hands off to.
 /// Idempotent and safe to re-run: see the module doc for the per-table
 /// idempotency keys and the points-ledger settlement shape.
 pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
+    refuse_legacy_seed_rows(db).await?;
+
     // Hash each distinct dev plaintext once, up front — Admin#2026 (admin),
     // Member#2026 (test member + all 24 reporting members) and Coach#2026
     // (all 4 coaches) — instead of once per `upsert_user`/`upsert_seed_member`
@@ -1654,50 +1651,6 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     }
     println!("[members]  24 seed members ready (seed-member-01..24@dreamfly.tw / Member#2026)");
 
-    // -- enrolments (~39, spread over the past 6 months) --------------------
-    // Every member takes course (i*7)%6; even i adds (i*5+1)%6; i%5==0 adds
-    // (i*11+2)%6 (dedup'd) — 39 pairs. (i+k)%10==3 marks ~10% cancelled.
-    // created_at sits 50-179 days back, which also lands the 90-day
-    // enrolment count at ~45% of the 3-month trial-inquiry count (funnel).
-    let mut active_enrolments: Vec<(usize, usize, Uuid)> = Vec::new();
-    let mut enrolment_total = 0usize;
-    let mut enrolment_cancelled = 0usize;
-    for i in 1..=24usize {
-        let mut picks: Vec<usize> = vec![(i * 7) % 6];
-        if i % 2 == 0 {
-            let k = (i * 5 + 1) % 6;
-            if !picks.contains(&k) {
-                picks.push(k);
-            }
-        }
-        if i % 5 == 0 {
-            let k = (i * 11 + 2) % 6;
-            if !picks.contains(&k) {
-                picks.push(k);
-            }
-        }
-        for k in picks {
-            let status = if (i + k) % 10 == 3 { "cancelled" } else { "active" };
-            let days_ago = 50 + ((i * 13 + k * 29) % 130);
-            let created_at = at_utc(today - Days::new(days_ago as u64), 6, at.now);
-            let enrolment_id =
-                insert_enrolment_if_absent(db, member_ids[i - 1], course_ids[k], status, created_at)
-                    .await?;
-            enrolment_total += 1;
-            if status == "active" {
-                active_enrolments.push((i, k, enrolment_id));
-            } else {
-                enrolment_cancelled += 1;
-            }
-        }
-    }
-    println!(
-        "[enrolments] {} enrolments ready ({} active / {} cancelled)",
-        enrolment_total,
-        active_enrolments.len(),
-        enrolment_cancelled
-    );
-
     // -- orders + order_items (~120 across 12 months) -----------------------
     // Identity: `DF-SEED-{YYYYMM}-{seq:02}` — the checkout idempotency key of
     // a paid/completed/refunded `SeedPurchase`, the order_number of a
@@ -1707,9 +1660,8 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     // derive from `(abs, seq)` alone, never from how many months back the
     // month sits: `order_idempotency` is per (buyer, key), so a key whose
     // buyer shifted as the 12-month window slides would miss its replay and
-    // be bought again for another member. Purchases are collected oldest
-    // month first and bought in that order, so each member's ledger
-    // `balance_after` moves forward with the rows' `paid_at`.
+    // be bought again for another member. The purchases are bought together
+    // with the course purchases below.
     let mut product_ids: Vec<Uuid> = Vec::with_capacity(product_seeds.len());
     for seed in &product_seeds {
         product_ids.push(product_id_by_slug(db, seed.slug).await?);
@@ -1819,10 +1771,82 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             order_total += 1;
         }
     }
-    for purchase in &purchases {
-        buy_seed_purchase(db, at, purchase).await?;
+
+    // -- course purchases → enrolments (39, spread over the past 6 months) --
+    // Every member buys course (i*7)%6; even i adds (i*5+1)%6; i%5==0 adds
+    // (i*11+2)%6 (dedup'd) — 39 one-line purchases keyed
+    // `DF-SEED-ENR-{i:02}-{k}`, each enrolling its buyer through checkout.
+    // (i+k)%10==3 refunds ~10% three days later, which cancels that
+    // enrolment. `ts` sits 50-179 days back, which also lands the 90-day
+    // enrolment count at ~45% of the 3-month trial-inquiry count (funnel).
+    let mut enrolment_total = 0usize;
+    let mut enrolment_cancelled = 0usize;
+    for i in 1..=24usize {
+        let mut picks: Vec<usize> = vec![(i * 7) % 6];
+        if i % 2 == 0 {
+            let k = (i * 5 + 1) % 6;
+            if !picks.contains(&k) {
+                picks.push(k);
+            }
+        }
+        if i % 5 == 0 {
+            let k = (i * 11 + 2) % 6;
+            if !picks.contains(&k) {
+                picks.push(k);
+            }
+        }
+        for k in picks {
+            let refunded = (i + k) % 10 == 3;
+            let days_ago = 50 + ((i * 13 + k * 29) % 130);
+            purchases.push(SeedPurchase {
+                key: format!("DF-SEED-ENR-{i:02}-{k}"),
+                buyer: member_ids[i - 1],
+                member_idx: i,
+                ts: at_utc(today - Days::new(days_ago as u64), 6, at.now),
+                lines: vec![(LineTarget::Course(course_ids[k]), 1)],
+                coupon: None,
+                payment_method: PM_CYCLE[(i + k) % 10],
+                target: if refunded {
+                    OrderStatus::Refunded
+                } else {
+                    OrderStatus::Paid
+                },
+            });
+            enrolment_total += 1;
+            if refunded {
+                enrolment_cancelled += 1;
+            }
+        }
     }
-    println!("[orders]   {order_total} seed orders across 12 months ready (DF-SEED-*)");
+
+    // Buy both sets oldest first (a stable sort on `ts`), so each member's
+    // ledger `balance_after` moves forward with the rows' `paid_at`. The
+    // active enrolments attendance is marked against are the ones checkout
+    // (or its replay) returns.
+    purchases.sort_by_key(|purchase| purchase.ts);
+    let mut active_enrolments: Vec<(usize, usize, Uuid)> = Vec::new();
+    for purchase in &purchases {
+        let order = buy_seed_purchase(db, at, purchase).await?;
+        for enrolment in order.enrolments {
+            if enrolment.status == EnrolmentStatus::Active {
+                let k = course_ids
+                    .iter()
+                    .position(|&id| id == enrolment.course_id)
+                    .expect("seed purchases only buy seed courses");
+                active_enrolments.push((purchase.member_idx, k, enrolment.id));
+            }
+        }
+    }
+    println!(
+        "[orders]   {order_total} monthly + {enrolment_total} course seed orders ready \
+         (checkout key DF-SEED-*, pending order_number DF-SEED-*)"
+    );
+    println!(
+        "[enrolments] {} enrolments ready ({} active / {} cancelled)",
+        enrolment_total,
+        active_enrolments.len(),
+        enrolment_cancelled
+    );
 
     // -- settle every member's points-tier target balance --------------------
     // Every run, for every one of the 24 members (not just newly-inserted
