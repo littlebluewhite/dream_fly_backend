@@ -261,9 +261,10 @@ async fn later_run_keeps_invariants(db: PgPool) {
 
     // Keys: paid seed orders are bought through checkout under their own
     // `DF-SEED-%` idempotency key — every non-pending seed order carries
-    // one — and no key is recorded for two buyers: a key's buyer derives
-    // from the absolute month, so the D+40d run replays the overlapping
-    // months instead of buying them again for another member.
+    // one — and no key is recorded for two buyers: a monthly key's buyer
+    // derives from the absolute month (a course key `DF-SEED-ENR-…` from its
+    // `(i, k)`), so the D+40d run replays the overlapping months instead of
+    // buying them again for another member.
     let keys_on_two_buyers: Vec<String> = sqlx::query_scalar(
         "SELECT idempotency_key FROM order_idempotency \
          WHERE idempotency_key LIKE 'DF-SEED-%' \

@@ -82,7 +82,8 @@
 
 - **「哪些欄位可以寫 DB 時鐘」改由 `tests/business_time.rs` 的 `AUDIT_COLUMNS` 持有**,取代 Consequences 所說、
   隨每一步縮短的 `src/utils/clock.rs` 未覆蓋清單。判準不變,仍是判斷;清單是判斷的結果,每筆附理由。
-  `*.updated_at` 是一筆通配:`set_updated_at` trigger 在 UPDATE 時一律覆寫成 `NOW()`,綁值也沒用。
+  `*.updated_at` 是一筆通配:`set_updated_at` trigger 在 UPDATE 時一律覆寫成 `NOW()`,綁值也沒用(`settings` 除外——
+  它沒有該 trigger,upsert 自己寫 `now()`;INSERT 也不經 trigger)。
 - **掃描範圍**:`src/**` 與 `tests/common/**` 的每個字串 literal(raw string、`format!`、`QueryBuilder` 片段都算;
   attribute 與 doc comment 略過),解跳脫後找 DB 時鐘字樣(`now()`、`current_timestamp`、`current_date`、
   `localtimestamp`、`clock_timestamp()`、`statement_timestamp()`、`transaction_timestamp()`),以括號深度對應到
