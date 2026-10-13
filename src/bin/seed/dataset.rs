@@ -4,6 +4,12 @@
 //! and its `#[sqlx::test]`s can live together without dragging in
 //! process-level concerns.
 //!
+//! Layout, top to bottom: per-table insert helpers (one `// ---` banner per
+//! table), the reporting-dataset helpers, `SeedReport`, then `run`, whose
+//! body walks the tables in `// -- <table> --` steps, and the unit tests.
+//! List the steps with `grep -n '// -- ' src/bin/seed/dataset.rs` and read
+//! the one you need rather than the whole file.
+//!
 //! Every insert is `INSERT ... ON CONFLICT DO NOTHING` keyed on the table's
 //! natural unique column (email / slug / code) — a bare `ON CONFLICT DO
 //! NOTHING` (no explicit target) no-ops on ANY unique-constraint violation on

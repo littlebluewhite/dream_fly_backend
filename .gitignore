@@ -5,7 +5,9 @@
 *.swo
 .DS_Store
 *.log
-/CLAUDE.md
-/AGENTS.md
 /graphify-out/
 /.understand-anything/
+# Track the shared skills; keep the rest of .claude/ (worktrees, local settings) out.
+!/.claude/
+/.claude/*
+!/.claude/skills/
