@@ -20,7 +20,7 @@
 
 mod common;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, SubsecRound, TimeZone, Utc};
 use chrono_tz::Tz;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -2168,7 +2168,9 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
 
 #[sqlx::test]
 async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
-    let now = Utc::now();
+    // Postgres keeps microseconds; Linux clocks give nanoseconds, so an untruncated cutoff
+    // lands a sub-microsecond after the stored 19-minutes-ago row.
+    let now = Utc::now().trunc_subsecs(6);
     for i in 0..25i64 {
         seed_member_created_at(
             &db,
