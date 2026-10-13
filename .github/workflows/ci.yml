@@ -26,6 +26,8 @@ jobs:
       DATABASE_URL: postgres://dreamfly:dreamfly_dev@localhost:5432/dream_fly
     steps:
       - uses: actions/checkout@v4
+      # rdkafka's cmake-build compiles librdkafka, which includes curl headers.
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
