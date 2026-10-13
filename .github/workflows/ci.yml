@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dreamfly
+          POSTGRES_PASSWORD: dreamfly_dev
+          POSTGRES_DB: dream_fly
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U dreamfly" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # #[sqlx::test] creates a throwaway database per test from this server.
+      DATABASE_URL: postgres://dreamfly:dreamfly_dev@localhost:5432/dream_fly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --quiet -- -D warnings
+      - run: cargo test
