@@ -4,7 +4,7 @@ mod common;
 
 use chrono::{Duration, TimeZone, Utc};
 use common::fixtures::{CourseSeed, OrderSeed, seed_entitlement_product};
-use common::http::{spawn_test_app, spawn_test_app_with, TestApp};
+use common::http::{TestApp, spawn_test_app, spawn_test_app_with};
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::products::model::ProductType;
 use serde_json::json;
@@ -74,7 +74,10 @@ async fn checkout_happy_path_creates_order_and_clears_cart(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(
-        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        cart.json::<serde_json::Value>()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
         0
     );
 }
@@ -163,7 +166,10 @@ async fn checkout_with_inactive_cart_line_returns_422_and_lists_name(db: PgPool)
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(
-        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        cart.json::<serde_json::Value>()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
         1,
         "cart must survive a rejected checkout"
     );
@@ -201,8 +207,12 @@ async fn my_orders_returns_only_mine(db: PgPool) {
 #[sqlx::test]
 async fn get_order_other_users_order_is_hidden(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let alice = app.register_member("alice-o@example.com", "Password!234").await;
-    let bob = app.register_member("bob-o@example.com", "Password!234").await;
+    let alice = app
+        .register_member("alice-o@example.com", "Password!234")
+        .await;
+    let bob = app
+        .register_member("bob-o@example.com", "Password!234")
+        .await;
     let pid = seed_product_via_admin(&app, "Bundle", Some(10)).await;
 
     // Alice creates an order.
@@ -397,7 +407,11 @@ async fn checkout_idempotent_replay_across_studio_day_keeps_original_order(db: P
         .as_str()
         .expect("order_number")
         .to_string();
-    assert_eq!(&first_number[3..11], "20260715", "first stamps studio day D");
+    assert_eq!(
+        &first_number[3..11],
+        "20260715",
+        "first stamps studio day D"
+    );
 
     // Advance a full day → studio day D+1 (2026-07-16).
     app.clock.advance(Duration::days(1));
@@ -470,7 +484,10 @@ async fn checkout_invalid_idempotency_key_returns_400(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(
-        cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        cart.json::<serde_json::Value>()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
         1,
         "cart must survive a rejected checkout"
     );
@@ -489,7 +506,10 @@ async fn update_status_refund_via_http_returns_cancelled_artifacts(db: PgPool) {
     let user = app
         .register_member("refund-http@example.com", "Password!234")
         .await;
-    let course = CourseSeed::new("HTTP Refund Course").max_students(12).insert(&app.db).await;
+    let course = CourseSeed::new("HTTP Refund Course")
+        .max_students(12)
+        .insert(&app.db)
+        .await;
     let membership = seed_entitlement_product(
         &app.db,
         "http-refund-membership",
@@ -547,8 +567,12 @@ async fn update_status_refund_via_http_returns_cancelled_artifacts(db: PgPool) {
 async fn update_order_status_pending_to_paid_is_400(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, admin_token) = app.seed_admin().await;
-    let buyer = app.register_member("pending-paid@example.com", "Password!234").await;
-    let order_id = OrderSeed::new(buyer.user_id, OrderStatus::Pending).insert(&app.db).await;
+    let buyer = app
+        .register_member("pending-paid@example.com", "Password!234")
+        .await;
+    let order_id = OrderSeed::new(buyer.user_id, OrderStatus::Pending)
+        .insert(&app.db)
+        .await;
 
     let resp = app
         .patch(&format!("/api/v1/orders/{order_id}/status"))

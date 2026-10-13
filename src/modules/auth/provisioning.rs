@@ -42,7 +42,7 @@ use crate::kafka::outbox;
 use crate::modules::permissions::model::Role;
 use crate::modules::permissions::repository as permissions_repository;
 
-use super::model::{normalize_email, User};
+use super::model::{User, normalize_email};
 use super::repository;
 
 /// Input to [`create_account`]. The caller already holds a hashed password

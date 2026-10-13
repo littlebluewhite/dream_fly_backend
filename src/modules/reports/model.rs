@@ -240,7 +240,10 @@ mod tests {
         for &product_type in ProductType::ALL {
             let source = IncomeSource::from_product_type(product_type);
             assert_eq!(source.as_str(), product_type.as_str());
-            assert!(IncomeSource::ALL.contains(&source), "{product_type:?} maps outside ALL");
+            assert!(
+                IncomeSource::ALL.contains(&source),
+                "{product_type:?} maps outside ALL"
+            );
             assert!(source.is_order_line());
         }
         assert!(IncomeSource::Course.is_order_line());

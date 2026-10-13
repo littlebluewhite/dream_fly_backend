@@ -21,7 +21,9 @@ use chrono::{NaiveDate, Utc};
 use sqlx::PgPool;
 
 use dream_fly_backend::error::AppError;
-use dream_fly_backend::modules::certificates::dto::{CreateCertificateRequest, CreateReportCardRequest};
+use dream_fly_backend::modules::certificates::dto::{
+    CreateCertificateRequest, CreateReportCardRequest,
+};
 use dream_fly_backend::modules::certificates::service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::permissions::model::Role;
@@ -43,7 +45,14 @@ async fn create_certificate_by_owning_coach_succeeds_and_notifies(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user_id, "Cert Svc Coach").await;
     let course_id = seed_course(&db, "Cert Svc Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "cert-svc-student@example.com", "Password!234").await;
-    seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        member_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
@@ -79,7 +88,14 @@ async fn create_certificate_for_cancelled_enrolment_student_succeeds(db: PgPool)
     let coach_id = seed_coach(&db, coach_user_id, "Cert Svc Hist Coach").await;
     let course_id = seed_course(&db, "Cert Svc Hist Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "cert-svc-hist-student@example.com", "Password!234").await;
-    seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Cancelled, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        member_id,
+        course_id,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
 
     let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
@@ -114,20 +130,28 @@ async fn create_certificate_by_non_owning_coach_returns_403_with_no_side_effects
         note: None,
     };
 
-    let err = service::create_certificate(&db, &auth, req).await.unwrap_err();
+    let err = service::create_certificate(&db, &auth, req)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)));
 
     let cert_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM certificates")
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(cert_count, 0, "a rejected authorization must not insert a certificate row");
+    assert_eq!(
+        cert_count, 0,
+        "a rejected authorization must not insert a certificate row"
+    );
 
     let notif_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(notif_count, 0, "a rejected authorization must not send a notification");
+    assert_eq!(
+        notif_count, 0,
+        "a rejected authorization must not send a notification"
+    );
 }
 
 #[sqlx::test]
@@ -139,8 +163,12 @@ async fn create_certificate_by_coach_without_coach_row_returns_403(db: PgPool) {
     // `http_certificates.rs` never exercises this branch.
     let coach_user_id =
         seed_user_with_roles(&db, "cert-svc-no-coach-row@example.com", &[Role::Coach]).await;
-    let member_id =
-        seed_member(&db, "cert-svc-no-coach-row-target@example.com", "Password!234").await;
+    let member_id = seed_member(
+        &db,
+        "cert-svc-no-coach-row-target@example.com",
+        "Password!234",
+    )
+    .await;
 
     let auth = auth_for(&db, coach_user_id).await;
     let req = CreateCertificateRequest {
@@ -152,7 +180,9 @@ async fn create_certificate_by_coach_without_coach_row_returns_403(db: PgPool) {
         note: None,
     };
 
-    let err = service::create_certificate(&db, &auth, req).await.unwrap_err();
+    let err = service::create_certificate(&db, &auth, req)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Forbidden(_)));
 }
 
@@ -188,8 +218,14 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user_id, "RC Svc Coach").await;
     let course_id = seed_course(&db, "RC Svc Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "rc-svc-student@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_id = seed_enrolment(
+        &db,
+        member_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let auth = auth_for(&db, coach_user_id).await;
     let req = CreateReportCardRequest {
@@ -220,8 +256,14 @@ async fn create_report_card_duplicate_term_returns_409_leaves_one_row(db: PgPool
     let coach_id = seed_coach(&db, coach_user_id, "RC Svc Dup Coach").await;
     let course_id = seed_course(&db, "RC Svc Dup Course", Some(coach_id)).await;
     let member_id = seed_member(&db, "rc-svc-dup-student@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&db, member_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_id = seed_enrolment(
+        &db,
+        member_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let auth = auth_for(&db, coach_user_id).await;
     let first = CreateReportCardRequest {
@@ -230,7 +272,9 @@ async fn create_report_card_duplicate_term_returns_409_leaves_one_row(db: PgPool
         comment: None,
         rating: None,
     };
-    service::create_report_card(&db, &auth, first).await.unwrap();
+    service::create_report_card(&db, &auth, first)
+        .await
+        .unwrap();
 
     let second = CreateReportCardRequest {
         enrolment_id,
@@ -238,7 +282,9 @@ async fn create_report_card_duplicate_term_returns_409_leaves_one_row(db: PgPool
         comment: None,
         rating: None,
     };
-    let err = service::create_report_card(&db, &auth, second).await.unwrap_err();
+    let err = service::create_report_card(&db, &auth, second)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)));
 
     // The rejected duplicate must roll back cleanly — exactly the first row
@@ -249,5 +295,8 @@ async fn create_report_card_duplicate_term_returns_409_leaves_one_row(db: PgPool
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(count, 1, "duplicate term_label must roll back with zero extra rows");
+    assert_eq!(
+        count, 1,
+        "duplicate term_label must roll back with zero extra rows"
+    );
 }

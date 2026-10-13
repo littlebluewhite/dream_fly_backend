@@ -133,7 +133,9 @@ async fn valid_token_for_unknown_user_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn valid_token_for_deactivated_user_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("deact@example.com", "Password!234").await;
+    let user = app
+        .register_member("deact@example.com", "Password!234")
+        .await;
 
     // Flip is_active to false. No authenticated request has run yet, so
     // the access cache is cold and the extractor reads the DB.
@@ -169,7 +171,9 @@ async fn member_token_against_staff_endpoint_returns_403(db: PgPool) {
     // staff-gated endpoint; per-handler role coverage for every moved site
     // lives in each module's own `tests/http_*.rs`.
     let app = spawn_test_app(db).await;
-    let user = app.register_member("m-staff@example.com", "Password!234").await;
+    let user = app
+        .register_member("m-staff@example.com", "Password!234")
+        .await;
     let resp = app
         .get("/api/v1/sessions/today")
         .authorization_bearer(&user.access_token)

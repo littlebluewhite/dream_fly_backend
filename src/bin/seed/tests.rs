@@ -201,7 +201,10 @@ async fn later_run_keeps_invariants(db: PgPool) {
     .fetch_all(&db)
     .await
     .expect("load over-capacity slots");
-    assert!(over_capacity.is_empty(), "over-capacity slots: {over_capacity:?}");
+    assert!(
+        over_capacity.is_empty(),
+        "over-capacity slots: {over_capacity:?}"
+    );
 
     let seed_ids = seed_order_ids(&db).await;
     let orders: Vec<(Uuid, i64, i64, OrderStatus)> = sqlx::query_as(
@@ -690,14 +693,21 @@ async fn seed_points_history_chains_in_time_order(db: PgPool) {
                         "user {} at {}: balance {balance}, rows {:?}",
                         user_rows[0].0,
                         same_instant[0].1,
-                        same_instant.iter().map(|r| (r.2, r.3, &r.4)).collect::<Vec<_>>()
+                        same_instant
+                            .iter()
+                            .map(|r| (r.2, r.3, &r.4))
+                            .collect::<Vec<_>>()
                     ));
                     break;
                 }
             }
         }
     }
-    assert!(broken.is_empty(), "ledger out of time order:\n{}", broken.join("\n"));
+    assert!(
+        broken.is_empty(),
+        "ledger out of time order:\n{}",
+        broken.join("\n")
+    );
 }
 
 /// The balance `rows` (`(delta, balance_after)`, written at one instant)

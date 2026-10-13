@@ -311,11 +311,26 @@ async fn update_product_clears_nullable_fields_to_null(db: PgPool) {
     .fetch_one(&app.db)
     .await
     .unwrap();
-    assert!(row.0.is_none(), "original_price_cents must be NULL in the DB, not just absent from JSON");
-    assert!(row.1.is_none(), "badge must be NULL in the DB, not just absent from JSON");
-    assert!(row.2.is_none(), "stock must be NULL in the DB, not just absent from JSON");
-    assert!(row.3.is_none(), "valid_days must be NULL in the DB, not just absent from JSON");
-    assert!(row.4.is_none(), "session_count must be NULL in the DB, not just absent from JSON");
+    assert!(
+        row.0.is_none(),
+        "original_price_cents must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.1.is_none(),
+        "badge must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.2.is_none(),
+        "stock must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.3.is_none(),
+        "valid_days must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.4.is_none(),
+        "session_count must be NULL in the DB, not just absent from JSON"
+    );
 
     // Field-absent PATCH afterward must not error and must leave the
     // now-NULL columns alone — proves "absent" stays distinct from "null".

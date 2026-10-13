@@ -11,7 +11,9 @@ use crate::extractors::request_id::RequestId;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{CreateUserRequest, UpdateProfileRequest, UpdateUserRequest, UserListResponse, UserResponse};
+use super::dto::{
+    CreateUserRequest, UpdateProfileRequest, UpdateUserRequest, UserListResponse, UserResponse,
+};
 use super::service;
 
 #[tracing::instrument(skip_all)]

@@ -12,8 +12,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
-use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::auth::access::AccessCache;
+use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::coaches::dto::CreateCoachRequest;
 use dream_fly_backend::modules::coaches::service as coaches_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
@@ -59,14 +59,22 @@ pub async fn seed_coach_with_cache(
         slug: None,
         photo_url: None,
     };
-    coaches_service::create_coach(db, cache, &req).await.expect("create coach").id
+    coaches_service::create_coach(db, cache, &req)
+        .await
+        .expect("create coach")
+        .id
 }
 
 /// Insert a published course with a unique slug derived from `name`
 /// (`max_students = 12`, `schedule_text` NULL). Shorthand for
 /// [`CourseSeed`] with only the coach set.
 pub async fn seed_course(db: &PgPool, name: &str, coach_id: Option<Uuid>) -> Uuid {
-    CourseSeed { coach_id, ..CourseSeed::new(name) }.insert(db).await
+    CourseSeed {
+        coach_id,
+        ..CourseSeed::new(name)
+    }
+    .insert(db)
+    .await
 }
 
 /// Builder for a published `courses` row with a unique slug derived from
@@ -82,19 +90,33 @@ pub struct CourseSeed<'a> {
 
 impl<'a> CourseSeed<'a> {
     pub fn new(name: &'a str) -> Self {
-        Self { name, coach_id: None, max_students: 12, schedule_text: None }
+        Self {
+            name,
+            coach_id: None,
+            max_students: 12,
+            schedule_text: None,
+        }
     }
 
     pub fn coach(self, coach_id: Uuid) -> Self {
-        Self { coach_id: Some(coach_id), ..self }
+        Self {
+            coach_id: Some(coach_id),
+            ..self
+        }
     }
 
     pub fn max_students(self, max_students: i32) -> Self {
-        Self { max_students, ..self }
+        Self {
+            max_students,
+            ..self
+        }
     }
 
     pub fn schedule_text(self, schedule_text: &'a str) -> Self {
-        Self { schedule_text: Some(schedule_text), ..self }
+        Self {
+            schedule_text: Some(schedule_text),
+            ..self
+        }
     }
 
     /// Returns the course id.
@@ -133,7 +155,9 @@ pub async fn seed_course_schedule_slot(
     start_time: NaiveTime,
     end_time: NaiveTime,
 ) -> Uuid {
-    SlotSeed::new(course_id, day_of_week, start_time, end_time).insert(db).await
+    SlotSeed::new(course_id, day_of_week, start_time, end_time)
+        .insert(db)
+        .await
 }
 
 /// Builder for a `course_schedule_slots` row (see
@@ -154,11 +178,20 @@ impl<'a> SlotSeed<'a> {
         start_time: NaiveTime,
         end_time: NaiveTime,
     ) -> Self {
-        Self { course_id, day_of_week, start_time, end_time, venue: None }
+        Self {
+            course_id,
+            day_of_week,
+            start_time,
+            end_time,
+            venue: None,
+        }
     }
 
     pub fn venue(self, venue: &'a str) -> Self {
-        Self { venue: Some(venue), ..self }
+        Self {
+            venue: Some(venue),
+            ..self
+        }
     }
 
     /// Returns the slot id.
@@ -194,7 +227,9 @@ pub async fn seed_course_session(
     start_time: NaiveTime,
     end_time: NaiveTime,
 ) -> Uuid {
-    SessionSeed::new(course_id, session_date, start_time, end_time).insert(db).await
+    SessionSeed::new(course_id, session_date, start_time, end_time)
+        .insert(db)
+        .await
 }
 
 /// Builder for a `course_sessions` row. `venue` (the snapshot column)
@@ -215,11 +250,20 @@ impl<'a> SessionSeed<'a> {
         start_time: NaiveTime,
         end_time: NaiveTime,
     ) -> Self {
-        Self { course_id, session_date, start_time, end_time, venue: None }
+        Self {
+            course_id,
+            session_date,
+            start_time,
+            end_time,
+            venue: None,
+        }
     }
 
     pub fn venue(self, venue: &'a str) -> Self {
-        Self { venue: Some(venue), ..self }
+        Self {
+            venue: Some(venue),
+            ..self
+        }
     }
 
     /// Returns the session id.
@@ -363,11 +407,17 @@ impl TimeSlotSeed {
     }
 
     pub fn course(self, course_id: Uuid) -> Self {
-        Self { course_id: Some(course_id), ..self }
+        Self {
+            course_id: Some(course_id),
+            ..self
+        }
     }
 
     pub fn venue(self, venue_id: Uuid) -> Self {
-        Self { venue_id: Some(venue_id), ..self }
+        Self {
+            venue_id: Some(venue_id),
+            ..self
+        }
     }
 
     /// Returns the slot id.
@@ -438,15 +488,28 @@ pub async fn seed_coupon(
 /// the `cart_items_course_qty` CHECK the real checkout flow inherits).
 #[derive(Clone, Copy)]
 pub enum SeedOrderLine {
-    Product { product_id: Uuid, quantity: i32, unit_price_cents: i64 },
-    Course { course_id: Uuid, unit_price_cents: i64 },
+    Product {
+        product_id: Uuid,
+        quantity: i32,
+        unit_price_cents: i64,
+    },
+    Course {
+        course_id: Uuid,
+        unit_price_cents: i64,
+    },
 }
 
 impl SeedOrderLine {
     fn subtotal_cents(&self) -> i64 {
         match self {
-            Self::Product { quantity, unit_price_cents, .. } => unit_price_cents * *quantity as i64,
-            Self::Course { unit_price_cents, .. } => *unit_price_cents,
+            Self::Product {
+                quantity,
+                unit_price_cents,
+                ..
+            } => unit_price_cents * *quantity as i64,
+            Self::Course {
+                unit_price_cents, ..
+            } => *unit_price_cents,
         }
     }
 }
@@ -486,11 +549,17 @@ impl<'a> OrderSeed<'a> {
     }
 
     pub fn paid_at(self, paid_at: DateTime<Utc>) -> Self {
-        Self { paid_at: Some(paid_at), ..self }
+        Self {
+            paid_at: Some(paid_at),
+            ..self
+        }
     }
 
     pub fn payment_method(self, payment_method: &'a str) -> Self {
-        Self { payment_method: Some(payment_method), ..self }
+        Self {
+            payment_method: Some(payment_method),
+            ..self
+        }
     }
 
     pub fn line(mut self, line: SeedOrderLine) -> Self {
@@ -499,7 +568,10 @@ impl<'a> OrderSeed<'a> {
     }
 
     pub fn total_cents(self, total_cents: i64) -> Self {
-        Self { total_cents: Some(total_cents), ..self }
+        Self {
+            total_cents: Some(total_cents),
+            ..self
+        }
     }
 
     /// Returns the order id.
@@ -531,12 +603,21 @@ impl<'a> OrderSeed<'a> {
 
         for line in &self.lines {
             let (item_type, product_id, course_id, quantity, unit_price_cents) = match *line {
-                SeedOrderLine::Product { product_id, quantity, unit_price_cents } => {
-                    ("product", Some(product_id), None, quantity, unit_price_cents)
-                }
-                SeedOrderLine::Course { course_id, unit_price_cents } => {
-                    ("course", None, Some(course_id), 1, unit_price_cents)
-                }
+                SeedOrderLine::Product {
+                    product_id,
+                    quantity,
+                    unit_price_cents,
+                } => (
+                    "product",
+                    Some(product_id),
+                    None,
+                    quantity,
+                    unit_price_cents,
+                ),
+                SeedOrderLine::Course {
+                    course_id,
+                    unit_price_cents,
+                } => ("course", None, Some(course_id), 1, unit_price_cents),
             };
             sqlx::query(
                 r#"
@@ -994,7 +1075,12 @@ pub async fn seed_marked_attendance(
     let end_time = start_time + Duration::hours(1);
     let session = seed_course_session(db, course_id, session_date, start_time, end_time).await;
     let attendance = seed_attendance(db, session, enrolment, status, member).await;
-    AttendanceScene { member, enrolment, session, attendance }
+    AttendanceScene {
+        member,
+        enrolment,
+        session,
+        attendance,
+    }
 }
 
 /// 一行式課程營收:[`OrderSeed`] 包一層,只塞一筆
@@ -1011,7 +1097,13 @@ pub async fn seed_course_revenue(
     if let Some(paid_at) = paid_at {
         order = order.paid_at(paid_at);
     }
-    order.line(SeedOrderLine::Course { course_id, unit_price_cents }).insert(db).await
+    order
+        .line(SeedOrderLine::Course {
+            course_id,
+            unit_price_cents,
+        })
+        .insert(db)
+        .await
 }
 
 /// 「某日一個時段被多筆不同狀態的預訂占用」:`TimeSlotSeed` 建一個
@@ -1023,7 +1115,9 @@ pub async fn seed_venue_rentals(
     slot_date: NaiveDate,
     rentals: &[(BookingStatus, i64)],
 ) -> Vec<Uuid> {
-    let slot_id = TimeSlotSeed::new(rentals.len() as i32, slot_date).insert(db).await;
+    let slot_id = TimeSlotSeed::new(rentals.len() as i32, slot_date)
+        .insert(db)
+        .await;
     let mut booking_ids = Vec::with_capacity(rentals.len());
     for (status, price_cents) in rentals {
         let email = format!("venue-rental-{}@example.com", Uuid::now_v7());
@@ -1075,7 +1169,13 @@ pub async fn seed_leave_scene(
     if let Some(makeup_id) = makeup_session_id {
         set_makeup_session(db, leave, makeup_id).await;
     }
-    LeaveScene { member: user_id, course: course_id, session, enrolment, leave }
+    LeaveScene {
+        member: user_id,
+        course: course_id,
+        session,
+        enrolment,
+        leave,
+    }
 }
 
 /// [`seed_full_course`] 回傳的課程 id,與坐滿座位的會員 id 列表。
@@ -1091,7 +1191,10 @@ pub struct FullCourse {
 /// 詞條——_Avoid_: capacity)。Returns the new course id and its occupants'
 /// member ids, in creation order.
 pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> FullCourse {
-    let course = CourseSeed::new(name).max_students(max_students).insert(db).await;
+    let course = CourseSeed::new(name)
+        .max_students(max_students)
+        .insert(db)
+        .await;
     let mut occupants = Vec::with_capacity(max_students as usize);
     for _ in 0..max_students {
         let email = format!("occupant-{}@example.com", Uuid::now_v7());
@@ -1130,9 +1233,10 @@ pub async fn seed_carted_member(
     let member = seed_member(db, email, "Password!234").await;
     for line in cart {
         match line {
-            SeedCartLine::Product { product_id, quantity } => {
-                add_to_cart(db, member, *product_id, *quantity).await
-            }
+            SeedCartLine::Product {
+                product_id,
+                quantity,
+            } => add_to_cart(db, member, *product_id, *quantity).await,
             SeedCartLine::Course { course_id } => add_course_to_cart(db, member, *course_id).await,
         }
     }
@@ -1187,5 +1291,9 @@ pub async fn seed_session_scene(
     }
     let slot = slot.insert(db).await;
     let session = session.insert(db).await;
-    SessionScene { course, slot, session }
+    SessionScene {
+        course,
+        slot,
+        session,
+    }
 }

@@ -27,7 +27,9 @@ pub async fn find_sessions_in(
 /// cross-module JOIN convention (e.g. `enrolments::repository` joins
 /// `courses` the same way).
 pub async fn find_all_course_ids(db: &PgPool) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>("SELECT id FROM courses").fetch_all(db).await
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM courses")
+        .fetch_all(db)
+        .await
 }
 
 /// `coach_name` JOINs the same way as `find_my_weekly_schedule` (courses ->

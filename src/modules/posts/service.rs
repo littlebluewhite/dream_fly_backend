@@ -204,7 +204,10 @@ mod tests {
 
     #[test]
     fn should_stamp_published_at_true_on_first_publish() {
-        assert!(should_stamp_published_at(Some(&PostStatus::Published), None));
+        assert!(should_stamp_published_at(
+            Some(&PostStatus::Published),
+            None
+        ));
     }
 
     #[test]

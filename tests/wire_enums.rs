@@ -154,5 +154,8 @@ async fn role_all_matches_roles_table(db: PgPool) {
     let mut all: Vec<&str> = Role::ALL.iter().map(|r| r.as_str()).collect();
     all.sort();
 
-    assert_eq!(table, all, "roles table rows must equal Role::ALL's as_str() labels");
+    assert_eq!(
+        table, all,
+        "roles table rows must equal Role::ALL's as_str() labels"
+    );
 }

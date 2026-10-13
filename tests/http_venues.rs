@@ -64,7 +64,9 @@ async fn create_venue_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_venue_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("vmem@example.com", "Password!234").await;
+    let user = app
+        .register_member("vmem@example.com", "Password!234")
+        .await;
     let resp = app
         .post("/api/v1/venues")
         .authorization_bearer(&user.access_token)

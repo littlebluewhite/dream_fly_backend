@@ -143,23 +143,26 @@ pub struct AgeRange {
 impl AgeRange {
     pub fn new(min_age: Option<i32>, max_age: Option<i32>) -> Result<Self, AppError> {
         if let Some(min) = min_age
-            && !(0..=150).contains(&min) {
-                return Err(AppError::Validation(
-                    "min_age must be between 0 and 150".into(),
-                ));
-            }
+            && !(0..=150).contains(&min)
+        {
+            return Err(AppError::Validation(
+                "min_age must be between 0 and 150".into(),
+            ));
+        }
         if let Some(max) = max_age
-            && !(0..=150).contains(&max) {
-                return Err(AppError::Validation(
-                    "max_age must be between 0 and 150".into(),
-                ));
-            }
+            && !(0..=150).contains(&max)
+        {
+            return Err(AppError::Validation(
+                "max_age must be between 0 and 150".into(),
+            ));
+        }
         if let (Some(min), Some(max)) = (min_age, max_age)
-            && min > max {
-                return Err(AppError::Validation(
-                    "min_age must be less than or equal to max_age".into(),
-                ));
-            }
+            && min > max
+        {
+            return Err(AppError::Validation(
+                "min_age must be less than or equal to max_age".into(),
+            ));
+        }
         Ok(Self { min_age, max_age })
     }
 

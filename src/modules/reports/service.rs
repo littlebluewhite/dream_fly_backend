@@ -216,5 +216,9 @@ fn activity_label(row: ActivityRow) -> ActivityItem {
         // UNION always tags one of the four kinds above.
         other => format!("{}:{}", other, row.detail),
     };
-    ActivityItem { kind: row.kind, label, occurred_at: row.occurred_at }
+    ActivityItem {
+        kind: row.kind,
+        label,
+        occurred_at: row.occurred_at,
+    }
 }

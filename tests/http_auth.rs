@@ -119,7 +119,8 @@ async fn register_rejects_invalid_email(db: PgPool) {
 #[sqlx::test]
 async fn login_with_correct_credentials_returns_tokens(db: PgPool) {
     let app = spawn_test_app(db).await;
-    app.register_member("login@example.com", "Password!234").await;
+    app.register_member("login@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/auth/login")
@@ -138,7 +139,8 @@ async fn login_with_correct_credentials_returns_tokens(db: PgPool) {
 #[sqlx::test]
 async fn login_with_wrong_password_returns_unauthorized(db: PgPool) {
     let app = spawn_test_app(db).await;
-    app.register_member("login2@example.com", "Password!234").await;
+    app.register_member("login2@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/auth/login")
@@ -171,7 +173,9 @@ async fn login_unknown_email_returns_unauthorized(db: PgPool) {
 #[sqlx::test]
 async fn refresh_rotates_tokens_and_invalidates_old(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("refresh@example.com", "Password!234").await;
+    let user = app
+        .register_member("refresh@example.com", "Password!234")
+        .await;
 
     // First refresh should succeed and issue a NEW refresh token.
     let resp = app
@@ -207,7 +211,9 @@ async fn refresh_with_garbage_token_returns_unauthorized(db: PgPool) {
 #[sqlx::test]
 async fn logout_is_idempotent(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("logout@example.com", "Password!234").await;
+    let user = app
+        .register_member("logout@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/auth/logout")
@@ -316,7 +322,9 @@ async fn otp_send_twilio_failure_returns_500(db: PgPool) {
         cfg.sms.twilio_base_url = twilio_server.uri();
     })
     .await;
-    let user = app.register_member("otpfail@example.com", "Password!234").await;
+    let user = app
+        .register_member("otpfail@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/auth/otp/send")
@@ -337,7 +345,9 @@ async fn otp_verify_round_trip_marks_phone_verified(db: PgPool) {
         cfg.sms.twilio_base_url = twilio_server.uri();
     })
     .await;
-    let user = app.register_member("otpv@example.com", "Password!234").await;
+    let user = app
+        .register_member("otpv@example.com", "Password!234")
+        .await;
 
     // Send first to store a code for this user.
     app.post("/api/v1/auth/otp/send")
@@ -372,7 +382,9 @@ async fn otp_verify_wrong_code_returns_bad_request(db: PgPool) {
         cfg.sms.twilio_base_url = twilio_server.uri();
     })
     .await;
-    let user = app.register_member("otpw@example.com", "Password!234").await;
+    let user = app
+        .register_member("otpw@example.com", "Password!234")
+        .await;
 
     app.post("/api/v1/auth/otp/send")
         .authorization_bearer(&user.access_token)

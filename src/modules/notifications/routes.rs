@@ -1,5 +1,8 @@
-use axum::{Router, routing::{get, patch}};
 use crate::state::AppState;
+use axum::{
+    Router,
+    routing::{get, patch},
+};
 
 use super::handlers;
 

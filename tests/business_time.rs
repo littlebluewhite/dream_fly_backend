@@ -37,43 +37,130 @@ const AUDIT_COLUMNS: &[(&str, &str)] = &[
     // Row-touch time; on every table but `settings` the BEFORE UPDATE trigger
     // `set_updated_at` rewrites it with NOW() whatever the SQL binds.
     ("*.updated_at", "row-touch time, trigger-written"),
-    ("attendance_records.created_at", "row insert time; its business date is the session's"),
+    (
+        "attendance_records.created_at",
+        "row insert time; its business date is the session's",
+    ),
     ("attendance_records.marked_at", "ADR-0017: audit this round"),
-    ("audit_log.created_at", "consumption time, by design (kafka::consumer module doc)"),
-    ("bookings.created_at", "list order only; the seed binds a history instant"),
+    (
+        "audit_log.created_at",
+        "consumption time, by design (kafka::consumer module doc)",
+    ),
+    (
+        "bookings.created_at",
+        "list order only; the seed binds a history instant",
+    ),
     ("cart_items.created_at", "cart line order only"),
-    ("certificates.created_at", "insert time; the certificate's date is the bound issued_on"),
-    ("clock_records.clock_in", "ADR-0017: clock_records are audit this round"),
-    ("clock_records.clock_out", "ADR-0017: clock_records are audit this round"),
-    ("clock_records.created_at", "ADR-0017: clock_records are audit this round"),
-    ("coach_schedules.created_at", "row insert time of a weekly availability slot"),
-    ("coaches.created_at", "coach list tiebreak and the profile's registered date; never bucketed"),
-    ("conversations.created_at", "ADR-0017: messages are audit this round"),
-    ("conversations.last_message_at", "ADR-0017: messages are audit this round"),
-    ("coupons.created_at", "admin list order; validity compares the bound expires_at"),
-    ("course_schedule_slots.created_at", "row insert time of a weekly schedule slot"),
-    ("course_sessions.created_at", "row insert time; the session's date is session_date"),
+    (
+        "certificates.created_at",
+        "insert time; the certificate's date is the bound issued_on",
+    ),
+    (
+        "clock_records.clock_in",
+        "ADR-0017: clock_records are audit this round",
+    ),
+    (
+        "clock_records.clock_out",
+        "ADR-0017: clock_records are audit this round",
+    ),
+    (
+        "clock_records.created_at",
+        "ADR-0017: clock_records are audit this round",
+    ),
+    (
+        "coach_schedules.created_at",
+        "row insert time of a weekly availability slot",
+    ),
+    (
+        "coaches.created_at",
+        "coach list tiebreak and the profile's registered date; never bucketed",
+    ),
+    (
+        "conversations.created_at",
+        "ADR-0017: messages are audit this round",
+    ),
+    (
+        "conversations.last_message_at",
+        "ADR-0017: messages are audit this round",
+    ),
+    (
+        "coupons.created_at",
+        "admin list order; validity compares the bound expires_at",
+    ),
+    (
+        "course_schedule_slots.created_at",
+        "row insert time of a weekly schedule slot",
+    ),
+    (
+        "course_sessions.created_at",
+        "row insert time; the session's date is session_date",
+    ),
     ("courses.created_at", "catalog row insert time"),
-    ("events_outbox.next_attempt_at", "retry lease, written and compared on the DB clock only"),
-    ("events_outbox.published_at", "dispatch bookkeeping, read only as IS NULL"),
-    ("leave_requests.created_at", "leave list order; the leave's business date is its session"),
+    (
+        "events_outbox.next_attempt_at",
+        "retry lease, written and compared on the DB clock only",
+    ),
+    (
+        "events_outbox.published_at",
+        "dispatch bookkeeping, read only as IS NULL",
+    ),
+    (
+        "leave_requests.created_at",
+        "leave list order; the leave's business date is its session",
+    ),
     ("leave_requests.decided_at", "ADR-0017: audit this round"),
-    ("messages.created_at", "ADR-0017: messages are audit this round"),
-    ("messages.read_at", "ADR-0017: messages are audit this round"),
-    ("notifications.created_at", "list order and display; runtime inserts take the column DEFAULT"),
-    ("order_idempotency.created_at", "when the key was recorded; never read"),
-    ("posts.created_at", "row insert time; posts order by published_at"),
-    ("posts.published_at", "only orders posts (confirmed audit time)"),
+    (
+        "messages.created_at",
+        "ADR-0017: messages are audit this round",
+    ),
+    (
+        "messages.read_at",
+        "ADR-0017: messages are audit this round",
+    ),
+    (
+        "notifications.created_at",
+        "list order and display; runtime inserts take the column DEFAULT",
+    ),
+    (
+        "order_idempotency.created_at",
+        "when the key was recorded; never read",
+    ),
+    (
+        "posts.created_at",
+        "row insert time; posts order by published_at",
+    ),
+    (
+        "posts.published_at",
+        "only orders posts (confirmed audit time)",
+    ),
     ("products.created_at", "catalog list order"),
-    ("refresh_tokens.created_at", "token issue time; expiry is the bound expires_at"),
-    ("report_cards.created_at", "list order and display; the card's period is term_label"),
-    ("reward_redemptions.created_at", "history order; its points move is a bound point_ledger row"),
+    (
+        "refresh_tokens.created_at",
+        "token issue time; expiry is the bound expires_at",
+    ),
+    (
+        "report_cards.created_at",
+        "list order and display; the card's period is term_label",
+    ),
+    (
+        "reward_redemptions.created_at",
+        "history order; its points move is a bound point_ledger row",
+    ),
     ("rewards.created_at", "catalog list tiebreak"),
-    ("time_slots.created_at", "row insert time; the slot's time is date + start_time"),
-    ("users.last_login", "when the DB recorded the login; displayed, never bucketed or compared"),
+    (
+        "time_slots.created_at",
+        "row insert time; the slot's time is date + start_time",
+    ),
+    (
+        "users.last_login",
+        "when the DB recorded the login; displayed, never bucketed or compared",
+    ),
     ("venue_categories.created_at", "catalog row insert time"),
     ("venues.created_at", "catalog row insert time"),
-    ("waitlist_entries.created_at", "ADR-0017: audit this round (FIFO order)"),
+    (
+        "waitlist_entries.created_at",
+        "ADR-0017: audit this round (FIFO order)",
+    ),
 ];
 
 /// DB-clock tokens the scan cannot map to a column, keyed by
@@ -124,7 +211,11 @@ fn db_clock_is_written_only_into_audit_columns() {
     for path in files {
         let file = slash_path(path.strip_prefix(root).unwrap());
         let text = fs::read_to_string(&path).unwrap();
-        sites.extend(clock_sites(&text, &file).into_iter().map(|site| (file.clone(), site)));
+        sites.extend(
+            clock_sites(&text, &file)
+                .into_iter()
+                .map(|site| (file.clone(), site)),
+        );
     }
     let problems = audit_problems(&sites, AUDIT_COLUMNS, UNMAPPED);
     assert!(
@@ -152,7 +243,9 @@ fn audit_problems(
         let at = format!("{file}:{}", site.line);
         match &site.target {
             Some(col) => match audit.iter().position(|(c, _)| {
-                c == col || c.strip_prefix('*').is_some_and(|suffix| col.ends_with(suffix))
+                c == col
+                    || c.strip_prefix('*')
+                        .is_some_and(|suffix| col.ends_with(suffix))
             }) {
                 Some(i) => audit_seen[i] = true,
                 None => problems.push(format!("  {at}  writes the DB clock into {col}")),
@@ -168,7 +261,9 @@ fn audit_problems(
     }
     for ((col, _), seen) in audit.iter().zip(audit_seen) {
         if !seen {
-            problems.push(format!("  stale AUDIT_COLUMNS entry {col}: nothing writes it"));
+            problems.push(format!(
+                "  stale AUDIT_COLUMNS entry {col}: nothing writes it"
+            ));
         }
     }
     for ((file, needle, hits, _), found) in unmapped.iter().zip(unmapped_hits) {
@@ -228,7 +323,11 @@ fn clock_sites(text: &str, file: &str) -> Vec<ClockSite> {
         let toks = sql_tokens(&sql);
         let targets = write_targets(&toks);
         for i in (0..toks.len()).filter(|&i| is_db_clock(&toks, i)) {
-            sites.push(ClockSite { line, target: targets[i].clone(), sql: sql.clone() });
+            sites.push(ClockSite {
+                line,
+                target: targets[i].clone(),
+                sql: sql.clone(),
+            });
         }
     }
     sites
@@ -330,7 +429,11 @@ fn write_targets(toks: &[Tok]) -> Vec<Option<String>> {
             let table = word(toks, i + 2);
             insert_table = Some(table);
             // `INSERT INTO t AS x (…)`
-            let cols = if word(toks, i + 3) == "as" { i + 5 } else { i + 3 };
+            let cols = if word(toks, i + 3) == "as" {
+                i + 5
+            } else {
+                i + 3
+            };
             map_values(toks, cols, table, &mut targets);
         } else if word(toks, i) == "set" {
             let table = if i >= 2 && word(toks, i - 1) == "update" && word(toks, i - 2) == "do" {
@@ -444,7 +547,10 @@ fn f() {
     sqlx::query("INSERT INTO u (id, created_at) VALUES ($1, now()), ($2, now())");
 }
 "##;
-    assert_eq!(hits(sample), ["3 t.a", "3 t.b", "4 u.created_at", "4 u.created_at"]);
+    assert_eq!(
+        hits(sample),
+        ["3 t.a", "3 t.b", "4 u.created_at", "4 u.created_at"]
+    );
 }
 
 #[test]
@@ -459,7 +565,10 @@ fn f() {
     let qb = QueryBuilder::<Postgres>::new("UPDATE p SET updated_at = now()");
 }
 "##;
-    assert_eq!(hits(sample), ["3 t.created_at", "7 t.updated_at", "8 p.updated_at"]);
+    assert_eq!(
+        hits(sample),
+        ["3 t.created_at", "7 t.updated_at", "8 p.updated_at"]
+    );
 }
 
 #[test]
@@ -475,7 +584,13 @@ fn f() {
 "##;
     assert_eq!(
         hits(sample),
-        ["3 t.made_at", "4 s.updated_at", "5 q.next_at", "6 w.created_at", "7 v.updated_at"]
+        [
+            "3 t.made_at",
+            "4 s.updated_at",
+            "5 q.next_at",
+            "6 w.created_at",
+            "7 v.updated_at"
+        ]
     );
 }
 
@@ -529,7 +644,12 @@ fn f() {
         .into_iter()
         .map(|site| ("sample".to_owned(), site))
         .collect();
-    let unmapped = [("sample", "INSERT INTO s", 1, "UNNEST batch insert: now() lands in s.created_at")];
+    let unmapped = [(
+        "sample",
+        "INSERT INTO s",
+        1,
+        "UNNEST batch insert: now() lands in s.created_at",
+    )];
     assert_eq!(
         audit_problems(&sites, &[], &unmapped),
         ["  UNMAPPED entry sample \"INSERT INTO s\": 2 DB-clock hits, expects 1"]

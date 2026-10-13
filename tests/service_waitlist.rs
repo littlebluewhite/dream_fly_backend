@@ -28,7 +28,10 @@ use dream_fly_backend::modules::waitlist::service;
 #[sqlx::test]
 async fn join_full_course_creates_waiting_entry(db: PgPool) {
     // max_students = 1, one active enrolment fills the only seat.
-    let course_id = CourseSeed::new("Full Join Course").max_students(1).insert(&db).await;
+    let course_id = CourseSeed::new("Full Join Course")
+        .max_students(1)
+        .insert(&db)
+        .await;
     let filler = common::seed_member(&db, "wl-filler-a@example.com", "Password!234").await;
     seed_enrolment(&db, filler, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
@@ -45,7 +48,10 @@ async fn join_full_course_creates_waiting_entry(db: PgPool) {
 
 #[sqlx::test]
 async fn join_course_not_full_returns_conflict(db: PgPool) {
-    let course_id = CourseSeed::new("Not Full Course").max_students(2).insert(&db).await;
+    let course_id = CourseSeed::new("Not Full Course")
+        .max_students(2)
+        .insert(&db)
+        .await;
     let joiner = common::seed_member(&db, "wl-notfull@example.com", "Password!234").await;
 
     let err = service::join_waitlist(&db, joiner, course_id)
@@ -60,7 +66,10 @@ async fn join_course_not_full_returns_conflict(db: PgPool) {
 
 #[sqlx::test]
 async fn join_duplicate_waiting_returns_conflict(db: PgPool) {
-    let course_id = CourseSeed::new("Dup Waitlist Course").max_students(1).insert(&db).await;
+    let course_id = CourseSeed::new("Dup Waitlist Course")
+        .max_students(1)
+        .insert(&db)
+        .await;
     let filler = common::seed_member(&db, "wl-filler-b@example.com", "Password!234").await;
     seed_enrolment(&db, filler, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let joiner = common::seed_member(&db, "wl-dup@example.com", "Password!234").await;
@@ -92,7 +101,10 @@ async fn join_nonexistent_course_returns_404(db: PgPool) {
 
 #[sqlx::test]
 async fn join_inactive_course_returns_400(db: PgPool) {
-    let course_id = CourseSeed::new("Inactive Waitlist Course").max_students(1).insert(&db).await;
+    let course_id = CourseSeed::new("Inactive Waitlist Course")
+        .max_students(1)
+        .insert(&db)
+        .await;
     sqlx::query("UPDATE courses SET is_active = false WHERE id = $1")
         .bind(course_id)
         .execute(&db)
@@ -112,7 +124,10 @@ async fn join_inactive_course_returns_400(db: PgPool) {
 
 #[sqlx::test]
 async fn cancel_then_rejoin_succeeds(db: PgPool) {
-    let course_id = CourseSeed::new("Rejoin Waitlist Course").max_students(1).insert(&db).await;
+    let course_id = CourseSeed::new("Rejoin Waitlist Course")
+        .max_students(1)
+        .insert(&db)
+        .await;
     let filler = common::seed_member(&db, "wl-filler-c@example.com", "Password!234").await;
     seed_enrolment(&db, filler, course_id, EnrolmentStatus::Active, Utc::now()).await;
     let joiner = common::seed_member(&db, "wl-rejoin@example.com", "Password!234").await;
@@ -148,7 +163,10 @@ async fn duplicate_waiting_insert_trips_partial_unique_index(db: PgPool) {
     // constraint name — the exact condition `join_waitlist`'s fallback arm
     // matches on. If the index were missing, misnamed, or no longer
     // partial-on-waiting, this test is the one that catches it.
-    let course_id = CourseSeed::new("Constraint Waitlist Course").max_students(1).insert(&db).await;
+    let course_id = CourseSeed::new("Constraint Waitlist Course")
+        .max_students(1)
+        .insert(&db)
+        .await;
     let user_id = common::seed_member(&db, "wl-uniq@example.com", "Password!234").await;
 
     waitlist_repo::insert(&db, user_id, course_id)

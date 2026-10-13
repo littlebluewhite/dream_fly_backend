@@ -53,8 +53,7 @@ pub async fn list_inquiries(
     pagination: &PaginationParams,
 ) -> Result<InquiryListResponse, AppError> {
     let total = repository::count_all(db).await?;
-    let inquiries =
-        repository::find_all(db, pagination.limit(), pagination.offset()).await?;
+    let inquiries = repository::find_all(db, pagination.limit(), pagination.offset()).await?;
 
     Ok(InquiryListResponse {
         inquiries: inquiries.into_iter().map(InquiryResponse::from).collect(),

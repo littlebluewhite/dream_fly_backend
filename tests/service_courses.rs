@@ -286,9 +286,7 @@ async fn get_course_nonexistent_returns_not_found(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn get_active_course_by_slug_or_id_not_found_when_inactive_but_unscoped_still_ok(
-    db: PgPool,
-) {
+async fn get_active_course_by_slug_or_id_not_found_when_inactive_but_unscoped_still_ok(db: PgPool) {
     let created = service::create_course(&db, minimal_create("Deactivated Course"))
         .await
         .unwrap();
@@ -540,7 +538,13 @@ async fn update_course_slot_edit_keeps_referenced_future_orphans(db: PgPool) {
     // tripped — each is still unmatched by the sole 09:00 slot.
     let cancelled_leave_orphan_id =
         seed_course_session(&db, course_id, future_date, t(9, 0), t(10, 0)).await;
-    seed_leave_request(&db, enrolment_id, cancelled_leave_orphan_id, LeaveStatus::Cancelled).await;
+    seed_leave_request(
+        &db,
+        enrolment_id,
+        cancelled_leave_orphan_id,
+        LeaveStatus::Cancelled,
+    )
+    .await;
 
     // Case 2: approved leave request whose makeup target is the orphan
     // (referenced via `makeup_session_id`, not `session_id`).
@@ -553,8 +557,14 @@ async fn update_course_slot_edit_keeps_referenced_future_orphans(db: PgPool) {
     // Case 3: attendance record referencing the orphan.
     let attendance_orphan_id =
         seed_course_session(&db, course_id, future_date, t(13, 0), t(14, 0)).await;
-    seed_attendance(&db, attendance_orphan_id, enrolment_id, AttendanceStatus::Present, user_id)
-        .await;
+    seed_attendance(
+        &db,
+        attendance_orphan_id,
+        enrolment_id,
+        AttendanceStatus::Present,
+        user_id,
+    )
+    .await;
 
     // Wholesale slot replacement (empty set) orphans all three sessions —
     // none should be deleted since each is referenced.
@@ -616,7 +626,10 @@ async fn update_course_slot_end_time_change_syncs_future_sessions(db: PgPool) {
     .await
     .expect("update_course");
 
-    assert!(session_exists(&db, session_id).await, "matching session must survive");
+    assert!(
+        session_exists(&db, session_id).await,
+        "matching session must survive"
+    );
     assert_eq!(session_end_time(&db, session_id).await, t(10, 30));
     assert_eq!(
         session_end_time(&db, today_session_id).await,
@@ -634,15 +647,20 @@ async fn update_course_slot_venue_change_syncs_future_sessions_only(db: PgPool) 
     // also matches the today-dated fixture.
     let future_date = today + Duration::days(7);
     let dow = future_date.weekday().num_days_from_sunday() as i16;
-    SlotSeed::new(course_id, dow, t(9, 0), t(10, 0)).venue("Old Hall").insert(&db).await;
+    SlotSeed::new(course_id, dow, t(9, 0), t(10, 0))
+        .venue("Old Hall")
+        .insert(&db)
+        .await;
     let future_id = SessionSeed::new(course_id, future_date, t(9, 0), t(10, 0))
         .venue("Old Hall")
         .insert(&db)
         .await;
     // Same slot match, dated today — the `session_date > today` boundary
     // keeps its venue snapshot as-is.
-    let today_id =
-        SessionSeed::new(course_id, today, t(9, 0), t(10, 0)).venue("Old Hall").insert(&db).await;
+    let today_id = SessionSeed::new(course_id, today, t(9, 0), t(10, 0))
+        .venue("Old Hall")
+        .insert(&db)
+        .await;
 
     // Venue-only edit: same (day_of_week, start_time, end_time).
     service::update_course(
@@ -687,8 +705,7 @@ async fn update_course_without_schedule_slots_leaves_sessions_alone(db: PgPool) 
     // A future session that does NOT correspond to any slot — it would be
     // deleted as an orphan if reconciliation ran, but `schedule_slots` is
     // absent from this PATCH, so reconciliation must not run at all.
-    let mismatched_id =
-        seed_course_session(&db, course_id, future_date, t(14, 0), t(15, 0)).await;
+    let mismatched_id = seed_course_session(&db, course_id, future_date, t(14, 0), t(15, 0)).await;
 
     service::update_course(
         &db,

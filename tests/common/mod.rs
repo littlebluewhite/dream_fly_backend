@@ -200,12 +200,7 @@ pub async fn seed_member_at(
 
 /// Insert a product. `stock = None` means unlimited (tickets/memberships);
 /// `Some(n)` means finite inventory.
-pub async fn seed_product(
-    db: &PgPool,
-    slug: &str,
-    price_cents: i64,
-    stock: Option<i32>,
-) -> Uuid {
+pub async fn seed_product(db: &PgPool, slug: &str, price_cents: i64, stock: Option<i32>) -> Uuid {
     let id = Uuid::now_v7();
 
     sqlx::query(

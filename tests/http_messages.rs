@@ -5,10 +5,10 @@
 
 mod common;
 
-use dream_fly_backend::modules::permissions::model::Role;
 use chrono::{DateTime, Duration, Utc};
 use common::fixtures::seed_message;
 use common::http::{TestApp, spawn_test_app};
+use dream_fly_backend::modules::permissions::model::Role;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -235,7 +235,10 @@ async fn me_returns_peer_name_last_message_and_unread_count(db: PgPool) {
 
     // Brand-new conversation, zero messages yet: last_message_body/
     // last_message_at must be null and unread_count zero, not an error.
-    let empty_resp = app.get("/api/v1/conversations/me").authorization_bearer(&coach.token).await;
+    let empty_resp = app
+        .get("/api/v1/conversations/me")
+        .authorization_bearer(&coach.token)
+        .await;
     assert_eq!(empty_resp.status_code(), 200, "body={}", empty_resp.text());
     let empty_body: serde_json::Value = empty_resp.json();
     assert!(empty_body[0]["last_message_body"].is_null());
@@ -269,7 +272,10 @@ async fn me_returns_peer_name_last_message_and_unread_count(db: PgPool) {
         .await
         .expect("set last_message_at");
 
-    let resp = app.get("/api/v1/conversations/me").authorization_bearer(&coach.token).await;
+    let resp = app
+        .get("/api/v1/conversations/me")
+        .authorization_bearer(&coach.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().expect("plain array, not an envelope");
@@ -302,7 +308,10 @@ async fn me_truncates_last_message_body_to_100_chars(db: PgPool) {
     )
     .await;
 
-    let resp = app.get("/api/v1/conversations/me").authorization_bearer(&coach.token).await;
+    let resp = app
+        .get("/api/v1/conversations/me")
+        .authorization_bearer(&coach.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let truncated = body[0]["last_message_body"]
@@ -373,9 +382,33 @@ async fn list_messages_returns_paginated_envelope_newest_first(db: PgPool) {
     let conv_id = create_conversation(&app, &coach.token, member.user_id).await;
 
     let now = Utc::now();
-    seed_message(&app.db, conv_id, member.user_id, "first", None, now - Duration::seconds(3)).await;
-    seed_message(&app.db, conv_id, coach.user_id, "second", None, now - Duration::seconds(2)).await;
-    seed_message(&app.db, conv_id, member.user_id, "third", None, now - Duration::seconds(1)).await;
+    seed_message(
+        &app.db,
+        conv_id,
+        member.user_id,
+        "first",
+        None,
+        now - Duration::seconds(3),
+    )
+    .await;
+    seed_message(
+        &app.db,
+        conv_id,
+        coach.user_id,
+        "second",
+        None,
+        now - Duration::seconds(2),
+    )
+    .await;
+    seed_message(
+        &app.db,
+        conv_id,
+        member.user_id,
+        "third",
+        None,
+        now - Duration::seconds(1),
+    )
+    .await;
 
     let resp = app
         .get(&format!(
@@ -599,18 +632,40 @@ async fn mark_read_zeroes_unread_and_does_not_mark_own_messages(db: PgPool) {
     let conv_id = create_conversation(&app, &coach.token, member.user_id).await;
 
     let now = Utc::now();
-    let msg1 =
-        seed_message(&app.db, conv_id, member.user_id, "M1", None, now - Duration::seconds(3))
-            .await;
-    let msg2 =
-        seed_message(&app.db, conv_id, member.user_id, "M2", None, now - Duration::seconds(2))
-            .await;
-    let msg3 =
-        seed_message(&app.db, conv_id, coach.user_id, "C1", None, now - Duration::seconds(1)).await;
+    let msg1 = seed_message(
+        &app.db,
+        conv_id,
+        member.user_id,
+        "M1",
+        None,
+        now - Duration::seconds(3),
+    )
+    .await;
+    let msg2 = seed_message(
+        &app.db,
+        conv_id,
+        member.user_id,
+        "M2",
+        None,
+        now - Duration::seconds(2),
+    )
+    .await;
+    let msg3 = seed_message(
+        &app.db,
+        conv_id,
+        coach.user_id,
+        "C1",
+        None,
+        now - Duration::seconds(1),
+    )
+    .await;
 
     // Before any mark-read: coach sees 2 unread (M1, M2 sent by member);
     // member sees 1 unread (C1 sent by coach).
-    let coach_view = app.get("/api/v1/conversations/me").authorization_bearer(&coach.token).await;
+    let coach_view = app
+        .get("/api/v1/conversations/me")
+        .authorization_bearer(&coach.token)
+        .await;
     let coach_body: serde_json::Value = coach_view.json();
     assert_eq!(coach_body[0]["unread_count"], 2);
 
@@ -669,7 +724,10 @@ async fn mark_read_zeroes_unread_and_does_not_mark_own_messages(db: PgPool) {
 
     // ...but the coach's unread_count is UNCHANGED (the member's mark-read
     // call must not affect the coach's own unread count for M1/M2).
-    let coach_view2 = app.get("/api/v1/conversations/me").authorization_bearer(&coach.token).await;
+    let coach_view2 = app
+        .get("/api/v1/conversations/me")
+        .authorization_bearer(&coach.token)
+        .await;
     let coach_body2: serde_json::Value = coach_view2.json();
     assert_eq!(
         coach_body2[0]["unread_count"], 2,
@@ -685,7 +743,10 @@ async fn mark_read_zeroes_unread_and_does_not_mark_own_messages(db: PgPool) {
     let body2: serde_json::Value = resp2.json();
     assert_eq!(body2["updated"], 2);
 
-    let coach_view3 = app.get("/api/v1/conversations/me").authorization_bearer(&coach.token).await;
+    let coach_view3 = app
+        .get("/api/v1/conversations/me")
+        .authorization_bearer(&coach.token)
+        .await;
     let coach_body3: serde_json::Value = coach_view3.json();
     assert_eq!(coach_body3[0]["unread_count"], 0);
 }

@@ -25,8 +25,9 @@ const MAX_RANGE_DAYS: i64 = 60;
 const DEFAULT_RANGE_DAYS: i64 = 28;
 
 fn parse_query_date(s: &str) -> Result<NaiveDate, AppError> {
-    studio_clock::parse_date(s)
-        .ok_or_else(|| AppError::BadRequest(format!("invalid date format, expected YYYY-MM-DD: {s}")))
+    studio_clock::parse_date(s).ok_or_else(|| {
+        AppError::BadRequest(format!("invalid date format, expected YYYY-MM-DD: {s}"))
+    })
 }
 
 /// Materialize then list a single course's sessions in `[from, to]`
@@ -117,5 +118,8 @@ pub async fn my_weekly_schedule(
     user_id: Uuid,
 ) -> Result<Vec<MyScheduleEntryResponse>, AppError> {
     let rows = repository::find_my_weekly_schedule(db, user_id).await?;
-    Ok(rows.into_iter().map(MyScheduleEntryResponse::from).collect())
+    Ok(rows
+        .into_iter()
+        .map(MyScheduleEntryResponse::from)
+        .collect())
 }

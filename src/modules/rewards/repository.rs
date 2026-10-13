@@ -75,7 +75,10 @@ pub async fn lock_by_id_tx(
 /// `WHERE stock > 0` guard because the caller already holds the row lock
 /// from `lock_by_id_tx` and validated `stock > 0` earlier in the same
 /// transaction — no other transaction can have changed it since.
-pub async fn decrement_stock_tx(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn decrement_stock_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE rewards \
          SET stock = CASE WHEN stock IS NULL THEN NULL ELSE stock - 1 END, updated_at = NOW() \
@@ -155,7 +158,11 @@ pub async fn create(db: &PgPool, input: RewardCreate<'_>) -> Result<Reward, sqlx
     .await
 }
 
-pub async fn update(db: &PgPool, id: Uuid, input: RewardUpdate<'_>) -> Result<Option<Reward>, sqlx::Error> {
+pub async fn update(
+    db: &PgPool,
+    id: Uuid,
+    input: RewardUpdate<'_>,
+) -> Result<Option<Reward>, sqlx::Error> {
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE rewards SET updated_at = now()");
 
     if let Some(v) = input.name {

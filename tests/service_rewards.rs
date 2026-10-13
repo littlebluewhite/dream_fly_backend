@@ -134,7 +134,10 @@ async fn redeem_insufficient_balance_conflict_with_zero_side_effects(db: PgPool)
             .fetch_one(&db)
             .await
             .expect("count redemptions");
-    assert_eq!(redemption_count, 0, "no redemption row should have been written");
+    assert_eq!(
+        redemption_count, 0,
+        "no redemption row should have been written"
+    );
 }
 
 #[sqlx::test]
@@ -156,7 +159,10 @@ async fn redeem_zero_stock_returns_conflict(db: PgPool) {
         .await
         .expect("query balance")
         .expect("user exists");
-    assert_eq!(balance, 1000, "balance must be unchanged when stock blocks the redeem");
+    assert_eq!(
+        balance, 1000,
+        "balance must be unchanged when stock blocks the redeem"
+    );
 }
 
 #[sqlx::test]
@@ -201,10 +207,13 @@ async fn concurrent_redeem_last_stock_unit_only_one_succeeds(db: PgPool) {
         tokio::spawn(attempt_redeem(db.clone(), user_a, reward_id)),
         tokio::spawn(attempt_redeem(db.clone(), user_b, reward_id)),
     );
-    let ok_count = [res_a.expect("task a panicked"), res_b.expect("task b panicked")]
-        .iter()
-        .filter(|ok| **ok)
-        .count();
+    let ok_count = [
+        res_a.expect("task a panicked"),
+        res_b.expect("task b panicked"),
+    ]
+    .iter()
+    .filter(|ok| **ok)
+    .count();
     assert_eq!(ok_count, 1, "exactly one concurrent redeem should succeed");
 
     let stock: Option<i32> = sqlx::query_scalar("SELECT stock FROM rewards WHERE id = $1")
@@ -231,8 +240,16 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
     // Seed ledger noise so the redemptions list isn't accidentally reading
     // from point_ledger instead of reward_redemptions.
     set_points_balance(&db, user_id, 100).await;
-    seed_point_ledger_entry(&db, user_id, -15, 85, PointReason::Redeem, None, chrono::Utc::now())
-        .await;
+    seed_point_ledger_entry(
+        &db,
+        user_id,
+        -15,
+        85,
+        PointReason::Redeem,
+        None,
+        chrono::Utc::now(),
+    )
+    .await;
 
     for _ in 0..3 {
         service::redeem(&db, user_id, reward_id, chrono::Utc::now())
@@ -243,7 +260,10 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
     let page = service::my_redemptions(
         &db,
         user_id,
-        &dream_fly_backend::extractors::pagination::PaginationParams { page: 1, per_page: 2 },
+        &dream_fly_backend::extractors::pagination::PaginationParams {
+            page: 1,
+            per_page: 2,
+        },
     )
     .await
     .expect("my_redemptions");

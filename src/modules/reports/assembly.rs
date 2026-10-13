@@ -29,7 +29,9 @@ use super::model::{
 /// Whether an income-source key is an order line (see
 /// `IncomeSource::is_order_line`); `category_split` keeps only these.
 fn is_order_line_source(source: &str) -> bool {
-    source.parse::<IncomeSource>().is_ok_and(|s| s.is_order_line())
+    source
+        .parse::<IncomeSource>()
+        .is_ok_and(|s| s.is_order_line())
 }
 
 /// Every repository result `service::admin_report`'s sequential queries
@@ -74,7 +76,12 @@ pub fn safe_ratio(numerator: i64, denominator: i64) -> Option<f64> {
 /// `(bucket, count)` rename that used to be repeated verbatim 3x in
 /// `service::admin_report`.
 fn bucket_entries(rows: Vec<BucketCountRow>) -> Vec<BucketCountEntry> {
-    rows.into_iter().map(|r| BucketCountEntry { bucket: r.bucket, count: r.count }).collect()
+    rows.into_iter()
+        .map(|r| BucketCountEntry {
+            bucket: r.bucket,
+            count: r.count,
+        })
+        .collect()
 }
 
 /// Turn every repository result for `GET /reports/admin` into its response
@@ -103,7 +110,10 @@ pub fn assemble_admin_report(
 
     let trend: Vec<RevenueMonthPoint> = trend_rows
         .into_iter()
-        .map(|(month, revenue_cents)| RevenueMonthPoint { month, revenue_cents })
+        .map(|(month, revenue_cents)| RevenueMonthPoint {
+            month,
+            revenue_cents,
+        })
         .collect();
     // `revenue_trend` always returns exactly 12 rows (oldest..newest,
     // ending at the current studio-local month), so the last entry is
@@ -232,16 +242,26 @@ pub fn assemble_admin_report(
 
     let weekday_load: Vec<WeekdayLoadEntry> = weekday_rows
         .into_iter()
-        .map(|r| WeekdayLoadEntry { weekday: r.weekday, present_count: r.present_count })
+        .map(|r| WeekdayLoadEntry {
+            weekday: r.weekday,
+            present_count: r.present_count,
+        })
         .collect();
 
     let venue_usage: Vec<VenueUsageEntry> = venue_rows
         .into_iter()
-        .map(|r| VenueUsageEntry { venue: r.venue, minutes: r.minutes })
+        .map(|r| VenueUsageEntry {
+            venue: r.venue,
+            minutes: r.minutes,
+        })
         .collect();
 
     AdminReportResponse {
-        revenue: AdminRevenueSection { this_month_cents, last_month_cents, trend },
+        revenue: AdminRevenueSection {
+            this_month_cents,
+            last_month_cents,
+            trend,
+        },
         kpis,
         revenue_breakdown,
         income_sources_12m,
@@ -254,7 +274,11 @@ pub fn assemble_admin_report(
         funnel,
         weekday_load,
         venue_usage,
-        members: AdminMembersSection { total, new_this_month, active },
+        members: AdminMembersSection {
+            total,
+            new_this_month,
+            active,
+        },
         courses,
         coaches,
     }
@@ -294,7 +318,10 @@ mod tests {
             age_dist_rows: vec![],
             tier_dist_rows: vec![],
             retention_rows: vec![],
-            funnel_row: FunnelRow { trial_inquiries: 0, new_enrolments: 0 },
+            funnel_row: FunnelRow {
+                trial_inquiries: 0,
+                new_enrolments: 0,
+            },
             weekday_rows: vec![],
             venue_rows: vec![],
         }
@@ -315,8 +342,14 @@ mod tests {
 
         let report = assemble_admin_report(inputs, "2026-07");
 
-        assert_eq!(report.revenue.this_month_cents, 3_000, "last row = this month");
-        assert_eq!(report.revenue.last_month_cents, 2_000, "second-to-last row = last month");
+        assert_eq!(
+            report.revenue.this_month_cents, 3_000,
+            "last row = this month"
+        );
+        assert_eq!(
+            report.revenue.last_month_cents, 2_000,
+            "second-to-last row = last month"
+        );
     }
 
     #[test]
@@ -325,13 +358,21 @@ mod tests {
         // in real use, so a 0- or 1-row trend can never happen through the
         // real repository query — this is pure-core-only coverage for
         // `checked_sub`'s defensive guard, integration-unreachable.
-        let one_row =
-            AdminReportInputs { trend_rows: vec![("2026-07".to_string(), 500)], ..empty_inputs() };
+        let one_row = AdminReportInputs {
+            trend_rows: vec![("2026-07".to_string(), 500)],
+            ..empty_inputs()
+        };
         let report = assemble_admin_report(one_row, "2026-07");
         assert_eq!(report.revenue.this_month_cents, 500);
-        assert_eq!(report.revenue.last_month_cents, 0, "no second-to-last row -> falls back to 0");
+        assert_eq!(
+            report.revenue.last_month_cents, 0,
+            "no second-to-last row -> falls back to 0"
+        );
 
-        let zero_rows = AdminReportInputs { trend_rows: vec![], ..empty_inputs() };
+        let zero_rows = AdminReportInputs {
+            trend_rows: vec![],
+            ..empty_inputs()
+        };
         let report = assemble_admin_report(zero_rows, "2026-07");
         assert_eq!(report.revenue.this_month_cents, 0);
         assert_eq!(report.revenue.last_month_cents, 0);
@@ -372,10 +413,17 @@ mod tests {
 
         assert_eq!(report.revenue_breakdown.len(), 2, "only the 2026-07 rows");
         assert!(
-            report.revenue_breakdown.iter().all(|r| r.gross_cents != 100),
+            report
+                .revenue_breakdown
+                .iter()
+                .all(|r| r.gross_cents != 100),
             "the 2026-06 row must not leak in"
         );
-        assert_eq!(report.income_sources_12m.len(), 3, "income_sources_12m keeps every month");
+        assert_eq!(
+            report.income_sources_12m.len(),
+            3,
+            "income_sources_12m keeps every month"
+        );
     }
 
     // --- category_split exclusion + ratio ---
@@ -412,16 +460,27 @@ mod tests {
         let report = assemble_admin_report(inputs, "2026-07");
 
         assert!(
-            report.category_split.iter().all(|r| r.source != "venue_rental"),
+            report
+                .category_split
+                .iter()
+                .all(|r| r.source != "venue_rental"),
             "venue rental excluded from category_split"
         );
-        let course = report.category_split.iter().find(|r| r.source == "course").unwrap();
+        let course = report
+            .category_split
+            .iter()
+            .find(|r| r.source == "course")
+            .unwrap();
         assert_eq!(
             course.ratio,
             Some(0.75),
             "300 / (300+100) order-line total, venue's 600 excluded from the denominator"
         );
-        let ticket = report.category_split.iter().find(|r| r.source == "ticket").unwrap();
+        let ticket = report
+            .category_split
+            .iter()
+            .find(|r| r.source == "ticket")
+            .unwrap();
         assert_eq!(ticket.ratio, Some(0.25));
     }
 
@@ -457,9 +516,15 @@ mod tests {
         // revenue_breakdown — proof that venue_rental never enters the
         // denominator.
         assert!(report.category_split.iter().all(|r| r.ratio.is_none()));
-        let venue_row =
-            report.revenue_breakdown.iter().find(|r| r.source == "venue_rental").unwrap();
-        assert_eq!(venue_row.gross_cents, 500, "venue_rental still appears in revenue_breakdown");
+        let venue_row = report
+            .revenue_breakdown
+            .iter()
+            .find(|r| r.source == "venue_rental")
+            .unwrap();
+        assert_eq!(
+            venue_row.gross_cents, 500,
+            "venue_rental still appears in revenue_breakdown"
+        );
     }
 
     // --- fill_rate divide-by-zero (unreachable via the DB CHECK) ---
@@ -521,7 +586,10 @@ mod tests {
             Some(0.75),
             "3 present / (3 present + 1 absent)"
         );
-        assert_eq!(report.coaches[1].attendance_rate, None, "no attendance data -> null, not 0");
+        assert_eq!(
+            report.coaches[1].attendance_rate, None,
+            "no attendance data -> null, not 0"
+        );
     }
 
     // --- kpis + retention rate, zero denominator ---
@@ -541,9 +609,15 @@ mod tests {
 
         let report = assemble_admin_report(inputs, "2026-07");
 
-        assert_eq!(report.kpis.attendance_rate.this_month, None, "0 present + 0 absent -> null");
+        assert_eq!(
+            report.kpis.attendance_rate.this_month, None,
+            "0 present + 0 absent -> null"
+        );
         assert_eq!(report.kpis.attendance_rate.last_month, None);
-        assert_eq!(report.retention[0].rate, None, "empty previous month -> null, not 0");
+        assert_eq!(
+            report.retention[0].rate, None,
+            "empty previous month -> null, not 0"
+        );
     }
 
     // --- passthrough sections preserve values/order (incl. bucket_entries) ---
@@ -553,16 +627,34 @@ mod tests {
         let inputs = AdminReportInputs {
             member_stats: (10, 2, 5),
             payment_rows: vec![("credit_card".to_string(), 3), ("line_pay".to_string(), 1)],
-            attendance_dist_rows: vec![BucketCountRow { bucket: "gte_95".into(), count: 2 }],
+            attendance_dist_rows: vec![BucketCountRow {
+                bucket: "gte_95".into(),
+                count: 2,
+            }],
             weekday_rows: vec![
-                WeekdayLoadRow { weekday: 0, present_count: 4 },
-                WeekdayLoadRow { weekday: 1, present_count: 7 },
+                WeekdayLoadRow {
+                    weekday: 0,
+                    present_count: 4,
+                },
+                WeekdayLoadRow {
+                    weekday: 1,
+                    present_count: 7,
+                },
             ],
             venue_rows: vec![
-                VenueUsageRow { venue: "A".into(), minutes: 120 },
-                VenueUsageRow { venue: "B".into(), minutes: 60 },
+                VenueUsageRow {
+                    venue: "A".into(),
+                    minutes: 120,
+                },
+                VenueUsageRow {
+                    venue: "B".into(),
+                    minutes: 60,
+                },
             ],
-            funnel_row: FunnelRow { trial_inquiries: 9, new_enrolments: 3 },
+            funnel_row: FunnelRow {
+                trial_inquiries: 9,
+                new_enrolments: 3,
+            },
             ..empty_inputs()
         };
 

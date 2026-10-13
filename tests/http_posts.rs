@@ -3,8 +3,8 @@
 mod common;
 
 use common::fixtures::seed_post;
-use dream_fly_backend::modules::permissions::model::Role;
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::permissions::model::Role;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -12,7 +12,9 @@ use uuid::Uuid;
 #[sqlx::test]
 async fn list_posts_public_only_published(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("author@example.com", "Password!234").await;
+    let user = app
+        .register_member("author@example.com", "Password!234")
+        .await;
     seed_post(&app.db, user.user_id, "Published", true).await;
     seed_post(&app.db, user.user_id, "Draft", false).await;
 
@@ -27,7 +29,9 @@ async fn list_posts_public_only_published(db: PgPool) {
 #[sqlx::test]
 async fn get_post_by_slug_returns_detail(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("author2@example.com", "Password!234").await;
+    let user = app
+        .register_member("author2@example.com", "Password!234")
+        .await;
     let post_id = seed_post(&app.db, user.user_id, "Hello", true).await;
 
     // Fetch by UUID
@@ -42,9 +46,7 @@ async fn get_post_by_slug_returns_detail(db: PgPool) {
 #[sqlx::test]
 async fn get_post_unknown_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let resp = app
-        .get(&format!("/api/v1/posts/{}", Uuid::now_v7()))
-        .await;
+    let resp = app.get(&format!("/api/v1/posts/{}", Uuid::now_v7())).await;
     assert_eq!(resp.status_code(), 404);
 }
 
@@ -65,7 +67,9 @@ async fn create_post_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_post_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("p-mem@example.com", "Password!234").await;
+    let user = app
+        .register_member("p-mem@example.com", "Password!234")
+        .await;
 
     // Member is neither admin nor coach → 403
     let resp = app
@@ -104,7 +108,9 @@ async fn create_post_as_coach_succeeds(db: PgPool) {
     // above already covers admin; this was the only moved staff-gate site
     // across the six Step 9 modules without a coach-passes-the-gate test.
     let app = spawn_test_app(db).await;
-    let (_coach_user, token) = app.seed_user_with_roles("p-coach@example.com", &[Role::Coach]).await;
+    let (_coach_user, token) = app
+        .seed_user_with_roles("p-coach@example.com", &[Role::Coach])
+        .await;
 
     let resp = app
         .post("/api/v1/posts")
@@ -122,10 +128,14 @@ async fn create_post_as_coach_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn delete_post_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let author = app.register_member("auth3@example.com", "Password!234").await;
+    let author = app
+        .register_member("auth3@example.com", "Password!234")
+        .await;
     let post_id = seed_post(&app.db, author.user_id, "Hi", true).await;
 
-    let member = app.register_member("p-mem2@example.com", "Password!234").await;
+    let member = app
+        .register_member("p-mem2@example.com", "Password!234")
+        .await;
     let resp = app
         .delete(&format!("/api/v1/posts/{post_id}"))
         .authorization_bearer(&member.access_token)
@@ -136,7 +146,9 @@ async fn delete_post_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn delete_post_as_admin_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let author = app.register_member("auth4@example.com", "Password!234").await;
+    let author = app
+        .register_member("auth4@example.com", "Password!234")
+        .await;
     let post_id = seed_post(&app.db, author.user_id, "Goodbye", true).await;
     let (_admin, token) = app.seed_admin().await;
 
@@ -189,8 +201,14 @@ async fn update_post_clears_excerpt_and_cover_image_to_null(db: PgPool) {
             .fetch_one(&app.db)
             .await
             .unwrap();
-    assert!(row.0.is_none(), "excerpt must be NULL in the DB, not just absent from JSON");
-    assert!(row.1.is_none(), "cover_image must be NULL in the DB, not just absent from JSON");
+    assert!(
+        row.0.is_none(),
+        "excerpt must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.1.is_none(),
+        "cover_image must be NULL in the DB, not just absent from JSON"
+    );
 
     // Field-absent PATCH afterward must not error and must leave the
     // now-NULL columns alone — proves "absent" stays distinct from "null".
@@ -226,5 +244,8 @@ async fn update_post_clears_excerpt_and_cover_image_to_null(db: PgPool) {
     assert_eq!(resp4.status_code(), 200, "body={}", resp4.text());
     let body4: serde_json::Value = resp4.json();
     assert_eq!(body4["excerpt"], "Refilled excerpt");
-    assert_eq!(body4["cover_image"], "https://example.com/refilled-cover.jpg");
+    assert_eq!(
+        body4["cover_image"],
+        "https://example.com/refilled-cover.jpg"
+    );
 }

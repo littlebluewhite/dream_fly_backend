@@ -25,8 +25,7 @@ pub async fn create(
     auth: AuthUser,
     ValidatedJson(req): ValidatedJson<CreateLeaveRequestRequest>,
 ) -> Result<Json<LeaveRequestResponse>, AppError> {
-    let created =
-        service::create_leave_request(&state.db, state.studio_now(), &auth, req).await?;
+    let created = service::create_leave_request(&state.db, state.studio_now(), &auth, req).await?;
     Ok(Json(created))
 }
 

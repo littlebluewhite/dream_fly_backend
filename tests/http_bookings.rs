@@ -21,7 +21,9 @@ async fn create_booking_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_booking_happy_path(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("bmem@example.com", "Password!234").await;
+    let user = app
+        .register_member("bmem@example.com", "Password!234")
+        .await;
     let slot = TimeSlotSeed::new(5, app.today()).insert(&app.db).await;
 
     let resp = app
@@ -39,7 +41,9 @@ async fn create_booking_happy_path(db: PgPool) {
 #[sqlx::test]
 async fn create_booking_response_includes_price_cents(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("price@example.com", "Password!234").await;
+    let user = app
+        .register_member("price@example.com", "Password!234")
+        .await;
     let slot = TimeSlotSeed::new(5, app.today()).insert(&app.db).await;
     sqlx::query("UPDATE time_slots SET price_cents = $2 WHERE id = $1")
         .bind(slot)
@@ -61,7 +65,9 @@ async fn create_booking_response_includes_price_cents(db: PgPool) {
 #[sqlx::test]
 async fn create_booking_duplicate_returns_conflict(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("bmem2@example.com", "Password!234").await;
+    let user = app
+        .register_member("bmem2@example.com", "Password!234")
+        .await;
     let slot = TimeSlotSeed::new(5, app.today()).insert(&app.db).await;
 
     let payload = json!({ "time_slot_id": slot });
@@ -80,7 +86,9 @@ async fn create_booking_duplicate_returns_conflict(db: PgPool) {
 #[sqlx::test]
 async fn my_bookings_returns_only_mine(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let alice = app.register_member("alice@example.com", "Password!234").await;
+    let alice = app
+        .register_member("alice@example.com", "Password!234")
+        .await;
     let bob = app.register_member("bob@example.com", "Password!234").await;
     let slot_a = TimeSlotSeed::new(5, app.today()).insert(&app.db).await;
     let slot_b = TimeSlotSeed::new(5, app.today()).insert(&app.db).await;
@@ -148,7 +156,9 @@ async fn list_all_bookings_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn list_all_bookings_as_admin_sees_everything(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let alice = app.register_member("alice-b@example.com", "Password!234").await;
+    let alice = app
+        .register_member("alice-b@example.com", "Password!234")
+        .await;
     let slot = TimeSlotSeed::new(5, app.today()).insert(&app.db).await;
     app.post("/api/v1/bookings")
         .authorization_bearer(&alice.access_token)

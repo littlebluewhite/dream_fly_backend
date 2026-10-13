@@ -110,7 +110,12 @@ async fn e2e_booking_flow(db: PgPool) {
         .authorization_bearer(&member.access_token)
         .json(&json!({ "time_slot_id": slot_id }))
         .await;
-    assert_eq!(booking.status_code(), 200, "booking body={}", booking.text());
+    assert_eq!(
+        booking.status_code(),
+        200,
+        "booking body={}",
+        booking.text()
+    );
     let booking_body: serde_json::Value = booking.json();
     let booking_id = booking_body["id"].as_str().unwrap().to_string();
 
@@ -149,7 +154,9 @@ async fn e2e_shopping_flow(db: PgPool) {
     let product_id = product["id"].as_str().unwrap().to_string();
 
     // Register + add to cart + checkout.
-    let member = app.register_member("shopper@example.com", "Password!234").await;
+    let member = app
+        .register_member("shopper@example.com", "Password!234")
+        .await;
     app.post("/api/v1/cart/items")
         .authorization_bearer(&member.access_token)
         .json(&json!({ "item_type": "product", "item_id": product_id, "quantity": 1 }))
@@ -168,7 +175,13 @@ async fn e2e_shopping_flow(db: PgPool) {
         .get("/api/v1/cart")
         .authorization_bearer(&member.access_token)
         .await;
-    assert_eq!(cart.json::<serde_json::Value>()["items"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        cart.json::<serde_json::Value>()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     // my_orders contains it.
     let my = app
@@ -179,7 +192,8 @@ async fn e2e_shopping_flow(db: PgPool) {
     assert!(
         !my.json::<serde_json::Value>()["orders"]
             .as_array()
-            .unwrap().is_empty()
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -257,9 +271,7 @@ async fn e2e_post_lifecycle(db: PgPool) {
     // Draft posts are hidden from the public `GET /posts/:id` path
     // (service::get_published_by_slug_or_id filters on `status='published'`),
     // so an anon read of a freshly-created draft returns 404.
-    let read = app
-        .get(&format!("/api/v1/posts/{post_id}"))
-        .await;
+    let read = app.get(&format!("/api/v1/posts/{post_id}")).await;
     assert_eq!(read.status_code(), 404);
 
     let del = app
@@ -414,10 +426,17 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     .await;
 
     // Register the member and give them an active enrolment.
-    let member = app.register_member("e2e-leave-member@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("e2e-leave-member@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     // --- 請假: the member requests leave for the original session. ---
     let leave_resp = app
@@ -437,8 +456,16 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
         .authorization_bearer(&coach.token)
         .json(&json!({"status": "approved"}))
         .await;
-    assert_eq!(decide_resp.status_code(), 200, "body={}", decide_resp.text());
-    assert_eq!(decide_resp.json::<serde_json::Value>()["status"], "approved");
+    assert_eq!(
+        decide_resp.status_code(),
+        200,
+        "body={}",
+        decide_resp.text()
+    );
+    assert_eq!(
+        decide_resp.json::<serde_json::Value>()["status"],
+        "approved"
+    );
 
     // 核准恆勝 (ADR-0008): the same-tx attendance write projects onto the
     // original session's roster as `leave`.
@@ -446,7 +473,12 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
         .get(&format!("/api/v1/sessions/{original_session_id}/roster"))
         .authorization_bearer(&coach.token)
         .await;
-    assert_eq!(roster_resp.status_code(), 200, "body={}", roster_resp.text());
+    assert_eq!(
+        roster_resp.status_code(),
+        200,
+        "body={}",
+        roster_resp.text()
+    );
     let roster_body: serde_json::Value = roster_resp.json();
     let roster_entry = roster_body
         .as_array()
@@ -462,7 +494,12 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
         .authorization_bearer(&member.access_token)
         .json(&json!({"session_id": target_session_id}))
         .await;
-    assert_eq!(makeup_resp.status_code(), 200, "body={}", makeup_resp.text());
+    assert_eq!(
+        makeup_resp.status_code(),
+        200,
+        "body={}",
+        makeup_resp.text()
+    );
     assert_eq!(
         makeup_resp.json::<serde_json::Value>()["makeup_session_id"],
         target_session_id.to_string()
@@ -479,7 +516,10 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     .fetch_one(&app.db)
     .await
     .expect("count approved leave for original session");
-    assert_eq!(original_leave_count, 1, "original session must show one seat freed by leave");
+    assert_eq!(
+        original_leave_count, 1,
+        "original session must show one seat freed by leave"
+    );
 
     let target_makeup_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM leave_requests WHERE makeup_session_id = $1")
@@ -487,14 +527,23 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
             .fetch_one(&app.db)
             .await
             .expect("count makeups booked into target session");
-    assert_eq!(target_makeup_count, 1, "target session must show one seat occupied by makeup");
+    assert_eq!(
+        target_makeup_count, 1,
+        "target session must show one seat occupied by makeup"
+    );
 
     // --- approved-guard (ADR-0008): advance the mock clock to the original
     // session's start so the PUT attendance time gate itself is satisfied,
     // isolating the approved-guard 422 as the one under test.
-    app.clock.set(original_date.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()).and_utc());
+    app.clock.set(
+        original_date
+            .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap())
+            .and_utc(),
+    );
     let guard_resp = app
-        .put(&format!("/api/v1/sessions/{original_session_id}/attendance"))
+        .put(&format!(
+            "/api/v1/sessions/{original_session_id}/attendance"
+        ))
         .authorization_bearer(&coach.token)
         .json(&json!({"records": [{"enrolment_id": enrolment_id, "status": "present"}]}))
         .await;
@@ -509,7 +558,12 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
         .get(&format!("/api/v1/sessions/{original_session_id}/roster"))
         .authorization_bearer(&coach.token)
         .await;
-    assert_eq!(roster_after_resp.status_code(), 200, "body={}", roster_after_resp.text());
+    assert_eq!(
+        roster_after_resp.status_code(),
+        200,
+        "body={}",
+        roster_after_resp.text()
+    );
     let roster_after_body: serde_json::Value = roster_after_resp.json();
     let entry_after = roster_after_body
         .as_array()

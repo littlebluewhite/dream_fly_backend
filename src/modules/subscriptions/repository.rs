@@ -141,7 +141,10 @@ pub async fn product_name(db: &PgPool, product_id: Uuid) -> Result<String, sqlx:
 /// membership (`remaining_sessions IS NULL`) derives to `active` but still
 /// has nothing to redeem a session from. There is no Rust-side twin of this
 /// predicate anymore; the SQL function is the single implementation.
-pub async fn redeem_one_session(db: &PgPool, id: Uuid) -> Result<Option<Subscription>, sqlx::Error> {
+pub async fn redeem_one_session(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<Subscription>, sqlx::Error> {
     sqlx::query_as::<_, Subscription>(
         "UPDATE subscriptions SET remaining_sessions = remaining_sessions - 1 \
          WHERE id = $1 \

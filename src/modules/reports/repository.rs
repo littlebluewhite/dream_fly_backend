@@ -60,10 +60,7 @@ pub async fn revenue_trend(
 /// `total`/`new_this_month` count every `users` row (no role filter, per
 /// task brief); `active` = distinct users holding at least one `active`
 /// enrolment.
-pub async fn member_stats(
-    db: &PgPool,
-    at: StudioNow,
-) -> Result<(i64, i64, i64), sqlx::Error> {
+pub async fn member_stats(db: &PgPool, at: StudioNow) -> Result<(i64, i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT COUNT(*), \
                 COUNT(*) FILTER ( \
@@ -253,10 +250,7 @@ pub async fn income_by_source(
 /// (環比 delta 同樣前端算). Methods with zero orders simply don't appear —
 /// the value domain is application-level (`orders::model::PAYMENT_METHODS`),
 /// not a DB enum, so there is no fixed list to zero-fill against.
-pub async fn payment_split(
-    db: &PgPool,
-    at: StudioNow,
-) -> Result<Vec<(String, i64)>, sqlx::Error> {
+pub async fn payment_split(db: &PgPool, at: StudioNow) -> Result<Vec<(String, i64)>, sqlx::Error> {
     sqlx::query_as::<_, (String, i64)>(
         "SELECT COALESCE(o.payment_method, 'unknown') AS method, COUNT(*)::bigint AS orders \
          FROM orders o \
@@ -480,10 +474,7 @@ pub async fn tier_distribution(db: &PgPool) -> Result<Vec<BucketCountRow>, sqlx:
 /// 6-month window) so「首次活躍」is judged against the member's whole past.
 /// Session month uses `date_trunc` on `session_date` (already a studio-local
 /// date per §3.18), matching [`kpis`]'s attendance bucketing.
-pub async fn retention(
-    db: &PgPool,
-    at: StudioNow,
-) -> Result<Vec<RetentionRow>, sqlx::Error> {
+pub async fn retention(db: &PgPool, at: StudioNow) -> Result<Vec<RetentionRow>, sqlx::Error> {
     sqlx::query_as::<_, RetentionRow>(
         "WITH months AS ( \
            SELECT generate_series( \
@@ -534,10 +525,7 @@ pub async fn retention(
 /// `created_at`) against `today - 90`, so「90 天窗」is a studio-calendar window
 /// (a row created 91 studio days ago is out; 90 or fewer is in). No middle
 /// stages are fabricated.
-pub async fn funnel(
-    db: &PgPool,
-    at: StudioNow,
-) -> Result<FunnelRow, sqlx::Error> {
+pub async fn funnel(db: &PgPool, at: StudioNow) -> Result<FunnelRow, sqlx::Error> {
     // new_enrolments 刻意不換底至 active_enrolments view——同 kpis 的「報名事件」口徑,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, FunnelRow>(
         "SELECT \
@@ -567,10 +555,7 @@ pub async fn funnel(
 /// materialization needed, since a `present` record can only exist on a
 /// session that was already created and attended. The `VALUES` weekday list
 /// LEFT JOIN zero-fills all 7 days.
-pub async fn weekday_load(
-    db: &PgPool,
-    at: StudioNow,
-) -> Result<Vec<WeekdayLoadRow>, sqlx::Error> {
+pub async fn weekday_load(db: &PgPool, at: StudioNow) -> Result<Vec<WeekdayLoadRow>, sqlx::Error> {
     sqlx::query_as::<_, WeekdayLoadRow>(
         "WITH weekdays(weekday) AS ( \
            VALUES (0::smallint), (1::smallint), (2::smallint), (3::smallint), \
@@ -712,12 +697,10 @@ pub async fn my_active_enrolment_course_ids(
     db: &PgPool,
     user_id: Uuid,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT course_id FROM active_enrolments WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await
+    sqlx::query_scalar::<_, Uuid>("SELECT course_id FROM active_enrolments WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_all(db)
+        .await
 }
 
 /// Count of `mat.course_ids()`'s materialized sessions in

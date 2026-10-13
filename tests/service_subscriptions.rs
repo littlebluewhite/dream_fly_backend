@@ -27,7 +27,9 @@ use chrono::{Duration, SubsecRound, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use common::fixtures::{SeedCartLine, seed_carted_member, seed_entitlement_product, seed_subscription};
+use common::fixtures::{
+    SeedCartLine, seed_carted_member, seed_entitlement_product, seed_subscription,
+};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::repository as orders_repo;
@@ -153,11 +155,10 @@ async fn grant_non_entitlement_product_type_returns_none(db: PgPool) {
         .expect("product exists");
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 1_500).await;
-    let result = service::grant_from_purchase_tx(
-        &mut tx, user_id, &product, 1, 1_500, order_id, Utc::now(),
-    )
-    .await
-    .expect("grant should not error for a non-entitlement product");
+    let result =
+        service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 1_500, order_id, Utc::now())
+            .await
+            .expect("grant should not error for a non-entitlement product");
     tx.rollback().await.expect("rollback");
 
     assert!(result.is_none());
@@ -274,7 +275,15 @@ async fn redeem_with_no_session_quota_returns_specific_conflict_message(db: PgPo
     )
     .await;
     let sub_id = seed_subscription(
-        &db, user_id, product_id, SubscriptionStatus::Active, None, None, None, 20_000, Utc::now(),
+        &db,
+        user_id,
+        product_id,
+        SubscriptionStatus::Active,
+        None,
+        None,
+        None,
+        20_000,
+        Utc::now(),
     )
     .await;
 
@@ -335,9 +344,15 @@ async fn concurrent_redeems_each_report_their_own_decrement(db: PgPool) {
     // its UPDATE and response assembly, a sibling call's later decrement
     // could leak into the response (duplicate/missing values here).
     let user_id = common::seed_member(&db, "redeem-f@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&db, "ticket-redeem-f", ProductType::Ticket, 5_000, None, Some(5))
-            .await;
+    let product_id = seed_entitlement_product(
+        &db,
+        "ticket-redeem-f",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(5),
+    )
+    .await;
     let sub_id = seed_subscription(
         &db,
         user_id,
@@ -529,7 +544,10 @@ async fn redeem_after_refund_is_conflict(db: PgPool) {
     let user = seed_carted_member(
         &db,
         "refund-redeem@example.com",
-        &[SeedCartLine::Product { product_id: ticket, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: ticket,
+            quantity: 1,
+        }],
         0,
     )
     .await;
@@ -543,7 +561,11 @@ async fn redeem_after_refund_is_conflict(db: PgPool) {
     )
     .await
     .expect("checkout");
-    assert_eq!(order.subscriptions.len(), 1, "a ticket grants a subscription");
+    assert_eq!(
+        order.subscriptions.len(),
+        1,
+        "a ticket grants a subscription"
+    );
     let sub_id = order.subscriptions[0].id;
 
     // Refund the order → cancels the subscription (order-scoped).

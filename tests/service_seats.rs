@@ -33,7 +33,10 @@ fn t(h: u32, m: u32) -> NaiveTime {
 /// that get made up elsewhere) and a future target session. Returns
 /// (course_id, original_session_id, target_session_id).
 async fn course_with_sessions(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uuid, Uuid) {
-    let course_id = CourseSeed::new(name).max_students(max_students).insert(db).await;
+    let course_id = CourseSeed::new(name)
+        .max_students(max_students)
+        .insert(db)
+        .await;
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let original_session = seed_course_session(db, course_id, original, t(9, 0), t(10, 0)).await;
     let target = (Utc::now() + Duration::days(3)).date_naive();

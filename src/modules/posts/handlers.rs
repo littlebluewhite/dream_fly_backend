@@ -11,9 +11,7 @@ use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{
-    CreatePostRequest, PostDetailResponse, PostListResponse, UpdatePostRequest,
-};
+use super::dto::{CreatePostRequest, PostDetailResponse, PostListResponse, UpdatePostRequest};
 use super::service;
 
 /// List published posts (public)

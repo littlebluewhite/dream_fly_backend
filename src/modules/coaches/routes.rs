@@ -1,4 +1,7 @@
-use axum::{Router, routing::{get, patch, post}};
+use axum::{
+    Router,
+    routing::{get, patch, post},
+};
 
 use crate::state::AppState;
 
@@ -10,8 +13,14 @@ pub fn router() -> Router<AppState> {
         .route("/coaches/{id}", get(handlers::get_by_id))
         .route("/coaches/{id}/clock-in", post(handlers::clock_in))
         .route("/coaches/{id}/clock-out", post(handlers::clock_out))
-        .route("/coaches/{id}/clock-records", get(handlers::get_clock_records))
-        .route("/coaches/{id}/schedule", get(handlers::get_schedule).put(handlers::update_schedule))
+        .route(
+            "/coaches/{id}/clock-records",
+            get(handlers::get_clock_records),
+        )
+        .route(
+            "/coaches/{id}/schedule",
+            get(handlers::get_schedule).put(handlers::update_schedule),
+        )
 }
 
 /// admin 半邊:教練建立/更新(與公開的清單/查詢共用路徑,按 method 拆;capture

@@ -4,8 +4,8 @@
 
 mod common;
 
-use dream_fly_backend::modules::permissions::model::Role;
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::permissions::model::Role;
 use sqlx::PgPool;
 
 // ---------------------------------------------------------------------------
@@ -22,7 +22,9 @@ async fn admin_report_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn admin_report_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("reports-admin-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("reports-admin-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/reports/admin")
@@ -42,7 +44,13 @@ async fn admin_report_as_admin_returns_200_with_shape(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["revenue"]["trend"].as_array().expect("trend array").len(), 12);
+    assert_eq!(
+        body["revenue"]["trend"]
+            .as_array()
+            .expect("trend array")
+            .len(),
+        12
+    );
     assert!(body["revenue"]["this_month_cents"].is_number());
     assert!(body["revenue"]["last_month_cents"].is_number());
     assert!(body["members"]["total"].is_number());
@@ -55,21 +63,78 @@ async fn admin_report_as_admin_returns_200_with_shape(db: PgPool) {
     assert!(body["kpis"]["new_members"]["this_month"].is_number());
     assert!(body["kpis"]["new_enrolments"]["last_month"].is_number());
     assert!(body["kpis"]["paid_orders_count"]["this_month"].is_number());
-    assert!(body["kpis"]["attendance_rate"]["this_month"].is_null(), "no-data month is null");
-    assert_eq!(body["revenue_breakdown"].as_array().expect("breakdown array").len(), 6);
-    assert_eq!(body["income_sources_12m"].as_array().expect("12m array").len(), 72);
-    assert_eq!(body["category_split"].as_array().expect("split array").len(), 5);
-    assert_eq!(body["payment_split"].as_array().expect("payment array").len(), 0);
+    assert!(
+        body["kpis"]["attendance_rate"]["this_month"].is_null(),
+        "no-data month is null"
+    );
+    assert_eq!(
+        body["revenue_breakdown"]
+            .as_array()
+            .expect("breakdown array")
+            .len(),
+        6
+    );
+    assert_eq!(
+        body["income_sources_12m"]
+            .as_array()
+            .expect("12m array")
+            .len(),
+        72
+    );
+    assert_eq!(
+        body["category_split"]
+            .as_array()
+            .expect("split array")
+            .len(),
+        5
+    );
+    assert_eq!(
+        body["payment_split"]
+            .as_array()
+            .expect("payment array")
+            .len(),
+        0
+    );
 
     // Round 4 Phase 4 人流 sections — fixed-bucket zero-fills on an empty DB.
-    assert_eq!(body["attendance_distribution"].as_array().expect("attDist array").len(), 4);
-    assert_eq!(body["age_distribution"].as_array().expect("ageDist array").len(), 6);
-    assert_eq!(body["tier_distribution"].as_array().expect("tierDist array").len(), 4);
-    assert_eq!(body["retention"].as_array().expect("retention array").len(), 6);
+    assert_eq!(
+        body["attendance_distribution"]
+            .as_array()
+            .expect("attDist array")
+            .len(),
+        4
+    );
+    assert_eq!(
+        body["age_distribution"]
+            .as_array()
+            .expect("ageDist array")
+            .len(),
+        6
+    );
+    assert_eq!(
+        body["tier_distribution"]
+            .as_array()
+            .expect("tierDist array")
+            .len(),
+        4
+    );
+    assert_eq!(
+        body["retention"].as_array().expect("retention array").len(),
+        6
+    );
     assert!(body["funnel"]["trial_inquiries"].is_number());
     assert!(body["funnel"]["new_enrolments"].is_number());
-    assert_eq!(body["weekday_load"].as_array().expect("weekday array").len(), 7);
-    assert_eq!(body["venue_usage"].as_array().expect("venue array").len(), 0);
+    assert_eq!(
+        body["weekday_load"]
+            .as_array()
+            .expect("weekday array")
+            .len(),
+        7
+    );
+    assert_eq!(
+        body["venue_usage"].as_array().expect("venue array").len(),
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +151,9 @@ async fn coach_report_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn coach_report_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("reports-coach-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("reports-coach-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/reports/coach")
@@ -114,8 +181,9 @@ async fn coach_report_as_admin_without_coach_role_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn coach_report_role_but_no_coach_row_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (_user_id, token) =
-        app.seed_user_with_roles("reports-coach-no-row@example.com", &[Role::Coach]).await;
+    let (_user_id, token) = app
+        .seed_user_with_roles("reports-coach-no-row@example.com", &[Role::Coach])
+        .await;
 
     let resp = app
         .get("/api/v1/reports/coach")
@@ -129,14 +197,20 @@ async fn coach_report_as_coach_returns_200_with_shape(db: PgPool) {
     let app = spawn_test_app(db).await;
     let user = app.seed_coach_user().await;
 
-    let resp = app.get("/api/v1/reports/coach").authorization_bearer(&user.token).await;
+    let resp = app
+        .get("/api/v1/reports/coach")
+        .authorization_bearer(&user.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert!(body["today_sessions"].is_number());
     assert!(body["pending_attendance"].is_number());
     assert!(body["unread_messages"].is_number());
     assert!(body["student_count"].is_number());
-    assert!(body["attendance_rate_30d"].is_null(), "no attendance data yet -> null");
+    assert!(
+        body["attendance_rate_30d"].is_null(),
+        "no attendance data yet -> null"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +227,9 @@ async fn member_report_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn member_report_as_member_returns_200_with_shape(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("reports-me-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("reports-me-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/reports/me")
@@ -172,8 +248,9 @@ async fn member_report_as_member_returns_200_with_shape(db: PgPool) {
 async fn member_report_as_coach_role_also_returns_200(db: PgPool) {
     // "登入即可" (any authenticated user) — no role restriction.
     let app = spawn_test_app(db).await;
-    let (_user_id, token) =
-        app.seed_user_with_roles("reports-me-coach@example.com", &[Role::Coach]).await;
+    let (_user_id, token) = app
+        .seed_user_with_roles("reports-me-coach@example.com", &[Role::Coach])
+        .await;
 
     let resp = app
         .get("/api/v1/reports/me")
@@ -196,7 +273,9 @@ async fn admin_activity_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn admin_activity_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("reports-activity-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("reports-activity-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/reports/admin/activity")

@@ -29,10 +29,18 @@ async fn create_report_card_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_report_card_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rc-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("rc-member@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "RC Member Course", None).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -47,10 +55,17 @@ async fn create_report_card_by_owning_coach_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "RC Course", Some(coach.coach_id)).await;
-    let member = app.register_member("rc-student@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-student@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -80,10 +95,17 @@ async fn create_report_card_by_non_owning_coach_returns_403(db: PgPool) {
 
     // Course has no coach assigned at all (distinct from `other_coach`).
     let course_id = seed_course(&app.db, "RC Unowned Course", None).await;
-    let member = app.register_member("rc-student2@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-student2@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -104,10 +126,17 @@ async fn create_report_card_by_a_different_coachs_course_returns_403(db: PgPool)
 
     let coach_b = app.seed_coach_user().await;
 
-    let member = app.register_member("rc-student3@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-student3@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -122,10 +151,17 @@ async fn create_report_card_by_admin_bypasses_ownership(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "RC Admin Course", None).await;
-    let member = app.register_member("rc-admin-student@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-admin-student@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -153,10 +189,17 @@ async fn create_report_card_duplicate_term_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "RC Dup Course", None).await;
-    let member = app.register_member("rc-dup-student@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-dup-student@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let first = app
         .post("/api/v1/report-cards")
@@ -178,10 +221,17 @@ async fn create_report_card_rating_zero_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "RC Rating Low Course", None).await;
-    let member = app.register_member("rc-rating-low@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-rating-low@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -196,10 +246,17 @@ async fn create_report_card_rating_six_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "RC Rating High Course", None).await;
-    let member = app.register_member("rc-rating-high@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-rating-high@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/report-cards")
@@ -225,16 +282,33 @@ async fn my_report_cards_only_shows_own(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "RC Me Course", None).await;
-    let member_a = app.register_member("rc-me-a@example.com", "Password!234").await;
-    let member_b = app.register_member("rc-me-b@example.com", "Password!234").await;
-    let enrolment_a =
-        seed_enrolment(&app.db, member_a.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
-    let enrolment_b =
-        seed_enrolment(&app.db, member_b.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member_a = app
+        .register_member("rc-me-a@example.com", "Password!234")
+        .await;
+    let member_b = app
+        .register_member("rc-me-b@example.com", "Password!234")
+        .await;
+    let enrolment_a = seed_enrolment(
+        &app.db,
+        member_a.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    let enrolment_b = seed_enrolment(
+        &app.db,
+        member_b.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
-    for (enrolment_id, term) in [(enrolment_a, "2026 Spring A"), (enrolment_b, "2026 Spring B")] {
+    for (enrolment_id, term) in [
+        (enrolment_a, "2026 Spring A"),
+        (enrolment_b, "2026 Spring B"),
+    ] {
         let resp = app
             .post("/api/v1/report-cards")
             .authorization_bearer(&admin_token)
@@ -273,7 +347,9 @@ async fn create_certificate_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_certificate_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("cert-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("cert-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/certificates")
@@ -290,8 +366,17 @@ async fn create_certificate_for_own_active_student_succeeds_and_notifies(db: PgP
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Cert Course", Some(coach.coach_id)).await;
-    let member = app.register_member("cert-student@example.com", "Password!234").await;
-    seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let member = app
+        .register_member("cert-student@example.com", "Password!234")
+        .await;
+    seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/certificates")
@@ -332,9 +417,17 @@ async fn create_certificate_for_cancelled_enrolment_student_succeeds(db: PgPool)
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Cert Hist Course", Some(coach.coach_id)).await;
-    let member = app.register_member("cert-hist-student@example.com", "Password!234").await;
-    seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
+    let member = app
+        .register_member("cert-hist-student@example.com", "Password!234")
         .await;
+    seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/certificates")
@@ -353,7 +446,9 @@ async fn create_certificate_for_non_student_returns_403(db: PgPool) {
     seed_course(&app.db, "Cert Cross Coach Course", Some(coach.coach_id)).await;
 
     // This member has never enrolled in any of the coach's courses.
-    let member = app.register_member("cert-cross-student@example.com", "Password!234").await;
+    let member = app
+        .register_member("cert-cross-student@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/certificates")
@@ -374,8 +469,17 @@ async fn create_certificate_for_other_coachs_student_returns_403(db: PgPool) {
     let coach_b_id = seed_coach(&app.db, coach_b_user, "Cert Coach B").await;
     let course_b = seed_course(&app.db, "Cert Coach B Course", Some(coach_b_id)).await;
 
-    let member = app.register_member("cert-coach-b-student@example.com", "Password!234").await;
-    seed_enrolment(&app.db, member.user_id, course_b, EnrolmentStatus::Active, Utc::now()).await;
+    let member = app
+        .register_member("cert-coach-b-student@example.com", "Password!234")
+        .await;
+    seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_b,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/certificates")
@@ -391,7 +495,9 @@ async fn create_certificate_for_other_coachs_student_returns_403(db: PgPool) {
 async fn create_certificate_by_admin_bypasses_ownership(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
-    let member = app.register_member("cert-admin-student@example.com", "Password!234").await;
+    let member = app
+        .register_member("cert-admin-student@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/certificates")
@@ -421,8 +527,12 @@ async fn my_certificates_without_auth_returns_401(db: PgPool) {
 async fn my_certificates_only_shows_own(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
-    let member_a = app.register_member("cert-me-a@example.com", "Password!234").await;
-    let member_b = app.register_member("cert-me-b@example.com", "Password!234").await;
+    let member_a = app
+        .register_member("cert-me-a@example.com", "Password!234")
+        .await;
+    let member_b = app
+        .register_member("cert-me-b@example.com", "Password!234")
+        .await;
 
     for (user, title) in [(&member_a, "證書 A"), (&member_b, "證書 B")] {
         let resp = app
@@ -458,10 +568,17 @@ async fn create_report_card_response_matches_me_row(db: PgPool) {
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "RC Pin Course", Some(coach.coach_id)).await;
-    let member = app.register_member("rc-pin-student@example.com", "Password!234").await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let member = app
+        .register_member("rc-pin-student@example.com", "Password!234")
+        .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let create_resp = app
         .post("/api/v1/report-cards")
@@ -473,7 +590,12 @@ async fn create_report_card_response_matches_me_row(db: PgPool) {
             "rating": 4
         }))
         .await;
-    assert_eq!(create_resp.status_code(), 200, "body={}", create_resp.text());
+    assert_eq!(
+        create_resp.status_code(),
+        200,
+        "body={}",
+        create_resp.text()
+    );
     let created: serde_json::Value = create_resp.json();
 
     let me_rows: serde_json::Value = app
@@ -496,7 +618,9 @@ async fn create_certificate_response_matches_me_row(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Cert Pin Course", None).await;
-    let member = app.register_member("cert-pin-student@example.com", "Password!234").await;
+    let member = app
+        .register_member("cert-pin-student@example.com", "Password!234")
+        .await;
 
     let create_resp = app
         .post("/api/v1/certificates")
@@ -510,7 +634,12 @@ async fn create_certificate_response_matches_me_row(db: PgPool) {
             "note": "表現優異"
         }))
         .await;
-    assert_eq!(create_resp.status_code(), 200, "body={}", create_resp.text());
+    assert_eq!(
+        create_resp.status_code(),
+        200,
+        "body={}",
+        create_resp.text()
+    );
     let created: serde_json::Value = create_resp.json();
 
     let me_rows: serde_json::Value = app

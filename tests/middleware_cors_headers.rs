@@ -21,15 +21,11 @@ async fn health_response_contains_security_headers(db: PgPool) {
         Some("nosniff")
     );
     assert_eq!(
-        headers
-            .get("x-frame-options")
-            .map(|v| v.to_str().unwrap()),
+        headers.get("x-frame-options").map(|v| v.to_str().unwrap()),
         Some("DENY")
     );
     assert_eq!(
-        headers
-            .get("referrer-policy")
-            .map(|v| v.to_str().unwrap()),
+        headers.get("referrer-policy").map(|v| v.to_str().unwrap()),
         Some("no-referrer")
     );
 }
@@ -44,9 +40,7 @@ async fn body_larger_than_2mb_is_rejected(db: PgPool) {
     // `ValidatedJson` (where it surfaces as `AppError::Validation` → 422),
     // we accept either rejection. The handler body MUST NOT execute.
     let big = "x".repeat(3 * 1024 * 1024);
-    let payload = format!(
-        r#"{{"email":"a@b.com","name":"big","password":"{big}"}}"#
-    );
+    let payload = format!(r#"{{"email":"a@b.com","name":"big","password":"{big}"}}"#);
 
     let resp = app
         .post("/api/v1/auth/register")

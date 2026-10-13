@@ -8,7 +8,8 @@ mod common;
 
 use chrono::{Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use common::fixtures::{
-    TimeSlotSeed, seed_point_ledger_entry, seed_booking, seed_course, seed_course_session, seed_enrolment,
+    TimeSlotSeed, seed_booking, seed_course, seed_course_session, seed_enrolment,
+    seed_point_ledger_entry,
 };
 use common::http::{TestApp, spawn_test_app_with};
 use dream_fly_backend::modules::bookings::model::BookingStatus;
@@ -27,7 +28,8 @@ async fn taipei_app_at_half_past_midnight(db: PgPool) -> TestApp {
         cfg.server.studio_timezone = "Asia/Taipei".parse().unwrap();
     })
     .await;
-    app.clock.set(Utc.with_ymd_and_hms(2026, 7, 14, 16, 30, 0).unwrap());
+    app.clock
+        .set(Utc.with_ymd_and_hms(2026, 7, 14, 16, 30, 0).unwrap());
     assert_eq!(app.today(), NaiveDate::from_ymd_opt(2026, 7, 15).unwrap());
     app
 }
@@ -46,21 +48,42 @@ async fn cancel_status(app: &TestApp, token: &str, booking_id: uuid::Uuid) -> u1
 #[sqlx::test]
 async fn venue_cancel_window_uses_taipei_wall_clock(db: PgPool) {
     let app = taipei_app_at_half_past_midnight(db).await;
-    let user = app.register_member("taipei-cancel@example.com", "Password!234").await;
+    let user = app
+        .register_member("taipei-cancel@example.com", "Password!234")
+        .await;
 
-    let inside =
-        TimeSlotSeed::new(5, app.today()).on(app.today()).start(t(20, 0)).insert(&app.db).await;
+    let inside = TimeSlotSeed::new(5, app.today())
+        .on(app.today())
+        .start(t(20, 0))
+        .insert(&app.db)
+        .await;
     let outside = TimeSlotSeed::new(5, app.today())
         .on(app.today() + Duration::days(1))
         .start(t(1, 0))
         .insert(&app.db)
         .await;
-    let b_inside = seed_booking(&app.db, user.user_id, inside, BookingStatus::Confirmed, 1000).await;
-    let b_outside =
-        seed_booking(&app.db, user.user_id, outside, BookingStatus::Confirmed, 1000).await;
+    let b_inside = seed_booking(
+        &app.db,
+        user.user_id,
+        inside,
+        BookingStatus::Confirmed,
+        1000,
+    )
+    .await;
+    let b_outside = seed_booking(
+        &app.db,
+        user.user_id,
+        outside,
+        BookingStatus::Confirmed,
+        1000,
+    )
+    .await;
 
     assert_eq!(cancel_status(&app, &user.access_token, b_inside).await, 400);
-    assert_eq!(cancel_status(&app, &user.access_token, b_outside).await, 200);
+    assert_eq!(
+        cancel_status(&app, &user.access_token, b_outside).await,
+        200
+    );
 }
 
 /// "Session already started" is judged in studio wall-clock: Taipei 07-15
@@ -69,9 +92,18 @@ async fn venue_cancel_window_uses_taipei_wall_clock(db: PgPool) {
 #[sqlx::test]
 async fn leave_request_session_started_uses_taipei_wall_clock(db: PgPool) {
     let app = taipei_app_at_half_past_midnight(db).await;
-    let user = app.register_member("taipei-leave@example.com", "Password!234").await;
+    let user = app
+        .register_member("taipei-leave@example.com", "Password!234")
+        .await;
     let course = seed_course(&app.db, "Taipei Leave", None).await;
-    seed_enrolment(&app.db, user.user_id, course, EnrolmentStatus::Active, app.studio_now().now).await;
+    seed_enrolment(
+        &app.db,
+        user.user_id,
+        course,
+        EnrolmentStatus::Active,
+        app.studio_now().now,
+    )
+    .await;
     let started = seed_course_session(&app.db, course, app.today(), t(0, 10), t(1, 10)).await;
     let upcoming = seed_course_session(&app.db, course, app.today(), t(9, 0), t(10, 0)).await;
 
@@ -101,10 +133,18 @@ async fn sessions_today_after_taipei_midnight_lists_taipei_date(db: PgPool) {
     let utc_day = app.today() - Duration::days(1);
     seed_course_session(&app.db, course, utc_day, t(9, 0), t(10, 0)).await;
 
-    let resp = app.get("/api/v1/sessions/today").authorization_bearer(&coach.token).await;
+    let resp = app
+        .get("/api/v1/sessions/today")
+        .authorization_bearer(&coach.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    let ids: Vec<&str> = body.as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, vec![today_session.to_string()]);
 }
 
@@ -116,9 +156,19 @@ async fn coach_report_today_sessions_uses_taipei_date(db: PgPool) {
     let course = seed_course(&app.db, "Taipei Report", Some(coach.coach_id)).await;
     seed_course_session(&app.db, course, app.today(), t(9, 0), t(10, 0)).await;
     seed_course_session(&app.db, course, app.today(), t(11, 0), t(12, 0)).await;
-    seed_course_session(&app.db, course, app.today() - Duration::days(1), t(9, 0), t(10, 0)).await;
+    seed_course_session(
+        &app.db,
+        course,
+        app.today() - Duration::days(1),
+        t(9, 0),
+        t(10, 0),
+    )
+    .await;
 
-    let resp = app.get("/api/v1/reports/coach").authorization_bearer(&coach.token).await;
+    let resp = app
+        .get("/api/v1/reports/coach")
+        .authorization_bearer(&coach.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert_eq!(body["today_sessions"], 2);
@@ -130,7 +180,9 @@ async fn coach_report_today_sessions_uses_taipei_date(db: PgPool) {
 #[sqlx::test]
 async fn points_me_earned_this_month_uses_studio_month_boundaries(db: PgPool) {
     let app = taipei_app_at_half_past_midnight(db).await;
-    let user = app.register_member("pts-taipei@example.com", "Password!234").await;
+    let user = app
+        .register_member("pts-taipei@example.com", "Password!234")
+        .await;
     let at = |y, mo, d, h, mi, s| Utc.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap();
     let rows = [
         (at(2026, 6, 30, 15, 59, 59), PointReason::CheckoutEarn, 1000), // Taipei June 30: excluded
@@ -141,8 +193,16 @@ async fn points_me_earned_this_month_uses_studio_month_boundaries(db: PgPool) {
         (at(2026, 7, 31, 16, 0, 0), PointReason::CheckoutEarn, 2000),   // Taipei Aug 1: excluded
     ];
     for (created_at, reason, delta) in rows {
-        seed_point_ledger_entry(&app.db, user.user_id, delta, delta, reason, None, created_at)
-            .await;
+        seed_point_ledger_entry(
+            &app.db,
+            user.user_id,
+            delta,
+            delta,
+            reason,
+            None,
+            created_at,
+        )
+        .await;
     }
 
     let resp = app

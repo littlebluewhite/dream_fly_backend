@@ -17,9 +17,7 @@ use super::dto::{
 use super::service;
 
 #[tracing::instrument(skip_all)]
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<CoachResponse>>, AppError> {
+pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<CoachResponse>>, AppError> {
     let coaches = service::list_active(&state.db).await?;
     Ok(Json(coaches))
 }

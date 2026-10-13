@@ -294,7 +294,8 @@ pub async fn update(
     id: Uuid,
     input: ProductUpdate<'_>,
 ) -> Result<Option<Product>, sqlx::Error> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE products SET updated_at = now()");
+    let mut qb =
+        sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE products SET updated_at = now()");
 
     if let Some(v) = input.name {
         qb.push(", name = ").push_bind(v);

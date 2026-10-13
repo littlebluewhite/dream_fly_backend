@@ -4,7 +4,9 @@ use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::state::AppState;
 
-use super::dto::{ActivityResponse, AdminReportResponse, CoachReportResponse, MemberReportResponse};
+use super::dto::{
+    ActivityResponse, AdminReportResponse, CoachReportResponse, MemberReportResponse,
+};
 use super::service;
 
 /// `GET /reports/admin` — admin only.

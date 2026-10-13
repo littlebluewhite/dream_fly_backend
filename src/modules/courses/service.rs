@@ -40,18 +40,23 @@ fn parse_schedule_slots(entries: &[CourseScheduleSlotEntry]) -> Result<Vec<SlotR
             let start = studio_clock::parse_time_of_day(&e.start_time).ok_or_else(|| {
                 AppError::Validation(format!("invalid start_time: {}", e.start_time))
             })?;
-            let end = studio_clock::parse_time_of_day(&e.end_time).ok_or_else(|| {
-                AppError::Validation(format!("invalid end_time: {}", e.end_time))
-            })?;
+            let end = studio_clock::parse_time_of_day(&e.end_time)
+                .ok_or_else(|| AppError::Validation(format!("invalid end_time: {}", e.end_time)))?;
             studio_clock::validate_time_window(start, end)?;
             Ok((e.day_of_week, start, end, e.venue.clone()))
         })
         .collect()
 }
 
-async fn slots_response(db: &PgPool, course_id: uuid::Uuid) -> Result<Vec<CourseScheduleSlotResponse>, AppError> {
+async fn slots_response(
+    db: &PgPool,
+    course_id: uuid::Uuid,
+) -> Result<Vec<CourseScheduleSlotResponse>, AppError> {
     let slots = repository::find_slots_by_course(db, course_id).await?;
-    Ok(slots.into_iter().map(CourseScheduleSlotResponse::from).collect())
+    Ok(slots
+        .into_iter()
+        .map(CourseScheduleSlotResponse::from)
+        .collect())
 }
 
 pub async fn list_courses(
@@ -59,8 +64,7 @@ pub async fn list_courses(
     pagination: &PaginationParams,
 ) -> Result<CourseListResponse, AppError> {
     let total = repository::count_active(db).await?;
-    let courses =
-        repository::find_all_active(db, pagination.limit(), pagination.offset()).await?;
+    let courses = repository::find_all_active(db, pagination.limit(), pagination.offset()).await?;
     Ok(CourseListResponse {
         courses: courses.into_iter().map(CourseResponse::from).collect(),
         meta: pagination.meta(total),

@@ -17,5 +17,8 @@ pub fn router() -> Router<AppState> {
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/orders", get(handlers::admin_list_orders))
-        .route("/orders/{id}/status", axum::routing::patch(handlers::update_status))
+        .route(
+            "/orders/{id}/status",
+            axum::routing::patch(handlers::update_status),
+        )
 }

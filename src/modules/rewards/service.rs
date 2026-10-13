@@ -51,9 +51,10 @@ pub async fn redeem(
     }
 
     if let Some(stock) = reward.stock
-        && stock <= 0 {
-            return Err(AppError::Conflict("已兌換完畢".into()));
-        }
+        && stock <= 0
+    {
+        return Err(AppError::Conflict("已兌換完畢".into()));
+    }
 
     // The one true points mechanism (裁決 7): lock the balance, compare
     // against `points_cost`, and spend it atomically — ledger insert +
@@ -94,7 +95,10 @@ pub async fn my_redemptions(
     let total = repository::count_redemptions_by_user(db, user_id).await?;
 
     Ok(RedemptionListResponse {
-        redemptions: redemptions.into_iter().map(RedemptionResponse::from).collect(),
+        redemptions: redemptions
+            .into_iter()
+            .map(RedemptionResponse::from)
+            .collect(),
         meta: pagination.meta(total),
     })
 }
@@ -119,7 +123,11 @@ pub async fn create(db: &PgPool, req: CreateRewardRequest) -> Result<RewardRespo
 
 /// `PATCH /rewards/{id}` — admin only. Enforced by the `admin_api`
 /// route_layer (see `startup.rs`).
-pub async fn update(db: &PgPool, id: Uuid, req: UpdateRewardRequest) -> Result<RewardResponse, AppError> {
+pub async fn update(
+    db: &PgPool,
+    id: Uuid,
+    req: UpdateRewardRequest,
+) -> Result<RewardResponse, AppError> {
     let reward = repository::update(
         db,
         id,

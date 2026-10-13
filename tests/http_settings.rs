@@ -43,7 +43,11 @@ async fn get_settings_as_admin_on_empty_table_returns_empty_object(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["settings"], json!({}), "empty table must yield {{}}, not 500");
+    assert_eq!(
+        body["settings"],
+        json!({}),
+        "empty table must yield {{}}, not 500"
+    );
 }
 
 // ---------------------------------------------------------------------------

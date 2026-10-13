@@ -36,11 +36,7 @@ impl SmsClient {
             self.base_url, self.account_sid
         );
 
-        let params = [
-            ("To", to),
-            ("From", &self.from_number),
-            ("Body", message),
-        ];
+        let params = [("To", to), ("From", &self.from_number), ("Body", message)];
 
         let response = self
             .client

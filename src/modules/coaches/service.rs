@@ -57,10 +57,7 @@ impl CoachScope {
 
 /// 解析呼叫者的教練範圍。None = 呼叫者沒有教練 profile(三態政策仍由呼叫端
 /// 決定,同 [`resolve`])。
-pub async fn resolve_scope(
-    db: &PgPool,
-    auth: &AuthUser,
-) -> Result<Option<CoachScope>, AppError> {
+pub async fn resolve_scope(db: &PgPool, auth: &AuthUser) -> Result<Option<CoachScope>, AppError> {
     let Some(coach) = resolve(db, auth).await? else {
         return Ok(None);
     };
@@ -106,7 +103,10 @@ pub async fn get_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailResponse, Ap
 
     Ok(CoachDetailResponse {
         coach: CoachResponse::from(coach),
-        schedules: schedules.into_iter().map(CoachScheduleResponse::from).collect(),
+        schedules: schedules
+            .into_iter()
+            .map(CoachScheduleResponse::from)
+            .collect(),
     })
 }
 
@@ -121,7 +121,10 @@ pub async fn get_active_detail(db: &PgPool, id: Uuid) -> Result<CoachDetailRespo
 
     Ok(CoachDetailResponse {
         coach: CoachResponse::from(coach),
-        schedules: schedules.into_iter().map(CoachScheduleResponse::from).collect(),
+        schedules: schedules
+            .into_iter()
+            .map(CoachScheduleResponse::from)
+            .collect(),
     })
 }
 
@@ -228,7 +231,10 @@ pub async fn get_schedules(
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
     let schedules = repository::find_schedules(db, coach_id).await?;
-    Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())
+    Ok(schedules
+        .into_iter()
+        .map(CoachScheduleResponse::from)
+        .collect())
 }
 
 /// Public-facing lookup — only returns a schedule for an active coach.
@@ -244,7 +250,10 @@ pub async fn get_active_schedules(
         .ok_or_else(|| AppError::NotFound("coach not found".into()))?;
 
     let schedules = repository::find_schedules(db, coach_id).await?;
-    Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())
+    Ok(schedules
+        .into_iter()
+        .map(CoachScheduleResponse::from)
+        .collect())
 }
 
 /// Parse+validate `ScheduleEntry` request rows into the tuple shape
@@ -262,9 +271,8 @@ fn parse_schedule_entries(
             let start = studio_clock::parse_time_of_day(&e.start_time).ok_or_else(|| {
                 AppError::Validation(format!("invalid start_time: {}", e.start_time))
             })?;
-            let end = studio_clock::parse_time_of_day(&e.end_time).ok_or_else(|| {
-                AppError::Validation(format!("invalid end_time: {}", e.end_time))
-            })?;
+            let end = studio_clock::parse_time_of_day(&e.end_time)
+                .ok_or_else(|| AppError::Validation(format!("invalid end_time: {}", e.end_time)))?;
             studio_clock::validate_time_window(start, end)?;
             Ok((e.day_of_week, start, end, e.is_available))
         })
@@ -284,7 +292,10 @@ pub async fn update_schedules(
     let schedules = repository::replace_schedules(db, coach_id, &parsed_entries)
         .await
         .map_err(|e| AppError::conflict_on_exclusion(e, "教練班表時段重疊"))?;
-    Ok(schedules.into_iter().map(CoachScheduleResponse::from).collect())
+    Ok(schedules
+        .into_iter()
+        .map(CoachScheduleResponse::from)
+        .collect())
 }
 
 pub async fn clock_in(

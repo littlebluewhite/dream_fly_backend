@@ -55,7 +55,11 @@ impl AuthUser {
     }
 
     /// 非 owner 且非 admin → NotFound(not_found_msg):對外遮蔽資源存在性
-    pub fn owns_or_admin_masked(&self, owner_id: Uuid, not_found_msg: &str) -> Result<(), AppError> {
+    pub fn owns_or_admin_masked(
+        &self,
+        owner_id: Uuid,
+        not_found_msg: &str,
+    ) -> Result<(), AppError> {
         if self.user_id == owner_id || self.is_admin() {
             Ok(())
         } else {
@@ -133,7 +137,9 @@ impl FromRequestParts<AppState> for LoginRequired {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        AuthUser::from_request_parts(parts, state).await.map(LoginRequired)
+        AuthUser::from_request_parts(parts, state)
+            .await
+            .map(LoginRequired)
     }
 }
 
@@ -167,9 +173,7 @@ mod tests {
     fn neither_owner_nor_admin_is_forbidden_with_message() {
         let owner_id = Uuid::now_v7();
         let a = auth(Uuid::now_v7(), &["member"]);
-        let err = a
-            .owns_or_admin(owner_id, "you shall not pass")
-            .unwrap_err();
+        let err = a.owns_or_admin(owner_id, "you shall not pass").unwrap_err();
         assert!(matches!(err, AppError::Forbidden(ref m) if m == "you shall not pass"));
     }
 

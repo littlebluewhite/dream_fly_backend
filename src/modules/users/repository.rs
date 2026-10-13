@@ -4,28 +4,19 @@ use uuid::Uuid;
 
 use super::model::User;
 
-pub async fn find_by_id(
-    db: &PgPool,
-    id: Uuid,
-) -> Result<Option<User>, sqlx::Error> {
+pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(id)
         .fetch_optional(db)
         .await
 }
 
-pub async fn find_all(
-    db: &PgPool,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<User>, sqlx::Error> {
-    sqlx::query_as::<_, User>(
-        "SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(db)
-    .await
+pub async fn find_all(db: &PgPool, limit: i64, offset: i64) -> Result<Vec<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2")
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await
 }
 
 pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {

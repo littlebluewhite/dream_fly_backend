@@ -66,8 +66,7 @@ pub struct CourseUpdate<'a> {
 /// 的 `RETURNING`)。子查詢引用外層別名 `c`——本檔每個使用點都以
 /// `FROM courses c`/`INSERT INTO courses AS c`/`UPDATE courses AS c` 提供
 /// 該別名。
-const COURSE_COLUMNS: &str =
-    "c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
+const COURSE_COLUMNS: &str = "c.id, c.name, c.slug, c.level, c.description, c.duration_minutes, c.price_cents, \
      c.max_students, c.min_age, c.max_age, c.features, c.is_active, c.coach_id, c.category, \
      c.schedule_text, c.is_highlighted, c.created_at, c.updated_at, \
      (SELECT COUNT(*) FROM active_enrolments e WHERE e.course_id = c.id) AS enrolled_count, \
@@ -201,7 +200,8 @@ pub async fn update(
     id: Uuid,
     input: CourseUpdate<'_>,
 ) -> Result<Option<Course>, sqlx::Error> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE courses AS c SET updated_at = now()");
+    let mut qb =
+        sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE courses AS c SET updated_at = now()");
 
     if let Some(v) = input.name {
         qb.push(", name = ").push_bind(v);

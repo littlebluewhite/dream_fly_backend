@@ -148,8 +148,14 @@ impl fmt::Debug for AuthConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthConfig")
             .field("jwt_secret", &"[REDACTED]")
-            .field("jwt_access_expiration_minutes", &self.jwt_access_expiration_minutes)
-            .field("jwt_refresh_expiration_days", &self.jwt_refresh_expiration_days)
+            .field(
+                "jwt_access_expiration_minutes",
+                &self.jwt_access_expiration_minutes,
+            )
+            .field(
+                "jwt_refresh_expiration_days",
+                &self.jwt_refresh_expiration_days,
+            )
             .field("google_client_id", &self.google_client_id)
             .field("google_client_secret", &"[REDACTED]")
             .field("google_redirect_url", &self.google_redirect_url)
@@ -218,9 +224,7 @@ impl fmt::Debug for SmsConfig {
 /// The one field that needs list handling, `server.allowed_origins`, is parsed
 /// from its raw string in `deserialize_allowed_origins` instead.
 fn env_source() -> config::Environment {
-    config::Environment::default()
-        .separator("__")
-        .prefix("APP")
+    config::Environment::default().separator("__").prefix("APP")
 }
 
 /// The running deployment environment (`APP_ENV`), e.g. `development`,
@@ -278,7 +282,8 @@ impl AppConfig {
 
         if app_config.auth.jwt_secret.is_empty() {
             return Err(config::ConfigError::Message(
-                "auth.jwt_secret must be set — use APP__AUTH__JWT_SECRET env var or config overlay".to_string(),
+                "auth.jwt_secret must be set — use APP__AUTH__JWT_SECRET env var or config overlay"
+                    .to_string(),
             ));
         }
 
@@ -428,7 +433,10 @@ mod tests {
         let mut source = HashMap::new();
         source.insert("APP__SERVER__HOST".to_string(), "0.0.0.0".to_string());
         source.insert("APP__SERVER__PORT".to_string(), "3000".to_string());
-        source.insert("APP__SERVER__ALLOWED_ORIGINS".to_string(), value.to_string());
+        source.insert(
+            "APP__SERVER__ALLOWED_ORIGINS".to_string(),
+            value.to_string(),
+        );
 
         let config = config::Config::builder()
             .add_source(env_source().source(Some(source)))

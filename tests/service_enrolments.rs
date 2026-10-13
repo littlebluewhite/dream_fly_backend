@@ -101,7 +101,10 @@ async fn enrol_from_purchase_creates_active_enrolment(db: PgPool) {
 
 #[sqlx::test]
 async fn enrol_full_course_returns_course_is_full_conflict(db: PgPool) {
-    let course_id = CourseSeed::new("Full Course").max_students(1).insert(&db).await;
+    let course_id = CourseSeed::new("Full Course")
+        .max_students(1)
+        .insert(&db)
+        .await;
     let user_a = common::seed_member(&db, "enrol-full-a@example.com", "Password!234").await;
     let user_b = common::seed_member(&db, "enrol-full-b@example.com", "Password!234").await;
 
@@ -231,7 +234,9 @@ async fn duplicate_active_insert_trips_partial_unique_index(db: PgPool) {
     let order_b = seed_order(&mut tx2, user_id, 50_000).await;
     let err = enrolments_repo::insert_tx(&mut tx2, user_id, course_id, order_b, chrono::Utc::now())
         .await
-        .expect_err("second active insert for the same user+course must violate uniq_enrolments_active");
+        .expect_err(
+            "second active insert for the same user+course must violate uniq_enrolments_active",
+        );
     tx2.rollback().await.expect("rollback");
 
     assert!(
@@ -324,10 +329,13 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
         tokio::spawn(attempt(db.clone(), user_id, course_id)),
         tokio::spawn(attempt(db.clone(), user_id, course_id)),
     );
-    let ok_count = [res_a.expect("task a panicked"), res_b.expect("task b panicked")]
-        .iter()
-        .filter(|ok| **ok)
-        .count();
+    let ok_count = [
+        res_a.expect("task a panicked"),
+        res_b.expect("task b panicked"),
+    ]
+    .iter()
+    .filter(|ok| **ok)
+    .count();
     assert_eq!(ok_count, 1, "exactly one concurrent enrol should succeed");
 
     let active_count: i64 = sqlx::query_scalar(

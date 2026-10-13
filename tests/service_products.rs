@@ -26,10 +26,8 @@ use common::fixtures::{OrderSeed, SeedOrderLine};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::products::dto::{CreateProductRequest, UpdateProductRequest};
 use dream_fly_backend::modules::products::model::ProductType;
-use dream_fly_backend::modules::products::dto::{
-    CreateProductRequest, UpdateProductRequest,
-};
 use dream_fly_backend::modules::products::service;
 
 fn create(name: &str, slug: Option<&str>, product_type: &str) -> CreateProductRequest {
@@ -122,9 +120,12 @@ async fn get_product_by_slug_or_id_not_found(db: PgPool) {
 
 #[sqlx::test]
 async fn get_active_by_slug_or_id_not_found_when_inactive_but_unscoped_still_ok(db: PgPool) {
-    let created = service::create(&db, create("Deactivated", Some("deactivated"), "merchandise"))
-        .await
-        .expect("create");
+    let created = service::create(
+        &db,
+        create("Deactivated", Some("deactivated"), "merchandise"),
+    )
+    .await
+    .expect("create");
 
     sqlx::query("UPDATE products SET is_active = false WHERE id = $1")
         .bind(created.id)
@@ -133,11 +134,15 @@ async fn get_active_by_slug_or_id_not_found_when_inactive_but_unscoped_still_ok(
         .unwrap();
 
     assert!(matches!(
-        service::get_active_by_slug(&db, "deactivated").await.unwrap_err(),
+        service::get_active_by_slug(&db, "deactivated")
+            .await
+            .unwrap_err(),
         AppError::NotFound(_)
     ));
     assert!(matches!(
-        service::get_active_by_id(&db, created.id).await.unwrap_err(),
+        service::get_active_by_id(&db, created.id)
+            .await
+            .unwrap_err(),
         AppError::NotFound(_)
     ));
 
@@ -171,9 +176,16 @@ async fn list_products_filters_inactive_and_by_type(db: PgPool) {
         .unwrap();
 
     // Use a big per_page so the test doesn't need to page through results.
-    let all_active = service::list(&db, None, &PaginationParams { page: 1, per_page: 100 })
-        .await
-        .unwrap();
+    let all_active = service::list(
+        &db,
+        None,
+        &PaginationParams {
+            page: 1,
+            per_page: 100,
+        },
+    )
+    .await
+    .unwrap();
     let all_ids: Vec<_> = all_active.products.iter().map(|p| p.id).collect();
     assert!(all_ids.contains(&tee.id));
     assert!(all_ids.contains(&pass.id));
@@ -192,7 +204,10 @@ async fn list_products_filters_inactive_and_by_type(db: PgPool) {
     let only_tickets = service::list(
         &db,
         Some("ticket"),
-        &PaginationParams { page: 1, per_page: 100 },
+        &PaginationParams {
+            page: 1,
+            per_page: 100,
+        },
     )
     .await
     .unwrap();
@@ -204,9 +219,16 @@ async fn list_products_filters_inactive_and_by_type(db: PgPool) {
 async fn list_page_zero_clamps_meta_page_to_one(db: PgPool) {
     // `PaginationParams::meta()` must clamp `page` the same way `offset()`
     // already does — page=0 must not lie in the response's `meta.page`.
-    let list = service::list(&db, None, &PaginationParams { page: 0, per_page: 20 })
-        .await
-        .expect("list");
+    let list = service::list(
+        &db,
+        None,
+        &PaginationParams {
+            page: 0,
+            per_page: 20,
+        },
+    )
+    .await
+    .expect("list");
     assert_eq!(list.meta.page, 1);
 }
 
@@ -311,9 +333,12 @@ async fn update_duplicate_slug_returns_conflict(db: PgPool) {
 async fn quota_mirrors_stock_including_null(db: PgPool) {
     // quota is a direct mapping of products.stock — null (unlimited) must
     // pass through as null, not as some other sentinel.
-    let unlimited = service::create(&db, create_with_stock("Unlimited Ticket", None, "ticket", None))
-        .await
-        .expect("create unlimited");
+    let unlimited = service::create(
+        &db,
+        create_with_stock("Unlimited Ticket", None, "ticket", None),
+    )
+    .await
+    .expect("create unlimited");
     assert_eq!(unlimited.stock, None);
     assert_eq!(unlimited.quota, None);
 
@@ -335,7 +360,9 @@ async fn sold_is_zero_with_no_orders(db: PgPool) {
     assert_eq!(created.sold, 0);
 
     // Also zero via the read paths, not just the create response.
-    let by_id = service::get_by_id(&db, created.id).await.expect("get_by_id");
+    let by_id = service::get_by_id(&db, created.id)
+        .await
+        .expect("get_by_id");
     assert_eq!(by_id.sold, 0);
 }
 
@@ -398,8 +425,13 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .insert(&db)
         .await;
 
-    let resp = service::get_by_id(&db, product.id).await.expect("get_by_id");
-    assert_eq!(resp.sold, 6, "only paid+processing+completed (2+1+3) should count");
+    let resp = service::get_by_id(&db, product.id)
+        .await
+        .expect("get_by_id");
+    assert_eq!(
+        resp.sold, 6,
+        "only paid+processing+completed (2+1+3) should count"
+    );
 }
 
 #[sqlx::test]
@@ -420,19 +452,42 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
         .expect("create b");
 
     OrderSeed::new(user, OrderStatus::Paid)
-        .line(SeedOrderLine::Product { product_id: a.id, quantity: 4, unit_price_cents: 1000 })
+        .line(SeedOrderLine::Product {
+            product_id: a.id,
+            quantity: 4,
+            unit_price_cents: 1000,
+        })
         .insert(&db)
         .await;
     OrderSeed::new(user, OrderStatus::Completed)
-        .line(SeedOrderLine::Product { product_id: b.id, quantity: 9, unit_price_cents: 1000 })
+        .line(SeedOrderLine::Product {
+            product_id: b.id,
+            quantity: 9,
+            unit_price_cents: 1000,
+        })
         .insert(&db)
         .await;
 
-    let list = service::list(&db, None, &PaginationParams { page: 1, per_page: 100 })
-        .await
-        .expect("list");
-    let a_resp = list.products.iter().find(|p| p.id == a.id).expect("a in list");
-    let b_resp = list.products.iter().find(|p| p.id == b.id).expect("b in list");
+    let list = service::list(
+        &db,
+        None,
+        &PaginationParams {
+            page: 1,
+            per_page: 100,
+        },
+    )
+    .await
+    .expect("list");
+    let a_resp = list
+        .products
+        .iter()
+        .find(|p| p.id == a.id)
+        .expect("a in list");
+    let b_resp = list
+        .products
+        .iter()
+        .find(|p| p.id == b.id)
+        .expect("b in list");
     assert_eq!(a_resp.sold, 4);
     assert_eq!(b_resp.sold, 9);
 }
@@ -449,20 +504,30 @@ async fn reserve_stock_tx_decrements_mixed_finite_and_unlimited_stock(db: PgPool
     let reserved = service::reserve_stock_tx(
         &mut tx,
         &locks,
-        &[(finite, 3, "Finite Stock"), (unlimited, 5, "Unlimited Stock")],
+        &[
+            (finite, 3, "Finite Stock"),
+            (unlimited, 5, "Unlimited Stock"),
+        ],
     )
     .await
     .expect("sufficient stock should reserve");
     tx.commit().await.expect("commit");
 
-    assert_eq!(reserved.len(), 2, "both lines should appear in the returned map");
+    assert_eq!(
+        reserved.len(),
+        2,
+        "both lines should appear in the returned map"
+    );
     assert_eq!(
         reserved.get(&finite).expect("finite product in map").stock,
         Some(7),
         "finite stock must be decremented by the requested quantity"
     );
     assert_eq!(
-        reserved.get(&unlimited).expect("unlimited product in map").stock,
+        reserved
+            .get(&unlimited)
+            .expect("unlimited product in map")
+            .stock,
         None,
         "NULL (unlimited) stock must remain untouched"
     );

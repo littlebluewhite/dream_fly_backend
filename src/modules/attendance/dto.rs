@@ -90,8 +90,10 @@ mod tests {
             r#"{"enrolment_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","user_name":"u","attendance_status":null}"#
         );
         assert_eq!(
-            serde_json::to_string(&RosterEntryResponse::from(row(Some(AttendanceStatus::Present))))
-                .unwrap(),
+            serde_json::to_string(&RosterEntryResponse::from(row(Some(
+                AttendanceStatus::Present
+            ))))
+            .unwrap(),
             r#"{"enrolment_id":"00000000-0000-0000-0000-000000000000","user_id":"00000000-0000-0000-0000-000000000000","user_name":"u","attendance_status":"present"}"#
         );
     }

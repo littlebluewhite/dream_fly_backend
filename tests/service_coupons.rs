@@ -89,7 +89,14 @@ async fn validate_coupon_is_case_insensitive(db: PgPool) {
 
 #[sqlx::test]
 async fn validate_coupon_expired_returns_not_found(db: PgPool) {
-    seed_coupon(&db, "EXPIRED10", 100, true, Some(Utc::now() - Duration::days(1))).await;
+    seed_coupon(
+        &db,
+        "EXPIRED10",
+        100,
+        true,
+        Some(Utc::now() - Duration::days(1)),
+    )
+    .await;
 
     let err = service::validate_coupon(&db, "EXPIRED10", None, Utc::now())
         .await
@@ -244,7 +251,14 @@ async fn find_valid_by_code_tx_normalizes_and_filters(db: PgPool) {
 
 #[sqlx::test]
 async fn find_valid_by_code_tx_excludes_expired(db: PgPool) {
-    seed_coupon(&db, "TXEXPIRED", 250, true, Some(Utc::now() - Duration::days(1))).await;
+    seed_coupon(
+        &db,
+        "TXEXPIRED",
+        250,
+        true,
+        Some(Utc::now() - Duration::days(1)),
+    )
+    .await;
 
     let mut tx = db.begin().await.expect("begin tx");
     let found = repository::find_valid_by_code_tx(&mut tx, "TXEXPIRED", Utc::now())

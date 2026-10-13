@@ -48,9 +48,7 @@ pub struct MarkingPlan {
 /// Fails on the first invalid value (422, `invalid attendance status:
 /// {status}`) — must run before any enrolment-id DB lookup, see the module
 /// doc.
-pub fn parse(
-    records: &[AttendanceRecordEntry],
-) -> Result<Vec<(Uuid, AttendanceStatus)>, AppError> {
+pub fn parse(records: &[AttendanceRecordEntry]) -> Result<Vec<(Uuid, AttendanceStatus)>, AppError> {
     let mut parsed = Vec::with_capacity(records.len());
     for r in records {
         let status: AttendanceStatus = r.status.parse().map_err(|_| {
@@ -97,10 +95,9 @@ pub fn plan(
             "all enrolments must belong to this session's course and be active".into(),
         ));
     }
-    if parsed
-        .iter()
-        .any(|(id, status)| *status != AttendanceStatus::Leave && approved_leave_enrolment_ids.contains(id))
-    {
+    if parsed.iter().any(|(id, status)| {
+        *status != AttendanceStatus::Leave && approved_leave_enrolment_ids.contains(id)
+    }) {
         return Err(AppError::Validation(APPROVED_LEAVE_OVERWRITE.into()));
     }
     Ok(MarkingPlan { entries: parsed })
@@ -156,7 +153,10 @@ mod tests {
     #[test]
     fn plan_matching_sets_passes() {
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
-        let parsed = vec![(a, AttendanceStatus::Present), (b, AttendanceStatus::Absent)];
+        let parsed = vec![
+            (a, AttendanceStatus::Present),
+            (b, AttendanceStatus::Absent),
+        ];
         let valid: HashSet<Uuid> = [a, b].into_iter().collect();
         let plan = plan(parsed.clone(), &valid, &HashSet::new()).expect("plans");
         assert_eq!(plan.entries, parsed);
@@ -170,7 +170,10 @@ mod tests {
         // set — whether cross-course, cancelled, or nonexistent — rejects
         // the whole batch. This seam can't and doesn't distinguish *why*.
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
-        let parsed = vec![(a, AttendanceStatus::Present), (b, AttendanceStatus::Present)];
+        let parsed = vec![
+            (a, AttendanceStatus::Present),
+            (b, AttendanceStatus::Present),
+        ];
         let valid: HashSet<Uuid> = [a].into_iter().collect(); // b missing
         let err = plan(parsed, &valid, &HashSet::new()).expect_err("must reject");
         assert!(
@@ -212,7 +215,10 @@ mod tests {
         // marking an approved-leave member present taints the whole batch (422),
         // even though the batch is otherwise membership-valid.
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
-        let parsed = vec![(a, AttendanceStatus::Present), (b, AttendanceStatus::Present)];
+        let parsed = vec![
+            (a, AttendanceStatus::Present),
+            (b, AttendanceStatus::Present),
+        ];
         let valid: HashSet<Uuid> = [a, b].into_iter().collect();
         let approved: HashSet<Uuid> = [a].into_iter().collect(); // a holds an approved leave
         let err = plan(parsed, &valid, &approved).expect_err("must reject");

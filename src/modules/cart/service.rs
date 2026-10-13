@@ -125,7 +125,11 @@ pub async fn update_quantity(
     get_cart(db, user_id).await
 }
 
-pub async fn remove_item(db: &PgPool, user_id: Uuid, item_id: Uuid) -> Result<CartResponse, AppError> {
+pub async fn remove_item(
+    db: &PgPool,
+    user_id: Uuid,
+    item_id: Uuid,
+) -> Result<CartResponse, AppError> {
     let removed = repository::remove_item(db, user_id, item_id).await?;
     if !removed {
         return Err(AppError::NotFound("cart item not found".into()));

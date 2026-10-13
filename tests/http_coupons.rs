@@ -20,7 +20,9 @@ async fn validate_without_auth_returns_401(db: PgPool) {
 async fn validate_valid_code_returns_200_with_exact_body(db: PgPool) {
     let app = spawn_test_app(db).await;
     seed_coupon(&app.db, "DREAMFLY100", 1500, true, None).await;
-    let user = app.register_member("member-a@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-a@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/DREAMFLY100/validate")
@@ -30,14 +32,19 @@ async fn validate_valid_code_returns_200_with_exact_body(db: PgPool) {
     // Raw-text comparison, not parsed-Value equality: the backward-compat
     // promise for the no-subtotal_cents path is *byte-for-byte*, and a
     // serde_json::Value comparison cannot pin key order or whitespace.
-    assert_eq!(resp.text(), r#"{"code":"DREAMFLY100","discount_cents":1500}"#);
+    assert_eq!(
+        resp.text(),
+        r#"{"code":"DREAMFLY100","discount_cents":1500}"#
+    );
 }
 
 #[sqlx::test]
 async fn validate_is_case_insensitive(db: PgPool) {
     let app = spawn_test_app(db).await;
     seed_coupon(&app.db, "DREAMFLY100", 1500, true, None).await;
-    let user = app.register_member("member-b@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-b@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/dreamfly100/validate")
@@ -45,14 +52,26 @@ async fn validate_is_case_insensitive(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    assert_eq!(body, json!({ "code": "DREAMFLY100", "discount_cents": 1500 }));
+    assert_eq!(
+        body,
+        json!({ "code": "DREAMFLY100", "discount_cents": 1500 })
+    );
 }
 
 #[sqlx::test]
 async fn validate_expired_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    seed_coupon(&app.db, "EXPIRED10", 100, true, Some(Utc::now() - Duration::days(1))).await;
-    let user = app.register_member("member-c@example.com", "Password!234").await;
+    seed_coupon(
+        &app.db,
+        "EXPIRED10",
+        100,
+        true,
+        Some(Utc::now() - Duration::days(1)),
+    )
+    .await;
+    let user = app
+        .register_member("member-c@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/EXPIRED10/validate")
@@ -65,7 +84,9 @@ async fn validate_expired_returns_404(db: PgPool) {
 async fn validate_inactive_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
     seed_coupon(&app.db, "DISABLED10", 100, false, None).await;
-    let user = app.register_member("member-d@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-d@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/DISABLED10/validate")
@@ -77,7 +98,9 @@ async fn validate_inactive_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn validate_nonexistent_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("member-e@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-e@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/NOSUCHCODE/validate")
@@ -94,7 +117,9 @@ async fn validate_nonexistent_returns_404(db: PgPool) {
 async fn validate_with_subtotal_returns_exact_body_with_applied_discount(db: PgPool) {
     let app = spawn_test_app(db).await;
     seed_coupon(&app.db, "PREVIEWME", 1500, true, None).await;
-    let user = app.register_member("member-h@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-h@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/PREVIEWME/validate?subtotal_cents=1000")
@@ -113,7 +138,9 @@ async fn validate_with_subtotal_returns_exact_body_with_applied_discount(db: PgP
 async fn validate_negative_subtotal_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     seed_coupon(&app.db, "NEGSUBTOTAL", 500, true, None).await;
-    let user = app.register_member("member-i@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-i@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/NEGSUBTOTAL/validate?subtotal_cents=-1")
@@ -126,7 +153,9 @@ async fn validate_negative_subtotal_returns_422(db: PgPool) {
 async fn validate_malformed_subtotal_returns_400_json_envelope(db: PgPool) {
     let app = spawn_test_app(db).await;
     seed_coupon(&app.db, "BADQUERY1", 500, true, None).await;
-    let user = app.register_member("member-j@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-j@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/BADQUERY1/validate?subtotal_cents=abc")
@@ -155,7 +184,9 @@ async fn create_coupon_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_coupon_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("member-f@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-f@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/coupons")
@@ -240,7 +271,9 @@ async fn list_coupons_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn list_coupons_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("member-g@example.com", "Password!234").await;
+    let user = app
+        .register_member("member-g@example.com", "Password!234")
+        .await;
     let resp = app
         .get("/api/v1/coupons")
         .authorization_bearer(&user.access_token)

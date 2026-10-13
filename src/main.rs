@@ -124,7 +124,9 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to build Redis client — check APP__REDIS__URL syntax")?;
     let redis = redis::aio::ConnectionManager::new(redis_client)
         .await
-        .context("failed to connect to Redis — check APP__REDIS__URL and that Redis is reachable")?;
+        .context(
+            "failed to connect to Redis — check APP__REDIS__URL and that Redis is reachable",
+        )?;
     tracing::info!("Connected to Redis");
 
     // Optionally connect to Kafka
@@ -198,8 +200,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Start Kafka consumer if enabled
     let consumer_handle = if config_arc.kafka.enabled {
-        match kafka::consumer::create_consumer(&config_arc.kafka.brokers, &config_arc.kafka.group_id)
-        {
+        match kafka::consumer::create_consumer(
+            &config_arc.kafka.brokers,
+            &config_arc.kafka.group_id,
+        ) {
             Ok(consumer) => {
                 let consumer_db = state.db.clone();
                 let consumer_shutdown = shutdown_rx.clone();
@@ -210,7 +214,9 @@ async fn main() -> anyhow::Result<()> {
                 Some(handle)
             }
             Err(err) => {
-                tracing::warn!("Failed to create Kafka consumer: {err}, continuing without consumer");
+                tracing::warn!(
+                    "Failed to create Kafka consumer: {err}, continuing without consumer"
+                );
                 None
             }
         }
@@ -293,13 +299,15 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if let Some(handle) = consumer_handle
-            && let Err(e) = handle.await {
-                tracing::warn!("Kafka consumer task exited with error: {e}");
-            }
+            && let Err(e) = handle.await
+        {
+            tracing::warn!("Kafka consumer task exited with error: {e}");
+        }
         if let Some(handle) = outbox_handle
-            && let Err(e) = handle.await {
-                tracing::warn!("Kafka outbox dispatcher exited with error: {e}");
-            }
+            && let Err(e) = handle.await
+        {
+            tracing::warn!("Kafka outbox dispatcher exited with error: {e}");
+        }
         if let Err(e) = cleanup_handle.await {
             tracing::warn!("token cleanup task exited with error: {e}");
         }

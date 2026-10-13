@@ -51,7 +51,10 @@ pub async fn find_active_by_id(db: &PgPool, id: Uuid) -> Result<Option<Coach>, s
 /// Course ids owned by a coach, 不論 `is_active`(ADR-0012)——全站唯一寫
 /// `courses.coach_id = $1` 的教練範圍語句;讀取端經
 /// `service::resolve_scope` 取得後一律綁 `= ANY($n)`。
-pub async fn find_course_ids_by_coach(db: &PgPool, coach_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
+pub async fn find_course_ids_by_coach(
+    db: &PgPool,
+    coach_id: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>("SELECT id FROM courses WHERE coach_id = $1")
         .bind(coach_id)
         .fetch_all(db)
@@ -135,7 +138,8 @@ pub async fn update(
     slug: Option<Option<&str>>,
     photo_url: Option<Option<&str>>,
 ) -> Result<Option<Coach>, sqlx::Error> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE coaches AS c SET updated_at = now()");
+    let mut qb =
+        sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE coaches AS c SET updated_at = now()");
 
     if let Some(v) = title {
         qb.push(", title = ").push_bind(v);
@@ -242,10 +246,7 @@ pub async fn clock_in(
     .await
 }
 
-pub async fn clock_out(
-    db: &PgPool,
-    coach_id: Uuid,
-) -> Result<Option<ClockRecord>, sqlx::Error> {
+pub async fn clock_out(db: &PgPool, coach_id: Uuid) -> Result<Option<ClockRecord>, sqlx::Error> {
     sqlx::query_as::<_, ClockRecord>(
         "UPDATE clock_records SET clock_out = NOW() \
          WHERE coach_id = $1 AND clock_out IS NULL \

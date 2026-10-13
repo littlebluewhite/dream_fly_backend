@@ -8,8 +8,7 @@ use crate::state::AppState;
 use super::handlers;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/coupons/{code}/validate", get(handlers::validate))
+    Router::new().route("/coupons/{code}/validate", get(handlers::validate))
 }
 
 /// admin 半邊:優惠券 CRUD。公開的 `/coupons/{code}/validate` 留在 `router()`。

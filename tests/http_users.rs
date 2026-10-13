@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::fixtures::set_points_balance;
 use chrono::{TimeZone, Utc};
+use common::fixtures::set_points_balance;
 use common::http::{spawn_test_app, spawn_test_app_with};
 use serde_json::json;
 use sqlx::PgPool;
@@ -54,7 +54,9 @@ async fn me_as_admin_returns_admin_role(db: PgPool) {
 #[sqlx::test]
 async fn me_includes_points_balance(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("points@example.com", "Password!234").await;
+    let user = app
+        .register_member("points@example.com", "Password!234")
+        .await;
     set_points_balance(&app.db, user.user_id, 500).await;
 
     let resp = app
@@ -69,7 +71,9 @@ async fn me_includes_points_balance(db: PgPool) {
 #[sqlx::test]
 async fn update_me_changes_name(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("update@example.com", "Password!234").await;
+    let user = app
+        .register_member("update@example.com", "Password!234")
+        .await;
 
     let resp = app
         .patch("/api/v1/users/me")
@@ -108,7 +112,9 @@ async fn update_me_rejects_short_name(db: PgPool) {
 #[sqlx::test]
 async fn update_me_phone_change_resets_phone_verified(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("verifyme@example.com", "Password!234").await;
+    let user = app
+        .register_member("verifyme@example.com", "Password!234")
+        .await;
 
     sqlx::query("UPDATE users SET phone = $2, phone_verified = true WHERE id = $1")
         .bind(user.user_id)
@@ -148,7 +154,9 @@ async fn list_users_as_admin_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn list_users_as_admin_includes_roles_per_user(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let member = app.register_member("listroles@example.com", "Password!234").await;
+    let member = app
+        .register_member("listroles@example.com", "Password!234")
+        .await;
     let (admin_id, admin_token) = app.seed_admin().await;
 
     let resp = app
@@ -178,7 +186,9 @@ async fn list_users_as_admin_includes_roles_per_user(db: PgPool) {
 #[sqlx::test]
 async fn list_users_as_admin_includes_points_balance(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let member = app.register_member("listpoints@example.com", "Password!234").await;
+    let member = app
+        .register_member("listpoints@example.com", "Password!234")
+        .await;
     set_points_balance(&app.db, member.user_id, 300).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
@@ -211,7 +221,9 @@ async fn list_users_as_member_returns_forbidden(db: PgPool) {
 #[sqlx::test]
 async fn get_user_by_id_as_admin_returns_profile(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("target@example.com", "Password!234").await;
+    let target = app
+        .register_member("target@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     let resp = app
@@ -228,8 +240,12 @@ async fn get_user_by_id_as_member_returns_403(db: PgPool) {
     // `/users/:id` is admin-only — a plain member reading another user's
     // full profile by UUID must be rejected before the DB is consulted.
     let app = spawn_test_app(db).await;
-    let target = app.register_member("victim@example.com", "Password!234").await;
-    let caller = app.register_member("peeper@example.com", "Password!234").await;
+    let target = app
+        .register_member("victim@example.com", "Password!234")
+        .await;
+    let caller = app
+        .register_member("peeper@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get(&format!("/api/v1/users/{}", target.user_id))
@@ -340,7 +356,9 @@ async fn admin_create_user_short_password_returns_422(db: PgPool) {
 #[sqlx::test]
 async fn admin_create_user_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let caller = app.register_member("caller@example.com", "Password!234").await;
+    let caller = app
+        .register_member("caller@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/users")
@@ -417,7 +435,9 @@ async fn admin_create_user_writes_no_welcome_notification(db: PgPool) {
 #[sqlx::test]
 async fn admin_update_user_partial_updates_name_only(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("patchme@example.com", "Password!234").await;
+    let target = app
+        .register_member("patchme@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     let resp = app
@@ -439,7 +459,9 @@ async fn admin_update_user_partial_updates_name_only(db: PgPool) {
 #[sqlx::test]
 async fn admin_update_user_phone_change_resets_phone_verified(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("verifiedphone@example.com", "Password!234").await;
+    let target = app
+        .register_member("verifiedphone@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     // Arrange: pretend the user already verified an old phone number.
@@ -467,7 +489,9 @@ async fn admin_update_user_phone_change_resets_phone_verified(db: PgPool) {
 #[sqlx::test]
 async fn admin_update_user_ignores_email_roles_and_password_fields(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("immutable@example.com", "Password!234").await;
+    let target = app
+        .register_member("immutable@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     let resp = app
@@ -498,7 +522,9 @@ async fn admin_update_user_ignores_email_roles_and_password_fields(db: PgPool) {
 #[sqlx::test]
 async fn admin_update_user_no_fields_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("emptyupdate@example.com", "Password!234").await;
+    let target = app
+        .register_member("emptyupdate@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     let resp = app
@@ -533,7 +559,9 @@ async fn admin_update_user_nonexistent_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn admin_deactivate_user_then_login_is_rejected(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("deactivate@example.com", "Password!234").await;
+    let target = app
+        .register_member("deactivate@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     // Sanity check: login succeeds before deactivation.
@@ -570,7 +598,9 @@ async fn admin_deactivate_ends_sessions_so_reactivation_does_not_resurrect_refre
     db: PgPool,
 ) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("resurrect@example.com", "Password!234").await;
+    let target = app
+        .register_member("resurrect@example.com", "Password!234")
+        .await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
     for is_active in [false, true] {
@@ -638,8 +668,12 @@ async fn admin_deactivate_revokes_live_access_token_immediately(db: PgPool) {
 #[sqlx::test]
 async fn admin_update_user_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("target2@example.com", "Password!234").await;
-    let caller = app.register_member("caller2@example.com", "Password!234").await;
+    let target = app
+        .register_member("target2@example.com", "Password!234")
+        .await;
+    let caller = app
+        .register_member("caller2@example.com", "Password!234")
+        .await;
 
     let resp = app
         .patch(&format!("/api/v1/users/{}", target.user_id))
@@ -656,7 +690,9 @@ async fn admin_update_user_as_member_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn update_me_sets_preferences_and_get_me_returns_it(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("prefs@example.com", "Password!234").await;
+    let user = app
+        .register_member("prefs@example.com", "Password!234")
+        .await;
 
     let patch_resp = app
         .patch("/api/v1/users/me")
@@ -688,7 +724,9 @@ async fn update_me_sets_preferences_and_get_me_returns_it(db: PgPool) {
 #[sqlx::test]
 async fn update_me_without_preferences_field_leaves_existing_value_unchanged(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("prefs-keep@example.com", "Password!234").await;
+    let user = app
+        .register_member("prefs-keep@example.com", "Password!234")
+        .await;
 
     app.patch("/api/v1/users/me")
         .authorization_bearer(&user.access_token)
@@ -711,7 +749,9 @@ async fn update_me_without_preferences_field_leaves_existing_value_unchanged(db:
 #[sqlx::test]
 async fn update_me_preferences_full_overwrite_drops_old_keys(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("prefs-overwrite@example.com", "Password!234").await;
+    let user = app
+        .register_member("prefs-overwrite@example.com", "Password!234")
+        .await;
 
     app.patch("/api/v1/users/me")
         .authorization_bearer(&user.access_token)
@@ -733,7 +773,9 @@ async fn update_me_preferences_full_overwrite_drops_old_keys(db: PgPool) {
 #[sqlx::test]
 async fn me_returns_null_preferences_when_never_set(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("prefs-unset@example.com", "Password!234").await;
+    let user = app
+        .register_member("prefs-unset@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/users/me")
@@ -751,7 +793,9 @@ async fn me_returns_null_preferences_when_never_set(db: PgPool) {
 #[sqlx::test]
 async fn update_me_sets_birth_date_and_get_me_returns_it(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("bday@example.com", "Password!234").await;
+    let user = app
+        .register_member("bday@example.com", "Password!234")
+        .await;
 
     let patch_resp = app
         .patch("/api/v1/users/me")
@@ -778,7 +822,9 @@ async fn update_me_sets_birth_date_and_get_me_returns_it(db: PgPool) {
 #[sqlx::test]
 async fn update_me_rejects_future_birth_date(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("futurebday@example.com", "Password!234").await;
+    let user = app
+        .register_member("futurebday@example.com", "Password!234")
+        .await;
 
     let resp = app
         .patch("/api/v1/users/me")
@@ -791,7 +837,9 @@ async fn update_me_rejects_future_birth_date(db: PgPool) {
 #[sqlx::test]
 async fn update_me_rejects_birth_date_before_1900(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("oldbday@example.com", "Password!234").await;
+    let user = app
+        .register_member("oldbday@example.com", "Password!234")
+        .await;
 
     let resp = app
         .patch("/api/v1/users/me")
@@ -806,7 +854,9 @@ async fn update_me_rejects_birth_date_before_1900(db: PgPool) {
 #[sqlx::test]
 async fn update_me_clears_birth_date_with_explicit_null(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("clearbday@example.com", "Password!234").await;
+    let user = app
+        .register_member("clearbday@example.com", "Password!234")
+        .await;
 
     app.patch("/api/v1/users/me")
         .authorization_bearer(&user.access_token)
@@ -835,7 +885,9 @@ async fn update_me_clears_birth_date_with_explicit_null(db: PgPool) {
 #[sqlx::test]
 async fn update_me_without_birth_date_field_leaves_existing_value_unchanged(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("keepbday@example.com", "Password!234").await;
+    let user = app
+        .register_member("keepbday@example.com", "Password!234")
+        .await;
 
     app.patch("/api/v1/users/me")
         .authorization_bearer(&user.access_token)
@@ -856,7 +908,9 @@ async fn update_me_without_birth_date_field_leaves_existing_value_unchanged(db: 
 #[sqlx::test]
 async fn me_returns_null_birth_date_when_never_set(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("nobday@example.com", "Password!234").await;
+    let user = app
+        .register_member("nobday@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/users/me")

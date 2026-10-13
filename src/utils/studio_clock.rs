@@ -319,11 +319,17 @@ mod tests {
         // dated the 6th at 08:00 Taipei-local has NOT started yet at that
         // instant, even though the UTC calendar date is still the 5th.
         let now = Utc.with_ymd_and_hms(2026, 7, 5, 23, 30, 0).unwrap();
-        assert_eq!(has_started(taipei(), now, d(2026, 7, 6), t(8, 0)), Some(false));
+        assert_eq!(
+            has_started(taipei(), now, d(2026, 7, 6), t(8, 0)),
+            Some(false)
+        );
 
         // 23:30 UTC on the 5th = 07:30 Taipei on the 6th — a session dated
         // the 6th at 07:00 Taipei-local HAS already started.
-        assert_eq!(has_started(taipei(), now, d(2026, 7, 6), t(7, 0)), Some(true));
+        assert_eq!(
+            has_started(taipei(), now, d(2026, 7, 6), t(7, 0)),
+            Some(true)
+        );
     }
 
     // --- has_ended (mirrors has_started) ---
@@ -372,7 +378,10 @@ mod tests {
         // at that instant, even though the UTC calendar date is still the
         // 5th.
         let now = Utc.with_ymd_and_hms(2026, 7, 5, 23, 30, 0).unwrap();
-        assert_eq!(has_ended(taipei(), now, d(2026, 7, 6), t(8, 0)), Some(false));
+        assert_eq!(
+            has_ended(taipei(), now, d(2026, 7, 6), t(8, 0)),
+            Some(false)
+        );
 
         // 23:30 UTC on the 5th = 07:30 Taipei on the 6th — a session dated
         // the 6th and ending at 07:00 Taipei-local HAS already ended.
@@ -589,7 +598,10 @@ mod tests {
     fn month_bounds_handles_december_year_rollover() {
         // Exercises the `month == 12` branch: next-month-first is Jan 1 of
         // `year + 1`, stepped back one day to land on Dec 31 of `year`.
-        assert_eq!(month_bounds(2026, 12), Some((d(2026, 12, 1), d(2026, 12, 31))));
+        assert_eq!(
+            month_bounds(2026, 12),
+            Some((d(2026, 12, 1), d(2026, 12, 31)))
+        );
     }
 
     #[test]

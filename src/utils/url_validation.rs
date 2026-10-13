@@ -104,7 +104,9 @@ mod tests {
         // a regression test for `127.0.0.1` should be added alongside the
         // fix.
         assert_eq!(
-            validate_stored_url("http://localhost/foo").unwrap_err().code,
+            validate_stored_url("http://localhost/foo")
+                .unwrap_err()
+                .code,
             "url_loopback_not_allowed"
         );
         assert_eq!(
@@ -116,9 +118,6 @@ mod tests {
     #[test]
     fn urls_over_2kb_are_rejected() {
         let long = format!("https://example.com/{}", "a".repeat(2100));
-        assert_eq!(
-            validate_stored_url(&long).unwrap_err().code,
-            "url_too_long"
-        );
+        assert_eq!(validate_stored_url(&long).unwrap_err().code, "url_too_long");
     }
 }

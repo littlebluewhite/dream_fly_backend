@@ -76,7 +76,8 @@ pub async fn find_role_names_for_users(
         "SELECT ur.user_id, r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ANY($1) ORDER BY ur.user_id, r.name"
     ).bind(user_ids).fetch_all(db).await?;
 
-    let mut roles_by_user: std::collections::HashMap<Uuid, Vec<String>> = std::collections::HashMap::new();
+    let mut roles_by_user: std::collections::HashMap<Uuid, Vec<String>> =
+        std::collections::HashMap::new();
     for (user_id, role_name) in rows {
         roles_by_user.entry(user_id).or_default().push(role_name);
     }

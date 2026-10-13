@@ -141,7 +141,9 @@ async fn list_inquiries_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn list_inquiries_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("cmem@example.com", "Password!234").await;
+    let user = app
+        .register_member("cmem@example.com", "Password!234")
+        .await;
     let resp = app
         .get("/api/v1/contact/inquiries")
         .authorization_bearer(&user.access_token)

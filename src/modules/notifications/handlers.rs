@@ -19,8 +19,7 @@ pub async fn list(
     auth: AuthUser,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<NotificationResponse>>, AppError> {
-    let notifications =
-        service::list_notifications(&state.db, auth.user_id, &params).await?;
+    let notifications = service::list_notifications(&state.db, auth.user_id, &params).await?;
     Ok(Json(notifications))
 }
 
@@ -41,7 +40,6 @@ pub async fn mark_read(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<NotificationResponse>, AppError> {
-    let notification =
-        service::mark_as_read(&state.db, id, auth.user_id).await?;
+    let notification = service::mark_as_read(&state.db, id, auth.user_id).await?;
     Ok(Json(notification))
 }

@@ -115,8 +115,8 @@ mod tests {
     fn self_target_is_role_violation() {
         // create_targeting_self_returns_422 (tests/http_messages.rs)
         let id = Uuid::now_v7();
-        let err = resolve_pair(id, &roles(&["coach"]), id, &roles(&["coach"]))
-            .expect_err("must reject");
+        let err =
+            resolve_pair(id, &roles(&["coach"]), id, &roles(&["coach"])).expect_err("must reject");
         assert!(
             matches!(err, AppError::Validation(ref m) if m == ROLE_VIOLATION),
             "got: {err:?}"

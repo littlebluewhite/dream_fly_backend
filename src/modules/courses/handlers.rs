@@ -9,7 +9,9 @@ use crate::extractors::pagination::PaginationParams;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 
-use super::dto::{CourseDetailResponse, CourseListResponse, CreateCourseRequest, UpdateCourseRequest};
+use super::dto::{
+    CourseDetailResponse, CourseListResponse, CreateCourseRequest, UpdateCourseRequest,
+};
 use super::service;
 
 #[tracing::instrument(skip_all)]

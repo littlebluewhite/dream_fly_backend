@@ -136,12 +136,11 @@ pub async fn course_seats_tx(
         return Ok(None);
     };
 
-    let active_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1",
-    )
-    .bind(course_id)
-    .fetch_one(&mut **tx)
-    .await?;
+    let active_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1")
+            .bind(course_id)
+            .fetch_one(&mut **tx)
+            .await?;
 
     Ok(Some(CourseSeats {
         max_students,
@@ -166,12 +165,11 @@ pub async fn course_seats(
         return Ok(None);
     };
 
-    let active_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1",
-    )
-    .bind(course_id)
-    .fetch_one(db)
-    .await?;
+    let active_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM active_enrolments WHERE course_id = $1")
+            .bind(course_id)
+            .fetch_one(db)
+            .await?;
 
     Ok(Some(CourseSeats {
         max_students,
@@ -194,8 +192,7 @@ impl SessionSeats {
     /// 該場次的補課`——請假釋出座位、補課佔用座位(controller ruling
     /// 2026-07-06,契約 §3.20)。
     fn remaining(&self) -> i64 {
-        self.max_students as i64 - self.active_count + self.approved_leave_count
-            - self.makeup_count
+        self.max_students as i64 - self.active_count + self.approved_leave_count - self.makeup_count
     }
 
     /// 還有空位:剩餘座位嚴格 `> 0`。

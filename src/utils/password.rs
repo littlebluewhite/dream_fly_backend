@@ -12,8 +12,8 @@ use crate::error::AppError;
 /// (PHC string), so bumping these values here doesn't invalidate old
 /// passwords — it just strengthens newly-set ones.
 fn argon2() -> Argon2<'static> {
-    let params = Params::new(19 * 1024, 2, 1, None)
-        .expect("pinned Argon2 params are valid at compile time");
+    let params =
+        Params::new(19 * 1024, 2, 1, None).expect("pinned Argon2 params are valid at compile time");
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }
 

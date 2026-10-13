@@ -66,8 +66,7 @@ pub async fn create_certificate(
             .await?
             .ok_or_else(|| AppError::Forbidden("僅能發給自己課程的學員".into()))?;
 
-        let eligible =
-            repository::user_has_enrolment_with_coach(db, req.user_id, coach.id).await?;
+        let eligible = repository::user_has_enrolment_with_coach(db, req.user_id, coach.id).await?;
         if !eligible {
             return Err(AppError::Forbidden("僅能發給自己課程的學員".into()));
         }

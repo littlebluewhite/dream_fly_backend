@@ -164,11 +164,12 @@ impl Product {
         self.ensure_line_quantity(quantity)?;
 
         if let Some(stock) = self.stock
-            && quantity > stock {
-                return Err(AppError::Conflict(format!(
-                    "insufficient stock: only {stock} available"
-                )));
-            }
+            && quantity > stock
+        {
+            return Err(AppError::Conflict(format!(
+                "insufficient stock: only {stock} available"
+            )));
+        }
 
         Ok(())
     }
@@ -270,7 +271,9 @@ mod tests {
     fn ensure_line_quantity_rejects_out_of_range_as_bad_request() {
         let product = fixture_product(true, None);
         for quantity in [0, -1, 1000] {
-            let err = product.ensure_line_quantity(quantity).expect_err("must reject");
+            let err = product
+                .ensure_line_quantity(quantity)
+                .expect_err("must reject");
             assert!(
                 matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
                 "quantity {quantity} got: {err:?}"

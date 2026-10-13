@@ -51,9 +51,16 @@ async fn checkout_creates_order_and_clears_cart(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(resp.total_cents, 3000);
     assert_eq!(resp.items.len(), 1);
@@ -89,9 +96,16 @@ async fn checkout_decrements_stock(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(common::product_stock(&db, product).await, Some(1));
 }
@@ -165,7 +179,10 @@ async fn checkout_stamps_items_and_ledger_with_sampled_now(db: PgPool) {
             .await
             .unwrap();
     assert_eq!(ledger_times.len(), 2, "redeem + earn");
-    assert!(ledger_times.iter().all(|&at| at == t), "got: {ledger_times:?}");
+    assert!(
+        ledger_times.iter().all(|&at| at == t),
+        "got: {ledger_times:?}"
+    );
 }
 
 /// 已付訂單落帳:訂單列、訂單行、結帳點數帳同一個付款時間,點數帳照
@@ -278,9 +295,16 @@ async fn checkout_unlimited_stock_unchanged(db: PgPool) {
     let product = common::seed_product(&db, "ticket-1", 500, None).await;
     common::add_to_cart(&db, user, product, 10).await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(common::product_stock(&db, product).await, None);
 }
@@ -291,9 +315,16 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1000, Some(1)).await;
     common::add_to_cart(&db, user, product, 2).await;
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("insufficient stock should fail");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("insufficient stock should fail");
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
 
     // Transaction rolled back: cart intact, no order created, stock unchanged.
@@ -313,9 +344,16 @@ async fn checkout_fails_on_insufficient_stock(db: PgPool) {
 async fn checkout_empty_cart_fails(db: PgPool) {
     let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("empty cart should fail");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("empty cart should fail");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
 }
 
@@ -343,9 +381,16 @@ async fn checkout_inactive_product_line_returns_422_listing_name(db: PgPool) {
         .await
         .expect("deactivate product");
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("inactive line must reject checkout");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("inactive line must reject checkout");
     assert!(
         matches!(
             err,
@@ -356,7 +401,11 @@ async fn checkout_inactive_product_line_returns_422_listing_name(db: PgPool) {
     );
 
     assert_eq!(common::order_count(&db, user).await, 0);
-    assert_eq!(common::cart_count(&db, user).await, 2, "rejected checkout must not touch the cart");
+    assert_eq!(
+        common::cart_count(&db, user).await,
+        2,
+        "rejected checkout must not touch the cart"
+    );
 }
 
 #[sqlx::test]
@@ -371,9 +420,16 @@ async fn checkout_fully_inactive_cart_returns_422_not_cart_is_empty(db: PgPool) 
         .await
         .expect("deactivate product");
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("a fully-deactivated cart must still reject checkout");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("a fully-deactivated cart must still reject checkout");
 
     // The regression this closes: the snapshot is non-empty (it still holds
     // the now-inactive line), so this must NOT fall into the empty-cart 400
@@ -387,7 +443,10 @@ async fn checkout_fully_inactive_cart_returns_422_not_cart_is_empty(db: PgPool) 
 
 #[sqlx::test]
 async fn checkout_mixed_cart_inactive_course_rejects_whole_batch_and_keeps_cart(db: PgPool) {
-    let course = CourseSeed::new("Mixed Gate Course").max_students(12).insert(&db).await;
+    let course = CourseSeed::new("Mixed Gate Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
     let product = common::seed_product(&db, "still-active-mix", 1000, Some(5)).await;
     let user = common::seed_member(&db, "mixed-gate@example.com", "passw0rd!").await;
     common::add_to_cart(&db, user, product, 1).await;
@@ -399,13 +458,24 @@ async fn checkout_mixed_cart_inactive_course_rejects_whole_batch_and_keeps_cart(
         .await
         .expect("deactivate course");
 
-    let err = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("inactive course line must reject the whole batch");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("inactive course line must reject the whole batch");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 
     assert_eq!(common::order_count(&db, user).await, 0);
-    assert_eq!(common::cart_count(&db, user).await, 2, "rejected checkout must not touch the cart");
+    assert_eq!(
+        common::cart_count(&db, user).await,
+        2,
+        "rejected checkout must not touch the cart"
+    );
 
     let enrolment_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM enrolments WHERE user_id = $1 AND course_id = $2")
@@ -428,24 +498,40 @@ async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
     // course) exercises all three outcomes in one checkout. The response
     // DTO deliberately doesn't expose this column (wire safety), so this
     // reads `order_items` directly.
-    let course = CourseSeed::new("Snapshot Course").max_students(12).insert(&db).await;
+    let course = CourseSeed::new("Snapshot Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
     let limited = common::seed_product(&db, "snapshot-limited", 1000, Some(5)).await;
     let unlimited = common::seed_product(&db, "snapshot-unlimited", 500, None).await;
     let user = seed_carted_member(
         &db,
         "snapshot-buyer@example.com",
         &[
-            SeedCartLine::Product { product_id: limited, quantity: 1 },
-            SeedCartLine::Product { product_id: unlimited, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: limited,
+                quantity: 1,
+            },
+            SeedCartLine::Product {
+                product_id: unlimited,
+                quantity: 1,
+            },
             SeedCartLine::Course { course_id: course },
         ],
         0,
     )
     .await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     let rows: Vec<(Option<uuid::Uuid>, Option<uuid::Uuid>, bool)> = sqlx::query_as(
         "SELECT oi.product_id, oi.course_id, oi.stock_decremented \
@@ -488,24 +574,43 @@ async fn checkout_records_stock_decremented_snapshot(db: PgPool) {
 
 #[sqlx::test]
 async fn checkout_course_and_product_mix_creates_both_artifacts(db: PgPool) {
-    let course = CourseSeed::new("Mixed Cart Course").max_students(12).insert(&db).await;
-    let product =
-        seed_entitlement_product(&db, "membership-mix", ProductType::Membership, 8000, None, None)
-            .await;
+    let course = CourseSeed::new("Mixed Cart Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
+    let product = seed_entitlement_product(
+        &db,
+        "membership-mix",
+        ProductType::Membership,
+        8000,
+        None,
+        None,
+    )
+    .await;
     let user = seed_carted_member(
         &db,
         "mixed-buyer@example.com",
         &[
             SeedCartLine::Course { course_id: course },
-            SeedCartLine::Product { product_id: product, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: product,
+                quantity: 1,
+            },
         ],
         0,
     )
     .await;
 
-    let resp = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     // order_items: two lines, correctly discriminated.
     assert_eq!(resp.items.len(), 2);
@@ -564,7 +669,16 @@ async fn checkout_with_valid_coupon_applies_discount(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.coupon_code, Some("DREAMFLY100".to_string()));
@@ -615,7 +729,16 @@ async fn checkout_coupon_over_half_subtotal_succeeds(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.total_cents, 5_000);
@@ -634,9 +757,21 @@ async fn checkout_coupon_at_or_above_subtotal_clamps_to_free_order(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
-    assert_eq!(resp.discount_cents, 5_000, "discount clamps to the subtotal");
+    assert_eq!(
+        resp.discount_cents, 5_000,
+        "discount clamps to the subtotal"
+    );
     assert_eq!(resp.total_cents, 0);
     assert_eq!(resp.points_earned, 0, "a free order earns no points");
 
@@ -666,7 +801,16 @@ async fn checkout_coupon_plus_points_can_reach_zero_total(db: PgPool) {
         use_points: Some(true),
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(resp.discount_cents, 10_000);
     assert_eq!(resp.points_used, 100);
@@ -688,13 +832,23 @@ async fn checkout_with_invalid_coupon_returns_validation_error(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let err = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("invalid coupon should fail");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("invalid coupon should fail");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 
     let order_count = common::order_count(&db, user).await;
-    assert_eq!(order_count, 0, "no order should be created on invalid coupon");
+    assert_eq!(
+        order_count, 0,
+        "no order should be created on invalid coupon"
+    );
 }
 
 /// Round 4 Task B3: `PATCH /coupons/{id}` setting `is_active: false` is the
@@ -724,13 +878,23 @@ async fn checkout_with_deactivated_coupon_returns_validation_error(db: PgPool) {
         use_points: None,
         payment_method: None,
     };
-    let err = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("deactivated coupon should fail checkout");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("deactivated coupon should fail checkout");
     assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
 
     let order_count = common::order_count(&db, user).await;
-    assert_eq!(order_count, 0, "no order should be created on deactivated coupon");
+    assert_eq!(
+        order_count, 0,
+        "no order should be created on deactivated coupon"
+    );
 }
 
 #[sqlx::test]
@@ -746,7 +910,16 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
         use_points: Some(true),
         payment_method: None,
     };
-    let resp = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now())).await.expect("checkout");
+    let resp = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     assert_eq!(resp.points_used, 500);
     assert_eq!(resp.total_cents, 300_000 - 50_000);
@@ -769,8 +942,13 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
         &db,
         "latecomer@example.com",
         &[
-            SeedCartLine::Course { course_id: full_course.course },
-            SeedCartLine::Product { product_id: product, quantity: 1 },
+            SeedCartLine::Course {
+                course_id: full_course.course,
+            },
+            SeedCartLine::Product {
+                product_id: product,
+                quantity: 1,
+            },
         ],
         100,
     )
@@ -781,9 +959,16 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
         payment_method: None,
     };
 
-    let err = service::checkout(&db, user, None, req, None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect_err("full course must reject the whole checkout");
+    let err = service::checkout(
+        &db,
+        user,
+        None,
+        req,
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect_err("full course must reject the whole checkout");
     assert!(matches!(err, AppError::Conflict(_)), "got: {err:?}");
 
     // Nothing was written: no order, enrolment count for the course
@@ -803,11 +988,12 @@ async fn checkout_full_course_rolls_back_everything(db: PgPool) {
 
     assert_eq!(common::product_stock(&db, product).await, Some(3));
 
-    let ledger_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let ledger_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM point_ledger WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(ledger_count, 0, "no ledger row should survive the rollback");
 
     let balance = common::points_balance_of(&db, user).await;
@@ -965,8 +1151,14 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_before_stock_4
         &db,
         "qty-before-stock@example.com",
         &[
-            SeedCartLine::Product { product_id: short, quantity: 2 },
-            SeedCartLine::Product { product_id: membership, quantity: 2 },
+            SeedCartLine::Product {
+                product_id: short,
+                quantity: 2,
+            },
+            SeedCartLine::Product {
+                product_id: membership,
+                quantity: 2,
+            },
         ],
         0,
     )
@@ -1000,7 +1192,10 @@ async fn checkout_legacy_line_quantity_over_999_is_400_before_stock_409(db: PgPo
     let user = seed_carted_member(
         &db,
         "legacy-qty@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 1000 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 1000,
+        }],
         0,
     )
     .await;
@@ -1027,7 +1222,10 @@ async fn checkout_legacy_line_quantity_over_999_is_400_before_stock_409(db: PgPo
 #[sqlx::test]
 async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool) {
     let user = common::seed_member(&db, "replay-buyer@example.com", "passw0rd!").await;
-    let course = CourseSeed::new("Replay Course").max_students(12).insert(&db).await;
+    let course = CourseSeed::new("Replay Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
     add_course_to_cart(&db, user, course).await;
 
     let key = Some(IdempotencyKey::parse("idempotency-key-1").unwrap());
@@ -1055,18 +1253,24 @@ async fn checkout_idempotent_replay_returns_same_order_with_artifacts(db: PgPool
     .expect("replayed checkout");
 
     assert_eq!(first.order_number, second.order_number);
-    assert_eq!(second.enrolments.len(), 1, "replay must still surface artifacts");
+    assert_eq!(
+        second.enrolments.len(),
+        1,
+        "replay must still surface artifacts"
+    );
     assert_eq!(second.enrolments[0].course_id, course);
 
-    let enrolment_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM enrolments WHERE user_id = $1 AND course_id = $2",
-    )
-    .bind(user)
-    .bind(course)
-    .fetch_one(&db)
-    .await
-    .unwrap();
-    assert_eq!(enrolment_count, 1, "replay must not create a duplicate enrolment");
+    let enrolment_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM enrolments WHERE user_id = $1 AND course_id = $2")
+            .bind(user)
+            .bind(course)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        enrolment_count, 1,
+        "replay must not create a duplicate enrolment"
+    );
 
     let order_count = common::order_count(&db, user).await;
     assert_eq!(order_count, 1, "replay must not create a duplicate order");
@@ -1082,14 +1286,20 @@ async fn concurrent_checkout_last_unit_only_succeeds_once(db: PgPool) {
     let user_a = seed_carted_member(
         &db,
         "a@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 1,
+        }],
         0,
     )
     .await;
     let user_b = seed_carted_member(
         &db,
         "b@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 1,
+        }],
         0,
     )
     .await;
@@ -1168,7 +1378,10 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     let user = seed_carted_member(
         &db,
         "concurrent-replay@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 1,
+        }],
         0,
     )
     .await;
@@ -1229,7 +1442,10 @@ async fn concurrent_checkout_same_idempotency_key_converges_to_one_order(db: PgP
     );
 
     let order_count = common::order_count(&db, user).await;
-    assert_eq!(order_count, 1, "exactly one order must exist despite two concurrent checkouts");
+    assert_eq!(
+        order_count, 1,
+        "exactly one order must exist despite two concurrent checkouts"
+    );
 }
 
 #[sqlx::test]
@@ -1256,8 +1472,14 @@ async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPo
         &db,
         "cross-buyer-lock-order@example.com",
         &[
-            SeedCartLine::Product { product_id: p_high, quantity: 1 },
-            SeedCartLine::Product { product_id: p_low, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: p_high,
+                quantity: 1,
+            },
+            SeedCartLine::Product {
+                product_id: p_low,
+                quantity: 1,
+            },
         ],
         0,
     )
@@ -1295,7 +1517,10 @@ async fn checkout_locks_take_products_ascending_no_cross_buyer_deadlock(db: PgPo
     // fix it grabbed SHARE(p_high) first (cart-creation order) and then
     // blocked on p_low — holding exactly what the refund side needs next.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(!reader.is_finished(), "reader must be blocked behind the held p_low lock");
+    assert!(
+        !reader.is_finished(),
+        "reader must be blocked behind the held p_low lock"
+    );
 
     // The refund side takes its SECOND ascending lock. Post-fix the blocked
     // reader holds no product lock, so this returns immediately — no cycle.
@@ -1336,14 +1561,20 @@ async fn checkout_same_product_two_buyers_queue_instead_of_deadlocking(db: PgPoo
     let first = seed_carted_member(
         &db,
         "same-row-first@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 1,
+        }],
         0,
     )
     .await;
     let second = seed_carted_member(
         &db,
         "same-row-second@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 1,
+        }],
         0,
     )
     .await;
@@ -1409,7 +1640,10 @@ async fn checkout_same_course_two_buyers_queue_instead_of_deadlocking(db: PgPool
     // SHARE to upgrade to UPDATE — PostgreSQL aborted one (SQLSTATE 40P01 →
     // 500). The order lock protocol now takes `FOR UPDATE` up front
     // (`seats::lock_courses_tx`), so the second buyer queues instead.
-    let course = CourseSeed::new("same-row-course").max_students(5).insert(&db).await;
+    let course = CourseSeed::new("same-row-course")
+        .max_students(5)
+        .insert(&db)
+        .await;
     let first = seed_carted_member(
         &db,
         "same-row-course-first@example.com",
@@ -1546,28 +1780,57 @@ async fn my_orders_lists_items_per_order_without_cross_contamination(db: PgPool)
     let product_b = common::seed_product(&db, "item-b", 2000, Some(10)).await;
 
     common::add_to_cart(&db, user, product_a, 3).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout 1");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout 1");
 
     common::add_to_cart(&db, user, product_b, 1).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout 2");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout 2");
 
-    let list = service::my_orders(&db, user, &PaginationParams { page: 1, per_page: 10 })
-        .await
-        .expect("my_orders");
+    let list = service::my_orders(
+        &db,
+        user,
+        &PaginationParams {
+            page: 1,
+            per_page: 10,
+        },
+    )
+    .await
+    .expect("my_orders");
     assert_eq!(list.orders.len(), 2);
 
     // Newest first (ORDER BY created_at DESC): order 2 (item-b) then order 1 (item-a).
     let newest = &list.orders[0];
-    assert_eq!(newest.items.len(), 1, "newest order must only carry its own item");
+    assert_eq!(
+        newest.items.len(),
+        1,
+        "newest order must only carry its own item"
+    );
     assert_eq!(newest.items[0].name, "Test Product item-b");
     assert_eq!(newest.items[0].quantity, 1);
 
     let oldest = &list.orders[1];
-    assert_eq!(oldest.items.len(), 1, "oldest order must only carry its own item");
+    assert_eq!(
+        oldest.items.len(),
+        1,
+        "oldest order must only carry its own item"
+    );
     assert_eq!(oldest.items[0].name, "Test Product item-a");
     assert_eq!(oldest.items[0].quantity, 3);
 }
@@ -1582,13 +1845,27 @@ async fn my_orders_aggregates_multiple_items_in_one_order(db: PgPool) {
 
     common::add_to_cart(&db, user, product_a, 2).await;
     common::add_to_cart(&db, user, product_b, 5).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
-    let list = service::my_orders(&db, user, &PaginationParams { page: 1, per_page: 10 })
-        .await
-        .expect("my_orders");
+    let list = service::my_orders(
+        &db,
+        user,
+        &PaginationParams {
+            page: 1,
+            per_page: 10,
+        },
+    )
+    .await
+    .expect("my_orders");
     assert_eq!(list.orders.len(), 1);
     let items = &list.orders[0].items;
     assert_eq!(items.len(), 2, "both cart lines must appear in the summary");
@@ -1610,9 +1887,16 @@ async fn admin_list_orders_includes_items(db: PgPool) {
     let user = common::seed_member(&db, "admin-items-buyer@example.com", "passw0rd!").await;
     let product = common::seed_product(&db, "admin-item", 1000, Some(10)).await;
     common::add_to_cart(&db, user, product, 4).await;
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     let pagination = PaginationParams {
         page: 1,
@@ -1635,9 +1919,16 @@ async fn admin_list_orders_exposes_paid_at(db: PgPool) {
     let user = common::seed_member(&db, "admin-paid-at@example.com", "passw0rd!").await;
     let product = common::seed_product(&db, "admin-paid-at", 1000, Some(10)).await;
     common::add_to_cart(&db, user, product, 1).await;
-    let checked_out = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    let checked_out = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
     let pending_id = OrderSeed::new(user, OrderStatus::Pending).insert(&db).await;
 
     let pagination = PaginationParams {
@@ -1647,10 +1938,18 @@ async fn admin_list_orders_exposes_paid_at(db: PgPool) {
     let list = service::list_all_orders(&db, &pagination)
         .await
         .expect("list_all_orders");
-    let paid = list.orders.iter().find(|o| o.id == checked_out.id).expect("checkout order listed");
+    let paid = list
+        .orders
+        .iter()
+        .find(|o| o.id == checked_out.id)
+        .expect("checkout order listed");
     assert!(paid.paid_at.is_some(), "checkout order must expose paid_at");
     assert_eq!(paid.paid_at, checked_out.paid_at);
-    let pending = list.orders.iter().find(|o| o.id == pending_id).expect("pending order listed");
+    let pending = list
+        .orders
+        .iter()
+        .find(|o| o.id == pending_id)
+        .expect("pending order listed");
     assert!(pending.paid_at.is_none(), "pending order has no paid_at");
 }
 
@@ -1665,9 +1964,16 @@ async fn update_order_status_transitions_and_notifies(db: PgPool) {
     let product = common::seed_product(&db, "prod-1", 1500, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
 
-    let order = service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    let order = service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
     assert_eq!(order.status, OrderStatus::Paid);
 
     let updated =
@@ -1755,9 +2061,16 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
     let product = common::seed_product(&db, "nocorr-prod", 1000, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
 
-    service::checkout(&db, user, None, CheckoutRequest::default(), None, common::studio_now_utc(chrono::Utc::now()))
-        .await
-        .expect("checkout");
+    service::checkout(
+        &db,
+        user,
+        None,
+        CheckoutRequest::default(),
+        None,
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("checkout");
 
     // `correlation_id` is skipped entirely at serialization time when `None`
     // (see `KafkaEvent`'s `skip_serializing_if`), so the key itself must be
@@ -1782,18 +2095,33 @@ async fn checkout_without_correlation_id_omits_payload_key(db: PgPool) {
 /// `seed_*` fixtures never write `order_id`, so a directly-built order carries
 /// no traces to compensate). Returns `(user, order, finite_product_id)`.
 async fn checkout_mixed_with_points(db: &PgPool, email: &str) -> (Uuid, OrderResponse, Uuid) {
-    let course = CourseSeed::new("Compensation Course").max_students(12).insert(db).await;
+    let course = CourseSeed::new("Compensation Course")
+        .max_students(12)
+        .insert(db)
+        .await;
     let limited = common::seed_product(db, "comp-limited", 10_000, Some(5)).await;
-    let membership =
-        seed_entitlement_product(db, "comp-membership", ProductType::Membership, 8_000, None, None)
-            .await;
+    let membership = seed_entitlement_product(
+        db,
+        "comp-membership",
+        ProductType::Membership,
+        8_000,
+        None,
+        None,
+    )
+    .await;
     let user = seed_carted_member(
         db,
         email,
         &[
-            SeedCartLine::Product { product_id: limited, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: limited,
+                quantity: 1,
+            },
             SeedCartLine::Course { course_id: course },
-            SeedCartLine::Product { product_id: membership, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: membership,
+                quantity: 1,
+            },
         ],
         500,
     )
@@ -1844,10 +2172,15 @@ async fn assert_fully_compensated(
     // Enrolment + subscription cancelled (the response re-reads the latest
     // artifact rows).
     assert_eq!(outcome.enrolments.len(), 1);
-    assert_eq!(outcome.enrolments[0].status, EnrolmentStatus::Cancelled, "enrolment cancelled");
+    assert_eq!(
+        outcome.enrolments[0].status,
+        EnrolmentStatus::Cancelled,
+        "enrolment cancelled"
+    );
     assert_eq!(outcome.subscriptions.len(), 1);
     assert_eq!(
-        outcome.subscriptions[0].status, SubscriptionStatus::Cancelled,
+        outcome.subscriptions[0].status,
+        SubscriptionStatus::Cancelled,
         "subscription cancelled"
     );
 
@@ -1873,7 +2206,10 @@ async fn assert_fully_compensated(
     .fetch_one(db)
     .await
     .expect("one refund_restore row");
-    assert_eq!(restore.0, order.points_used, "restore reverses the redeemed magnitude");
+    assert_eq!(
+        restore.0, order.points_used,
+        "restore reverses the redeemed magnitude"
+    );
     assert_eq!(restore.1, Some(order.id));
 
     let clawback: (i64, Option<Uuid>) = sqlx::query_as(
@@ -1884,7 +2220,10 @@ async fn assert_fully_compensated(
     .fetch_one(db)
     .await
     .expect("one refund_clawback row");
-    assert_eq!(clawback.0, -order.points_earned, "clawback reverses the earned magnitude");
+    assert_eq!(
+        clawback.0, -order.points_earned,
+        "clawback reverses the earned magnitude"
+    );
     assert_eq!(clawback.1, Some(order.id));
 
     let refund_ledger_count: i64 = sqlx::query_scalar(
@@ -1945,7 +2284,10 @@ async fn cancel_compensates_identically_to_refund(db: PgPool) {
 /// stock, enrolment, subscription untouched; no refund ledger row).
 #[sqlx::test]
 async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: PgPool) {
-    let course = CourseSeed::new("Clawback Course").max_students(12).insert(&db).await;
+    let course = CourseSeed::new("Clawback Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
     let limited = common::seed_product(&db, "clawback-limited", 10_000, Some(5)).await;
     let membership = seed_entitlement_product(
         &db,
@@ -1962,9 +2304,15 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
         &db,
         "clawback-buyer@example.com",
         &[
-            SeedCartLine::Product { product_id: limited, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: limited,
+                quantity: 1,
+            },
             SeedCartLine::Course { course_id: course },
-            SeedCartLine::Product { product_id: membership, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: membership,
+                quantity: 1,
+            },
         ],
         0,
     )
@@ -1979,7 +2327,10 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
     )
     .await
     .expect("checkout");
-    assert!(order.points_earned > 0, "must earn points to have a clawback");
+    assert!(
+        order.points_earned > 0,
+        "must earn points to have a clawback"
+    );
 
     // Member spent the earned points elsewhere — wipe the balance to 0.
     set_points_balance(&db, user, 0).await;
@@ -2030,7 +2381,10 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
     .fetch_one(&db)
     .await
     .unwrap();
-    assert_eq!(refund_ledger, 0, "no refund ledger row survives the rollback");
+    assert_eq!(
+        refund_ledger, 0,
+        "no refund ledger row survives the rollback"
+    );
 }
 
 /// Row 4: re-PATCHing the same terminal status is an observable idempotent
@@ -2099,7 +2453,10 @@ async fn refunded_terminal_rejects_further_transitions(db: PgPool) {
     let user_a = seed_carted_member(
         &db,
         "terminal-a@example.com",
-        &[SeedCartLine::Product { product_id: product_a, quantity: 1 }],
+        &[SeedCartLine::Product {
+            product_id: product_a,
+            quantity: 1,
+        }],
         0,
     )
     .await;
@@ -2131,7 +2488,10 @@ async fn refund_keeps_unlimited_stock_null(db: PgPool) {
     let user = seed_carted_member(
         &db,
         "unlimited-refund@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 3 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 3,
+        }],
         0,
     )
     .await;
@@ -2165,7 +2525,10 @@ async fn refund_skips_restock_when_sold_unlimited_then_stock_set(db: PgPool) {
     let user = seed_carted_member(
         &db,
         "snapshot-refund@example.com",
-        &[SeedCartLine::Product { product_id: product, quantity: 2 }],
+        &[SeedCartLine::Product {
+            product_id: product,
+            quantity: 2,
+        }],
         0,
     )
     .await;
@@ -2206,7 +2569,11 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
     set_points_balance(&db, user, 100).await;
     let product = common::seed_product(&db, "direct-paid-prod", 1_000, Some(5)).await;
     let order_id = OrderSeed::new(user, OrderStatus::Paid)
-        .line(SeedOrderLine::Product { product_id: product, quantity: 2, unit_price_cents: 1_000 })
+        .line(SeedOrderLine::Product {
+            product_id: product,
+            quantity: 2,
+            unit_price_cents: 1_000,
+        })
         .insert(&db)
         .await;
 
@@ -2231,7 +2598,10 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(refund_ledger, 0, "no refund ledger row for a zero-trace order");
+    assert_eq!(
+        refund_ledger, 0,
+        "no refund ledger row for a zero-trace order"
+    );
 }
 
 /// Row 10: member self-cancels the enrolment first, then the whole order is
@@ -2240,14 +2610,20 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
 /// in FULL — whole-order semantics don't depend on the enrolment's state.
 #[sqlx::test]
 async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
-    let course = CourseSeed::new("Self-Cancel Course").max_students(12).insert(&db).await;
+    let course = CourseSeed::new("Self-Cancel Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
     let limited = common::seed_product(&db, "self-cancel-limited", 10_000, Some(5)).await;
     let user = seed_carted_member(
         &db,
         "self-cancel-buyer@example.com",
         &[
             SeedCartLine::Course { course_id: course },
-            SeedCartLine::Product { product_id: limited, quantity: 1 },
+            SeedCartLine::Product {
+                product_id: limited,
+                quantity: 1,
+            },
         ],
         500,
     )
@@ -2286,7 +2662,8 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
             .expect("refund after self-cancel");
     assert_eq!(refunded.status, OrderStatus::Refunded);
     assert_eq!(
-        refunded.enrolments[0].status, EnrolmentStatus::Cancelled,
+        refunded.enrolments[0].status,
+        EnrolmentStatus::Cancelled,
         "enrolment stays cancelled"
     );
 
@@ -2312,7 +2689,10 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
 /// 已核准的假單維持 `approved`(ADR-0008 gap 1)。
 #[sqlx::test]
 async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
-    let course = CourseSeed::new("Refund Leave Course").max_students(12).insert(&db).await;
+    let course = CourseSeed::new("Refund Leave Course")
+        .max_students(12)
+        .insert(&db)
+        .await;
     let user = seed_carted_member(
         &db,
         "refund-leave-buyer@example.com",
@@ -2340,9 +2720,13 @@ async fn refund_cancels_pending_leaves_of_order_enrolments(db: PgPool) {
         seed_leave_request(&db, order.enrolments[0].id, session, LeaveStatus::Pending).await;
     let day_after = tomorrow + chrono::Duration::days(1);
     let approved_session = seed_course_session(&db, course, day_after, nine, ten).await;
-    let approved_leave =
-        seed_leave_request(&db, order.enrolments[0].id, approved_session, LeaveStatus::Approved)
-            .await;
+    let approved_leave = seed_leave_request(
+        &db,
+        order.enrolments[0].id,
+        approved_session,
+        LeaveStatus::Approved,
+    )
+    .await;
 
     service::update_order_status(&db, order.id, "refunded", None, chrono::Utc::now())
         .await
@@ -2495,7 +2879,11 @@ async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
     let product = common::seed_product(&db, "twin-prod", 1000, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
     let o_twin = OrderSeed::new(user, OrderStatus::Paid)
-        .line(SeedOrderLine::Product { product_id: product, quantity: 1, unit_price_cents: 1000 })
+        .line(SeedOrderLine::Product {
+            product_id: product,
+            quantity: 1,
+            unit_price_cents: 1000,
+        })
         .insert(&db)
         .await;
 

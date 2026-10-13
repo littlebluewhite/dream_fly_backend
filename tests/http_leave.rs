@@ -57,10 +57,20 @@ async fn create_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_success_for_future_session(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-create-ok@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-create-ok@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Create Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
-    seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
+    seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -81,7 +91,9 @@ async fn create_success_for_future_session(db: PgPool) {
 #[sqlx::test]
 async fn create_unknown_session_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-unknown-session@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-unknown-session@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -94,9 +106,12 @@ async fn create_unknown_session_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn create_not_enrolled_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-not-enrolled@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-not-enrolled@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Not Enrolled Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
     // Deliberately no enrolment seeded for `user`.
 
     let resp = app
@@ -110,10 +125,20 @@ async fn create_not_enrolled_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn create_session_already_started_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-started@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-started@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Started Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
-    seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
+    seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -126,10 +151,19 @@ async fn create_session_already_started_returns_422(db: PgPool) {
 #[sqlx::test]
 async fn create_duplicate_active_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-dup@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-dup@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Dup Course", None).await;
-    let scene =
-        seed_leave_scene(&app.db, user.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        user.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -145,10 +179,19 @@ async fn create_after_prior_cancelled_request_succeeds(db: PgPool) {
     // `cancelled` request for the same (enrolment, session) must not block
     // re-applying.
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-recreate@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-recreate@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Recreate Course", None).await;
-    let scene =
-        seed_leave_scene(&app.db, user.user_id, course_id, LeaveStatus::Cancelled, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        user.user_id,
+        course_id,
+        LeaveStatus::Cancelled,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .post("/api/v1/leave-requests")
@@ -172,7 +215,9 @@ async fn me_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn me_returns_joined_fields_including_makeup(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-me@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-me@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Me Course", None).await;
     let session_date = tomorrow(&app);
     let makeup_date = app.today() + Duration::days(8);
@@ -215,17 +260,28 @@ async fn me_returns_joined_fields_including_makeup(db: PgPool) {
 #[sqlx::test]
 async fn cancel_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let resp = app.delete(&format!("/api/v1/leave-requests/{}", Uuid::now_v7())).await;
+    let resp = app
+        .delete(&format!("/api/v1/leave-requests/{}", Uuid::now_v7()))
+        .await;
     assert_eq!(resp.status_code(), 401);
 }
 
 #[sqlx::test]
 async fn cancel_pending_by_owner_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-cancel-ok@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-cancel-ok@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Cancel Course", None).await;
-    let scene =
-        seed_leave_scene(&app.db, user.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        user.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -245,10 +301,19 @@ async fn cancel_pending_by_owner_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn cancel_non_pending_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-cancel-409@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-cancel-409@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Cancel 409 Course", None).await;
-    let scene =
-        seed_leave_scene(&app.db, user.user_id, course_id, LeaveStatus::Approved, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        user.user_id,
+        course_id,
+        LeaveStatus::Approved,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -260,11 +325,22 @@ async fn cancel_non_pending_returns_409(db: PgPool) {
 #[sqlx::test]
 async fn cancel_by_non_owner_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let owner = app.register_member("leave-cancel-owner@example.com", "Password!234").await;
-    let other = app.register_member("leave-cancel-other@example.com", "Password!234").await;
+    let owner = app
+        .register_member("leave-cancel-owner@example.com", "Password!234")
+        .await;
+    let other = app
+        .register_member("leave-cancel-other@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Leave Cancel Owner Course", None).await;
-    let scene =
-        seed_leave_scene(&app.db, owner.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        owner.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .delete(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -287,7 +363,9 @@ async fn list_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn list_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-list-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-list-member@example.com", "Password!234")
+        .await;
     let resp = app
         .get("/api/v1/leave-requests")
         .authorization_bearer(&user.access_token)
@@ -302,10 +380,30 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
 
     let course_a = seed_course(&app.db, "Leave List Course A", None).await;
     let course_b = seed_course(&app.db, "Leave List Course B", None).await;
-    let user_a = app.register_member("leave-list-a@example.com", "Password!234").await;
-    let user_b = app.register_member("leave-list-b@example.com", "Password!234").await;
-    seed_leave_scene(&app.db, user_a.user_id, course_a, LeaveStatus::Pending, None, app.today()).await;
-    seed_leave_scene(&app.db, user_b.user_id, course_b, LeaveStatus::Approved, None, app.today()).await;
+    let user_a = app
+        .register_member("leave-list-a@example.com", "Password!234")
+        .await;
+    let user_b = app
+        .register_member("leave-list-b@example.com", "Password!234")
+        .await;
+    seed_leave_scene(
+        &app.db,
+        user_a.user_id,
+        course_a,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
+    seed_leave_scene(
+        &app.db,
+        user_b.user_id,
+        course_b,
+        LeaveStatus::Approved,
+        None,
+        app.today(),
+    )
+    .await;
 
     // No filter: admin sees both.
     let resp = app
@@ -326,7 +424,11 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
         .await;
     let body: serde_json::Value = resp.json();
     let arr = body["leave_requests"].as_array().unwrap();
-    assert_eq!(arr.len(), 1, "status filter must narrow to the approved one");
+    assert_eq!(
+        arr.len(),
+        1,
+        "status filter must narrow to the approved one"
+    );
     assert_eq!(body["total"], 1, "total must count the same filtered set");
     assert_eq!(arr[0]["course_id"], course_b.to_string());
     assert_eq!(arr[0]["user_name"], "Test Member");
@@ -382,16 +484,43 @@ async fn list_as_coach_scoped_to_own_courses(db: PgPool) {
     let course_a = seed_course(&app.db, "Leave List Coach Course A", Some(coach_a.coach_id)).await;
     let course_b = seed_course(&app.db, "Leave List Coach Course B", Some(coach_b_id)).await;
 
-    let user_a = app.register_member("leave-list-student-a@example.com", "Password!234").await;
-    let user_b = app.register_member("leave-list-student-b@example.com", "Password!234").await;
-    seed_leave_scene(&app.db, user_a.user_id, course_a, LeaveStatus::Pending, None, app.today()).await;
-    seed_leave_scene(&app.db, user_b.user_id, course_b, LeaveStatus::Pending, None, app.today()).await;
+    let user_a = app
+        .register_member("leave-list-student-a@example.com", "Password!234")
+        .await;
+    let user_b = app
+        .register_member("leave-list-student-b@example.com", "Password!234")
+        .await;
+    seed_leave_scene(
+        &app.db,
+        user_a.user_id,
+        course_a,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
+    seed_leave_scene(
+        &app.db,
+        user_b.user_id,
+        course_b,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
-    let resp = app.get("/api/v1/leave-requests").authorization_bearer(&coach_a.token).await;
+    let resp = app
+        .get("/api/v1/leave-requests")
+        .authorization_bearer(&coach_a.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body["leave_requests"].as_array().unwrap();
-    assert_eq!(arr.len(), 1, "coach must only see their own course's requests");
+    assert_eq!(
+        arr.len(),
+        1,
+        "coach must only see their own course's requests"
+    );
     assert_eq!(arr[0]["course_id"], course_a.to_string());
     assert_eq!(body["total"], 1);
 }
@@ -419,7 +548,9 @@ async fn decide_as_member_returns_403(db: PgPool) {
     // `ValidatedJson` before the role check ever ran. The route-layer gate
     // now runs ahead of extraction, so the member still gets 403.
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-decide-member-403@example.com", "Password!234").await;
+    let user = app
+        .register_member("leave-decide-member-403@example.com", "Password!234")
+        .await;
     let resp = app
         .patch(&format!("/api/v1/leave-requests/{}", Uuid::now_v7()))
         .authorization_bearer(&user.access_token)
@@ -433,9 +564,18 @@ async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Leave Decide Course", Some(coach.coach_id)).await;
-    let member = app.register_member("leave-decide-member@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-decide-member@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -492,16 +632,32 @@ async fn decide_approve_overwrites_existing_present_attendance(db: PgPool) {
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Approve Over Present Course", Some(coach.coach_id)).await;
-    let member =
-        app.register_member("leave-approve-over-present-member@example.com", "Password!234").await;
+    let member = app
+        .register_member(
+            "leave-approve-over-present-member@example.com",
+            "Password!234",
+        )
+        .await;
     // Already-started session so the prior `present` mark is realistic; decide
     // has no time gate, so a late approval still applies.
-    let session_id = seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
-    seed_attendance(&app.db, session_id, enrolment_id, AttendanceStatus::Present, coach.user_id)
-        .await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    seed_attendance(
+        &app.db,
+        session_id,
+        enrolment_id,
+        AttendanceStatus::Present,
+        coach.user_id,
+    )
+    .await;
     let leave_id =
         seed_leave_request(&app.db, enrolment_id, session_id, LeaveStatus::Pending).await;
 
@@ -520,7 +676,10 @@ async fn decide_approve_overwrites_existing_present_attendance(db: PgPool) {
     .fetch_one(&app.db)
     .await
     .expect("fetch attendance status");
-    assert_eq!(att_status, "leave", "approval must overwrite the prior present with leave");
+    assert_eq!(
+        att_status, "leave",
+        "approval must overwrite the prior present with leave"
+    );
 }
 
 #[sqlx::test]
@@ -528,9 +687,18 @@ async fn decide_reject_does_not_write_attendance(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Reject Course", None).await;
-    let member = app.register_member("leave-reject-member@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-reject-member@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -568,9 +736,18 @@ async fn decide_by_non_owning_coach_returns_403(db: PgPool) {
 
     // Course has no coach assigned at all (distinct from `other_coach`).
     let course_id = seed_course(&app.db, "Leave Decide Unowned Course", None).await;
-    let member = app.register_member("leave-decide-member2@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-decide-member2@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let resp = app
         .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -585,9 +762,18 @@ async fn decide_invalid_status_value_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Decide 422 Course", None).await;
-    let member = app.register_member("leave-decide-422@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-decide-422@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     // "pending" is a valid LeaveStatus value but not one PATCH accepts.
     let resp = app
@@ -605,12 +791,24 @@ async fn decide_invalid_status_value_returns_422(db: PgPool) {
 async fn decide_approve_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
-    let course_id =
-        seed_course(&app.db, "Leave Decide Cancelled Course", Some(coach.coach_id)).await;
-    let member =
-        app.register_member("leave-decide-cancelled-member@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let course_id = seed_course(
+        &app.db,
+        "Leave Decide Cancelled Course",
+        Some(coach.coach_id),
+    )
+    .await;
+    let member = app
+        .register_member("leave-decide-cancelled-member@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let cancel_resp = app
         .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
@@ -643,10 +841,18 @@ async fn decide_reject_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Decide Cancelled Reject Course", None).await;
-    let member =
-        app.register_member("leave-decide-cancelled-reject@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-decide-cancelled-reject@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let cancel_resp = app
         .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
@@ -684,8 +890,15 @@ async fn cancel_leave_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
             "Password!234",
         )
         .await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let cancel_resp = app
         .patch(&format!("/api/v1/enrolments/{}/cancel", scene.enrolment))
@@ -721,9 +934,14 @@ async fn decide_approve_pending_on_cancelled_enrolment_returns_409(db: PgPool) {
         .register_member("leave-backstop-approve@example.com", "Password!234")
         .await;
     let session = seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
-    let enrolment =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
-            .await;
+    let enrolment = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
     let leave = seed_leave_request(&app.db, enrolment, session, LeaveStatus::Pending).await;
 
     let resp = app
@@ -749,9 +967,14 @@ async fn decide_reject_pending_on_cancelled_enrolment_succeeds(db: PgPool) {
         .register_member("leave-backstop-reject@example.com", "Password!234")
         .await;
     let session = seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
-    let enrolment =
-        seed_enrolment(&app.db, member.user_id, course_id, EnrolmentStatus::Cancelled, Utc::now())
-            .await;
+    let enrolment = seed_enrolment(
+        &app.db,
+        member.user_id,
+        course_id,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
     let leave = seed_leave_request(&app.db, enrolment, session, LeaveStatus::Pending).await;
 
     let resp = app
@@ -780,14 +1003,26 @@ async fn makeup_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn makeup_same_course_future_session_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-makeup-ok@example.com", "Password!234").await;
-    let course_id = CourseSeed::new("Leave Makeup Course").max_students(10).insert(&app.db).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
+    let user = app
+        .register_member("leave-makeup-ok@example.com", "Password!234")
+        .await;
+    let course_id = CourseSeed::new("Leave Makeup Course")
+        .max_students(10)
+        .insert(&app.db)
+        .await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let target_date = app.today() + Duration::days(3);
     let target_session_id =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     let leave_id =
         seed_leave_request(&app.db, enrolment_id, session_id, LeaveStatus::Approved).await;
 
@@ -814,14 +1049,25 @@ async fn makeup_same_course_future_session_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn makeup_target_session_already_started_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("leave-makeup-started@example.com", "Password!234").await;
-    let course_id =
-        CourseSeed::new("Leave Makeup Started Course").max_students(10).insert(&app.db).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
+    let user = app
+        .register_member("leave-makeup-started@example.com", "Password!234")
+        .await;
+    let course_id = CourseSeed::new("Leave Makeup Started Course")
+        .max_students(10)
+        .insert(&app.db)
+        .await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let target_session_id =
         seed_course_session(&app.db, course_id, yesterday(&app), t(14, 0), t(15, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     let leave_id =
         seed_leave_request(&app.db, enrolment_id, session_id, LeaveStatus::Approved).await;
 
@@ -836,17 +1082,29 @@ async fn makeup_target_session_already_started_returns_422(db: PgPool) {
 #[sqlx::test]
 async fn makeup_by_non_owner_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let owner = app.register_member("leave-makeup-owner@example.com", "Password!234").await;
-    let other = app.register_member("leave-makeup-other@example.com", "Password!234").await;
-    let course_id =
-        CourseSeed::new("Leave Makeup Owner Course").max_students(10).insert(&app.db).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
+    let owner = app
+        .register_member("leave-makeup-owner@example.com", "Password!234")
+        .await;
+    let other = app
+        .register_member("leave-makeup-other@example.com", "Password!234")
+        .await;
+    let course_id = CourseSeed::new("Leave Makeup Owner Course")
+        .max_students(10)
+        .insert(&app.db)
+        .await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let target_date = app.today() + Duration::days(3);
     let target_session_id =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, owner.user_id, course_id, EnrolmentStatus::Active, Utc::now())
-            .await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        owner.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     let leave_id =
         seed_leave_request(&app.db, enrolment_id, session_id, LeaveStatus::Approved).await;
 
@@ -871,8 +1129,15 @@ async fn makeup_cancelled_enrolment_returns_409(db: PgPool) {
         .register_member("leave-makeup-cancelled@example.com", "Password!234")
         .await;
     let course_id = seed_course(&app.db, "Makeup Cancelled Enrolment Course", None).await;
-    let scene =
-        seed_leave_scene(&app.db, user.user_id, course_id, LeaveStatus::Approved, None, app.today()).await;
+    let scene = seed_leave_scene(
+        &app.db,
+        user.user_id,
+        course_id,
+        LeaveStatus::Approved,
+        None,
+        app.today(),
+    )
+    .await;
     let target_date = app.today() + Duration::days(3);
     let target_session =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
@@ -913,8 +1178,16 @@ async fn create_response_matches_me_row(db: PgPool) {
         .register_member("leave-pin-create@example.com", "Password!234")
         .await;
     let course_id = seed_course(&app.db, "Leave Pin Create Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
-    seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, tomorrow(&app), t(9, 0), t(10, 0)).await;
+    seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let create_resp = app
         .post("/api/v1/leave-requests")
@@ -949,9 +1222,18 @@ async fn decide_approve_response_matches_me_row(db: PgPool) {
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Leave Pin Approve Course", Some(coach.coach_id)).await;
-    let member = app.register_member("leave-pin-approve-member@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-pin-approve-member@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let decide_resp = app
         .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -986,9 +1268,18 @@ async fn decide_reject_response_matches_me_row(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Leave Pin Reject Course", None).await;
-    let member = app.register_member("leave-pin-reject-member@example.com", "Password!234").await;
-    let scene =
-        seed_leave_scene(&app.db, member.user_id, course_id, LeaveStatus::Pending, None, app.today()).await;
+    let member = app
+        .register_member("leave-pin-reject-member@example.com", "Password!234")
+        .await;
+    let scene = seed_leave_scene(
+        &app.db,
+        member.user_id,
+        course_id,
+        LeaveStatus::Pending,
+        None,
+        app.today(),
+    )
+    .await;
 
     let decide_resp = app
         .patch(&format!("/api/v1/leave-requests/{}", scene.leave))
@@ -1024,14 +1315,23 @@ async fn makeup_response_matches_me_row(db: PgPool) {
     let user = app
         .register_member("leave-pin-makeup@example.com", "Password!234")
         .await;
-    let course_id =
-        CourseSeed::new("Leave Pin Makeup Course").max_students(10).insert(&app.db).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
+    let course_id = CourseSeed::new("Leave Pin Makeup Course")
+        .max_students(10)
+        .insert(&app.db)
+        .await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let target_date = app.today() + Duration::days(3);
     let target_session_id =
         seed_course_session(&app.db, course_id, target_date, t(14, 0), t(15, 0)).await;
-    let enrolment_id =
-        seed_enrolment(&app.db, user.user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_id = seed_enrolment(
+        &app.db,
+        user.user_id,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     let leave_id =
         seed_leave_request(&app.db, enrolment_id, session_id, LeaveStatus::Approved).await;
 

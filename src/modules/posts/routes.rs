@@ -1,15 +1,16 @@
-use axum::{Router, routing::{delete, get, post}};
 use crate::state::AppState;
+use axum::{
+    Router,
+    routing::{delete, get, post},
+};
 
 use super::handlers;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/posts", get(handlers::list))
-        .route(
-            "/posts/{param}",
-            get(handlers::get_by_slug_or_id).patch(handlers::update),
-        )
+    Router::new().route("/posts", get(handlers::list)).route(
+        "/posts/{param}",
+        get(handlers::get_by_slug_or_id).patch(handlers::update),
+    )
 }
 
 /// staff 半邊:發文(admin 或 coach;與公開的清單查詢共用 `/posts` 路徑,
@@ -23,6 +24,5 @@ pub fn staff_router() -> Router<AppState> {
 /// /posts/{param}`(admin 或作者)有自己的授權,留在 `router()`。閘門由
 /// `admin_api` route_layer 施加。
 pub fn admin_router() -> Router<AppState> {
-    Router::new()
-        .route("/posts/{param}", delete(handlers::delete))
+    Router::new().route("/posts/{param}", delete(handlers::delete))
 }

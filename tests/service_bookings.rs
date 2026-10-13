@@ -178,9 +178,15 @@ async fn cancel_booking_frees_seat_and_is_idempotent(db: PgPool) {
 
     assert_eq!(common::slot_booked(&db, slot).await, 1);
 
-    service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
-        .await
-        .expect("first cancel");
+    service::cancel_booking(
+        &db,
+        common::studio_now_utc(Utc::now()),
+        &auth,
+        booking.id,
+        None,
+    )
+    .await
+    .expect("first cancel");
     assert_eq!(common::slot_booked(&db, slot).await, 0);
 
     // A "Booking Cancelled" notification is written post-commit.
@@ -191,9 +197,15 @@ async fn cancel_booking_frees_seat_and_is_idempotent(db: PgPool) {
 
     // Second cancel of the same booking should fail cleanly (not free the
     // seat twice).
-    let err = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
-        .await
-        .expect_err("second cancel should fail");
+    let err = service::cancel_booking(
+        &db,
+        common::studio_now_utc(Utc::now()),
+        &auth,
+        booking.id,
+        None,
+    )
+    .await
+    .expect_err("second cancel should fail");
     // Either BadRequest("booking is already cancelled") or Conflict, both
     // are acceptable idempotency signals.
     assert!(
@@ -232,9 +244,15 @@ async fn cancel_within_24h_rejected_for_non_admin(db: PgPool) {
     .await
     .expect("create booking");
 
-    let err = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
-        .await
-        .expect_err("within 24h should be rejected");
+    let err = service::cancel_booking(
+        &db,
+        common::studio_now_utc(Utc::now()),
+        &auth,
+        booking.id,
+        None,
+    )
+    .await
+    .expect_err("within 24h should be rejected");
     assert!(matches!(err, AppError::BadRequest(_)), "got: {err:?}");
 
     // Booked count untouched since cancel failed.
@@ -321,9 +339,15 @@ async fn cancel_booking_does_not_modify_price_cents(db: PgPool) {
     .expect("create booking");
     assert_eq!(booking.price_cents, 12_345);
 
-    let cancelled = service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
-        .await
-        .expect("cancel booking");
+    let cancelled = service::cancel_booking(
+        &db,
+        common::studio_now_utc(Utc::now()),
+        &auth,
+        booking.id,
+        None,
+    )
+    .await
+    .expect("cancel booking");
     assert_eq!(
         cancelled.price_cents, 12_345,
         "cancel must not touch price_cents — reports filter by status, not by zeroing this out"
@@ -395,21 +419,41 @@ async fn concurrent_cancel_and_create_never_oversell(db: PgPool) {
     let user_a = common::seed_member(&db, "a@example.com", "passw0rd!").await;
     let user_b = common::seed_member(&db, "b@example.com", "passw0rd!").await;
     let slot = TimeSlotSeed::new(1, common::today_utc()).insert(&db).await;
-    let req = move || CreateBookingRequest { time_slot_id: slot, note: None };
-    let held = service::create_booking(&db, common::studio_now_utc(Utc::now()), user_a, req(), None)
-        .await
-        .expect("A takes the only seat");
+    let req = move || CreateBookingRequest {
+        time_slot_id: slot,
+        note: None,
+    };
+    let held =
+        service::create_booking(&db, common::studio_now_utc(Utc::now()), user_a, req(), None)
+            .await
+            .expect("A takes the only seat");
 
     let (db_c, db_b) = (Arc::new(db.clone()), Arc::new(db.clone()));
     let auth_a = common::auth_for(&db, user_a).await;
     let cancel = tokio::spawn(async move {
-        service::cancel_booking(db_c.as_ref(), common::studio_now_utc(Utc::now()), &auth_a, held.id, None).await
+        service::cancel_booking(
+            db_c.as_ref(),
+            common::studio_now_utc(Utc::now()),
+            &auth_a,
+            held.id,
+            None,
+        )
+        .await
     });
     let create = tokio::spawn(async move {
-        service::create_booking(db_b.as_ref(), common::studio_now_utc(Utc::now()), user_b, req(), None).await
+        service::create_booking(
+            db_b.as_ref(),
+            common::studio_now_utc(Utc::now()),
+            user_b,
+            req(),
+            None,
+        )
+        .await
     });
     let (cancelled, created) = tokio::join!(cancel, create);
-    cancelled.expect("cancel task panicked").expect("A's cancel always succeeds");
+    cancelled
+        .expect("cancel task panicked")
+        .expect("A's cancel always succeeds");
     let b_got_seat = match created.expect("create task panicked") {
         Ok(_) => true,
         Err(AppError::BadRequest(ref m)) if m == "time slot is full or closed" => false,
@@ -458,7 +502,11 @@ async fn create_booking_full_and_started_slot_reports_full_not_started(db: PgPoo
     let user = common::seed_member(&db, "u@example.com", "passw0rd!").await;
     let past_date = (Utc::now() - Duration::days(1)).date_naive();
     let past_time = (Utc::now() - Duration::days(1)).time();
-    let slot = TimeSlotSeed::new(1, common::today_utc()).on(past_date).start(past_time).insert(&db).await;
+    let slot = TimeSlotSeed::new(1, common::today_utc())
+        .on(past_date)
+        .start(past_time)
+        .insert(&db)
+        .await;
     let other = common::seed_member(&db, "other@example.com", "passw0rd!").await;
     common::fixtures::seed_booking(&db, other, slot, BookingStatus::Confirmed, 0).await;
 
@@ -510,9 +558,15 @@ async fn cancel_booking_on_closed_slot_still_releases_seat(db: PgPool) {
         .await
         .expect("close slot");
 
-    service::cancel_booking(&db, common::studio_now_utc(Utc::now()), &auth, booking.id, None)
-        .await
-        .expect("cancel on closed slot should still succeed");
+    service::cancel_booking(
+        &db,
+        common::studio_now_utc(Utc::now()),
+        &auth,
+        booking.id,
+        None,
+    )
+    .await
+    .expect("cancel on closed slot should still succeed");
 
     assert_eq!(common::slot_booked(&db, slot).await, 0);
 }

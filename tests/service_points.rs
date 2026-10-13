@@ -183,7 +183,10 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
     let ledger = points_repo::find_ledger_by_user(&db, user_id, 10, 0)
         .await
         .expect("query ledger");
-    assert!(ledger.is_empty(), "a zero-delta call must not write a ledger row");
+    assert!(
+        ledger.is_empty(),
+        "a zero-delta call must not write a ledger row"
+    );
 }
 
 #[sqlx::test]
@@ -268,9 +271,9 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
             assert!(db_err.is_check_violation(), "got {db_err:?}");
             assert_eq!(db_err.constraint(), Some("test_points_balance_cap"));
         }
-        other => panic!(
-            "an unrelated check violation must pass through as Database, got {other:?}"
-        ),
+        other => {
+            panic!("an unrelated check violation must pass through as Database, got {other:?}")
+        }
     }
 }
 
@@ -320,7 +323,10 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
         .expect("read back flow sums");
     tx.commit().await.expect("commit");
 
-    assert_eq!(flow.earned, 10, "checkout_earn magnitude reads back positive");
+    assert_eq!(
+        flow.earned, 10,
+        "checkout_earn magnitude reads back positive"
+    );
     assert_eq!(
         flow.redeemed, 30,
         "checkout_redeem magnitude reads back positive despite the negative delta written"
@@ -452,11 +458,12 @@ async fn concurrent_try_spend_same_user_exactly_one_succeeds(db: PgPool) {
 
     let conflict_count = [&res_a, &res_b]
         .iter()
-        .filter(|r| {
-            matches!(r, Err(AppError::Conflict(msg)) if msg == "點數不足")
-        })
+        .filter(|r| matches!(r, Err(AppError::Conflict(msg)) if msg == "點數不足"))
         .count();
-    assert_eq!(conflict_count, 1, "the other must fail with Conflict(\"點數不足\")");
+    assert_eq!(
+        conflict_count, 1,
+        "the other must fail with Conflict(\"點數不足\")"
+    );
 
     let balance = points_repo::find_balance(&db, user_id)
         .await

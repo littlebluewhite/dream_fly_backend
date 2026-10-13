@@ -140,7 +140,8 @@ pub async fn list_leave_requests(
     };
 
     let total =
-        repository::count_admin_list(db, status_filter, query.course_id, coach_scope.as_ref()).await?;
+        repository::count_admin_list(db, status_filter, query.course_id, coach_scope.as_ref())
+            .await?;
     let rows = repository::find_admin_list(
         db,
         status_filter,
@@ -152,7 +153,10 @@ pub async fn list_leave_requests(
     .await?;
 
     Ok(LeaveRequestListResponse {
-        leave_requests: rows.into_iter().map(AdminLeaveRequestResponse::from).collect(),
+        leave_requests: rows
+            .into_iter()
+            .map(AdminLeaveRequestResponse::from)
+            .collect(),
         meta: pagination.meta(total),
     })
 }

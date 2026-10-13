@@ -434,7 +434,10 @@ async fn purge_expired_deletes_expired_rows_revoked_or_not(db: PgPool) {
     }
 
     let purged = session::purge_expired(&db).await.expect("purge");
-    assert_eq!(purged, 2, "both expired rows, revoked and live, are deleted");
+    assert_eq!(
+        purged, 2,
+        "both expired rows, revoked and live, are deleted"
+    );
 
     let remaining: Vec<String> =
         sqlx::query_scalar("SELECT token_hash FROM refresh_tokens WHERE user_id = $1")
@@ -1067,8 +1070,18 @@ async fn otp_verify_sixth_attempt_invalidates_code_until_resend(db: PgPool) {
 async fn verify_otp_conflict_keeps_code_usable(db: PgPool) {
     let store = InMemoryEphemeralStore::new();
     let (server, sms) = twilio_sms().await;
-    let owner = common::seed_member(&db, &format!("otp-owner-{}@example.com", Uuid::now_v7()), "Password!234").await;
-    let user_id = common::seed_member(&db, &format!("otp-conflict-{}@example.com", Uuid::now_v7()), "Password!234").await;
+    let owner = common::seed_member(
+        &db,
+        &format!("otp-owner-{}@example.com", Uuid::now_v7()),
+        "Password!234",
+    )
+    .await;
+    let user_id = common::seed_member(
+        &db,
+        &format!("otp-conflict-{}@example.com", Uuid::now_v7()),
+        "Password!234",
+    )
+    .await;
 
     // Another user already holds the verified phone.
     sqlx::query("UPDATE users SET phone = $2, phone_verified = true WHERE id = $1")
@@ -1094,7 +1107,11 @@ async fn verify_otp_conflict_keeps_code_usable(db: PgPool) {
     // stays counted (retained, not reset): free the phone, retry.
     let attempts_key = format!("otp_attempts:{user_id}");
     assert_eq!(
-        store.get(&attempts_key).await.expect("read attempts").as_deref(),
+        store
+            .get(&attempts_key)
+            .await
+            .expect("read attempts")
+            .as_deref(),
         Some("1"),
         "the 409 must keep the attempt count, not reset it"
     );

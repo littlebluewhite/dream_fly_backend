@@ -39,7 +39,9 @@ async fn attempt_makeup(
         common::studio_now_utc(Utc::now()),
         &auth,
         leave_id,
-        MakeupRequest { session_id: target_session_id },
+        MakeupRequest {
+            session_id: target_session_id,
+        },
     )
     .await
     .is_ok()
@@ -51,7 +53,10 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     // request, both targeting the same (roomy-capacity) session. The
     // `FOR UPDATE OF lr` lock in `find_for_makeup_tx` must serialize them so
     // only the first can observe `makeup_session_id IS NULL` and win.
-    let course_id = CourseSeed::new("Makeup Race Course").max_students(10).insert(&db).await;
+    let course_id = CourseSeed::new("Makeup Race Course")
+        .max_students(10)
+        .insert(&db)
+        .await;
     let user_id = common::seed_member(&db, "makeup-race@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
@@ -59,7 +64,8 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
     let original = (Utc::now() - Duration::days(1)).date_naive();
     let session_id = seed_course_session(&db, course_id, original, t(9, 0), t(10, 0)).await;
     let target_date = (Utc::now() + Duration::days(3)).date_naive();
-    let target_session_id = seed_course_session(&db, course_id, target_date, t(14, 0), t(15, 0)).await;
+    let target_session_id =
+        seed_course_session(&db, course_id, target_date, t(14, 0), t(15, 0)).await;
 
     let leave_id = seed_leave_request(&db, enrolment_id, session_id, LeaveStatus::Approved).await;
 
@@ -77,11 +83,17 @@ async fn concurrent_makeup_same_leave_request_only_one_succeeds(db: PgPool) {
             target_session_id
         )),
     );
-    let ok_count = [res_a.expect("task a panicked"), res_b.expect("task b panicked")]
-        .iter()
-        .filter(|ok| **ok)
-        .count();
-    assert_eq!(ok_count, 1, "exactly one concurrent makeup booking should succeed");
+    let ok_count = [
+        res_a.expect("task a panicked"),
+        res_b.expect("task b panicked"),
+    ]
+    .iter()
+    .filter(|ok| **ok)
+    .count();
+    assert_eq!(
+        ok_count, 1,
+        "exactly one concurrent makeup booking should succeed"
+    );
 
     let makeup: Option<Uuid> =
         sqlx::query_scalar("SELECT makeup_session_id FROM leave_requests WHERE id = $1")
@@ -100,7 +112,10 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
     // lock (`lock_session_tx`, controller ruling 2026-07-06) must serialize
     // the two capacity checks: the loser recounts after the winner's commit,
     // sees remaining = 3 - 2 + 0 - 1 = 0, and gets the capacity 409.
-    let course_id = CourseSeed::new("Makeup Last Seat Course").max_students(3).insert(&db).await;
+    let course_id = CourseSeed::new("Makeup Last Seat Course")
+        .max_students(3)
+        .insert(&db)
+        .await;
     let user_a = common::seed_member(&db, "makeup-last-seat-a@example.com", "Password!234").await;
     let user_b = common::seed_member(&db, "makeup-last-seat-b@example.com", "Password!234").await;
     let enrolment_a =
@@ -131,10 +146,13 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
             target_session_id
         )),
     );
-    let ok_count = [res_a.expect("task a panicked"), res_b.expect("task b panicked")]
-        .iter()
-        .filter(|ok| **ok)
-        .count();
+    let ok_count = [
+        res_a.expect("task a panicked"),
+        res_b.expect("task b panicked"),
+    ]
+    .iter()
+    .filter(|ok| **ok)
+    .count();
     assert_eq!(
         ok_count, 1,
         "exactly one of two racing makeup bookings should win the last seat"
@@ -146,7 +164,10 @@ async fn concurrent_makeup_different_requests_last_seat_only_one_wins(db: PgPool
             .fetch_one(&db)
             .await
             .expect("count makeups into target");
-    assert_eq!(booked_into_target, 1, "the target session must not be overbooked");
+    assert_eq!(
+        booked_into_target, 1,
+        "the target session must not be overbooked"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +187,9 @@ async fn makeup(
         common::studio_now_utc(Utc::now()),
         &common::auth_for(db, user_id).await,
         leave_id,
-        MakeupRequest { session_id: target_session_id },
+        MakeupRequest {
+            session_id: target_session_id,
+        },
     )
     .await
     .map(|_| ())
@@ -175,7 +198,10 @@ async fn makeup(
 /// 已核准、可補課的假單(課程 `max_students`,申請人是唯一 active 報名)。
 /// 回傳 (course_id, user_id, leave_id)。
 async fn approved_leave(db: &PgPool, name: &str, max_students: i32) -> (Uuid, Uuid, Uuid) {
-    let course_id = CourseSeed::new(name).max_students(max_students).insert(db).await;
+    let course_id = CourseSeed::new(name)
+        .max_students(max_students)
+        .insert(db)
+        .await;
     let email = format!("makeup-pin-{}@example.com", Uuid::now_v7());
     let user_id = common::seed_member(db, &email, "Password!234").await;
     let enrolment_id =
@@ -202,7 +228,10 @@ async fn makeup_unknown_target_session_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn makeup_source_conflict_precedes_unknown_target_404(db: PgPool) {
     // 假單還是 pending(source 409),目標場次又不存在(404)——source 先。
-    let course_id = CourseSeed::new("Makeup Pin Source").max_students(10).insert(&db).await;
+    let course_id = CourseSeed::new("Makeup Pin Source")
+        .max_students(10)
+        .insert(&db)
+        .await;
     let user_id = common::seed_member(&db, "makeup-pin-source@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;

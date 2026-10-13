@@ -49,14 +49,8 @@ pub async fn cancel(
     request_id: RequestId,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BookingResponse>, AppError> {
-    let booking = service::cancel_booking(
-        &state.db,
-        state.studio_now(),
-        &auth,
-        id,
-        request_id.0,
-    )
-    .await?;
+    let booking =
+        service::cancel_booking(&state.db, state.studio_now(), &auth, id, request_id.0).await?;
     Ok(Json(booking))
 }
 

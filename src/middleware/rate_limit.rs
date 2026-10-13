@@ -1,10 +1,10 @@
 use std::net::IpAddr;
 
+use axum::Json;
 use axum::extract::{ConnectInfo, Request};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 use crate::state::AppState;
@@ -43,10 +43,11 @@ fn extract_client_ip(req: &Request, trust_proxy: bool) -> Option<IpAddr> {
             .headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-            && let Some(first) = hdr.split(',').next()
-                && let Ok(ip) = first.trim().parse::<IpAddr>() {
-                    return Some(ip);
-                }
+        && let Some(first) = hdr.split(',').next()
+        && let Ok(ip) = first.trim().parse::<IpAddr>()
+    {
+        return Some(ip);
+    }
 
     req.extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -108,7 +109,10 @@ pub async fn rate_limit_middleware(
         })?;
 
     if global_count > GLOBAL_MAX_REQUESTS_PER_WINDOW {
-        return Err(error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
+        return Err(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many requests",
+        ));
     }
 
     Ok(next.run(req).await)
@@ -155,7 +159,10 @@ pub async fn strict_rate_limit(
         })?;
 
     if auth_count > AUTH_MAX_REQUESTS_PER_WINDOW {
-        return Err(error_response(StatusCode::TOO_MANY_REQUESTS, "too many requests"));
+        return Err(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many requests",
+        ));
     }
 
     Ok(next.run(req).await)

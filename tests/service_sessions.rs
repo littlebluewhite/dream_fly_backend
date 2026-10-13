@@ -251,8 +251,14 @@ async fn list_course_sessions_past_from_returns_existing_rows_only(db: PgPool) {
     let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap());
     let d = |day: u32| NaiveDate::from_ymd_opt(2026, 9, day).unwrap();
     let course_id = seed_course(&db, "Past From Course", None).await;
-    SlotSeed::new(course_id, 1, t(9, 0), t(10, 0)).venue("A").insert(&db).await;
-    SessionSeed::new(course_id, d(7), t(9, 0), t(10, 0)).venue("A").insert(&db).await;
+    SlotSeed::new(course_id, 1, t(9, 0), t(10, 0))
+        .venue("A")
+        .insert(&db)
+        .await;
+    SessionSeed::new(course_id, d(7), t(9, 0), t(10, 0))
+        .venue("A")
+        .insert(&db)
+        .await;
 
     let sessions = service::list_course_sessions(
         &db,
@@ -291,15 +297,18 @@ async fn list_course_sessions_materializes_todays_slot(db: PgPool) {
         &db,
         common::studio_now_utc(Utc::now()),
         course_id,
-        SessionsRangeQuery { from: None, to: None },
+        SessionsRangeQuery {
+            from: None,
+            to: None,
+        },
     )
     .await
     .expect("list");
 
     assert!(
-        sessions.iter().any(|s| s.session_date == today
-            && s.start_time == t(9, 0)
-            && s.end_time == t(10, 0)),
+        sessions
+            .iter()
+            .any(|s| s.session_date == today && s.start_time == t(9, 0) && s.end_time == t(10, 0)),
         "today's weekly slot should have materialized into a session, got {sessions:?}"
     );
 }
@@ -310,7 +319,10 @@ async fn list_course_sessions_nonexistent_course_returns_not_found(db: PgPool) {
         &db,
         common::studio_now_utc(Utc::now()),
         Uuid::now_v7(),
-        SessionsRangeQuery { from: None, to: None },
+        SessionsRangeQuery {
+            from: None,
+            to: None,
+        },
     )
     .await
     .unwrap_err();
@@ -386,8 +398,22 @@ async fn my_weekly_schedule_only_includes_active_enrolments(db: PgPool) {
     seed_course_schedule_slot(&db, cancelled_course, 2, t(9, 0), t(10, 0)).await;
     seed_course_schedule_slot(&db, not_enrolled_course, 3, t(9, 0), t(10, 0)).await;
 
-    seed_enrolment(&db, user_id, active_course, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, user_id, cancelled_course, EnrolmentStatus::Cancelled, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        user_id,
+        active_course,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    seed_enrolment(
+        &db,
+        user_id,
+        cancelled_course,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
 
     let schedule = service::my_weekly_schedule(&db, user_id)
         .await
@@ -407,8 +433,15 @@ async fn today_sessions_coach_sees_only_own_courses_with_enrolled_count(db: PgPo
     let coach_id = seed_coach(&db, coach_user, "Coach Today").await;
     let today = Utc::now().date_naive();
     let dow = dow_of(today);
-    let own_scene =
-        seed_session_scene(&db, "Own Course Today", Some(coach_id), today, t(9, 0), None).await;
+    let own_scene = seed_session_scene(
+        &db,
+        "Own Course Today",
+        Some(coach_id),
+        today,
+        t(9, 0),
+        None,
+    )
+    .await;
     let own_course = own_scene.course;
     // other_course intentionally has no session pre-seeded — the coach-scoped
     // today_sessions() materialize/read must never surface a course this
@@ -455,7 +488,8 @@ async fn today_sessions_coach_role_without_coach_row_returns_empty(db: PgPool) {
 
 #[sqlx::test]
 async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPool) {
-    let coach_user = common::seed_member(&db, "coach-name-today@example.com", "hunter22-secret").await;
+    let coach_user =
+        common::seed_member(&db, "coach-name-today@example.com", "hunter22-secret").await;
     sqlx::query("UPDATE users SET name = $2 WHERE id = $1")
         .bind(coach_user)
         .bind("Today Coach Display Name")
@@ -465,12 +499,25 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
     let coach_id = seed_coach(&db, coach_user, "Today Coach Title").await;
 
     let today = Utc::now().date_naive();
-    let with_scene =
-        seed_session_scene(&db, "Course With Coach Today", Some(coach_id), today, t(9, 0), None)
-            .await;
+    let with_scene = seed_session_scene(
+        &db,
+        "Course With Coach Today",
+        Some(coach_id),
+        today,
+        t(9, 0),
+        None,
+    )
+    .await;
     let with_coach = with_scene.course;
-    let without_scene =
-        seed_session_scene(&db, "Course Without Coach Today", None, today, t(11, 0), None).await;
+    let without_scene = seed_session_scene(
+        &db,
+        "Course Without Coach Today",
+        None,
+        today,
+        t(11, 0),
+        None,
+    )
+    .await;
     let without_coach = without_scene.course;
 
     let admin_id =
@@ -480,12 +527,23 @@ async fn today_sessions_coach_name_present_with_coach_and_null_without(db: PgPoo
         .await
         .expect("today sessions");
 
-    let with_row = sessions.iter().find(|s| s.course_id == with_coach).expect("with_coach session");
-    assert_eq!(with_row.coach_name.as_deref(), Some("Today Coach Display Name"));
+    let with_row = sessions
+        .iter()
+        .find(|s| s.course_id == with_coach)
+        .expect("with_coach session");
+    assert_eq!(
+        with_row.coach_name.as_deref(),
+        Some("Today Coach Display Name")
+    );
 
-    let without_row =
-        sessions.iter().find(|s| s.course_id == without_coach).expect("without_coach session");
-    assert_eq!(without_row.coach_name, None, "course has no coach_id -> null");
+    let without_row = sessions
+        .iter()
+        .find(|s| s.course_id == without_coach)
+        .expect("without_coach session");
+    assert_eq!(
+        without_row.coach_name, None,
+        "course has no coach_id -> null"
+    );
 }
 
 #[sqlx::test]
@@ -509,7 +567,10 @@ async fn today_sessions_venue_resolves_when_slot_matches(db: PgPool) {
         .await
         .expect("today sessions");
 
-    let row = sessions.iter().find(|s| s.course_id == course_id).expect("session present");
+    let row = sessions
+        .iter()
+        .find(|s| s.course_id == course_id)
+        .expect("session present");
     assert_eq!(row.venue.as_deref(), Some("Main Hall"));
 }
 
@@ -568,7 +629,10 @@ async fn today_sessions_venue_is_null_when_no_matching_slot(db: PgPool) {
         .await
         .expect("today sessions");
 
-    let row = sessions.iter().find(|s| s.course_id == course_id).expect("session present");
+    let row = sessions
+        .iter()
+        .find(|s| s.course_id == course_id)
+        .expect("session present");
     assert_eq!(row.venue, None);
 }
 
@@ -579,8 +643,15 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
     let coach_id = seed_coach(&db, coach_user, "Coach").await;
 
     let today = Utc::now().date_naive();
-    let scene_a =
-        seed_session_scene(&db, "Course A Admin Today", Some(coach_id), today, t(9, 0), None).await;
+    let scene_a = seed_session_scene(
+        &db,
+        "Course A Admin Today",
+        Some(coach_id),
+        today,
+        t(9, 0),
+        None,
+    )
+    .await;
     let course_a = scene_a.course;
     let scene_b = seed_session_scene(&db, "Course B Admin Today", None, today, t(9, 0), None).await;
     let course_b = scene_b.course;
@@ -593,8 +664,14 @@ async fn today_sessions_admin_sees_all_courses(db: PgPool) {
         .expect("admin today sessions");
 
     let ids: Vec<Uuid> = sessions.iter().map(|s| s.course_id).collect();
-    assert!(ids.contains(&course_a), "admin must see course_a, got {ids:?}");
-    assert!(ids.contains(&course_b), "admin must see course_b, got {ids:?}");
+    assert!(
+        ids.contains(&course_a),
+        "admin must see course_a, got {ids:?}"
+    );
+    assert!(
+        ids.contains(&course_b),
+        "admin must see course_b, got {ids:?}"
+    );
 }
 
 #[sqlx::test]

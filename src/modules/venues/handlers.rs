@@ -12,9 +12,7 @@ use super::dto::{CreateVenueRequest, UpdateVenueRequest, VenueResponse};
 use super::service;
 
 #[tracing::instrument(skip_all)]
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<VenueResponse>>, AppError> {
+pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<VenueResponse>>, AppError> {
     let venues = service::list_active(&state.db).await?;
     Ok(Json(venues))
 }

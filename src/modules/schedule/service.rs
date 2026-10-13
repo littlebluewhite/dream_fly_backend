@@ -19,10 +19,14 @@ pub async fn get_monthly_schedule(
     params: ScheduleQuery,
 ) -> Result<Vec<DaySchedule>, AppError> {
     if !(1..=12).contains(&params.month) {
-        return Err(AppError::BadRequest("month must be between 1 and 12".into()));
+        return Err(AppError::BadRequest(
+            "month must be between 1 and 12".into(),
+        ));
     }
     if !(1970..=2100).contains(&params.year) {
-        return Err(AppError::BadRequest("year must be between 1970 and 2100".into()));
+        return Err(AppError::BadRequest(
+            "year must be between 1970 and 2100".into(),
+        ));
     }
 
     let slots = repository::find_by_month(db, params.year, params.month).await?;

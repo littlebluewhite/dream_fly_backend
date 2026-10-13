@@ -22,7 +22,9 @@ async fn list_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn list_member_sees_only_active_sorted_by_display_order(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-list-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-list-member@example.com", "Password!234")
+        .await;
 
     seed_reward(&app.db, "Second", 20, None, true, 1).await;
     seed_reward(&app.db, "First", 10, None, true, 0).await;
@@ -43,7 +45,9 @@ async fn list_member_sees_only_active_sorted_by_display_order(db: PgPool) {
 #[sqlx::test]
 async fn list_all_true_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-list-all-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-list-all-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/rewards?all=true")
@@ -77,14 +81,18 @@ async fn list_all_true_as_admin_includes_inactive(db: PgPool) {
 async fn redeem_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
     let reward_id = seed_reward(&app.db, "Any Reward", 10, None, true, 0).await;
-    let resp = app.post(&format!("/api/v1/rewards/{reward_id}/redeem")).await;
+    let resp = app
+        .post(&format!("/api/v1/rewards/{reward_id}/redeem"))
+        .await;
     assert_eq!(resp.status_code(), 401);
 }
 
 #[sqlx::test]
 async fn redeem_success_returns_expected_shape(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-redeem-ok@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-redeem-ok@example.com", "Password!234")
+        .await;
     set_points_balance(&app.db, user.user_id, 100).await;
     let reward_id = seed_reward(&app.db, "Mug", 40, Some(5), true, 0).await;
 
@@ -102,7 +110,9 @@ async fn redeem_success_returns_expected_shape(db: PgPool) {
 #[sqlx::test]
 async fn redeem_unknown_reward_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-redeem-404@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-redeem-404@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post(&format!("/api/v1/rewards/{}/redeem", Uuid::now_v7()))
@@ -114,7 +124,9 @@ async fn redeem_unknown_reward_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn redeem_insufficient_points_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-redeem-poor@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-redeem-poor@example.com", "Password!234")
+        .await;
     set_points_balance(&app.db, user.user_id, 1).await;
     let reward_id = seed_reward(&app.db, "Expensive", 999, None, true, 0).await;
 
@@ -130,7 +142,9 @@ async fn redeem_insufficient_points_returns_409(db: PgPool) {
 #[sqlx::test]
 async fn redeem_zero_stock_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-redeem-oos@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-redeem-oos@example.com", "Password!234")
+        .await;
     set_points_balance(&app.db, user.user_id, 1000).await;
     let reward_id = seed_reward(&app.db, "Sold Out", 10, Some(0), true, 0).await;
 
@@ -157,7 +171,9 @@ async fn my_redemptions_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn my_redemptions_lists_and_paginates(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-history@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-history@example.com", "Password!234")
+        .await;
     set_points_balance(&app.db, user.user_id, 1000).await;
     let reward_id = seed_reward(&app.db, "Repeatable", 10, None, true, 0).await;
 
@@ -198,7 +214,9 @@ async fn create_reward_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_reward_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-create-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-create-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/rewards")
@@ -262,7 +280,9 @@ async fn update_reward_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn update_reward_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("rewards-update-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("rewards-update-member@example.com", "Password!234")
+        .await;
     let reward_id = seed_reward(&app.db, "Editable", 10, None, true, 0).await;
 
     let resp = app

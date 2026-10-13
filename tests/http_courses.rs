@@ -100,7 +100,9 @@ async fn create_course_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_course_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("mem-c@example.com", "Password!234").await;
+    let user = app
+        .register_member("mem-c@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/courses")
@@ -192,7 +194,9 @@ async fn update_course_as_admin_can_set_category_schedule_and_highlight(db: PgPo
 async fn update_course_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let id = seed_course(&app.db, "Intro Flow", None).await;
-    let user = app.register_member("m-upd-c@example.com", "Password!234").await;
+    let user = app
+        .register_member("m-upd-c@example.com", "Password!234")
+        .await;
 
     let resp = app
         .patch(&format!("/api/v1/courses/{id}"))
@@ -249,7 +253,9 @@ async fn create_course_with_schedule_slots_returns_detail_with_slots(db: PgPool)
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
+    let slots = body["schedule_slots"]
+        .as_array()
+        .expect("schedule_slots array");
     assert_eq!(slots.len(), 2);
     assert_eq!(slots[0]["day_of_week"], 2);
     assert_eq!(slots[0]["start_time"], "16:00:00");
@@ -276,7 +282,9 @@ async fn get_course_detail_includes_schedule_slots(db: PgPool) {
     let resp = app.get(&format!("/api/v1/courses/{course_id}")).await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
+    let slots = body["schedule_slots"]
+        .as_array()
+        .expect("schedule_slots array");
     assert_eq!(slots.len(), 1);
     assert_eq!(slots[0]["day_of_week"], 6);
     assert_eq!(slots[0]["start_time"], "10:00:00");
@@ -331,8 +339,14 @@ async fn patch_course_schedule_slots_replaces_entire_set(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
-    assert_eq!(slots.len(), 1, "old slot must be gone, not merged with the new one");
+    let slots = body["schedule_slots"]
+        .as_array()
+        .expect("schedule_slots array");
+    assert_eq!(
+        slots.len(),
+        1,
+        "old slot must be gone, not merged with the new one"
+    );
     assert_eq!(slots[0]["day_of_week"], 5);
     assert_eq!(slots[0]["start_time"], "18:00:00");
 }
@@ -358,8 +372,14 @@ async fn patch_course_without_schedule_slots_field_leaves_slots_untouched(db: Pg
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    let slots = body["schedule_slots"].as_array().expect("schedule_slots array");
-    assert_eq!(slots.len(), 1, "omitting schedule_slots must leave existing slots untouched");
+    let slots = body["schedule_slots"]
+        .as_array()
+        .expect("schedule_slots array");
+    assert_eq!(
+        slots.len(),
+        1,
+        "omitting schedule_slots must leave existing slots untouched"
+    );
     assert_eq!(slots[0]["day_of_week"], 3);
 }
 
@@ -455,18 +475,39 @@ async fn update_course_clears_nullable_fields_to_null(db: PgPool) {
     assert!(body["schedule_text"].is_null());
 
     #[allow(clippy::type_complexity)]
-    let row: (Option<i32>, Option<i32>, Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
+    let row: (
+        Option<i32>,
+        Option<i32>,
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
         "SELECT min_age, max_age, coach_id, category, schedule_text FROM courses WHERE id = $1",
     )
     .bind(Uuid::parse_str(id).unwrap())
     .fetch_one(&app.db)
     .await
     .unwrap();
-    assert!(row.0.is_none(), "min_age must be NULL in the DB, not just absent from JSON");
-    assert!(row.1.is_none(), "max_age must be NULL in the DB, not just absent from JSON");
-    assert!(row.2.is_none(), "coach_id must be NULL in the DB, not just absent from JSON");
-    assert!(row.3.is_none(), "category must be NULL in the DB, not just absent from JSON");
-    assert!(row.4.is_none(), "schedule_text must be NULL in the DB, not just absent from JSON");
+    assert!(
+        row.0.is_none(),
+        "min_age must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.1.is_none(),
+        "max_age must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.2.is_none(),
+        "coach_id must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.3.is_none(),
+        "category must be NULL in the DB, not just absent from JSON"
+    );
+    assert!(
+        row.4.is_none(),
+        "schedule_text must be NULL in the DB, not just absent from JSON"
+    );
 
     // Field-absent PATCH afterward must not error and must leave the
     // now-NULL columns alone — proves "absent" stays distinct from "null".

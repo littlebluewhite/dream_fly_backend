@@ -37,7 +37,11 @@ fn assert_error_shape(body: &Value, expected_status: u16, status_code: u16) {
         "expected status {expected_status}, got {status_code}, body={body}"
     );
     let obj = body.as_object().expect("response body is an object");
-    assert_eq!(obj.len(), 1, "error body must have exactly one key, got {obj:?}");
+    assert_eq!(
+        obj.len(),
+        1,
+        "error body must have exactly one key, got {obj:?}"
+    );
     let err = obj.get("error").expect("missing `error` key");
     assert!(
         err.is_string(),
@@ -214,5 +218,8 @@ async fn internal_variant_masks_sensitive_details_in_500_body() {
     let parsed: Value = serde_json::from_str(body_str).expect("json body");
     let obj = parsed.as_object().unwrap();
     assert_eq!(obj.len(), 1);
-    assert_eq!(obj.get("error").unwrap().as_str().unwrap(), "internal server error");
+    assert_eq!(
+        obj.get("error").unwrap().as_str().unwrap(),
+        "internal server error"
+    );
 }

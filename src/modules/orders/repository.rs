@@ -177,12 +177,10 @@ pub async fn find_by_user(
 }
 
 pub async fn count_by_user(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM orders WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_one(db)
-    .await
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orders WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
 }
 
 pub async fn find_items_by_order(

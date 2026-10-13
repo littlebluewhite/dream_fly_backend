@@ -1,10 +1,9 @@
-use axum::{Router, routing::post};
-use crate::state::AppState;
 use super::handlers;
+use crate::state::AppState;
+use axum::{Router, routing::post};
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/auth/logout", post(handlers::logout))
+    Router::new().route("/auth/logout", post(handlers::logout))
 }
 
 /// 8 條吃憑證/花錢的端點(register/login/google/refresh/otp/send、

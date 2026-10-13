@@ -25,7 +25,9 @@ async fn add_item_first_time_creates_cart_item(db: PgPool) {
     let user = seed_member(&db, "c1@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-1", 500, Some(10)).await;
 
-    let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
+    let cart = service::add_item(&db, user, "product", product, 2)
+        .await
+        .unwrap();
     assert_eq!(cart.items.len(), 1);
     assert_eq!(cart.items[0].item_type, CartItemType::Product);
     assert_eq!(cart.items[0].item_id, product);
@@ -39,8 +41,12 @@ async fn add_item_duplicate_merges_quantity(db: PgPool) {
     let user = seed_member(&db, "c2@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-2", 500, Some(10)).await;
 
-    service::add_item(&db, user, "product", product, 2).await.unwrap();
-    let cart = service::add_item(&db, user, "product", product, 3).await.unwrap();
+    service::add_item(&db, user, "product", product, 2)
+        .await
+        .unwrap();
+    let cart = service::add_item(&db, user, "product", product, 3)
+        .await
+        .unwrap();
 
     // Second `add_item` should have merged into the same row (repository
     // uses ON CONFLICT DO UPDATE SET quantity = quantity + excluded.quantity).
@@ -53,7 +59,9 @@ async fn add_item_rejects_zero_quantity(db: PgPool) {
     let user = seed_member(&db, "c3@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-3", 500, Some(10)).await;
 
-    let err = service::add_item(&db, user, "product", product, 0).await.unwrap_err();
+    let err = service::add_item(&db, user, "product", product, 0)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if m.contains("quantity")),
         "got {err:?}"
@@ -65,7 +73,9 @@ async fn add_item_rejects_quantity_above_stock(db: PgPool) {
     let user = seed_member(&db, "c4@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-4", 500, Some(3)).await;
 
-    let err = service::add_item(&db, user, "product", product, 10).await.unwrap_err();
+    let err = service::add_item(&db, user, "product", product, 10)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Conflict(ref m) if m.contains("stock")),
         "got {err:?}"
@@ -82,10 +92,14 @@ async fn add_item_merged_quantity_past_stock_is_409_and_cart_unchanged(db: PgPoo
     let user = seed_member(&db, "c11@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-11", 500, Some(3)).await;
 
-    let cart = service::add_item(&db, user, "product", product, 2).await.unwrap();
+    let cart = service::add_item(&db, user, "product", product, 2)
+        .await
+        .unwrap();
     assert_eq!(cart.items[0].quantity, 2);
 
-    let err = service::add_item(&db, user, "product", product, 2).await.unwrap_err();
+    let err = service::add_item(&db, user, "product", product, 2)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Conflict(ref m) if m == "insufficient stock: only 3 available"),
         "got {err:?}"
@@ -93,7 +107,10 @@ async fn add_item_merged_quantity_past_stock_is_409_and_cart_unchanged(db: PgPoo
 
     let cart = service::get_cart(&db, user).await.unwrap();
     assert_eq!(cart.items.len(), 1);
-    assert_eq!(cart.items[0].quantity, 2, "rejected add must not change the line");
+    assert_eq!(
+        cart.items[0].quantity, 2,
+        "rejected add must not change the line"
+    );
 }
 
 // Two concurrent adds to the same line: the upsert's row lock (or, for the
@@ -110,7 +127,11 @@ async fn concurrent_add_item_same_line_only_one_fits_in_stock(db: PgPool) {
     );
 
     let results = [a, b];
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "got {results:?}");
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "got {results:?}"
+    );
     assert!(
         results
             .iter()
@@ -129,7 +150,9 @@ async fn add_item_onto_near_i32_max_quantity_is_400_and_cart_unchanged(db: PgPoo
     let user = seed_member(&db, "c13b@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-13b", 500, None).await;
 
-    service::add_item(&db, user, "product", product, 1).await.unwrap();
+    service::add_item(&db, user, "product", product, 1)
+        .await
+        .unwrap();
     sqlx::query("UPDATE cart_items SET quantity = $1 WHERE user_id = $2")
         .bind(i32::MAX - 1)
         .bind(user)
@@ -137,7 +160,9 @@ async fn add_item_onto_near_i32_max_quantity_is_400_and_cart_unchanged(db: PgPoo
         .await
         .unwrap();
 
-    let err = service::add_item(&db, user, "product", product, 5).await.unwrap_err();
+    let err = service::add_item(&db, user, "product", product, 5)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
         "got {err:?}"
@@ -148,7 +173,11 @@ async fn add_item_onto_near_i32_max_quantity_is_400_and_cart_unchanged(db: PgPoo
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(quantity, i32::MAX - 1, "rejected add must not change the line");
+    assert_eq!(
+        quantity,
+        i32::MAX - 1,
+        "rejected add must not change the line"
+    );
 }
 
 #[sqlx::test]
@@ -156,15 +185,22 @@ async fn add_item_merged_quantity_past_999_is_400_and_cart_unchanged(db: PgPool)
     let user = seed_member(&db, "c13@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-13", 500, None).await;
 
-    service::add_item(&db, user, "product", product, 999).await.unwrap();
-    let err = service::add_item(&db, user, "product", product, 1).await.unwrap_err();
+    service::add_item(&db, user, "product", product, 999)
+        .await
+        .unwrap();
+    let err = service::add_item(&db, user, "product", product, 1)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if *m == quantity_range_msg()),
         "got {err:?}"
     );
 
     let cart = service::get_cart(&db, user).await.unwrap();
-    assert_eq!(cart.items[0].quantity, 999, "rejected add must not change the line");
+    assert_eq!(
+        cart.items[0].quantity, 999,
+        "rejected add must not change the line"
+    );
 }
 
 #[sqlx::test]
@@ -180,21 +216,30 @@ async fn add_item_time_based_entitlement_twice_is_422_and_cart_unchanged(db: PgP
     )
     .await;
 
-    service::add_item(&db, user, "product", membership, 1).await.unwrap();
-    let err = service::add_item(&db, user, "product", membership, 1).await.unwrap_err();
+    service::add_item(&db, user, "product", membership, 1)
+        .await
+        .unwrap();
+    let err = service::add_item(&db, user, "product", membership, 1)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Validation(ref m) if m == "time-based subscription quantity must be 1"),
         "got {err:?}"
     );
 
     let cart = service::get_cart(&db, user).await.unwrap();
-    assert_eq!(cart.items[0].quantity, 1, "rejected add must not change the line");
+    assert_eq!(
+        cart.items[0].quantity, 1,
+        "rejected add must not change the line"
+    );
 }
 
 #[sqlx::test]
 async fn add_item_unknown_product_returns_not_found(db: PgPool) {
     let user = seed_member(&db, "c5@example.com", "Password!234").await;
-    let err = service::add_item(&db, user, "product", Uuid::now_v7(), 1).await.unwrap_err();
+    let err = service::add_item(&db, user, "product", Uuid::now_v7(), 1)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
 }
 
@@ -208,7 +253,9 @@ async fn add_item_inactive_product_is_rejected(db: PgPool) {
         .await
         .unwrap();
 
-    let err = service::add_item(&db, user, "product", product, 1).await.unwrap_err();
+    let err = service::add_item(&db, user, "product", product, 1)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if m.contains("not available")),
         "got {err:?}"
@@ -218,7 +265,9 @@ async fn add_item_inactive_product_is_rejected(db: PgPool) {
 #[sqlx::test]
 async fn add_item_invalid_item_type_is_rejected(db: PgPool) {
     let user = seed_member(&db, "c6b@example.com", "Password!234").await;
-    let err = service::add_item(&db, user, "bogus", Uuid::now_v7(), 1).await.unwrap_err();
+    let err = service::add_item(&db, user, "bogus", Uuid::now_v7(), 1)
+        .await
+        .unwrap_err();
     match err {
         AppError::Validation(msg) => assert_eq!(msg, "invalid item_type: bogus"),
         other => panic!("expected Validation, got {other:?}"),
@@ -244,10 +293,14 @@ async fn add_item_mixed_case_item_type_returns_422(db: PgPool) {
 async fn update_quantity_changes_and_get_cart_reflects(db: PgPool) {
     let user = seed_member(&db, "c7@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-7", 500, Some(20)).await;
-    let cart = service::add_item(&db, user, "product", product, 1).await.unwrap();
+    let cart = service::add_item(&db, user, "product", product, 1)
+        .await
+        .unwrap();
     let item_id = cart.items[0].id;
 
-    let cart = service::update_quantity(&db, user, item_id, 7).await.unwrap();
+    let cart = service::update_quantity(&db, user, item_id, 7)
+        .await
+        .unwrap();
     assert_eq!(cart.items[0].quantity, 7);
     assert_eq!(cart.total_cents, 3500);
 
@@ -262,10 +315,14 @@ async fn update_quantity_changes_and_get_cart_reflects(db: PgPool) {
 async fn update_quantity_above_stock_returns_conflict(db: PgPool) {
     let user = seed_member(&db, "c12@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-12", 500, Some(5)).await;
-    let cart = service::add_item(&db, user, "product", product, 1).await.unwrap();
+    let cart = service::add_item(&db, user, "product", product, 1)
+        .await
+        .unwrap();
     let item_id = cart.items[0].id;
 
-    let err = service::update_quantity(&db, user, item_id, 6).await.unwrap_err();
+    let err = service::update_quantity(&db, user, item_id, 6)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Conflict(ref m) if m.contains("insufficient stock")),
         "got {err:?}"
@@ -287,10 +344,14 @@ async fn update_quantity_time_based_entitlement_above_one_is_422(db: PgPool) {
         None,
     )
     .await;
-    let cart = service::add_item(&db, user, "product", membership, 1).await.unwrap();
+    let cart = service::add_item(&db, user, "product", membership, 1)
+        .await
+        .unwrap();
     let item_id = cart.items[0].id;
 
-    let err = service::update_quantity(&db, user, item_id, 2).await.unwrap_err();
+    let err = service::update_quantity(&db, user, item_id, 2)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Validation(ref m) if m == "time-based subscription quantity must be 1"),
         "got {err:?}"
@@ -301,7 +362,9 @@ async fn update_quantity_time_based_entitlement_above_one_is_422(db: PgPool) {
 async fn remove_item_then_get_cart_empty(db: PgPool) {
     let user = seed_member(&db, "c8@example.com", "Password!234").await;
     let product = seed_product(&db, "prod-8", 500, Some(5)).await;
-    let cart = service::add_item(&db, user, "product", product, 1).await.unwrap();
+    let cart = service::add_item(&db, user, "product", product, 1)
+        .await
+        .unwrap();
     let item_id = cart.items[0].id;
 
     let cart = service::remove_item(&db, user, item_id).await.unwrap();
@@ -312,7 +375,9 @@ async fn remove_item_then_get_cart_empty(db: PgPool) {
 #[sqlx::test]
 async fn remove_item_not_in_cart_returns_not_found(db: PgPool) {
     let user = seed_member(&db, "c9@example.com", "Password!234").await;
-    let err = service::remove_item(&db, user, Uuid::now_v7()).await.unwrap_err();
+    let err = service::remove_item(&db, user, Uuid::now_v7())
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
 }
 
@@ -338,7 +403,9 @@ async fn add_course_item_creates_cart_item_with_quantity_one(db: PgPool) {
     let user = seed_member(&db, "cc1@example.com", "Password!234").await;
     let course = seed_course(&db, "Tumbling Basics", None).await;
 
-    let cart = service::add_item(&db, user, "course", course, 1).await.unwrap();
+    let cart = service::add_item(&db, user, "course", course, 1)
+        .await
+        .unwrap();
     assert_eq!(cart.items.len(), 1);
     assert_eq!(cart.items[0].item_type, CartItemType::Course);
     assert_eq!(cart.items[0].item_id, course);
@@ -353,7 +420,9 @@ async fn add_course_item_rejects_quantity_other_than_one(db: PgPool) {
     let user = seed_member(&db, "cc2@example.com", "Password!234").await;
     let course = seed_course(&db, "Tumbling Basics", None).await;
 
-    let err = service::add_item(&db, user, "course", course, 2).await.unwrap_err();
+    let err = service::add_item(&db, user, "course", course, 2)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
 }
 
@@ -362,8 +431,12 @@ async fn add_course_item_duplicate_returns_conflict(db: PgPool) {
     let user = seed_member(&db, "cc3@example.com", "Password!234").await;
     let course = seed_course(&db, "Tumbling Basics", None).await;
 
-    service::add_item(&db, user, "course", course, 1).await.unwrap();
-    let err = service::add_item(&db, user, "course", course, 1).await.unwrap_err();
+    service::add_item(&db, user, "course", course, 1)
+        .await
+        .unwrap();
+    let err = service::add_item(&db, user, "course", course, 1)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::Conflict(ref m) if m.contains("already in cart")),
         "got {err:?}"
@@ -373,7 +446,9 @@ async fn add_course_item_duplicate_returns_conflict(db: PgPool) {
 #[sqlx::test]
 async fn add_course_item_unknown_course_returns_not_found(db: PgPool) {
     let user = seed_member(&db, "cc4@example.com", "Password!234").await;
-    let err = service::add_item(&db, user, "course", Uuid::now_v7(), 1).await.unwrap_err();
+    let err = service::add_item(&db, user, "course", Uuid::now_v7(), 1)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
 }
 
@@ -387,7 +462,9 @@ async fn add_course_item_inactive_course_is_rejected(db: PgPool) {
         .await
         .unwrap();
 
-    let err = service::add_item(&db, user, "course", course, 1).await.unwrap_err();
+    let err = service::add_item(&db, user, "course", course, 1)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, AppError::BadRequest(ref m) if m == "course is not available"),
         "got {err:?}"
@@ -398,10 +475,14 @@ async fn add_course_item_inactive_course_is_rejected(db: PgPool) {
 async fn update_quantity_on_course_line_rejects_non_one(db: PgPool) {
     let user = seed_member(&db, "cc6@example.com", "Password!234").await;
     let course = seed_course(&db, "Tumbling Basics", None).await;
-    let cart = service::add_item(&db, user, "course", course, 1).await.unwrap();
+    let cart = service::add_item(&db, user, "course", course, 1)
+        .await
+        .unwrap();
     let item_id = cart.items[0].id;
 
-    let err = service::update_quantity(&db, user, item_id, 2).await.unwrap_err();
+    let err = service::update_quantity(&db, user, item_id, 2)
+        .await
+        .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
 }
 
@@ -465,8 +546,12 @@ async fn checkout_cart_seam_reads_only_the_locked_users_cart(db: PgPool) {
     let product_a = seed_product(&db, "cart-lock-prod-a", 500, Some(10)).await;
     let product_b = seed_product(&db, "cart-lock-prod-b", 700, Some(10)).await;
 
-    service::add_item(&db, user_a, "product", product_a, 1).await.unwrap();
-    service::add_item(&db, user_b, "product", product_b, 1).await.unwrap();
+    service::add_item(&db, user_a, "product", product_a, 1)
+        .await
+        .unwrap();
+    service::add_item(&db, user_b, "product", product_b, 1)
+        .await
+        .unwrap();
 
     // Lock user_a's balance, then read "the" cart through the seam — it must
     // resolve to user_a's cart (via `lock.user_id()`), never user_b's, even
@@ -481,6 +566,10 @@ async fn checkout_cart_seam_reads_only_the_locked_users_cart(db: PgPool) {
         .expect("checkout read");
     tx.rollback().await.expect("rollback");
 
-    assert_eq!(lines.len(), 1, "must read only the locked user's own cart line");
+    assert_eq!(
+        lines.len(),
+        1,
+        "must read only the locked user's own cart line"
+    );
     assert_eq!(lines[0].target, LineTarget::Product(product_a));
 }

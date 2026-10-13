@@ -47,9 +47,11 @@ impl MakeupInfo {
         start_time: Option<NaiveTime>,
     ) -> Option<Self> {
         match (session_id, session_date, start_time) {
-            (Some(session_id), Some(session_date), Some(start_time)) => {
-                Some(Self { session_id, session_date, start_time })
-            }
+            (Some(session_id), Some(session_date), Some(start_time)) => Some(Self {
+                session_id,
+                session_date,
+                start_time,
+            }),
             _ => None,
         }
     }

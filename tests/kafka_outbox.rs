@@ -72,12 +72,18 @@ struct OutboxRowState {
 
 async fn outbox_row_state(db: &PgPool, id: Uuid) -> OutboxRowState {
     let (published_at, attempts, last_error): (Option<DateTime<Utc>>, i32, Option<String>) =
-        sqlx::query_as("SELECT published_at, attempts, last_error FROM events_outbox WHERE id = $1")
-            .bind(id)
-            .fetch_one(db)
-            .await
-            .expect("events_outbox row");
-    OutboxRowState { published_at, attempts, last_error }
+        sqlx::query_as(
+            "SELECT published_at, attempts, last_error FROM events_outbox WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .expect("events_outbox row");
+    OutboxRowState {
+        published_at,
+        attempts,
+        last_error,
+    }
 }
 
 async fn next_attempt_at(db: &PgPool, id: Uuid) -> DateTime<Utc> {
@@ -174,7 +180,11 @@ async fn drain_once_on_empty_table_is_a_noop(db: PgPool) {
         .await
         .expect("drain_once on an empty outbox should succeed");
 
-    assert_eq!(fake.call_count(), 0, "no rows means publish is never called");
+    assert_eq!(
+        fake.call_count(),
+        0,
+        "no rows means publish is never called"
+    );
 }
 
 #[sqlx::test]
@@ -201,7 +211,10 @@ async fn drain_once_does_not_republish_already_published_rows(db: PgPool) {
         "a row with published_at already set must not be re-sent (WHERE published_at IS NULL)"
     );
     let state = outbox_row_state(&db, id).await;
-    assert_eq!(state.attempts, 0, "a row the dispatcher never touched keeps attempts at 0");
+    assert_eq!(
+        state.attempts, 0,
+        "a row the dispatcher never touched keeps attempts at 0"
+    );
 }
 
 /// Blocks inside `publish` until released, so a test can hold a drain

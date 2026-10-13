@@ -15,8 +15,8 @@
 
 mod common;
 
-use dream_fly_backend::modules::permissions::model::Role;
 use common::http::spawn_test_app;
+use dream_fly_backend::modules::permissions::model::Role;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -35,7 +35,9 @@ async fn admin_gate_no_token_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn admin_gate_member_token_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("gate-admin-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("gate-admin-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/users")
@@ -71,7 +73,9 @@ async fn staff_gate_no_token_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn staff_gate_member_token_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("gate-staff-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("gate-staff-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/sessions/today")
@@ -83,8 +87,9 @@ async fn staff_gate_member_token_returns_403(db: PgPool) {
 #[sqlx::test]
 async fn staff_gate_coach_token_returns_200(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (_coach_user_id, coach_token) =
-        app.seed_user_with_roles("gate-staff-coach@example.com", &[Role::Coach]).await;
+    let (_coach_user_id, coach_token) = app
+        .seed_user_with_roles("gate-staff-coach@example.com", &[Role::Coach])
+        .await;
 
     let resp = app
         .get("/api/v1/sessions/today")
@@ -130,7 +135,9 @@ async fn login_required_coupons_validate_no_token_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn login_required_coupons_validate_member_token_returns_non_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("gate-login-coupons@example.com", "Password!234").await;
+    let user = app
+        .register_member("gate-login-coupons@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/coupons/GATENOPE1/validate")
@@ -151,7 +158,9 @@ async fn login_required_course_sessions_no_token_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn login_required_course_sessions_member_token_returns_non_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("gate-login-sessions@example.com", "Password!234").await;
+    let user = app
+        .register_member("gate-login-sessions@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get(&format!("/api/v1/courses/{}/sessions", Uuid::now_v7()))

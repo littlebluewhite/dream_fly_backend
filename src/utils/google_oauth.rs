@@ -186,7 +186,9 @@ struct JwksCache {
 
 impl JwksCache {
     fn new() -> Self {
-        Self { entry: RwLock::new(None) }
+        Self {
+            entry: RwLock::new(None),
+        }
     }
 }
 
@@ -213,9 +215,10 @@ async fn get_jwks(
     if !force_refresh {
         let guard = slot.read().await;
         if let Some((jwks, fetched_at)) = guard.as_ref()
-            && (Utc::now() - *fetched_at).num_seconds() < JWKS_TTL_SECONDS {
-                return Ok(jwks.clone());
-            }
+            && (Utc::now() - *fetched_at).num_seconds() < JWKS_TTL_SECONDS
+        {
+            return Ok(jwks.clone());
+        }
     }
 
     let fresh = fetch_jwks(jwks_url, http).await?;
@@ -249,7 +252,9 @@ async fn verify_google_id_token(
     if header.alg != Algorithm::RS256 {
         // Refuse unexpected algorithms — this defends against the classic
         // "alg: none" downgrade and key-confusion attacks.
-        return Err(AppError::BadRequest("unsupported id_token algorithm".into()));
+        return Err(AppError::BadRequest(
+            "unsupported id_token algorithm".into(),
+        ));
     }
 
     let kid = header
@@ -344,7 +349,8 @@ mod tests {
         // against a future refactor that accidentally accepts `alg:none`.
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none","typ":"JWT","kid":"abc"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"1","iss":"x","aud":"y","exp":9999999999}"#);
+        let payload =
+            URL_SAFE_NO_PAD.encode(br#"{"sub":"1","iss":"x","aud":"y","exp":9999999999}"#);
         let forged = format!("{header}.{payload}.");
 
         let cache = JwksCache::new();
@@ -375,7 +381,8 @@ mod tests {
         // Must fail at the kid check before attempting any HTTP call to JWKS.
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"1","iss":"x","aud":"y","exp":9999999999}"#);
+        let payload =
+            URL_SAFE_NO_PAD.encode(br#"{"sub":"1","iss":"x","aud":"y","exp":9999999999}"#);
         // Signature doesn't matter — we never get that far.
         let forged = format!("{header}.{payload}.sig");
 

@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
-use crate::modules::permissions::model::Role;
 use crate::extractors::pagination::PaginationParams;
+use crate::modules::permissions::model::Role;
 use crate::state::AppState;
 use crate::utils::validation::ValidatedJson;
 

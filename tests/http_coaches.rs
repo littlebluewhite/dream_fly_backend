@@ -22,7 +22,9 @@ async fn list_coaches_public_returns_empty_initially(db: PgPool) {
 #[sqlx::test]
 async fn list_coaches_includes_seeded(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach1@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach1@example.com", "Password!234")
+        .await;
     seed_coach(&app.db, user.user_id, "Head Coach").await;
 
     let resp = app.get("/api/v1/coaches").await;
@@ -38,7 +40,9 @@ async fn list_coaches_includes_seeded(db: PgPool) {
 #[sqlx::test]
 async fn coach_list_and_detail_expose_slug_and_photo_url(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach-profile@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach-profile@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Profile Coach").await;
     sqlx::query("UPDATE coaches SET slug = $1, photo_url = $2 WHERE id = $3")
         .bind("profile-coach")
@@ -52,7 +56,10 @@ async fn coach_list_and_detail_expose_slug_and_photo_url(db: PgPool) {
     assert_eq!(list_resp.status_code(), 200);
     let list_body: serde_json::Value = list_resp.json();
     assert_eq!(list_body[0]["slug"], "profile-coach");
-    assert_eq!(list_body[0]["photo_url"], "https://cdn.example.com/coach.jpg");
+    assert_eq!(
+        list_body[0]["photo_url"],
+        "https://cdn.example.com/coach.jpg"
+    );
 
     let detail_resp = app.get(&format!("/api/v1/coaches/{coach_id}")).await;
     assert_eq!(detail_resp.status_code(), 200);
@@ -70,7 +77,9 @@ async fn list_and_detail_expose_coach_name_from_users(db: PgPool) {
     // distinct name (different from the seeded `title`) so the assertion
     // proves the join, not a coincidental match.
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach-name@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach-name@example.com", "Password!234")
+        .await;
     sqlx::query("UPDATE users SET name = $1 WHERE id = $2")
         .bind("王教練")
         .bind(user.user_id)
@@ -94,7 +103,9 @@ async fn list_and_detail_expose_coach_name_from_users(db: PgPool) {
 #[sqlx::test]
 async fn get_coach_by_id_returns_detail(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach2@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach2@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Specialist").await;
 
     let resp = app.get(&format!("/api/v1/coaches/{coach_id}")).await;
@@ -120,7 +131,9 @@ async fn get_deactivated_coach_public_detail_and_schedule_return_404(db: PgPool)
     // functions.
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let user = app.register_member("coach-deactivated@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach-deactivated@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Retiring Coach").await;
 
     let patch_resp = app
@@ -133,17 +146,23 @@ async fn get_deactivated_coach_public_detail_and_schedule_return_404(db: PgPool)
     let detail_resp = app.get(&format!("/api/v1/coaches/{coach_id}")).await;
     assert_eq!(detail_resp.status_code(), 404);
 
-    let schedule_resp = app.get(&format!("/api/v1/coaches/{coach_id}/schedule")).await;
+    let schedule_resp = app
+        .get(&format!("/api/v1/coaches/{coach_id}/schedule"))
+        .await;
     assert_eq!(schedule_resp.status_code(), 404);
 }
 
 #[sqlx::test]
 async fn coach_schedule_get_is_public(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach3@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach3@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Mentor").await;
 
-    let resp = app.get(&format!("/api/v1/coaches/{coach_id}/schedule")).await;
+    let resp = app
+        .get(&format!("/api/v1/coaches/{coach_id}/schedule"))
+        .await;
     assert_eq!(resp.status_code(), 200);
     let body: serde_json::Value = resp.json();
     assert!(body.is_array());
@@ -152,7 +171,9 @@ async fn coach_schedule_get_is_public(db: PgPool) {
 #[sqlx::test]
 async fn coach_schedule_update_requires_auth(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach4@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach4@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Trainer").await;
 
     // No auth → 401
@@ -166,7 +187,9 @@ async fn coach_schedule_update_requires_auth(db: PgPool) {
 #[sqlx::test]
 async fn clock_in_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("coach5@example.com", "Password!234").await;
+    let user = app
+        .register_member("coach5@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
 
     let resp = app
@@ -179,9 +202,13 @@ async fn clock_in_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn clock_records_member_without_permission_is_forbidden(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let coach_user = app.register_member("coach6@example.com", "Password!234").await;
+    let coach_user = app
+        .register_member("coach6@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, coach_user.user_id, "Coach").await;
-    let other = app.register_member("nosy@example.com", "Password!234").await;
+    let other = app
+        .register_member("nosy@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get(&format!("/api/v1/coaches/{coach_id}/clock-records"))
@@ -198,9 +225,13 @@ async fn clock_in_by_non_owning_member_returns_403(db: PgPool) {
     // stranger logged in as a plain member tries to clock-in on behalf
     // of that coach and must be refused.
     let app = spawn_test_app(db).await;
-    let owner = app.register_member("owner-ci@example.com", "Password!234").await;
+    let owner = app
+        .register_member("owner-ci@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, owner.user_id, "Real Coach").await;
-    let intruder = app.register_member("intruder@example.com", "Password!234").await;
+    let intruder = app
+        .register_member("intruder@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post(&format!("/api/v1/coaches/{coach_id}/clock-in"))
@@ -217,7 +248,9 @@ async fn clock_in_happy_path_then_clock_out(db: PgPool) {
     // combines the happy path with the conflict defense in one e2e-style
     // test so we can assert on the record payload too.
     let app = spawn_test_app(db).await;
-    let user = app.register_member("owner-ok@example.com", "Password!234").await;
+    let user = app
+        .register_member("owner-ok@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Owner Coach").await;
 
     let resp1 = app
@@ -228,7 +261,10 @@ async fn clock_in_happy_path_then_clock_out(db: PgPool) {
     assert_eq!(resp1.status_code(), 200, "body={}", resp1.text());
     let rec1: serde_json::Value = resp1.json();
     assert_eq!(rec1["note"], "shift start");
-    assert!(rec1["clock_out"].is_null(), "open record shouldn't have clock_out");
+    assert!(
+        rec1["clock_out"].is_null(),
+        "open record shouldn't have clock_out"
+    );
 
     let resp_dup = app
         .post(&format!("/api/v1/coaches/{coach_id}/clock-in"))
@@ -243,14 +279,19 @@ async fn clock_in_happy_path_then_clock_out(db: PgPool) {
         .await;
     assert_eq!(resp_out.status_code(), 200);
     let rec_out: serde_json::Value = resp_out.json();
-    assert!(!rec_out["clock_out"].is_null(), "clock_out must be set after clock-out");
+    assert!(
+        !rec_out["clock_out"].is_null(),
+        "clock_out must be set after clock-out"
+    );
 }
 
 #[sqlx::test]
 async fn clock_out_with_no_open_record_returns_404(db: PgPool) {
     // Fresh coach, never clocked in — clock-out has no matching row.
     let app = spawn_test_app(db).await;
-    let user = app.register_member("owner-404@example.com", "Password!234").await;
+    let user = app
+        .register_member("owner-404@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Fresh Coach").await;
 
     let resp = app
@@ -266,9 +307,13 @@ async fn update_schedule_by_stranger_returns_403(db: PgPool) {
     // on /schedule → require_own_coach_profile must reject with 403 (not 401,
     // because the token is valid).
     let app = spawn_test_app(db).await;
-    let owner = app.register_member("owner-sched@example.com", "Password!234").await;
+    let owner = app
+        .register_member("owner-sched@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, owner.user_id, "Owner").await;
-    let stranger = app.register_member("stranger-sched@example.com", "Password!234").await;
+    let stranger = app
+        .register_member("stranger-sched@example.com", "Password!234")
+        .await;
 
     let resp = app
         .put(&format!("/api/v1/coaches/{coach_id}/schedule"))
@@ -283,7 +328,9 @@ async fn update_schedule_by_admin_on_other_coach_succeeds(db: PgPool) {
     // An admin should be able to edit any coach's schedule even if they
     // aren't the coach's underlying user.
     let app = spawn_test_app(db).await;
-    let owner = app.register_member("owner-adminfix@example.com", "Password!234").await;
+    let owner = app
+        .register_member("owner-adminfix@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, owner.user_id, "Needs Admin").await;
     let (_admin_id, admin_token) = app.seed_admin().await;
 
@@ -317,7 +364,9 @@ async fn update_schedule_by_admin_on_other_coach_succeeds(db: PgPool) {
 #[sqlx::test]
 async fn update_schedule_with_overlapping_entries_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let owner = app.register_member("owner-overlap@example.com", "Password!234").await;
+    let owner = app
+        .register_member("owner-overlap@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, owner.user_id, "Overlap Coach").await;
 
     let resp = app
@@ -348,7 +397,9 @@ async fn clock_in_on_nonexistent_coach_returns_404(db: PgPool) {
     // Valid token + random coach id — require_own_coach_profile's first step is
     // `find_by_id` → NotFound, which must surface as 404 (not 403).
     let app = spawn_test_app(db).await;
-    let user = app.register_member("ghost@example.com", "Password!234").await;
+    let user = app
+        .register_member("ghost@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post(&format!("/api/v1/coaches/{}/clock-in", Uuid::now_v7()))
@@ -365,7 +416,9 @@ async fn clock_in_on_nonexistent_coach_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn create_coach_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("bind-noauth@example.com", "Password!234").await;
+    let user = app
+        .register_member("bind-noauth@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/coaches")
@@ -377,8 +430,12 @@ async fn create_coach_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_coach_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let target = app.register_member("bind-target@example.com", "Password!234").await;
-    let member = app.register_member("bind-mem@example.com", "Password!234").await;
+    let target = app
+        .register_member("bind-target@example.com", "Password!234")
+        .await;
+    let member = app
+        .register_member("bind-mem@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/coaches")
@@ -392,7 +449,9 @@ async fn create_coach_as_member_returns_403(db: PgPool) {
 async fn create_coach_as_admin_succeeds_and_assigns_coach_role(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let target = app.register_member("bind-ok@example.com", "Password!234").await;
+    let target = app
+        .register_member("bind-ok@example.com", "Password!234")
+        .await;
 
     let resp = app
         .post("/api/v1/coaches")
@@ -406,7 +465,10 @@ async fn create_coach_as_admin_succeeds_and_assigns_coach_role(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
-    assert_eq!(body["user_id"].as_str().unwrap(), target.user_id.to_string());
+    assert_eq!(
+        body["user_id"].as_str().unwrap(),
+        target.user_id.to_string()
+    );
     // `register_member` always names the user "Test Member" — proves the
     // insert's correlated subquery actually joins `users.name`, not just a
     // coincidental match.
@@ -449,7 +511,9 @@ async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
     // instead of waiting out the 15-minute TTL.
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let target = app.register_member("bind-cache@example.com", "Password!234").await;
+    let target = app
+        .register_member("bind-cache@example.com", "Password!234")
+        .await;
 
     let warm = access::resolve(&app.db, &*app.access_cache, target.user_id)
         .await
@@ -477,7 +541,9 @@ async fn create_coach_invalidates_stale_role_cache(db: PgPool) {
 async fn create_coach_duplicate_user_id_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let target = app.register_member("bind-dup@example.com", "Password!234").await;
+    let target = app
+        .register_member("bind-dup@example.com", "Password!234")
+        .await;
 
     let first = app
         .post("/api/v1/coaches")
@@ -511,8 +577,12 @@ async fn create_coach_nonexistent_user_id_returns_404(db: PgPool) {
 async fn create_coach_duplicate_slug_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let user_a = app.register_member("bind-slug-a@example.com", "Password!234").await;
-    let user_b = app.register_member("bind-slug-b@example.com", "Password!234").await;
+    let user_a = app
+        .register_member("bind-slug-a@example.com", "Password!234")
+        .await;
+    let user_b = app
+        .register_member("bind-slug-b@example.com", "Password!234")
+        .await;
 
     let first = app
         .post("/api/v1/coaches")
@@ -532,7 +602,9 @@ async fn create_coach_duplicate_slug_returns_409(db: PgPool) {
 #[sqlx::test]
 async fn update_coach_without_auth_returns_401(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("patch-noauth@example.com", "Password!234").await;
+    let user = app
+        .register_member("patch-noauth@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
 
     let resp = app
@@ -545,9 +617,13 @@ async fn update_coach_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn update_coach_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("patch-owner@example.com", "Password!234").await;
+    let user = app
+        .register_member("patch-owner@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
-    let member = app.register_member("patch-mem@example.com", "Password!234").await;
+    let member = app
+        .register_member("patch-mem@example.com", "Password!234")
+        .await;
 
     let resp = app
         .patch(&format!("/api/v1/coaches/{coach_id}"))
@@ -561,7 +637,9 @@ async fn update_coach_as_member_returns_403(db: PgPool) {
 async fn update_coach_as_admin_partial_update_only_title_changes(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let user = app.register_member("patch-ok@example.com", "Password!234").await;
+    let user = app
+        .register_member("patch-ok@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Original Title").await;
 
     let resp = app
@@ -587,7 +665,9 @@ async fn update_coach_as_admin_partial_update_only_title_changes(db: PgPool) {
 async fn update_coach_clears_photo_url_to_null(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let user = app.register_member("patch-clear@example.com", "Password!234").await;
+    let user = app
+        .register_member("patch-clear@example.com", "Password!234")
+        .await;
     let coach_id = seed_coach(&app.db, user.user_id, "Coach").await;
     sqlx::query("UPDATE coaches SET photo_url = 'https://cdn.example.com/old.jpg' WHERE id = $1")
         .bind(coach_id)
@@ -623,8 +703,12 @@ async fn update_coach_clears_photo_url_to_null(db: PgPool) {
 async fn update_coach_duplicate_slug_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin, token) = app.seed_admin().await;
-    let user_a = app.register_member("patch-slug-a@example.com", "Password!234").await;
-    let user_b = app.register_member("patch-slug-b@example.com", "Password!234").await;
+    let user_a = app
+        .register_member("patch-slug-a@example.com", "Password!234")
+        .await;
+    let user_b = app
+        .register_member("patch-slug-b@example.com", "Password!234")
+        .await;
     let coach_a = seed_coach(&app.db, user_a.user_id, "Coach A").await;
     let coach_b = seed_coach(&app.db, user_b.user_id, "Coach B").await;
     sqlx::query("UPDATE coaches SET slug = 'taken-slug' WHERE id = $1")

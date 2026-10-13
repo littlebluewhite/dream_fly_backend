@@ -36,7 +36,9 @@ async fn course_sessions_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn course_sessions_unknown_course_returns_404(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sess-404@example.com", "Password!234").await;
+    let user = app
+        .register_member("sess-404@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get(&format!("/api/v1/courses/{}/sessions", Uuid::now_v7()))
@@ -48,7 +50,9 @@ async fn course_sessions_unknown_course_returns_404(db: PgPool) {
 #[sqlx::test]
 async fn course_sessions_default_range_materializes_todays_slot(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sess-default@example.com", "Password!234").await;
+    let user = app
+        .register_member("sess-default@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Sessions Default Range Course", None).await;
 
     let today = Utc::now().date_naive();
@@ -86,7 +90,9 @@ async fn course_sessions_default_range_materializes_todays_slot(db: PgPool) {
 #[sqlx::test]
 async fn course_sessions_to_before_from_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sess-422a@example.com", "Password!234").await;
+    let user = app
+        .register_member("sess-422a@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Sessions 422 Course A", None).await;
 
     let resp = app
@@ -101,7 +107,9 @@ async fn course_sessions_to_before_from_returns_422(db: PgPool) {
 #[sqlx::test]
 async fn course_sessions_range_over_60_days_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sess-422b@example.com", "Password!234").await;
+    let user = app
+        .register_member("sess-422b@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Sessions 422 Course B", None).await;
 
     let resp = app
@@ -116,7 +124,9 @@ async fn course_sessions_range_over_60_days_returns_422(db: PgPool) {
 #[sqlx::test]
 async fn course_sessions_future_slot_status_is_upcoming(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sess-future@example.com", "Password!234").await;
+    let user = app
+        .register_member("sess-future@example.com", "Password!234")
+        .await;
     let course_id = seed_course(&app.db, "Sessions Future Slot Course", None).await;
 
     // A slot 7 days out — same day_of_week as today, so querying a range
@@ -159,7 +169,9 @@ async fn today_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn today_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sess-today-member@example.com", "Password!234").await;
+    let user = app
+        .register_member("sess-today-member@example.com", "Password!234")
+        .await;
 
     let resp = app
         .get("/api/v1/sessions/today")
@@ -180,10 +192,22 @@ async fn today_as_coach_returns_own_course_with_enrolled_count(db: PgPool) {
     seed_course_schedule_slot(&app.db, own_course, dow, t(9, 0), t(10, 0)).await;
     seed_course_schedule_slot(&app.db, other_course, dow, t(9, 0), t(10, 0)).await;
 
-    let member = app.register_member("sess-today-member2@example.com", "Password!234").await;
-    seed_enrolment(&app.db, member.user_id, own_course, EnrolmentStatus::Active, Utc::now()).await;
+    let member = app
+        .register_member("sess-today-member2@example.com", "Password!234")
+        .await;
+    seed_enrolment(
+        &app.db,
+        member.user_id,
+        own_course,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
-    let resp = app.get("/api/v1/sessions/today").authorization_bearer(&coach.token).await;
+    let resp = app
+        .get("/api/v1/sessions/today")
+        .authorization_bearer(&coach.token)
+        .await;
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().expect("plain array");
@@ -240,8 +264,12 @@ async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
 
     let coach = app.seed_coach_user().await;
 
-    let course_with_coach =
-        seed_course(&app.db, "HTTP Today Coach Venue Course", Some(coach.coach_id)).await;
+    let course_with_coach = seed_course(
+        &app.db,
+        "HTTP Today Coach Venue Course",
+        Some(coach.coach_id),
+    )
+    .await;
     let course_without_coach =
         seed_course(&app.db, "HTTP Today No Coach No Venue Course", None).await;
 
@@ -272,8 +300,14 @@ async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
         .iter()
         .find(|s| s["course_id"] == course_without_coach.to_string())
         .expect("course_without_coach session present");
-    assert!(entry_without["coach_name"].is_null(), "course has no coach -> null");
-    assert!(entry_without["venue"].is_null(), "slot has no venue -> null");
+    assert!(
+        entry_without["coach_name"].is_null(),
+        "course has no coach -> null"
+    );
+    assert!(
+        entry_without["venue"].is_null(),
+        "slot has no venue -> null"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -290,20 +324,27 @@ async fn schedule_me_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn schedule_me_returns_only_active_enrolment_courses(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sched-me-http@example.com", "Password!234").await;
-
-    let coach_user = common::seed_member(&app.db, "sched-me-coach@example.com", "hunter22-secret")
+    let user = app
+        .register_member("sched-me-http@example.com", "Password!234")
         .await;
+
+    let coach_user =
+        common::seed_member(&app.db, "sched-me-coach@example.com", "hunter22-secret").await;
     let coach_id = seed_coach(&app.db, coach_user, "Schedule Coach").await;
-    let active_course =
-        seed_course(&app.db, "HTTP Schedule Active Course", Some(coach_id)).await;
-    let cancelled_course =
-        seed_course(&app.db, "HTTP Schedule Cancelled Course", None).await;
+    let active_course = seed_course(&app.db, "HTTP Schedule Active Course", Some(coach_id)).await;
+    let cancelled_course = seed_course(&app.db, "HTTP Schedule Cancelled Course", None).await;
 
     seed_course_schedule_slot(&app.db, active_course, 1, t(19, 0), t(20, 0)).await;
     seed_course_schedule_slot(&app.db, cancelled_course, 2, t(19, 0), t(20, 0)).await;
 
-    seed_enrolment(&app.db, user.user_id, active_course, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(
+        &app.db,
+        user.user_id,
+        active_course,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     seed_enrolment(
         &app.db,
         user.user_id,

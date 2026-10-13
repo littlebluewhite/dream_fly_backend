@@ -55,10 +55,9 @@ async fn get_detail_nonexistent_returns_not_found(db: PgPool) {
 }
 
 #[sqlx::test]
-async fn get_active_detail_and_schedules_not_found_when_inactive_but_unscoped_still_ok(
-    db: PgPool,
-) {
-    let user_id = common::seed_member(&db, "deactivated-coach@example.com", "hunter22-secret").await;
+async fn get_active_detail_and_schedules_not_found_when_inactive_but_unscoped_still_ok(db: PgPool) {
+    let user_id =
+        common::seed_member(&db, "deactivated-coach@example.com", "hunter22-secret").await;
     let coach_id = common::fixtures::seed_coach(&db, user_id, "Deactivated Coach").await;
     set_coach_active(&db, coach_id, false).await;
 
@@ -67,7 +66,9 @@ async fn get_active_detail_and_schedules_not_found_when_inactive_but_unscoped_st
         AppError::NotFound(_)
     ));
     assert!(matches!(
-        service::get_active_schedules(&db, coach_id).await.unwrap_err(),
+        service::get_active_schedules(&db, coach_id)
+            .await
+            .unwrap_err(),
         AppError::NotFound(_)
     ));
 

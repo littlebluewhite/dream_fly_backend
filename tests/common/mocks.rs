@@ -97,7 +97,9 @@ pub struct MockClock {
 
 impl MockClock {
     pub fn new() -> Self {
-        Self { pinned: RwLock::new(None) }
+        Self {
+            pinned: RwLock::new(None),
+        }
     }
 
     /// Pin the clock to `t`. Subsequent `now()` calls return `t` until the

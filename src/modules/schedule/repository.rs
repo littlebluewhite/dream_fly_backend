@@ -8,7 +8,15 @@ use super::model::TimeSlot;
 
 /// `(date, start_time, end_time, venue_id, course_id, capacity, price_cents)`
 /// — input row for [`bulk_create`]. Aliased to keep the signature readable.
-pub type SlotRow = (NaiveDate, NaiveTime, NaiveTime, Option<Uuid>, Option<Uuid>, i32, i64);
+pub type SlotRow = (
+    NaiveDate,
+    NaiveTime,
+    NaiveTime,
+    Option<Uuid>,
+    Option<Uuid>,
+    i32,
+    i64,
+);
 
 /// The [`TimeSlot`] projection, shared by every read and `RETURNING` in this
 /// file. `booked` is not a column (ADR-0015): it is counted at read time from
@@ -16,8 +24,7 @@ pub type SlotRow = (NaiveDate, NaiveTime, NaiveTime, Option<Uuid>, Option<Uuid>,
 /// `bookings::model::BookingStatus::occupies_seat` — a view rather than an
 /// import because `bookings` already depends on `schedule`. Applied sites
 /// must have `time_slots` in scope unaliased.
-const SLOT_COLUMNS: &str =
-    "id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
+const SLOT_COLUMNS: &str = "id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, \
      (SELECT COUNT(*)::int FROM occupying_bookings ob WHERE ob.time_slot_id = time_slots.id) AS booked, \
      is_closed, created_at, updated_at";
 
@@ -44,10 +51,7 @@ pub async fn find_by_month(
     .await
 }
 
-pub async fn find_by_date(
-    db: &PgPool,
-    date: NaiveDate,
-) -> Result<Vec<TimeSlot>, sqlx::Error> {
+pub async fn find_by_date(db: &PgPool, date: NaiveDate) -> Result<Vec<TimeSlot>, sqlx::Error> {
     sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
         "SELECT {SLOT_COLUMNS} \
          FROM time_slots \
@@ -59,10 +63,7 @@ pub async fn find_by_date(
     .await
 }
 
-pub async fn find_by_id(
-    db: &PgPool,
-    id: Uuid,
-) -> Result<Option<TimeSlot>, sqlx::Error> {
+pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<TimeSlot>, sqlx::Error> {
     sqlx::query_as::<_, TimeSlot>(sqlx::AssertSqlSafe(format!(
         "SELECT {SLOT_COLUMNS} \
          FROM time_slots \
@@ -90,10 +91,7 @@ pub async fn find_by_id_tx(
     .await
 }
 
-pub async fn bulk_create(
-    db: &PgPool,
-    slots: &[SlotRow],
-) -> Result<Vec<TimeSlot>, sqlx::Error> {
+pub async fn bulk_create(db: &PgPool, slots: &[SlotRow]) -> Result<Vec<TimeSlot>, sqlx::Error> {
     let mut tx = db.begin().await?;
     let out = bulk_create_tx(&mut tx, slots).await?;
     tx.commit().await?;

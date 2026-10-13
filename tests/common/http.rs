@@ -55,10 +55,10 @@ use dream_fly_backend::config::{
 use dream_fly_backend::health::HealthProbe;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::startup;
-use dream_fly_backend::utils::clock::Clock;
-use dream_fly_backend::utils::studio_clock::StudioNow;
 use dream_fly_backend::state::{AppState, Infra, Overrides};
+use dream_fly_backend::utils::clock::Clock;
 use dream_fly_backend::utils::ephemeral::EphemeralStore;
+use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use super::mocks::{
     InMemoryAccessCache, InMemoryEphemeralStore, MockClock, MockEmailClient, StaticHealthProbe,
@@ -168,7 +168,10 @@ impl TestApp {
     /// The studio's "now" as the service layer sees it: the app's configured
     /// studio timezone plus its (possibly pinned) clock.
     pub fn studio_now(&self) -> StudioNow {
-        StudioNow { tz: self.config.server.studio_timezone, now: self.clock.now() }
+        StudioNow {
+            tz: self.config.server.studio_timezone,
+            now: self.clock.now(),
+        }
     }
 
     /// The studio-local calendar date right now — what fixtures take as `today`.
@@ -208,14 +211,20 @@ impl TestApp {
             .await;
         resp.assert_status_ok();
         let body: serde_json::Value = resp.json();
-        let user_id = Uuid::parse_str(body["user"]["id"].as_str().expect("user.id"))
-            .expect("parse user id");
+        let user_id =
+            Uuid::parse_str(body["user"]["id"].as_str().expect("user.id")).expect("parse user id");
 
         RegisteredUser {
             user_id,
             email: email.to_string(),
-            access_token: body["access_token"].as_str().expect("access_token").to_string(),
-            refresh_token: body["refresh_token"].as_str().expect("refresh_token").to_string(),
+            access_token: body["access_token"]
+                .as_str()
+                .expect("access_token")
+                .to_string(),
+            refresh_token: body["refresh_token"]
+                .as_str()
+                .expect("refresh_token")
+                .to_string(),
         }
     }
 
@@ -253,7 +262,11 @@ impl TestApp {
         let email = format!("coach-{}@test.local", Uuid::now_v7());
         let (user_id, token) = self.seed_user_with_roles(&email, &[]).await;
         let coach_id = self.seed_coach_for(user_id, "Test Coach").await;
-        SeededCoach { user_id, coach_id, token }
+        SeededCoach {
+            user_id,
+            coach_id,
+            token,
+        }
     }
 
     /// `fixtures::seed_coach` against this app's access cache, for a user

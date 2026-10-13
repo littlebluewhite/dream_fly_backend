@@ -66,9 +66,7 @@ async fn create_venue_duplicate_slug_returns_conflict(db: PgPool) {
 
 #[sqlx::test]
 async fn get_by_slug_nonexistent_returns_not_found(db: PgPool) {
-    let err = service::get_by_slug(&db, "never-seeded")
-        .await
-        .unwrap_err();
+    let err = service::get_by_slug(&db, "never-seeded").await.unwrap_err();
     assert!(matches!(err, AppError::NotFound(_)));
 }
 
@@ -85,7 +83,9 @@ async fn get_active_by_slug_not_found_when_inactive_but_unscoped_still_ok(db: Pg
         .unwrap();
 
     assert!(matches!(
-        service::get_active_by_slug(&db, "deactivated-hall").await.unwrap_err(),
+        service::get_active_by_slug(&db, "deactivated-hall")
+            .await
+            .unwrap_err(),
         AppError::NotFound(_)
     ));
 
@@ -98,8 +98,12 @@ async fn get_active_by_slug_not_found_when_inactive_but_unscoped_still_ok(db: Pg
 
 #[sqlx::test]
 async fn list_active_filters_out_inactive_venues(db: PgPool) {
-    let keep = service::create_venue(&db, &req("Keep", None)).await.unwrap();
-    let hide = service::create_venue(&db, &req("Hide", None)).await.unwrap();
+    let keep = service::create_venue(&db, &req("Keep", None))
+        .await
+        .unwrap();
+    let hide = service::create_venue(&db, &req("Hide", None))
+        .await
+        .unwrap();
 
     sqlx::query("UPDATE venues SET is_active = false WHERE id = $1")
         .bind(hide.id)

@@ -487,7 +487,10 @@ mod tests {
         let pairs = locks
             .rows_in_lock_order(vec![(high, "h"), (low, "l")], |(id, _)| *id)
             .expect("all covered");
-        let got: Vec<(Uuid, (Uuid, &str))> = pairs.into_iter().map(|(row, item)| (row.id, item)).collect();
+        let got: Vec<(Uuid, (Uuid, &str))> = pairs
+            .into_iter()
+            .map(|(row, item)| (row.id, item))
+            .collect();
         assert_eq!(got, vec![(low, (low, "l")), (high, (high, "h"))]);
     }
 

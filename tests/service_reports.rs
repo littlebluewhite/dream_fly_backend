@@ -33,12 +33,12 @@ use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::dto::LeaveRequestQuery;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
-use dream_fly_backend::modules::reports::model::IncomeSource;
 use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::products::model::ProductType;
+use dream_fly_backend::modules::reports::model::IncomeSource;
 use dream_fly_backend::modules::reports::repository as reports_repository;
 use dream_fly_backend::modules::reports::service;
 use dream_fly_backend::modules::sessions::service as sessions_service;
@@ -72,7 +72,10 @@ fn months_ago(now: DateTime<Utc>, n: i32) -> DateTime<Utc> {
         month += 12;
         year -= 1;
     }
-    day1.with_year(year).unwrap().with_month(month as u32).unwrap()
+    day1.with_year(year)
+        .unwrap()
+        .with_month(month as u32)
+        .unwrap()
 }
 
 /// Insert a `contact_inquiries` row directly (no shared fixture exists for
@@ -134,18 +137,36 @@ async fn admin_report_empty_db_is_all_zero(db: PgPool) {
     assert_eq!(report.kpis.new_enrolments.last_month, 0);
     assert_eq!(report.kpis.paid_orders_count.this_month, 0);
     assert_eq!(report.kpis.paid_orders_count.last_month, 0);
-    assert_eq!(report.kpis.attendance_rate.this_month, None, "no-data month must be null");
+    assert_eq!(
+        report.kpis.attendance_rate.this_month, None,
+        "no-data month must be null"
+    );
     assert_eq!(report.kpis.attendance_rate.last_month, None);
 
     // Always all 6 sources for the current month, in canonical order.
-    let breakdown_sources: Vec<&str> =
-        report.revenue_breakdown.iter().map(|r| r.source.as_str()).collect();
+    let breakdown_sources: Vec<&str> = report
+        .revenue_breakdown
+        .iter()
+        .map(|r| r.source.as_str())
+        .collect();
     assert_eq!(
         breakdown_sources,
-        ["course", "ticket", "membership", "course_package", "merchandise", "venue_rental"]
+        [
+            "course",
+            "ticket",
+            "membership",
+            "course_package",
+            "merchandise",
+            "venue_rental"
+        ]
     );
     assert!(report.revenue_breakdown.iter().all(|r| r.gross_cents == 0));
-    assert!(report.revenue_breakdown.iter().all(|r| r.orders_count == 0 && r.units == 0));
+    assert!(
+        report
+            .revenue_breakdown
+            .iter()
+            .all(|r| r.orders_count == 0 && r.units == 0)
+    );
 
     // 12 months × 6 sources, zero-filled like `revenue.trend`, oldest first.
     assert_eq!(report.income_sources_12m.len(), 12 * 6);
@@ -162,24 +183,54 @@ async fn admin_report_empty_db_is_all_zero(db: PgPool) {
 
     // Order-line sources only (no venue_rental) — ratio undefined on a
     // zero-gross month, not 0/NaN.
-    let split_sources: Vec<&str> =
-        report.category_split.iter().map(|r| r.source.as_str()).collect();
-    assert_eq!(split_sources, ["course", "ticket", "membership", "course_package", "merchandise"]);
-    assert!(report.category_split.iter().all(|r| r.gross_cents == 0 && r.ratio.is_none()));
+    let split_sources: Vec<&str> = report
+        .category_split
+        .iter()
+        .map(|r| r.source.as_str())
+        .collect();
+    assert_eq!(
+        split_sources,
+        [
+            "course",
+            "ticket",
+            "membership",
+            "course_package",
+            "merchandise"
+        ]
+    );
+    assert!(
+        report
+            .category_split
+            .iter()
+            .all(|r| r.gross_cents == 0 && r.ratio.is_none())
+    );
 
     assert!(report.payment_split.is_empty());
 
     // Round 4 Phase 4 人流 sections: fixed-bucket zero-fills, never a 500.
-    assert_eq!(report.attendance_distribution.len(), 4, "attDist always 4 fixed bands");
+    assert_eq!(
+        report.attendance_distribution.len(),
+        4,
+        "attDist always 4 fixed bands"
+    );
     assert!(report.attendance_distribution.iter().all(|r| r.count == 0));
 
-    let age_buckets: Vec<&str> =
-        report.age_distribution.iter().map(|r| r.bucket.as_str()).collect();
-    assert_eq!(age_buckets, ["0-6", "7-12", "13-17", "18-25", "26-40", "41+"]);
+    let age_buckets: Vec<&str> = report
+        .age_distribution
+        .iter()
+        .map(|r| r.bucket.as_str())
+        .collect();
+    assert_eq!(
+        age_buckets,
+        ["0-6", "7-12", "13-17", "18-25", "26-40", "41+"]
+    );
     assert!(report.age_distribution.iter().all(|r| r.count == 0));
 
-    let tier_buckets: Vec<&str> =
-        report.tier_distribution.iter().map(|r| r.bucket.as_str()).collect();
+    let tier_buckets: Vec<&str> = report
+        .tier_distribution
+        .iter()
+        .map(|r| r.bucket.as_str())
+        .collect();
     assert_eq!(tier_buckets, ["regular", "bronze", "silver", "gold"]);
     assert!(report.tier_distribution.iter().all(|r| r.count == 0));
 
@@ -209,7 +260,11 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
     let user_id = seed_member(&db, "revenue-buyer@example.com", "Password!234").await;
     let now = Utc::now();
 
-    OrderSeed::new(user_id, OrderStatus::Paid).total_cents(10_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(user_id, OrderStatus::Paid)
+        .total_cents(10_000)
+        .paid_at(now)
+        .insert(&db)
+        .await;
     OrderSeed::new(user_id, OrderStatus::Processing)
         .total_cents(20_000)
         .paid_at(now)
@@ -234,7 +289,10 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
         .paid_at(now)
         .insert(&db)
         .await;
-    OrderSeed::new(user_id, OrderStatus::Pending).total_cents(999_999).insert(&db).await;
+    OrderSeed::new(user_id, OrderStatus::Pending)
+        .total_cents(999_999)
+        .insert(&db)
+        .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -251,7 +309,11 @@ async fn admin_report_revenue_trend_buckets_by_month(db: PgPool) {
     let last_month = months_ago(now, 1);
     let oldest_month = months_ago(now, 11);
 
-    OrderSeed::new(user_id, OrderStatus::Paid).total_cents(1_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(user_id, OrderStatus::Paid)
+        .total_cents(1_000)
+        .paid_at(now)
+        .insert(&db)
+        .await;
     OrderSeed::new(user_id, OrderStatus::Paid)
         .total_cents(2_000)
         .paid_at(last_month)
@@ -269,13 +331,24 @@ async fn admin_report_revenue_trend_buckets_by_month(db: PgPool) {
 
     let trend = &report.revenue.trend;
     assert_eq!(trend.len(), 12);
-    assert_eq!(trend.last().unwrap().revenue_cents, 1_000, "this month bucket");
+    assert_eq!(
+        trend.last().unwrap().revenue_cents,
+        1_000,
+        "this month bucket"
+    );
     assert_eq!(report.revenue.this_month_cents, 1_000);
     assert_eq!(report.revenue.last_month_cents, 2_000);
-    assert_eq!(trend.first().unwrap().revenue_cents, 3_000, "oldest (11-months-ago) bucket");
+    assert_eq!(
+        trend.first().unwrap().revenue_cents,
+        3_000,
+        "oldest (11-months-ago) bucket"
+    );
 
     let nonzero_count = trend.iter().filter(|p| p.revenue_cents != 0).count();
-    assert_eq!(nonzero_count, 3, "only 3 buckets should be nonzero, got {trend:?}");
+    assert_eq!(
+        nonzero_count, 3,
+        "only 3 buckets should be nonzero, got {trend:?}"
+    );
 }
 
 #[sqlx::test]
@@ -286,8 +359,22 @@ async fn admin_report_members_total_new_and_active(db: PgPool) {
     let _new_plain_user = seed_member(&db, "new-plain-member@example.com", "Password!234").await;
 
     let course_id = seed_course(&db, "Members Stats Course", None).await;
-    seed_enrolment(&db, old_user, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, new_active_user, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        old_user,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    seed_enrolment(
+        &db,
+        new_active_user,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
@@ -306,7 +393,10 @@ async fn admin_report_members_total_new_and_active(db: PgPool) {
 
 #[sqlx::test]
 async fn admin_report_course_fill_rate_and_waitlist(db: PgPool) {
-    let course_id = CourseSeed::new("Fill Rate Course").max_students(4).insert(&db).await;
+    let course_id = CourseSeed::new("Fill Rate Course")
+        .max_students(4)
+        .insert(&db)
+        .await;
     let u1 = seed_member(&db, "fill-1@example.com", "Password!234").await;
     let u2 = seed_member(&db, "fill-2@example.com", "Password!234").await;
     let u3 = seed_member(&db, "fill-3@example.com", "Password!234").await;
@@ -345,21 +435,50 @@ async fn admin_report_coach_course_and_student_count_scoped_per_coach(db: PgPool
 
     let student_1 = seed_member(&db, "admin-student-1@example.com", "Password!234").await;
     let student_2 = seed_member(&db, "admin-student-2@example.com", "Password!234").await;
-    seed_enrolment(&db, student_1, course_a1, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        student_1,
+        course_a1,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     // Same student in 2 of coach A's courses -> distinct student_count is
     // still 1, not 2.
-    seed_enrolment(&db, student_1, course_a2, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, student_2, course_b1, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        student_1,
+        course_a2,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    seed_enrolment(
+        &db,
+        student_2,
+        course_b1,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(Utc::now()))
         .await
         .expect("admin_report");
 
-    let row_a = report.coaches.iter().find(|c| c.coach_id == coach_a).unwrap();
+    let row_a = report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_a)
+        .unwrap();
     assert_eq!(row_a.course_count, 2);
     assert_eq!(row_a.student_count, 1);
 
-    let row_b = report.coaches.iter().find(|c| c.coach_id == coach_b).unwrap();
+    let row_b = report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_b)
+        .unwrap();
     assert_eq!(row_b.course_count, 1);
     assert_eq!(row_b.student_count, 1);
 }
@@ -394,14 +513,25 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
 
     // paid_orders_count: refunded/pending never count, even with the same
     // month's `paid_at`.
-    OrderSeed::new(buyer, OrderStatus::Paid).total_cents(1_000).paid_at(now).insert(&db).await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .total_cents(1_000)
+        .paid_at(now)
+        .insert(&db)
+        .await;
     OrderSeed::new(buyer, OrderStatus::Completed)
         .total_cents(2_000)
         .paid_at(last_month)
         .insert(&db)
         .await;
-    OrderSeed::new(buyer, OrderStatus::Refunded).total_cents(3_000).paid_at(now).insert(&db).await;
-    OrderSeed::new(buyer, OrderStatus::Pending).total_cents(4_000).insert(&db).await;
+    OrderSeed::new(buyer, OrderStatus::Refunded)
+        .total_cents(3_000)
+        .paid_at(now)
+        .insert(&db)
+        .await;
+    OrderSeed::new(buyer, OrderStatus::Pending)
+        .total_cents(4_000)
+        .insert(&db)
+        .await;
 
     // attendance_rate this month: 1 present / (1 present + 1 absent) = 0.5,
     // leave in neither numerator nor denominator; last month has no records
@@ -421,12 +551,18 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
 
     assert_eq!(report.kpis.new_members.this_month, 1);
     assert_eq!(report.kpis.new_members.last_month, 1);
-    assert_eq!(report.kpis.new_enrolments.this_month, 1, "cancelled enrolment must not count");
+    assert_eq!(
+        report.kpis.new_enrolments.this_month, 1,
+        "cancelled enrolment must not count"
+    );
     assert_eq!(report.kpis.new_enrolments.last_month, 1);
     assert_eq!(report.kpis.paid_orders_count.this_month, 1);
     assert_eq!(report.kpis.paid_orders_count.last_month, 1);
     assert_eq!(report.kpis.attendance_rate.this_month, Some(0.5));
-    assert_eq!(report.kpis.attendance_rate.last_month, None, "no-data month must be null");
+    assert_eq!(
+        report.kpis.attendance_rate.last_month, None,
+        "no-data month must be null"
+    );
 }
 
 #[sqlx::test]
@@ -436,9 +572,15 @@ async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
     let course_id = seed_course(&db, "Breakdown Course", None).await;
     let merch_id = seed_product(&db, "breakdown-merch", 5_000, Some(10)).await;
 
-    let excluded_course = SeedOrderLine::Course { course_id, unit_price_cents: 50_000 };
-    let excluded_merch =
-        SeedOrderLine::Product { product_id: merch_id, quantity: 2, unit_price_cents: 5_000 };
+    let excluded_course = SeedOrderLine::Course {
+        course_id,
+        unit_price_cents: 50_000,
+    };
+    let excluded_merch = SeedOrderLine::Product {
+        product_id: merch_id,
+        quantity: 2,
+        unit_price_cents: 5_000,
+    };
     // `refunded` keeps its real `paid_at` — exclusion must come from the
     // status filter, not from `paid_at IS NULL`.
     OrderSeed::new(buyer, OrderStatus::Refunded)
@@ -455,7 +597,10 @@ async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
 
     OrderSeed::new(buyer, OrderStatus::Paid)
         .paid_at(now)
-        .line(SeedOrderLine::Course { course_id, unit_price_cents: 10_000 })
+        .line(SeedOrderLine::Course {
+            course_id,
+            unit_price_cents: 10_000,
+        })
         .insert(&db)
         .await;
 
@@ -463,15 +608,27 @@ async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
         .await
         .expect("admin_report");
 
-    let course_row =
-        report.revenue_breakdown.iter().find(|r| r.source == "course").expect("course row");
-    assert_eq!(course_row.gross_cents, 10_000, "only the paid order's course line counts");
+    let course_row = report
+        .revenue_breakdown
+        .iter()
+        .find(|r| r.source == "course")
+        .expect("course row");
+    assert_eq!(
+        course_row.gross_cents, 10_000,
+        "only the paid order's course line counts"
+    );
     assert_eq!(course_row.orders_count, 1);
     assert_eq!(course_row.units, 1);
 
-    let merch_row =
-        report.revenue_breakdown.iter().find(|r| r.source == "merchandise").expect("merch row");
-    assert_eq!(merch_row.gross_cents, 0, "refunded/pending product lines must not count");
+    let merch_row = report
+        .revenue_breakdown
+        .iter()
+        .find(|r| r.source == "merchandise")
+        .expect("merch row");
+    assert_eq!(
+        merch_row.gross_cents, 0,
+        "refunded/pending product lines must not count"
+    );
     assert_eq!(merch_row.orders_count, 0);
 }
 
@@ -501,14 +658,24 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
             quantity: 2,
             unit_price_cents: 10_000,
         })
-        .line(SeedOrderLine::Product { product_id: merch_id, quantity: 1, unit_price_cents: 5_000 })
-        .line(SeedOrderLine::Course { course_id, unit_price_cents: 25_000 })
+        .line(SeedOrderLine::Product {
+            product_id: merch_id,
+            quantity: 1,
+            unit_price_cents: 5_000,
+        })
+        .line(SeedOrderLine::Course {
+            course_id,
+            unit_price_cents: 25_000,
+        })
         .insert(&db)
         .await;
 
     // A venue booking this month must show up in revenue_breakdown but stay
     // out of category_split (order-line 毛額 only) and its ratios.
-    let slot_id = TimeSlotSeed::new(10, common::studio_now_utc(now).today()).on(months_ago(now, 0).date_naive()).insert(&db).await;
+    let slot_id = TimeSlotSeed::new(10, common::studio_now_utc(now).today())
+        .on(months_ago(now, 0).date_naive())
+        .insert(&db)
+        .await;
     seed_booking(&db, buyer, slot_id, BookingStatus::Confirmed, 100_000).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
@@ -516,9 +683,17 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
         .expect("admin_report");
 
     let find = |source: &str| {
-        report.category_split.iter().find(|r| r.source == source).expect("split row")
+        report
+            .category_split
+            .iter()
+            .find(|r| r.source == source)
+            .expect("split row")
     };
-    assert_eq!(find("ticket").gross_cents, 20_000, "ticket bucket only product_type=ticket");
+    assert_eq!(
+        find("ticket").gross_cents,
+        20_000,
+        "ticket bucket only product_type=ticket"
+    );
     assert_eq!(find("ticket").ratio, Some(0.4));
     assert_eq!(find("merchandise").gross_cents, 5_000);
     assert_eq!(find("merchandise").ratio, Some(0.1));
@@ -527,7 +702,10 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
     assert_eq!(find("membership").gross_cents, 0);
     assert_eq!(find("membership").ratio, Some(0.0));
     assert!(
-        report.category_split.iter().all(|r| r.source != "venue_rental"),
+        report
+            .category_split
+            .iter()
+            .all(|r| r.source != "venue_rental"),
         "venue rental is not an order-line category"
     );
 
@@ -536,7 +714,10 @@ async fn admin_report_category_split_ticket_bucket_only_product_type_ticket(db: 
         .iter()
         .find(|r| r.source == "venue_rental")
         .expect("venue row");
-    assert_eq!(venue_row.gross_cents, 100_000, "…but it does appear in revenue_breakdown");
+    assert_eq!(
+        venue_row.gross_cents, 100_000,
+        "…but it does appear in revenue_breakdown"
+    );
 }
 
 #[sqlx::test]
@@ -569,7 +750,10 @@ async fn admin_report_venue_rental_counts_only_confirmed_completed(db: PgPool) {
         .iter()
         .find(|r| r.source == "venue_rental")
         .expect("venue row");
-    assert_eq!(venue_row.gross_cents, 8_000, "confirmed+completed only, this month only");
+    assert_eq!(
+        venue_row.gross_cents, 8_000,
+        "confirmed+completed only, this month only"
+    );
     assert_eq!(venue_row.orders_count, 2);
     assert_eq!(venue_row.units, 2);
 
@@ -591,8 +775,15 @@ async fn admin_report_income_sources_12m_buckets_by_paid_month(db: PgPool) {
     let buyer = seed_member(&db, "sources-12m@example.com", "Password!234").await;
     let course_id = seed_course(&db, "Sources 12m Course", None).await;
 
-    let line = SeedOrderLine::Course { course_id, unit_price_cents: 1_000 };
-    OrderSeed::new(buyer, OrderStatus::Paid).paid_at(now).line(line).insert(&db).await;
+    let line = SeedOrderLine::Course {
+        course_id,
+        unit_price_cents: 1_000,
+    };
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(now)
+        .line(line)
+        .insert(&db)
+        .await;
     OrderSeed::new(buyer, OrderStatus::Paid)
         .paid_at(months_ago(now, 1))
         .line(line)
@@ -620,7 +811,11 @@ async fn admin_report_income_sources_12m_buckets_by_paid_month(db: PgPool) {
     let this_key = now.format("%Y-%m").to_string();
     let last_key = months_ago(now, 1).format("%Y-%m").to_string();
     for (month, gross) in &course_by_month {
-        let expected = if *month == this_key || *month == last_key { 1_000 } else { 0 };
+        let expected = if *month == this_key || *month == last_key {
+            1_000
+        } else {
+            0
+        };
         assert_eq!(*gross, expected, "month {month}");
     }
     assert_eq!(
@@ -635,9 +830,15 @@ async fn income_by_source_has_nonzero_bucket_for_every_source(db: PgPool) {
     let now = Utc::now();
     let buyer = seed_member(&db, "every-source@example.com", "Password!234").await;
     let course_id = seed_course(&db, "Every Source Course", None).await;
-    let ticket_id =
-        seed_entitlement_product(&db, "every-ticket", ProductType::Ticket, 1_000, Some(30), None)
-            .await;
+    let ticket_id = seed_entitlement_product(
+        &db,
+        "every-ticket",
+        ProductType::Ticket,
+        1_000,
+        Some(30),
+        None,
+    )
+    .await;
     let membership_id = seed_entitlement_product(
         &db,
         "every-membership",
@@ -660,8 +861,15 @@ async fn income_by_source_has_nonzero_bucket_for_every_source(db: PgPool) {
 
     OrderSeed::new(buyer, OrderStatus::Paid)
         .paid_at(now)
-        .line(SeedOrderLine::Course { course_id, unit_price_cents: 500 })
-        .line(SeedOrderLine::Product { product_id: ticket_id, quantity: 1, unit_price_cents: 1_000 })
+        .line(SeedOrderLine::Course {
+            course_id,
+            unit_price_cents: 500,
+        })
+        .line(SeedOrderLine::Product {
+            product_id: ticket_id,
+            quantity: 1,
+            unit_price_cents: 1_000,
+        })
         .line(SeedOrderLine::Product {
             product_id: membership_id,
             quantity: 1,
@@ -672,18 +880,29 @@ async fn income_by_source_has_nonzero_bucket_for_every_source(db: PgPool) {
             quantity: 1,
             unit_price_cents: 3_000,
         })
-        .line(SeedOrderLine::Product { product_id: merch_id, quantity: 1, unit_price_cents: 4_000 })
+        .line(SeedOrderLine::Product {
+            product_id: merch_id,
+            quantity: 1,
+            unit_price_cents: 4_000,
+        })
         .insert(&db)
         .await;
-    seed_venue_rentals(&db, months_ago(now, 0).date_naive(), &[(BookingStatus::Confirmed, 6_000)])
-        .await;
+    seed_venue_rentals(
+        &db,
+        months_ago(now, 0).date_naive(),
+        &[(BookingStatus::Confirmed, 6_000)],
+    )
+    .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
-    let sources: Vec<(&str, i64)> =
-        report.revenue_breakdown.iter().map(|r| (r.source.as_str(), r.gross_cents)).collect();
+    let sources: Vec<(&str, i64)> = report
+        .revenue_breakdown
+        .iter()
+        .map(|r| (r.source.as_str(), r.gross_cents))
+        .collect();
     assert_eq!(
         sources,
         [
@@ -725,7 +944,10 @@ async fn admin_report_payment_split_null_method_is_unknown(db: PgPool) {
         .paid_at(now)
         .insert(&db)
         .await;
-    OrderSeed::new(buyer, OrderStatus::Paid).paid_at(now).insert(&db).await;
+    OrderSeed::new(buyer, OrderStatus::Paid)
+        .paid_at(now)
+        .insert(&db)
+        .await;
     // Excluded: wrong status / wrong month.
     OrderSeed::new(buyer, OrderStatus::Refunded)
         .payment_method("credit_card")
@@ -742,7 +964,12 @@ async fn admin_report_payment_split_null_method_is_unknown(db: PgPool) {
         .await
         .expect("admin_report");
 
-    assert_eq!(report.payment_split.len(), 3, "got {:?}", report.payment_split);
+    assert_eq!(
+        report.payment_split.len(),
+        3,
+        "got {:?}",
+        report.payment_split
+    );
     let count_of = |method: &str| {
         report
             .payment_split
@@ -753,7 +980,11 @@ async fn admin_report_payment_split_null_method_is_unknown(db: PgPool) {
     };
     assert_eq!(count_of("credit_card"), 2);
     assert_eq!(count_of("line_pay"), 1);
-    assert_eq!(count_of("unknown"), 1, "NULL payment_method surfaces as the literal 'unknown' key");
+    assert_eq!(
+        count_of("unknown"),
+        1,
+        "NULL payment_method surfaces as the literal 'unknown' key"
+    );
 }
 
 #[sqlx::test]
@@ -782,7 +1013,10 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
     // no coach at all.
     OrderSeed::new(buyer, OrderStatus::Paid)
         .paid_at(now)
-        .line(SeedOrderLine::Course { course_id: course_a, unit_price_cents: 50_000 })
+        .line(SeedOrderLine::Course {
+            course_id: course_a,
+            unit_price_cents: 50_000,
+        })
         .line(SeedOrderLine::Product {
             product_id: ticket_id,
             quantity: 1,
@@ -791,26 +1025,67 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
         .insert(&db)
         .await;
     // Oldest in-window month (11 months back) still counts for coach B…
-    seed_course_revenue(&db, buyer, course_b, 30_000, OrderStatus::Paid, Some(months_ago(now, 11)))
-        .await;
+    seed_course_revenue(
+        &db,
+        buyer,
+        course_b,
+        30_000,
+        OrderStatus::Paid,
+        Some(months_ago(now, 11)),
+    )
+    .await;
     // …but 12 months back is outside the window, and refunded never counts.
-    seed_course_revenue(&db, buyer, course_a, 99_999, OrderStatus::Paid, Some(months_ago(now, 12)))
-        .await;
-    seed_course_revenue(&db, buyer, course_a, 88_888, OrderStatus::Refunded, Some(now)).await;
+    seed_course_revenue(
+        &db,
+        buyer,
+        course_a,
+        99_999,
+        OrderStatus::Paid,
+        Some(months_ago(now, 12)),
+    )
+    .await;
+    seed_course_revenue(
+        &db,
+        buyer,
+        course_a,
+        88_888,
+        OrderStatus::Refunded,
+        Some(now),
+    )
+    .await;
     // A coachless course's line is attributed to nobody (and must not 500).
-    seed_course_revenue(&db, buyer, course_orphan, 7_777, OrderStatus::Paid, Some(now)).await;
+    seed_course_revenue(
+        &db,
+        buyer,
+        course_orphan,
+        7_777,
+        OrderStatus::Paid,
+        Some(now),
+    )
+    .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
         .expect("admin_report");
 
-    let row_a = report.coaches.iter().find(|c| c.coach_id == coach_a).expect("coach A row");
+    let row_a = report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_a)
+        .expect("coach A row");
     assert_eq!(
         row_a.revenue_cents_12m, 50_000,
         "course line only — the same order's ticket line must not attribute to the coach"
     );
-    let row_b = report.coaches.iter().find(|c| c.coach_id == coach_b).expect("coach B row");
-    assert_eq!(row_b.revenue_cents_12m, 30_000, "11 months back is still inside the window");
+    let row_b = report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_b)
+        .expect("coach B row");
+    assert_eq!(
+        row_b.revenue_cents_12m, 30_000,
+        "11 months back is still inside the window"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -854,8 +1129,10 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
     // always mints a brand-new member per call — stays inline.
     let m_low = seed_member(&db, "attdist-low@example.com", "Password!234").await;
     let e_low = seed_enrolment(&db, m_low, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    let s1 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
-    let s2 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
+    let s1 =
+        seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
+    let s2 =
+        seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
     seed_attendance(&db, s1, e_low, AttendanceStatus::Present, m_low).await;
     seed_attendance(&db, s2, e_low, AttendanceStatus::Absent, m_low).await;
 
@@ -867,14 +1144,23 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
         .expect("admin_report");
 
     let count = |bucket: &str| {
-        report.attendance_distribution.iter().find(|r| r.bucket == bucket).unwrap().count
+        report
+            .attendance_distribution
+            .iter()
+            .find(|r| r.bucket == bucket)
+            .unwrap()
+            .count
     };
     assert_eq!(count("gte_95"), 1, "the always-present member");
     assert_eq!(count("lt_75"), 1, "the 50% member");
     assert_eq!(count("85_94"), 0);
     assert_eq!(count("75_84"), 0);
     assert_eq!(
-        report.attendance_distribution.iter().map(|r| r.count).sum::<i64>(),
+        report
+            .attendance_distribution
+            .iter()
+            .map(|r| r.count)
+            .sum::<i64>(),
         2,
         "leave-only and never-marked members must not appear in the distribution"
     );
@@ -890,10 +1176,38 @@ async fn admin_report_retention_new_returning_and_null_rate(db: PgPool) {
     // Present in last month (first-ever active month) and again this month.
     // Sessions pinned to the 1st of each month so bucketing can't straddle a
     // boundary.
-    let s_last = seed_course_session(&db, course_id, months_ago(now, 1).date_naive(), t(9, 0), t(10, 0)).await;
-    let s_this = seed_course_session(&db, course_id, months_ago(now, 0).date_naive(), t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, s_last, enrolment_id, AttendanceStatus::Present, user_id).await;
-    seed_attendance(&db, s_this, enrolment_id, AttendanceStatus::Present, user_id).await;
+    let s_last = seed_course_session(
+        &db,
+        course_id,
+        months_ago(now, 1).date_naive(),
+        t(9, 0),
+        t(10, 0),
+    )
+    .await;
+    let s_this = seed_course_session(
+        &db,
+        course_id,
+        months_ago(now, 0).date_naive(),
+        t(9, 0),
+        t(10, 0),
+    )
+    .await;
+    seed_attendance(
+        &db,
+        s_last,
+        enrolment_id,
+        AttendanceStatus::Present,
+        user_id,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        s_this,
+        enrolment_id,
+        AttendanceStatus::Present,
+        user_id,
+    )
+    .await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -902,15 +1216,36 @@ async fn admin_report_retention_new_returning_and_null_rate(db: PgPool) {
     let this_key = now.format("%Y-%m").to_string();
     let last_key = months_ago(now, 1).format("%Y-%m").to_string();
 
-    let this_row = report.retention.iter().find(|r| r.month == this_key).expect("this month row");
-    assert_eq!(this_row.new_count, 0, "user's first active month was last month, not this");
-    assert_eq!(this_row.returning_count, 1, "active this month with a prior active month");
-    assert_eq!(this_row.rate, Some(1.0), "the one last-month-active user stayed active this month");
+    let this_row = report
+        .retention
+        .iter()
+        .find(|r| r.month == this_key)
+        .expect("this month row");
+    assert_eq!(
+        this_row.new_count, 0,
+        "user's first active month was last month, not this"
+    );
+    assert_eq!(
+        this_row.returning_count, 1,
+        "active this month with a prior active month"
+    );
+    assert_eq!(
+        this_row.rate,
+        Some(1.0),
+        "the one last-month-active user stayed active this month"
+    );
 
-    let last_row = report.retention.iter().find(|r| r.month == last_key).expect("last month row");
+    let last_row = report
+        .retention
+        .iter()
+        .find(|r| r.month == last_key)
+        .expect("last month row");
     assert_eq!(last_row.new_count, 1, "first active month = new");
     assert_eq!(last_row.returning_count, 0);
-    assert_eq!(last_row.rate, None, "month before had no active users -> rate null, not 0");
+    assert_eq!(
+        last_row.rate, None,
+        "month before had no active users -> rate null, not 0"
+    );
 }
 
 #[sqlx::test]
@@ -929,7 +1264,12 @@ async fn admin_report_age_dist_excludes_null_birth_date(db: PgPool) {
         .expect("admin_report");
 
     let count = |bucket: &str| {
-        report.age_distribution.iter().find(|r| r.bucket == bucket).unwrap().count
+        report
+            .age_distribution
+            .iter()
+            .find(|r| r.bucket == bucket)
+            .unwrap()
+            .count
     };
     assert_eq!(count("0-6"), 1);
     assert_eq!(count("13-17"), 1);
@@ -945,18 +1285,60 @@ async fn admin_report_funnel_honest_two_stages_90_day_window(db: PgPool) {
     let now = Utc::now();
 
     // trial_inquiries: only inquiry_type='trial' inside the 90-day window.
-    seed_inquiry(&db, "Recent Trial", "試上諮詢", "trial", now - Duration::days(5)).await;
-    seed_inquiry(&db, "Old Trial", "試上諮詢", "trial", now - Duration::days(91)).await; // out of window
-    seed_inquiry(&db, "General", "一般諮詢", "general", now - Duration::days(1)).await; // wrong type
+    seed_inquiry(
+        &db,
+        "Recent Trial",
+        "試上諮詢",
+        "trial",
+        now - Duration::days(5),
+    )
+    .await;
+    seed_inquiry(
+        &db,
+        "Old Trial",
+        "試上諮詢",
+        "trial",
+        now - Duration::days(91),
+    )
+    .await; // out of window
+    seed_inquiry(
+        &db,
+        "General",
+        "一般諮詢",
+        "general",
+        now - Duration::days(1),
+    )
+    .await; // wrong type
 
     // new_enrolments: enrolments created (not cancelled) inside the window.
     let user_id = seed_member(&db, "funnel-user@example.com", "Password!234").await;
     let c1 = seed_course(&db, "Funnel Course 1", None).await;
     let c2 = seed_course(&db, "Funnel Course 2", None).await;
     let c3 = seed_course(&db, "Funnel Course 3", None).await;
-    seed_enrolment(&db, user_id, c1, EnrolmentStatus::Active, now - Duration::days(5)).await;
-    seed_enrolment(&db, user_id, c2, EnrolmentStatus::Cancelled, now - Duration::days(5)).await; // excluded
-    seed_enrolment(&db, user_id, c3, EnrolmentStatus::Active, now - Duration::days(91)).await; // out of window
+    seed_enrolment(
+        &db,
+        user_id,
+        c1,
+        EnrolmentStatus::Active,
+        now - Duration::days(5),
+    )
+    .await;
+    seed_enrolment(
+        &db,
+        user_id,
+        c2,
+        EnrolmentStatus::Cancelled,
+        now - Duration::days(5),
+    )
+    .await; // excluded
+    seed_enrolment(
+        &db,
+        user_id,
+        c3,
+        EnrolmentStatus::Active,
+        now - Duration::days(91),
+    )
+    .await; // out of window
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -986,7 +1368,8 @@ async fn admin_report_weekday_load_indexes_sunday_as_zero(db: PgPool) {
     // The most recent Sunday (index 0) and Wednesday (index 3) on/before today
     // — both within the trailing-30-day window.
     let sunday = today - Duration::days(i64::from(today.weekday().num_days_from_sunday()));
-    let wednesday = today - Duration::days(i64::from((today.weekday().num_days_from_sunday() + 4) % 7));
+    let wednesday =
+        today - Duration::days(i64::from((today.weekday().num_days_from_sunday() + 4) % 7));
     assert_eq!(sunday.weekday().num_days_from_sunday(), 0);
     assert_eq!(wednesday.weekday().num_days_from_sunday(), 3);
 
@@ -1002,13 +1385,22 @@ async fn admin_report_weekday_load_indexes_sunday_as_zero(db: PgPool) {
         .expect("admin_report");
 
     let by_day = |weekday: i16| {
-        report.weekday_load.iter().find(|r| r.weekday == weekday).unwrap().present_count
+        report
+            .weekday_load
+            .iter()
+            .find(|r| r.weekday == weekday)
+            .unwrap()
+            .present_count
     };
     assert_eq!(report.weekday_load.len(), 7);
     assert_eq!(by_day(0), 2, "Sunday present headcount (index 0)");
     assert_eq!(by_day(3), 1, "Wednesday present headcount (index 3)");
     assert_eq!(
-        report.weekday_load.iter().map(|r| r.present_count).sum::<i64>(),
+        report
+            .weekday_load
+            .iter()
+            .map(|r| r.present_count)
+            .sum::<i64>(),
         3,
         "no attendance leaked into other weekdays"
     );
@@ -1028,7 +1420,12 @@ async fn admin_report_tier_dist_threshold_boundaries(db: PgPool) {
         .expect("admin_report");
 
     let count = |bucket: &str| {
-        report.tier_distribution.iter().find(|r| r.bucket == bucket).unwrap().count
+        report
+            .tier_distribution
+            .iter()
+            .find(|r| r.bucket == bucket)
+            .unwrap()
+            .count
     };
     assert_eq!(count("regular"), 1, "499 -> regular");
     assert_eq!(count("bronze"), 2, "500 and 1999 -> bronze");
@@ -1053,8 +1450,14 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
     let course_d = seed_course(&db, "Venue D Course", None).await;
 
     // A館: 09:00–11:00 = 120 min; B教室: 14:00–15:00 = 60 min.
-    SlotSeed::new(course_a, 1, t(9, 0), t(11, 0)).venue("A 訓練館").insert(&db).await;
-    SlotSeed::new(course_b, 2, t(14, 0), t(15, 0)).venue("B 教室").insert(&db).await;
+    SlotSeed::new(course_a, 1, t(9, 0), t(11, 0))
+        .venue("A 訓練館")
+        .insert(&db)
+        .await;
+    SlotSeed::new(course_b, 2, t(14, 0), t(15, 0))
+        .venue("B 教室")
+        .insert(&db)
+        .await;
     // NULL venue -> excluded.
     seed_course_schedule_slot(&db, course_c, 3, t(10, 0), t(11, 0)).await;
 
@@ -1066,13 +1469,26 @@ async fn admin_report_venue_usage_sums_minutes_per_venue(db: PgPool) {
 
     let report = service::admin_report(&db, at).await.expect("admin_report");
 
-    let minutes = |venue: &str| report.venue_usage.iter().find(|r| r.venue == venue).map(|r| r.minutes);
+    let minutes = |venue: &str| {
+        report
+            .venue_usage
+            .iter()
+            .find(|r| r.venue == venue)
+            .map(|r| r.minutes)
+    };
     assert_eq!(minutes("A 訓練館"), Some(4 * 120));
     assert_eq!(minutes("B 教室"), Some(5 * 60));
     assert!(
-        report.venue_usage.iter().all(|r| r.venue == "A 訓練館" || r.venue == "B 教室"),
+        report
+            .venue_usage
+            .iter()
+            .all(|r| r.venue == "A 訓練館" || r.venue == "B 教室"),
         "NULL-venue slot and no-slot session must be excluded, got {:?}",
-        report.venue_usage.iter().map(|r| r.venue.as_str()).collect::<Vec<_>>()
+        report
+            .venue_usage
+            .iter()
+            .map(|r| r.venue.as_str())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1081,8 +1497,10 @@ async fn venue_usage_keeps_past_venue_after_venue_edit(db: PgPool) {
     // Sessions keep the venue snapshotted when they were materialized: a
     // later slot venue edit (without a reconcile) must not re-label them.
     let course_id = seed_course(&db, "Venue Edit Course", None).await;
-    let slot_id =
-        SlotSeed::new(course_id, 1, t(9, 0), t(10, 0)).venue("Old Hall").insert(&db).await;
+    let slot_id = SlotSeed::new(course_id, 1, t(9, 0), t(10, 0))
+        .venue("Old Hall")
+        .insert(&db)
+        .await;
     // First report (2026-09-01, 1st of the month) materializes all four
     // September Mondays (7/14/21/28) with "Old Hall".
     let first_at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap());
@@ -1121,9 +1539,15 @@ async fn admin_report_does_not_materialize_past_days(db: PgPool) {
     // phantom 09-14 row: 3 sessions × 60 min.
     let at = common::studio_now_utc(Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap());
     let course_id = seed_course(&db, "Forward Only Course", None).await;
-    SlotSeed::new(course_id, 1, t(9, 0), t(10, 0)).venue("A").insert(&db).await;
+    SlotSeed::new(course_id, 1, t(9, 0), t(10, 0))
+        .venue("A")
+        .insert(&db)
+        .await;
     let sep_7 = NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
-    SessionSeed::new(course_id, sep_7, t(9, 0), t(10, 0)).venue("A").insert(&db).await;
+    SessionSeed::new(course_id, sep_7, t(9, 0), t(10, 0))
+        .venue("A")
+        .insert(&db)
+        .await;
 
     let report = service::admin_report(&db, at).await.expect("admin_report");
 
@@ -1150,9 +1574,12 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
     seed_course(&db, "Coach Att B Course", Some(coach_b)).await;
 
     let today = Utc::now().date_naive();
-    let s1 = seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
-    let s2 = seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
-    let s3 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
+    let s1 =
+        seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
+    let s2 =
+        seed_course_session(&db, course_id, today - Duration::days(4), t(9, 0), t(10, 0)).await;
+    let s3 =
+        seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
     seed_attendance(&db, s1, enrolment_id, AttendanceStatus::Present, coach_user).await;
     seed_attendance(&db, s2, enrolment_id, AttendanceStatus::Absent, coach_user).await;
     seed_attendance(&db, s3, enrolment_id, AttendanceStatus::Leave, coach_user).await;
@@ -1161,14 +1588,25 @@ async fn admin_report_coach_attendance_rate_excludes_leave(db: PgPool) {
         .await
         .expect("admin_report");
 
-    let row_a = report.coaches.iter().find(|c| c.coach_id == coach_id).expect("coach A row");
+    let row_a = report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_id)
+        .expect("coach A row");
     assert_eq!(
         row_a.attendance_rate,
         Some(0.5),
         "1 present / (1 present + 1 absent) — leave excluded from the denominator"
     );
-    let row_b = report.coaches.iter().find(|c| c.coach_id == coach_b).expect("coach B row");
-    assert_eq!(row_b.attendance_rate, None, "a coach with no attendance records -> null");
+    let row_b = report
+        .coaches
+        .iter()
+        .find(|c| c.coach_id == coach_b)
+        .expect("coach B row");
+    assert_eq!(
+        row_b.attendance_rate, None,
+        "a coach with no attendance records -> null"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,7 +1622,10 @@ async fn coach_report_no_coach_row_returns_not_found(db: PgPool) {
         .await
         .expect_err("expected NotFound");
 
-    assert!(matches!(err, AppError::NotFound(_)), "expected NotFound, got {err:?}");
+    assert!(
+        matches!(err, AppError::NotFound(_)),
+        "expected NotFound, got {err:?}"
+    );
 }
 
 #[sqlx::test]
@@ -1223,7 +1664,10 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
         .expect("coach_report (before marking)");
 
     assert_eq!(report.today_sessions, 1);
-    assert_eq!(report.pending_attendance, 1, "no attendance recorded yet for today's session");
+    assert_eq!(
+        report.pending_attendance, 1,
+        "no attendance recorded yet for today's session"
+    );
 
     let session_id: Uuid = sqlx::query_scalar(
         "SELECT id FROM course_sessions WHERE course_id = $1 AND session_date = $2",
@@ -1240,7 +1684,14 @@ async fn coach_report_today_sessions_and_pending_attendance(db: PgPool) {
             .fetch_one(&db)
             .await
             .unwrap();
-    seed_attendance(&db, session_id, enrolment_id, AttendanceStatus::Present, coach_user).await;
+    seed_attendance(
+        &db,
+        session_id,
+        enrolment_id,
+        AttendanceStatus::Present,
+        coach_user,
+    )
+    .await;
 
     let report_after = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
         .await
@@ -1258,12 +1709,30 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
     let student_a = seed_member(&db, "rate-student-a@example.com", "Password!234").await;
     let student_b = seed_member(&db, "rate-student-b@example.com", "Password!234").await;
     let student_c = seed_member(&db, "rate-student-c@example.com", "Password!234").await;
-    let enrolment_a =
-        seed_enrolment(&db, student_a, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    let enrolment_b =
-        seed_enrolment(&db, student_b, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    let enrolment_c =
-        seed_enrolment(&db, student_c, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_a = seed_enrolment(
+        &db,
+        student_a,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    let enrolment_b = seed_enrolment(
+        &db,
+        student_b,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    let enrolment_c = seed_enrolment(
+        &db,
+        student_c,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let today = Utc::now().date_naive();
     let within_window = today - Duration::days(10);
@@ -1274,11 +1743,39 @@ async fn coach_report_attendance_rate_30d_excludes_leave_and_out_of_window(db: P
 
     // Within the 30-day window: 1 present, 1 absent, 1 leave — leave must
     // count toward neither the numerator nor the denominator.
-    seed_attendance(&db, session_in, enrolment_a, AttendanceStatus::Present, coach_user).await;
-    seed_attendance(&db, session_in, enrolment_b, AttendanceStatus::Absent, coach_user).await;
-    seed_attendance(&db, session_in, enrolment_c, AttendanceStatus::Leave, coach_user).await;
+    seed_attendance(
+        &db,
+        session_in,
+        enrolment_a,
+        AttendanceStatus::Present,
+        coach_user,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        session_in,
+        enrolment_b,
+        AttendanceStatus::Absent,
+        coach_user,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        session_in,
+        enrolment_c,
+        AttendanceStatus::Leave,
+        coach_user,
+    )
+    .await;
     // Outside the window: a present record that must not be counted.
-    seed_attendance(&db, session_out, enrolment_a, AttendanceStatus::Present, coach_user).await;
+    seed_attendance(
+        &db,
+        session_out,
+        enrolment_a,
+        AttendanceStatus::Present,
+        coach_user,
+    )
+    .await;
 
     let auth = common::auth_for(&db, coach_user).await;
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
@@ -1309,16 +1806,36 @@ async fn coach_report_scoped_to_own_domain(db: PgPool) {
 
     let student_a = seed_member(&db, "scope-student-a@example.com", "Password!234").await;
     let student_b = seed_member(&db, "scope-student-b@example.com", "Password!234").await;
-    seed_enrolment(&db, student_a, course_a, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, student_b, course_b, EnrolmentStatus::Active, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        student_a,
+        course_a,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    seed_enrolment(
+        &db,
+        student_b,
+        course_b,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
 
     let auth_a = common::auth_for(&db, coach_a_user).await;
     let report_a = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth_a)
         .await
         .expect("coach_report for coach A");
 
-    assert_eq!(report_a.today_sessions, 1, "coach A should only see their own course's session");
-    assert_eq!(report_a.student_count, 1, "coach A should not see coach B's student");
+    assert_eq!(
+        report_a.today_sessions, 1,
+        "coach A should only see their own course's session"
+    );
+    assert_eq!(
+        report_a.student_count, 1,
+        "coach A should not see coach B's student"
+    );
 }
 
 #[sqlx::test]
@@ -1342,11 +1859,34 @@ async fn coach_report_unread_messages_counts_only_incoming_unread(db: PgPool) {
     // Sent by the coach themself -> must not count as unread-to-me.
     seed_message(&db, conversation_id, coach_user, "hi", None, Utc::now()).await;
     // Sent by the member, already read -> must not count.
-    seed_message(&db, conversation_id, member_user, "read already", Some(Utc::now()), Utc::now())
-        .await;
+    seed_message(
+        &db,
+        conversation_id,
+        member_user,
+        "read already",
+        Some(Utc::now()),
+        Utc::now(),
+    )
+    .await;
     // Sent by the member, unread -> must count (x2).
-    seed_message(&db, conversation_id, member_user, "please read", None, Utc::now()).await;
-    seed_message(&db, conversation_id, member_user, "please read 2", None, Utc::now()).await;
+    seed_message(
+        &db,
+        conversation_id,
+        member_user,
+        "please read",
+        None,
+        Utc::now(),
+    )
+    .await;
+    seed_message(
+        &db,
+        conversation_id,
+        member_user,
+        "please read 2",
+        None,
+        Utc::now(),
+    )
+    .await;
 
     let auth = common::auth_for(&db, coach_user).await;
     let report = service::coach_report(&db, common::studio_now_utc(Utc::now()), &auth)
@@ -1383,13 +1923,37 @@ async fn member_report_attendance_rate_excludes_leave(db: PgPool) {
         seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
     let today = Utc::now().date_naive();
-    let session_1 = seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
-    let session_2 = seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
-    let session_3 = seed_course_session(&db, course_id, today - Duration::days(1), t(9, 0), t(10, 0)).await;
+    let session_1 =
+        seed_course_session(&db, course_id, today - Duration::days(5), t(9, 0), t(10, 0)).await;
+    let session_2 =
+        seed_course_session(&db, course_id, today - Duration::days(3), t(9, 0), t(10, 0)).await;
+    let session_3 =
+        seed_course_session(&db, course_id, today - Duration::days(1), t(9, 0), t(10, 0)).await;
 
-    seed_attendance(&db, session_1, enrolment_id, AttendanceStatus::Present, user_id).await;
-    seed_attendance(&db, session_2, enrolment_id, AttendanceStatus::Present, user_id).await;
-    seed_attendance(&db, session_3, enrolment_id, AttendanceStatus::Leave, user_id).await;
+    seed_attendance(
+        &db,
+        session_1,
+        enrolment_id,
+        AttendanceStatus::Present,
+        user_id,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        session_2,
+        enrolment_id,
+        AttendanceStatus::Present,
+        user_id,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        session_3,
+        enrolment_id,
+        AttendanceStatus::Leave,
+        user_id,
+    )
+    .await;
 
     let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
@@ -1421,7 +1985,14 @@ async fn member_report_active_enrolments_excludes_cancelled(db: PgPool) {
     let course_1 = seed_course(&db, "Active Enrol Course 1", None).await;
     let course_2 = seed_course(&db, "Active Enrol Course 2", None).await;
     seed_enrolment(&db, user_id, course_1, EnrolmentStatus::Active, Utc::now()).await;
-    seed_enrolment(&db, user_id, course_2, EnrolmentStatus::Cancelled, Utc::now()).await;
+    seed_enrolment(
+        &db,
+        user_id,
+        course_2,
+        EnrolmentStatus::Cancelled,
+        Utc::now(),
+    )
+    .await;
 
     let report = service::member_report(&db, common::studio_now_utc(Utc::now()), user_id)
         .await
@@ -1461,7 +2032,10 @@ async fn member_report_upcoming_sessions_7d_materializes_and_respects_window(db:
     .fetch_one(&db)
     .await
     .unwrap();
-    assert!(!far_session_exists, "a date 10 days out must not be materialized by the 7-day window");
+    assert!(
+        !far_session_exists,
+        "a date 10 days out must not be materialized by the 7-day window"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1509,13 +2083,23 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
     .await;
 
     // A contact inquiry (kind=inquiry) — newest of the four.
-    seed_inquiry(&db, "Activity Asker", "課程諮詢", "general", now - Duration::minutes(10)).await;
+    seed_inquiry(
+        &db,
+        "Activity Asker",
+        "課程諮詢",
+        "general",
+        now - Duration::minutes(10),
+    )
+    .await;
 
     let report = service::admin_activity(&db).await.expect("admin_activity");
 
     let kinds: Vec<&str> = report.items.iter().map(|i| i.kind.as_str()).collect();
     for expected in ["user", "order", "enrolment", "inquiry"] {
-        assert!(kinds.contains(&expected), "missing kind {expected} in {kinds:?}");
+        assert!(
+            kinds.contains(&expected),
+            "missing kind {expected} in {kinds:?}"
+        );
     }
 
     // The whole merged+sorted list (including the buyer/student's own
@@ -1524,7 +2108,11 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
         assert!(
             pair[0].occurred_at >= pair[1].occurred_at,
             "items must be sorted occurred_at desc, got {:?}",
-            report.items.iter().map(|i| (&i.kind, i.occurred_at)).collect::<Vec<_>>()
+            report
+                .items
+                .iter()
+                .map(|i| (&i.kind, i.occurred_at))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1533,22 +2121,49 @@ async fn admin_activity_includes_all_four_kinds_sorted_desc(db: PgPool) {
         .iter()
         .find(|i| i.label == "新會員註冊:Activity New User")
         .expect("headline user activity present");
-    let order_item = report.items.iter().find(|i| i.kind == "order").expect("order activity present");
-    let enrolment_item =
-        report.items.iter().find(|i| i.kind == "enrolment").expect("enrolment activity present");
-    let inquiry_item =
-        report.items.iter().find(|i| i.kind == "inquiry").expect("inquiry activity present");
+    let order_item = report
+        .items
+        .iter()
+        .find(|i| i.kind == "order")
+        .expect("order activity present");
+    let enrolment_item = report
+        .items
+        .iter()
+        .find(|i| i.kind == "enrolment")
+        .expect("enrolment activity present");
+    let inquiry_item = report
+        .items
+        .iter()
+        .find(|i| i.kind == "inquiry")
+        .expect("inquiry activity present");
 
-    assert!(order_item.label.starts_with("訂單 TEST-"), "got label={}", order_item.label);
-    assert!(order_item.label.contains("已付款:NT$500"), "got label={}", order_item.label);
+    assert!(
+        order_item.label.starts_with("訂單 TEST-"),
+        "got label={}",
+        order_item.label
+    );
+    assert!(
+        order_item.label.contains("已付款:NT$500"),
+        "got label={}",
+        order_item.label
+    );
     assert_eq!(enrolment_item.label, "新報名:Activity Feed Course");
     assert_eq!(inquiry_item.label, "新洽詢(general):課程諮詢");
 
     // The four headline events' relative order must reflect their
     // `occurred_at` offsets (-10m newest .. -40m oldest).
-    assert!(inquiry_item.occurred_at > enrolment_item.occurred_at, "inquiry should be newer than enrolment");
-    assert!(enrolment_item.occurred_at > order_item.occurred_at, "enrolment should be newer than order");
-    assert!(order_item.occurred_at > user_item.occurred_at, "order should be newer than the headline user");
+    assert!(
+        inquiry_item.occurred_at > enrolment_item.occurred_at,
+        "inquiry should be newer than enrolment"
+    );
+    assert!(
+        enrolment_item.occurred_at > order_item.occurred_at,
+        "enrolment should be newer than order"
+    );
+    assert!(
+        order_item.occurred_at > user_item.occurred_at,
+        "order should be newer than the headline user"
+    );
 }
 
 #[sqlx::test]
@@ -1564,7 +2179,11 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
     }
 
     let report = service::admin_activity(&db).await.expect("admin_activity");
-    assert_eq!(report.items.len(), 20, "must cap at 20 even with 25 candidate rows");
+    assert_eq!(
+        report.items.len(),
+        20,
+        "must cap at 20 even with 25 candidate rows"
+    );
 
     // The 20 most recent (offsets 0..19 minutes ago) must all be present;
     // the 5 oldest (20..24 minutes ago) must have been dropped.
@@ -1572,7 +2191,11 @@ async fn admin_activity_caps_at_20_across_sources(db: PgPool) {
     assert!(
         report.items.iter().all(|i| i.occurred_at >= cutoff),
         "oldest rows must have been dropped by the 20-cap, got {:?}",
-        report.items.iter().map(|i| i.occurred_at).collect::<Vec<_>>()
+        report
+            .items
+            .iter()
+            .map(|i| i.occurred_at)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1666,10 +2289,22 @@ async fn admin_report_buckets_follow_taipei_month_boundary(db: PgPool) {
         t(10, 0),
     )
     .await;
-    seed_attendance(&db, session_this_month, enrolment_x, AttendanceStatus::Present, member_x)
-        .await;
-    seed_attendance(&db, session_last_month, enrolment_y, AttendanceStatus::Present, member_y)
-        .await;
+    seed_attendance(
+        &db,
+        session_this_month,
+        enrolment_x,
+        AttendanceStatus::Present,
+        member_x,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        session_last_month,
+        enrolment_y,
+        AttendanceStatus::Present,
+        member_y,
+    )
+    .await;
 
     let report = service::admin_report(&db, at).await.expect("admin_report");
 
@@ -1743,7 +2378,11 @@ fn clock_cases() -> Vec<ClockCase> {
             tz_name: "America/New_York",
             now: Utc.with_ymd_and_hms(2026, 8, 1, 2, 0, 0).unwrap(),
         },
-        ClockCase { name: "UTC", tz_name: "UTC", now: Utc.with_ymd_and_hms(2026, 7, 5, 12, 0, 0).unwrap() },
+        ClockCase {
+            name: "UTC",
+            tz_name: "UTC",
+            now: Utc.with_ymd_and_hms(2026, 7, 5, 12, 0, 0).unwrap(),
+        },
     ]
 }
 
@@ -1860,11 +2499,9 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     let s4 = seed_member(&db, "delisted-s4@example.com", "Password!234").await;
 
     seed_enrolment(&db, s1, course_x, EnrolmentStatus::Active, now).await;
-    let enrolment_s2_y =
-        seed_enrolment(&db, s2, course_y, EnrolmentStatus::Active, now).await;
+    let enrolment_s2_y = seed_enrolment(&db, s2, course_y, EnrolmentStatus::Active, now).await;
     seed_enrolment(&db, s3, course_x, EnrolmentStatus::Active, now).await;
-    let enrolment_s3_y =
-        seed_enrolment(&db, s3, course_y, EnrolmentStatus::Active, now).await;
+    let enrolment_s3_y = seed_enrolment(&db, s3, course_y, EnrolmentStatus::Active, now).await;
     seed_enrolment(&db, s4, course_y, EnrolmentStatus::Cancelled, now).await;
 
     let today = now.date_naive();
@@ -1875,8 +2512,22 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     // absent -> 0.5. Plus a paid order on Y worth 5000 cents.
     let session_y_yesterday =
         seed_course_session(&db, course_y, today - Duration::days(1), t(9, 0), t(10, 0)).await;
-    seed_attendance(&db, session_y_yesterday, enrolment_s2_y, AttendanceStatus::Present, s2).await;
-    seed_attendance(&db, session_y_yesterday, enrolment_s3_y, AttendanceStatus::Absent, s3).await;
+    seed_attendance(
+        &db,
+        session_y_yesterday,
+        enrolment_s2_y,
+        AttendanceStatus::Present,
+        s2,
+    )
+    .await;
+    seed_attendance(
+        &db,
+        session_y_yesterday,
+        enrolment_s3_y,
+        AttendanceStatus::Absent,
+        s3,
+    )
+    .await;
     seed_course_revenue(&db, s1, course_y, 5_000, OrderStatus::Paid, Some(now)).await;
 
     // Y is delisted only after its roster/session/leave request are all in
@@ -1923,10 +2574,9 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
     );
 
     // GET /sessions/today as this coach — Y's today session still surfaces.
-    let today_sessions =
-        sessions_service::today_sessions(&db, common::studio_now_utc(now), &auth)
-            .await
-            .expect("today_sessions");
+    let today_sessions = sessions_service::today_sessions(&db, common::studio_now_utc(now), &auth)
+        .await
+        .expect("today_sessions");
     assert_eq!(
         today_sessions
             .iter()

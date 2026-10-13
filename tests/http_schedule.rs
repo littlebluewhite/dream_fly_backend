@@ -43,7 +43,10 @@ async fn get_availability_returns_seeded_slot(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     let arr = body.as_array().unwrap();
-    assert!(arr.iter().any(|s| s["id"].as_str().unwrap() == id.to_string()));
+    assert!(
+        arr.iter()
+            .any(|s| s["id"].as_str().unwrap() == id.to_string())
+    );
 }
 
 #[sqlx::test]
@@ -60,7 +63,9 @@ async fn create_slots_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn create_slots_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("smem@example.com", "Password!234").await;
+    let user = app
+        .register_member("smem@example.com", "Password!234")
+        .await;
     let resp = app
         .post("/api/v1/schedule/slots")
         .authorization_bearer(&user.access_token)
@@ -134,7 +139,10 @@ async fn create_slots_overlapping_existing_venue_slot_returns_409(db: PgPool) {
     let (_admin, token) = app.seed_admin().await;
     let venue_id = seed_venue(&app.db, "Overlap Venue", None).await;
     // `TimeSlotSeed` defaults to today + 2 days, 10:00-11:00.
-    TimeSlotSeed::new(10, app.today()).venue(venue_id).insert(&app.db).await;
+    TimeSlotSeed::new(10, app.today())
+        .venue(venue_id)
+        .insert(&app.db)
+        .await;
     let date = app.today() + Duration::days(2);
 
     let resp = app
@@ -200,7 +208,9 @@ async fn admin_closes_slot_then_monthly_shows_closed_status(db: PgPool) {
 #[sqlx::test]
 async fn update_slot_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("smem2@example.com", "Password!234").await;
+    let user = app
+        .register_member("smem2@example.com", "Password!234")
+        .await;
     let slot_id = TimeSlotSeed::new(10, app.today()).insert(&app.db).await;
 
     let resp = app
@@ -210,4 +220,3 @@ async fn update_slot_as_member_returns_403(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 403);
 }
-

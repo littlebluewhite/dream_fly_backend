@@ -5,8 +5,8 @@ mod common;
 use chrono::{Duration, Utc};
 use common::fixtures::{seed_entitlement_product, seed_subscription};
 use common::http::spawn_test_app;
-use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::permissions::model::Role;
+use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -21,12 +21,22 @@ async fn me_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn me_returns_only_callers_subscriptions(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user_a = app.register_member("sub-me-a@example.com", "Password!234").await;
-    let user_b = app.register_member("sub-me-b@example.com", "Password!234").await;
+    let user_a = app
+        .register_member("sub-me-a@example.com", "Password!234")
+        .await;
+    let user_b = app
+        .register_member("sub-me-b@example.com", "Password!234")
+        .await;
 
-    let product_id =
-        seed_entitlement_product(&app.db, "ticket-me-a", ProductType::Ticket, 5_000, None, Some(5))
-            .await;
+    let product_id = seed_entitlement_product(
+        &app.db,
+        "ticket-me-a",
+        ProductType::Ticket,
+        5_000,
+        None,
+        Some(5),
+    )
+    .await;
     seed_subscription(
         &app.db,
         user_a.user_id,
@@ -65,10 +75,18 @@ async fn me_returns_only_callers_subscriptions(db: PgPool) {
 #[sqlx::test]
 async fn me_orders_newest_first_with_full_response_shape(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sub-me-c@example.com", "Password!234").await;
-    let product_id =
-        seed_entitlement_product(&app.db, "ticket-me-c", ProductType::Ticket, 7_500, None, Some(8))
-            .await;
+    let user = app
+        .register_member("sub-me-c@example.com", "Password!234")
+        .await;
+    let product_id = seed_entitlement_product(
+        &app.db,
+        "ticket-me-c",
+        ProductType::Ticket,
+        7_500,
+        None,
+        Some(8),
+    )
+    .await;
 
     let older_id = seed_subscription(
         &app.db,
@@ -108,7 +126,12 @@ async fn me_orders_newest_first_with_full_response_shape(db: PgPool) {
 
     let first = &arr[0];
     assert_eq!(first["product_id"], product_id.to_string());
-    assert!(first["product_name"].as_str().unwrap().contains("ticket-me-c"));
+    assert!(
+        first["product_name"]
+            .as_str()
+            .unwrap()
+            .contains("ticket-me-c")
+    );
     assert_eq!(first["status"], "active");
     assert_eq!(first["total_sessions"], 8);
     assert_eq!(first["remaining_sessions"], 8);
@@ -120,7 +143,9 @@ async fn me_orders_newest_first_with_full_response_shape(db: PgPool) {
 #[sqlx::test]
 async fn me_status_derives_expired_for_past_expiry(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sub-me-d@example.com", "Password!234").await;
+    let user = app
+        .register_member("sub-me-d@example.com", "Password!234")
+        .await;
     let product_id = seed_entitlement_product(
         &app.db,
         "membership-me-d",
@@ -164,7 +189,9 @@ async fn redeem_without_auth_returns_401(db: PgPool) {
 #[sqlx::test]
 async fn redeem_as_member_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("sub-redeem-a@example.com", "Password!234").await;
+    let user = app
+        .register_member("sub-redeem-a@example.com", "Password!234")
+        .await;
     let product_id = seed_entitlement_product(
         &app.db,
         "ticket-redeem-a",
@@ -198,7 +225,9 @@ async fn redeem_as_member_returns_403(db: PgPool) {
 async fn redeem_as_admin_decrements_and_returns_200(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, token) = app.seed_admin().await;
-    let owner = app.register_member("sub-redeem-owner-a@example.com", "Password!234").await;
+    let owner = app
+        .register_member("sub-redeem-owner-a@example.com", "Password!234")
+        .await;
     let product_id = seed_entitlement_product(
         &app.db,
         "ticket-redeem-b",
@@ -234,8 +263,12 @@ async fn redeem_as_admin_decrements_and_returns_200(db: PgPool) {
 #[sqlx::test]
 async fn redeem_as_coach_succeeds(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let (_coach_id, token) = app.seed_user_with_roles("sub-redeem-coach@example.com", &[Role::Coach]).await;
-    let owner = app.register_member("sub-redeem-owner-b@example.com", "Password!234").await;
+    let (_coach_id, token) = app
+        .seed_user_with_roles("sub-redeem-coach@example.com", &[Role::Coach])
+        .await;
+    let owner = app
+        .register_member("sub-redeem-owner-b@example.com", "Password!234")
+        .await;
     let product_id = seed_entitlement_product(
         &app.db,
         "ticket-redeem-c",
@@ -265,7 +298,10 @@ async fn redeem_as_coach_succeeds(db: PgPool) {
     assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     let body: serde_json::Value = resp.json();
     assert_eq!(body["remaining_sessions"], 0);
-    assert_eq!(body["status"], "expired", "hitting 0 sessions must derive as expired");
+    assert_eq!(
+        body["status"], "expired",
+        "hitting 0 sessions must derive as expired"
+    );
 }
 
 #[sqlx::test]
@@ -284,7 +320,9 @@ async fn redeem_nonexistent_id_returns_404(db: PgPool) {
 async fn redeem_exhausted_returns_409(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, token) = app.seed_admin().await;
-    let owner = app.register_member("sub-redeem-owner-c@example.com", "Password!234").await;
+    let owner = app
+        .register_member("sub-redeem-owner-c@example.com", "Password!234")
+        .await;
     let product_id = seed_entitlement_product(
         &app.db,
         "ticket-redeem-d",

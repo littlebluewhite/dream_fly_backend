@@ -130,10 +130,7 @@ pub fn decode_access_token(config: &AuthConfig, token: &str) -> Result<Claims, A
     Ok(token_data.claims)
 }
 
-pub fn decode_refresh_token(
-    config: &AuthConfig,
-    token: &str,
-) -> Result<RefreshClaims, AppError> {
+pub fn decode_refresh_token(config: &AuthConfig, token: &str) -> Result<RefreshClaims, AppError> {
     let token_data = decode::<RefreshClaims>(
         token,
         &DecodingKey::from_secret(config.jwt_secret.as_bytes()),

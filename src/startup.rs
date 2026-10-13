@@ -83,7 +83,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(
             Router::new()
                 .merge(modules::auth::routes::throttled_router())
-                .route_layer(middleware::from_fn_with_state(state.clone(), strict_rate_limit)),
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    strict_rate_limit,
+                )),
         )
         .merge(modules::auth::routes::router())
         .merge(modules::users::routes::router())
@@ -179,10 +182,7 @@ pub fn build_router(state: AppState) -> Router {
         .layer(trace_layer)
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(PropagateHeaderLayer::new(request_id_header.clone()))
-        .layer(SetRequestIdLayer::new(
-            request_id_header,
-            MakeRequestUuid,
-        ))
+        .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
         .layer(cors)
         .with_state(state)
 }

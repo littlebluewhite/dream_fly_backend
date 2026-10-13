@@ -567,7 +567,10 @@ async fn insert_venue(db: &PgPool, seed: &VenueSeed) -> anyhow::Result<()> {
 /// the studio-tz date, which can run up to a day ahead of the UTC date, so a
 /// today-dated seed row would otherwise land hours in the future.
 fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
-    date.and_hms_opt(hour, 0, 0).expect("valid seed hour").and_utc().min(now)
+    date.and_hms_opt(hour, 0, 0)
+        .expect("valid seed hour")
+        .and_utc()
+        .min(now)
 }
 
 /// Insert a reporting-dataset member (idempotent on `email`) and return its
@@ -1091,14 +1094,23 @@ async fn collect_row_counts(db: &PgPool) -> anyhow::Result<Vec<(&'static str, i6
         ("venues", "SELECT COUNT(*) FROM venues"),
         ("orders", "SELECT COUNT(*) FROM orders"),
         ("order_items", "SELECT COUNT(*) FROM order_items"),
-        ("order_idempotency", "SELECT COUNT(*) FROM order_idempotency"),
+        (
+            "order_idempotency",
+            "SELECT COUNT(*) FROM order_idempotency",
+        ),
         ("subscriptions", "SELECT COUNT(*) FROM subscriptions"),
         ("enrolments", "SELECT COUNT(*) FROM enrolments"),
-        ("attendance_records", "SELECT COUNT(*) FROM attendance_records"),
+        (
+            "attendance_records",
+            "SELECT COUNT(*) FROM attendance_records",
+        ),
         ("course_sessions", "SELECT COUNT(*) FROM course_sessions"),
         ("time_slots", "SELECT COUNT(*) FROM time_slots"),
         ("bookings", "SELECT COUNT(*) FROM bookings"),
-        ("contact_inquiries", "SELECT COUNT(*) FROM contact_inquiries"),
+        (
+            "contact_inquiries",
+            "SELECT COUNT(*) FROM contact_inquiries",
+        ),
         ("notifications", "SELECT COUNT(*) FROM notifications"),
         ("events_outbox", "SELECT COUNT(*) FROM events_outbox"),
     ];
@@ -1277,7 +1289,10 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         assign_role(db, user_id, Role::Coach).await?;
         let coach_id = upsert_coach(db, user_id, seed).await?;
         coach_ids.insert(seed.slug, coach_id);
-        println!("[coaches]  {} ready: {} / Coach#2026", seed.user_name, seed.email);
+        println!(
+            "[coaches]  {} ready: {} / Coach#2026",
+            seed.user_name, seed.email
+        );
     }
 
     // -- courses -------------------------------------------------------------
@@ -1409,8 +1424,15 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         let course_id = course_id_by_slug(db, seed.slug).await?;
         course_ids.push(course_id);
         for (day_of_week, start_time, end_time) in seed.slots {
-            insert_course_schedule_slot(db, course_id, *day_of_week, start_time, end_time, seed.venue)
-                .await?;
+            insert_course_schedule_slot(
+                db,
+                course_id,
+                *day_of_week,
+                start_time,
+                end_time,
+                seed.venue,
+            )
+            .await?;
             slot_count += 1;
         }
         // Idempotent venue backfill for installs whose slots predate the
@@ -1461,7 +1483,11 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             product_type: "membership",
             description: "一個月內不限次數參加常規課程，適合想密集訓練的學員。",
             price_cents: 320_000,
-            features: &["30 天不限次數上課", "可預約所有常規課程", "隨時開始，效期 30 天"],
+            features: &[
+                "30 天不限次數上課",
+                "可預約所有常規課程",
+                "隨時開始，效期 30 天",
+            ],
             is_highlighted: false,
             badge: None,
             valid_days: Some(30),
@@ -1473,7 +1499,11 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             product_type: "membership",
             description: "三個月完整訓練週期，價格更優惠，是中長期學習的最佳選擇。",
             price_cents: 880_000,
-            features: &["90 天不限次數上課", "比月票更優惠的平均月費", "適合中長期訓練規劃"],
+            features: &[
+                "90 天不限次數上課",
+                "比月票更優惠的平均月費",
+                "適合中長期訓練規劃",
+            ],
             is_highlighted: true,
             badge: Some("最超值"),
             valid_days: Some(90),
@@ -1485,7 +1515,11 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             product_type: "membership",
             description: "全年度不限次數訓練，享有最優惠的長期方案，是最具承諾但最划算的選擇。",
             price_cents: 3_000_000,
-            features: &["365 天不限次數上課", "全年最優惠平均月費", "專屬會員生日禮遇"],
+            features: &[
+                "365 天不限次數上課",
+                "全年最優惠平均月費",
+                "專屬會員生日禮遇",
+            ],
             is_highlighted: false,
             badge: None,
             valid_days: Some(365),
@@ -1948,7 +1982,9 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     println!("[points]   {settled} members settled to their points-tier target");
 
     // -- course sessions: materialize the past 6 months ---------------------
-    let six_months_ago = today.checked_sub_months(Months::new(6)).expect("valid seed range");
+    let six_months_ago = today
+        .checked_sub_months(Months::new(6))
+        .expect("valid seed range");
     backfill_for_seed(db, &course_ids, six_months_ago, today)
         .await
         .context("materialize course sessions for the past 6 months")?;
@@ -2007,7 +2043,10 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         }
     }
     insert_attendance_bulk(db, admin_id, &attendance_rows).await?;
-    println!("[attendance] {} attendance records ready", attendance_rows.len());
+    println!(
+        "[attendance] {} attendance records ready",
+        attendance_rows.len()
+    );
 
     // -- venue rental: time_slots (~168) + bookings --------------------------
     // 4 venues × 3 weekly slots × 14 weeks (8 back + this week + 5 ahead),
@@ -2090,7 +2129,11 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             .expect("valid seed month");
         let ym = month_first.format("%Y%m");
         let clamp = |raw: usize| -> u32 {
-            if k == 0 { 1 + (raw % today.day() as usize) as u32 } else { 1 + (raw % 27) as u32 }
+            if k == 0 {
+                1 + (raw % today.day() as usize) as u32
+            } else {
+                1 + (raw % 27) as u32
+            }
         };
 
         let trial_count = 8 + ((k as usize * 7 + 1) % 3); // 9 / 10 / 8
@@ -2098,8 +2141,13 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             let category = CATEGORIES[(seq + k as usize) % 4];
             let parent_name = format!("試上家長{seq:02}");
             let phone = format!("09{:08}", (k as usize * 37 + seq * 13) % 100_000_000);
-            let created_at =
-                at_utc(month_first.with_day(clamp(seq * 5 + k as usize * 3)).expect("valid day"), 2, at.now);
+            let created_at = at_utc(
+                month_first
+                    .with_day(clamp(seq * 5 + k as usize * 3))
+                    .expect("valid day"),
+                2,
+                at.now,
+            );
             insert_inquiry_if_absent(
                 db,
                 &InquirySeed {
@@ -2128,10 +2176,19 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
         let general_count = 3 + (k as usize % 2); // 3 / 4 / 3
         for seq in 1..=general_count {
-            const SUBJECTS: [&str; 4] =
-                ["課程費用詢問", "場地租借詢問", "會員方案詢問", "營業時間詢問"];
-            let created_at =
-                at_utc(month_first.with_day(clamp(seq * 7 + k as usize * 5)).expect("valid day"), 2, at.now);
+            const SUBJECTS: [&str; 4] = [
+                "課程費用詢問",
+                "場地租借詢問",
+                "會員方案詢問",
+                "營業時間詢問",
+            ];
+            let created_at = at_utc(
+                month_first
+                    .with_day(clamp(seq * 7 + k as usize * 5))
+                    .expect("valid day"),
+                2,
+                at.now,
+            );
             insert_inquiry_if_absent(
                 db,
                 &InquirySeed {

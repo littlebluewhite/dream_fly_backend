@@ -6,7 +6,10 @@ use super::handlers;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/courses/{id}/sessions", get(handlers::list_course_sessions))
+        .route(
+            "/courses/{id}/sessions",
+            get(handlers::list_course_sessions),
+        )
         .route("/schedule/me", get(handlers::my_schedule))
 }
 

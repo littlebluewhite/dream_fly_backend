@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -69,9 +69,10 @@ impl AppError {
     /// no constraint name or bound value is ever surfaced.
     pub fn conflict_on_unique(e: sqlx::Error, msg: impl Into<String>) -> Self {
         if let Some(db_err) = e.as_database_error()
-            && db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
-                return AppError::Conflict(msg.into());
-            }
+            && db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION)
+        {
+            return AppError::Conflict(msg.into());
+        }
         AppError::Database(e)
     }
 
@@ -84,9 +85,10 @@ impl AppError {
     /// no constraint name or bound value is ever surfaced.
     pub fn conflict_on_exclusion(e: sqlx::Error, msg: impl Into<String>) -> Self {
         if let Some(db_err) = e.as_database_error()
-            && db_err.code().as_deref() == Some(PG_EXCLUSION_VIOLATION) {
-                return AppError::Conflict(msg.into());
-            }
+            && db_err.code().as_deref() == Some(PG_EXCLUSION_VIOLATION)
+        {
+            return AppError::Conflict(msg.into());
+        }
         AppError::Database(e)
     }
 
@@ -95,13 +97,17 @@ impl AppError {
     /// one unique constraint can fail on the same statement and each needs
     /// a different message. `e` is SQLSTATE 23505 *and* its constraint name
     /// is `constraint` → `Conflict(msg)`; anything else → `Database(e)`.
-    pub fn conflict_on_constraint(e: sqlx::Error, constraint: &str, msg: impl Into<String>) -> Self {
+    pub fn conflict_on_constraint(
+        e: sqlx::Error,
+        constraint: &str,
+        msg: impl Into<String>,
+    ) -> Self {
         if let Some(db_err) = e.as_database_error()
             && db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION)
-                && db_err.constraint() == Some(constraint)
-            {
-                return AppError::Conflict(msg.into());
-            }
+            && db_err.constraint() == Some(constraint)
+        {
+            return AppError::Conflict(msg.into());
+        }
         AppError::Database(e)
     }
 }

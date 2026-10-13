@@ -160,5 +160,8 @@ pub async fn get_attendance(
     auth.owns_or_admin_masked(owner_id, "enrolment not found")?;
 
     let rows = repository::find_attendance_timeline(db, id).await?;
-    Ok(rows.into_iter().map(AttendanceEntryResponse::from).collect())
+    Ok(rows
+        .into_iter()
+        .map(AttendanceEntryResponse::from)
+        .collect())
 }

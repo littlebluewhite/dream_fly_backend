@@ -1,4 +1,7 @@
-use axum::{Router, routing::{get, patch, post}};
+use axum::{
+    Router,
+    routing::{get, patch, post},
+};
 
 use crate::state::AppState;
 
@@ -14,6 +17,5 @@ pub fn router() -> Router<AppState> {
 /// admin 半邊:全站預約清單(`GET /bookings`,與公開的 `POST /bookings` 共用
 /// 路徑,按 method 拆)。閘門由 `admin_api` route_layer 施加。
 pub fn admin_router() -> Router<AppState> {
-    Router::new()
-        .route("/bookings", get(handlers::list_all))
+    Router::new().route("/bookings", get(handlers::list_all))
 }

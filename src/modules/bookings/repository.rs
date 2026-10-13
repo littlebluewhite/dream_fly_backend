@@ -48,11 +48,7 @@ pub async fn find_by_user(
     .await
 }
 
-pub async fn find_all(
-    db: &PgPool,
-    limit: u32,
-    offset: u32,
-) -> Result<Vec<Booking>, sqlx::Error> {
+pub async fn find_all(db: &PgPool, limit: u32, offset: u32) -> Result<Vec<Booking>, sqlx::Error> {
     sqlx::query_as::<_, Booking>(
         "SELECT id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at \
          FROM bookings \
@@ -66,12 +62,10 @@ pub async fn find_all(
 }
 
 pub async fn count_by_user(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM bookings WHERE user_id = $1",
-    )
-    .bind(user_id)
-    .fetch_one(db)
-    .await
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bookings WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
 }
 
 pub async fn count_all(db: &PgPool) -> Result<i64, sqlx::Error> {

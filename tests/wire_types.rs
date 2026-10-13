@@ -28,9 +28,9 @@ use ts_rs::{Config, Dependency, ExportError, TS};
 use dream_fly_backend::error;
 use dream_fly_backend::extractors;
 use dream_fly_backend::modules::{
-    attendance, auth, bookings, cart, certificates, coaches, contact, coupons, courses,
-    enrolments, leave, messages, notifications, orders, points, posts, products, reports,
-    rewards, schedule, sessions, settings, subscriptions, users, venues, waitlist,
+    attendance, auth, bookings, cart, certificates, coaches, contact, coupons, courses, enrolments,
+    leave, messages, notifications, orders, points, posts, products, reports, rewards, schedule,
+    sessions, settings, subscriptions, users, venues, waitlist,
 };
 
 struct WireType {
@@ -182,7 +182,9 @@ wire_types![
 fn bindings_match_response_dtos() {
     let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wire");
     let _ = fs::remove_dir_all(&out_dir);
-    let cfg = Config::new().with_large_int("number").with_out_dir(&out_dir);
+    let cfg = Config::new()
+        .with_large_int("number")
+        .with_out_dir(&out_dir);
     let types = wire_types(&cfg);
 
     // Two listed types writing one file would silently overwrite each other.
@@ -204,7 +206,11 @@ fn bindings_match_response_dtos() {
     // `serde_json::Value` delegating to ts-rs's private `JsonValue` type.
     let listed: HashMap<TypeId, &WireType> = types.iter().map(|t| (t.type_id, t)).collect();
     for t in &types {
-        for dep in t.dependencies.iter().filter(|d| d.output_path != t.output_path) {
+        for dep in t
+            .dependencies
+            .iter()
+            .filter(|d| d.output_path != t.output_path)
+        {
             assert!(
                 listed.contains_key(&dep.type_id),
                 "{} references `{}` ({}), which is not in the wire_types! list",
@@ -266,9 +272,18 @@ fn bindings_match_response_dtos() {
 
 /// `Serialize` types in DTO sources that are deliberately not wire types.
 const NOT_WIRE_TYPES: &[(&str, &str)] = &[
-    ("coaches::dto::ScheduleEntry", "request entry of UpdateScheduleRequest"),
-    ("schedule::dto::SlotEntry", "request entry of CreateSlotsRequest"),
-    ("courses::dto::CourseScheduleSlotEntry", "request entry of Create/UpdateCourseRequest"),
+    (
+        "coaches::dto::ScheduleEntry",
+        "request entry of UpdateScheduleRequest",
+    ),
+    (
+        "schedule::dto::SlotEntry",
+        "request entry of CreateSlotsRequest",
+    ),
+    (
+        "courses::dto::CourseScheduleSlotEntry",
+        "request entry of Create/UpdateCourseRequest",
+    ),
 ];
 
 /// Catches a response DTO nobody added to `wire_types!` (no other listed type
@@ -280,7 +295,10 @@ fn every_serialize_dto_is_listed() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files: Vec<(PathBuf, String)> = vec![
         (src.join("error/mod.rs"), "error".into()),
-        (src.join("extractors/pagination.rs"), "extractors::pagination".into()),
+        (
+            src.join("extractors/pagination.rs"),
+            "extractors::pagination".into(),
+        ),
     ];
     for entry in fs::read_dir(src.join("modules")).unwrap() {
         let dir = entry.unwrap().path();
@@ -401,7 +419,9 @@ fn index_ts(paths: &[String]) -> String {
 /// Every file under `root`, keyed by its `/`-separated path relative to `root`.
 fn read_tree(root: &Path) -> BTreeMap<String, String> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries {
             let path = entry.unwrap().path();
             if path.is_dir() {

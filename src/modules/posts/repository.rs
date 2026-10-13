@@ -59,10 +59,7 @@ pub async fn find_by_id(db: &PgPool, id: Uuid) -> Result<Option<Post>, sqlx::Err
 }
 
 /// Public-facing 單篇查詢(by slug)——只回傳 published 列。
-pub async fn find_published_by_slug(
-    db: &PgPool,
-    slug: &str,
-) -> Result<Option<Post>, sqlx::Error> {
+pub async fn find_published_by_slug(db: &PgPool, slug: &str) -> Result<Option<Post>, sqlx::Error> {
     sqlx::query_as::<_, Post>(sqlx::AssertSqlSafe(format!(
         "SELECT {POST_COLUMNS} FROM published_posts WHERE LOWER(slug) = LOWER($1)"
     )))
@@ -72,10 +69,7 @@ pub async fn find_published_by_slug(
 }
 
 /// Public-facing 單篇查詢(by id)——只回傳 published 列。
-pub async fn find_published_by_id(
-    db: &PgPool,
-    id: Uuid,
-) -> Result<Option<Post>, sqlx::Error> {
+pub async fn find_published_by_id(db: &PgPool, id: Uuid) -> Result<Option<Post>, sqlx::Error> {
     sqlx::query_as::<_, Post>(sqlx::AssertSqlSafe(format!(
         "SELECT {POST_COLUMNS} FROM published_posts WHERE id = $1"
     )))

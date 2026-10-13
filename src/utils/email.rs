@@ -1,7 +1,7 @@
 use async_trait::async_trait;
+use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-use lettre::message::header::ContentType;
 
 use crate::config::EmailConfig;
 use crate::error::AppError;
@@ -23,10 +23,7 @@ pub struct EmailClient {
 
 impl EmailClient {
     pub fn new(config: &EmailConfig) -> Result<Self, AppError> {
-        let creds = Credentials::new(
-            config.smtp_username.clone(),
-            config.smtp_password.clone(),
-        );
+        let creds = Credentials::new(config.smtp_username.clone(), config.smtp_password.clone());
 
         let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
             .map_err(|e| AppError::Internal(anyhow::anyhow!("SMTP relay error: {e}")))?
@@ -68,12 +65,13 @@ fn build_message(
     let from = format!("{from_name} <{from_email}>");
 
     Message::builder()
-        .from(from.parse().map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("invalid from address: {e}"))
-        })?)
-        .to(to.parse().map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("invalid to address: {e}"))
-        })?)
+        .from(
+            from.parse()
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid from address: {e}")))?,
+        )
+        .to(to
+            .parse()
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid to address: {e}")))?)
         .subject(subject)
         .header(ContentType::TEXT_HTML)
         .body(html_body)

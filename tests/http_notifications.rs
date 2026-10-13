@@ -19,12 +19,8 @@ async fn list_notifications_returns_only_own(db: PgPool) {
     let app = spawn_test_app(db).await;
     // Seed users directly (bypassing register) so no welcome notification is
     // written — the assertions below count rows exactly.
-    let (alice_id, alice_token) = app
-        .seed_user_with_roles("alice-n@example.com", &[])
-        .await;
-    let (bob_id, _bob_token) = app
-        .seed_user_with_roles("bob-n@example.com", &[])
-        .await;
+    let (alice_id, alice_token) = app.seed_user_with_roles("alice-n@example.com", &[]).await;
+    let (bob_id, _bob_token) = app.seed_user_with_roles("bob-n@example.com", &[]).await;
     seed_notification(&app.db, alice_id, "Alice#1", false).await;
     seed_notification(&app.db, alice_id, "Alice#2", false).await;
     seed_notification(&app.db, bob_id, "Bob#1", false).await;
@@ -47,9 +43,7 @@ async fn list_notifications_returns_only_own(db: PgPool) {
 async fn unread_count_returns_correct_number(db: PgPool) {
     let app = spawn_test_app(db).await;
     // Seed directly (no register → no welcome row) so the count is exact.
-    let (user_id, token) = app
-        .seed_user_with_roles("n-u@example.com", &[])
-        .await;
+    let (user_id, token) = app.seed_user_with_roles("n-u@example.com", &[]).await;
     seed_notification(&app.db, user_id, "a", false).await;
     seed_notification(&app.db, user_id, "b", false).await;
     seed_notification(&app.db, user_id, "c", true).await; // already read
@@ -136,9 +130,7 @@ async fn unread_count_decreases_after_mark_read(db: PgPool) {
     // that forgets to filter on `is_read = false`.
     let app = spawn_test_app(db).await;
     // Seed directly (no register → no welcome row) so counts are exact.
-    let (user_id, token) = app
-        .seed_user_with_roles("n-dec@example.com", &[])
-        .await;
+    let (user_id, token) = app.seed_user_with_roles("n-dec@example.com", &[]).await;
     let first = seed_notification(&app.db, user_id, "#1", false).await;
     seed_notification(&app.db, user_id, "#2", false).await;
 
@@ -180,9 +172,7 @@ async fn list_notifications_respects_pagination(db: PgPool) {
     // Seed 5 notifications. page=1 per_page=2 → 2 rows; page=3 per_page=2 → 1 row.
     let app = spawn_test_app(db).await;
     // Seed directly (no register → no welcome row) so pagination math is exact.
-    let (user_id, token) = app
-        .seed_user_with_roles("n-pag@example.com", &[])
-        .await;
+    let (user_id, token) = app.seed_user_with_roles("n-pag@example.com", &[]).await;
     for i in 0..5 {
         seed_notification(&app.db, user_id, &format!("n{i}"), false).await;
     }

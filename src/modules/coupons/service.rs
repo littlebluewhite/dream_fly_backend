@@ -31,9 +31,10 @@ pub async fn validate_coupon(
     now: DateTime<Utc>,
 ) -> Result<CouponValidateResponse, AppError> {
     if let Some(s) = subtotal_cents
-        && s < 0 {
-            return Err(AppError::Validation("subtotal_cents must be >= 0".into()));
-        }
+        && s < 0
+    {
+        return Err(AppError::Validation("subtotal_cents must be >= 0".into()));
+    }
 
     let coupon = repository::find_valid_by_code(db, code, now)
         .await?

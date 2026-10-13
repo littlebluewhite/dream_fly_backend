@@ -12,7 +12,11 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-async fn seed_product_via_admin(app: &common::http::TestApp, name: &str, stock: Option<i32>) -> Uuid {
+async fn seed_product_via_admin(
+    app: &common::http::TestApp,
+    name: &str,
+    stock: Option<i32>,
+) -> Uuid {
     let (_admin, token) = app.seed_admin().await;
     let created: serde_json::Value = app
         .post("/api/v1/products")
@@ -74,7 +78,9 @@ async fn add_item_increases_cart(db: PgPool) {
 #[sqlx::test]
 async fn add_item_quantity_range_is_bound_at_the_wire(db: PgPool) {
     let app = spawn_test_app(db).await;
-    let user = app.register_member("c-max@example.com", "Password!234").await;
+    let user = app
+        .register_member("c-max@example.com", "Password!234")
+        .await;
     let pid = seed_product_via_admin(&app, "Bulk", None).await;
 
     let resp = app
@@ -192,7 +198,10 @@ async fn remove_item_empties_cart(db: PgPool) {
         .await;
     assert_eq!(resp.status_code(), 200);
     assert_eq!(
-        resp.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        resp.json::<serde_json::Value>()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
         0
     );
 }
@@ -219,7 +228,10 @@ async fn clear_cart_returns_204(db: PgPool) {
         .authorization_bearer(&user.access_token)
         .await;
     assert_eq!(
-        resp.json::<serde_json::Value>()["items"].as_array().unwrap().len(),
+        resp.json::<serde_json::Value>()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
         0
     );
 }

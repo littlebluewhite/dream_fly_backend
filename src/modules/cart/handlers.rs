@@ -29,8 +29,14 @@ pub async fn add_item(
     ValidatedJson(req): ValidatedJson<AddCartItemRequest>,
 ) -> Result<Json<CartResponse>, AppError> {
     let quantity = req.quantity.unwrap_or(1);
-    let cart = service::add_item(&state.db, auth.user_id, &req.item_type, req.item_id, quantity)
-        .await?;
+    let cart = service::add_item(
+        &state.db,
+        auth.user_id,
+        &req.item_type,
+        req.item_id,
+        quantity,
+    )
+    .await?;
     Ok(Json(cart))
 }
 
@@ -56,10 +62,7 @@ pub async fn remove_item(
 }
 
 #[tracing::instrument(skip_all)]
-pub async fn clear(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> Result<StatusCode, AppError> {
+pub async fn clear(State(state): State<AppState>, auth: AuthUser) -> Result<StatusCode, AppError> {
     service::clear(&state.db, auth.user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -326,7 +326,9 @@ pub async fn checkout(
     // decrement.
     for p in &plan.products {
         let product = reserved.get(&p.product_id).ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("product line was reserved by reserve_stock_tx"))
+            AppError::Internal(anyhow::anyhow!(
+                "product line was reserved by reserve_stock_tx"
+            ))
         })?;
         subscriptions_service::grant_from_purchase_tx(
             &mut tx,
@@ -411,7 +413,12 @@ pub(super) async fn assemble_response(
 ) -> Result<OrderResponse, AppError> {
     let items = repository::find_items_by_order(db, order.id).await?;
     let (enrolments, subscriptions) = fetch_artifacts(db, order.id).await?;
-    Ok(OrderResponse::assemble(order, items, enrolments, subscriptions))
+    Ok(OrderResponse::assemble(
+        order,
+        items,
+        enrolments,
+        subscriptions,
+    ))
 }
 
 pub async fn get_order(
@@ -622,8 +629,8 @@ mod tests {
 
     #[test]
     fn parse_request_trims_coupon_and_passes_valid_fields_through() {
-        let intent =
-            parse_request(request(Some("  SAVE10  "), Some(true), Some("line_pay"))).expect("parses");
+        let intent = parse_request(request(Some("  SAVE10  "), Some(true), Some("line_pay")))
+            .expect("parses");
         assert_eq!(intent.payment_method, "line_pay");
         assert_eq!(intent.coupon_code.as_deref(), Some("SAVE10"));
         assert!(intent.use_points);

@@ -21,7 +21,8 @@ use dream_fly_backend::modules::leave::service as leave_service;
 use dream_fly_backend::modules::permissions::model::Role;
 
 use common::fixtures::{
-    seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
+    seed_attendance, seed_coach, seed_course, seed_course_session, seed_enrolment,
+    seed_leave_request,
 };
 use common::{auth_for, seed_member, seed_user_with_roles, studio_now_utc};
 
@@ -68,10 +69,22 @@ async fn approval_committed_mid_batch_rolls_back_whole_batch(db: PgPool) {
     let admin = seed_user_with_roles(&db, "att-race-admin@example.com", &[Role::Admin]).await;
     let member_a = seed_member(&db, "att-race-a@example.com", "Password!234").await;
     let member_b = seed_member(&db, "att-race-b@example.com", "Password!234").await;
-    let enrolment_a =
-        seed_enrolment(&db, member_a, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    let enrolment_b =
-        seed_enrolment(&db, member_b, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment_a = seed_enrolment(
+        &db,
+        member_a,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
+    let enrolment_b = seed_enrolment(
+        &db,
+        member_b,
+        course_id,
+        EnrolmentStatus::Active,
+        Utc::now(),
+    )
+    .await;
     let leave_b = seed_leave_request(&db, enrolment_b, session_id, LeaveStatus::Pending).await;
 
     let mut t_block = db.begin().await.expect("begin t_block");
@@ -148,7 +161,14 @@ async fn bulk_present_over_verbal_leave_overwrites(db: PgPool) {
     let member = seed_member(&db, "att-bulk-verbal@example.com", "Password!234").await;
     let enrolment_id =
         seed_enrolment(&db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
-    seed_attendance(&db, session_id, enrolment_id, AttendanceStatus::Leave, admin).await;
+    seed_attendance(
+        &db,
+        session_id,
+        enrolment_id,
+        AttendanceStatus::Leave,
+        admin,
+    )
+    .await;
 
     attendance_service::bulk_upsert_attendance(
         &db,
