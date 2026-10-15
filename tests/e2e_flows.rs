@@ -87,7 +87,7 @@ async fn e2e_booking_flow(db: PgPool) {
     let slot_id = TimeSlotSeed::new(3, app.today()).insert(&app.db).await;
 
     // Member lists schedule availability for tomorrow + 2d.
-    let date = (chrono::Utc::now() + chrono::Duration::days(2)).date_naive();
+    let date = app.today() + chrono::Duration::days(2);
     let avail = app
         .get(&format!("/api/v1/schedule/availability?date={date}"))
         .await;
@@ -406,7 +406,7 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
     // journeys' catalog setup.
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "E2E Leave Course", Some(coach.coach_id)).await;
-    let original_date = (Utc::now() + Duration::days(1)).date_naive();
+    let original_date = app.today() + Duration::days(1);
     let original_session_id = seed_course_session(
         &app.db,
         course_id,
@@ -415,7 +415,7 @@ async fn e2e_leave_makeup_projection_flow(db: PgPool) {
         NaiveTime::from_hms_opt(10, 0, 0).unwrap(),
     )
     .await;
-    let target_date = (Utc::now() + Duration::days(3)).date_naive();
+    let target_date = app.today() + Duration::days(3);
     let target_session_id = seed_course_session(
         &app.db,
         course_id,
