@@ -273,7 +273,7 @@ async fn cancel_enrolment_cancels_only_its_pending_leave_requests(db: PgPool) {
     )
     .await;
 
-    let day = |n| (Utc::now() + Duration::days(n)).date_naive();
+    let day = |n| app.today() + Duration::days(n);
     let e_s1 = seed_course_session(&app.db, course_e, day(1), t(9, 0), t(10, 0)).await;
     let e_s2 = seed_course_session(&app.db, course_e, day(2), t(9, 0), t(10, 0)).await;
     let e_makeup = seed_course_session(&app.db, course_e, day(3), t(9, 0), t(10, 0)).await;
@@ -333,7 +333,7 @@ async fn me_attendance_stats_present_2_absent_1_gives_attended_2_total_3(db: PgP
     // Seeded in the past (-3/-2/-1 days): `PUT .../attendance` now gates on
     // the session having already started, so a `today`/future seed here
     // would 422 instead of marking successfully.
-    let today = Utc::now().date_naive();
+    let today = app.today();
     let session_1 = seed_course_session(
         &app.db,
         course_id,
@@ -454,7 +454,7 @@ async fn me_attendance_stats_present_2_absent_1_leave_1_excludes_leave_from_tota
     )
     .await;
 
-    let today = Utc::now().date_naive();
+    let today = app.today();
     let session_present_1 = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
     let session_present_2 = seed_course_session(
         &app.db,
@@ -648,7 +648,7 @@ async fn attendance_owner_sees_marked_sessions_oldest_to_newest_with_full_fields
     )
     .await;
 
-    let today = Utc::now().date_naive();
+    let today = app.today();
     // Seed/mark out of chronological order to prove the endpoint sorts by
     // session date rather than echoing insertion or marking order. Marked
     // sessions are seeded in the past (-3/-2/-1 days) so `PUT

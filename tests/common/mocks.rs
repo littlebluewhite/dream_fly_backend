@@ -82,52 +82,42 @@ impl EmailSender for MockEmailClient {
 
 // ---------------- Clock ----------------
 
-/// In-memory stand-in for `Clock` so tests can pin or advance "now" without
-/// racing the real system clock.
+/// In-memory stand-in for `Clock`, always pinned: it never reads the system
+/// clock, so "now" moves only when the test calls `set` or `advance`.
+/// `TestApp` pins it at the scene instant when it spawns (`common::scene_now`).
 ///
-/// Defaults (`None`) to delegating every `now()` call to the real
-/// `Utc::now()` — most HTTP tests never call `set`, and existing tests that
-/// compute their own `Utc::now().date_naive()` around a request must keep
-/// seeing the real wall clock. A "freeze at spawn" default would instead
-/// reintroduce exactly the UTC-midnight flake that `studio_clock`'s "`now`
-/// is always a parameter" design was meant to eliminate.
+/// It drives only what handlers sample through `AppState::clock`. These
+/// never read it, so pinning or advancing it does not move them:
+/// - short-lived state TTLs (rate limits, OTP, reset tokens) and the access
+///   cache TTLs — the in-memory adapters time them with `std::time::Instant`;
+/// - JWTs — issued and validated against `Utc::now()`.
 pub struct MockClock {
-    pinned: RwLock<Option<DateTime<Utc>>>,
+    pinned: RwLock<DateTime<Utc>>,
 }
 
 impl MockClock {
-    pub fn new() -> Self {
+    /// A clock pinned at `t`.
+    pub fn new(t: DateTime<Utc>) -> Self {
         Self {
-            pinned: RwLock::new(None),
+            pinned: RwLock::new(t),
         }
     }
 
     /// Pin the clock to `t`. Subsequent `now()` calls return `t` until the
     /// next `set`/`advance`.
     pub fn set(&self, t: DateTime<Utc>) {
-        *self.pinned.write().unwrap() = Some(t);
+        *self.pinned.write().unwrap() = t;
     }
 
-    /// Move the pinned instant forward (or backward) by `d`. Panics if the
-    /// clock hasn't been `set` yet: advancing an unset (delegating) clock
-    /// would silently start pinning it at `Utc::now() + d`, a surprising
-    /// state change a caller almost certainly didn't intend.
+    /// Move the pinned instant forward (or backward) by `d`.
     pub fn advance(&self, d: Duration) {
-        let mut guard = self.pinned.write().unwrap();
-        let current = guard.expect("MockClock::advance called before set — clock is not pinned");
-        *guard = Some(current + d);
-    }
-}
-
-impl Default for MockClock {
-    fn default() -> Self {
-        Self::new()
+        *self.pinned.write().unwrap() += d;
     }
 }
 
 impl Clock for MockClock {
     fn now(&self) -> DateTime<Utc> {
-        self.pinned.read().unwrap().unwrap_or_else(Utc::now)
+        *self.pinned.read().unwrap()
     }
 }
 
