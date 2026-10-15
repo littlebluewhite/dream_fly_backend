@@ -371,11 +371,13 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
     // sold = SUM(order_items.quantity) across paid/processing/completed
     // orders only — pending/cancelled/refunded must not contribute.
     let user = common::seed_member(&db, "sold-buyer@example.com", "passw0rd!").await;
+    let now = common::scene_now().now;
     let product = service::create(&db, create("Counted Product", None, "merchandise"))
         .await
         .expect("create");
 
     OrderSeed::new(user, OrderStatus::Paid)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: product.id,
             quantity: 2,
@@ -384,6 +386,7 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .insert(&db)
         .await;
     OrderSeed::new(user, OrderStatus::Processing)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: product.id,
             quantity: 1,
@@ -392,6 +395,7 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .insert(&db)
         .await;
     OrderSeed::new(user, OrderStatus::Completed)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: product.id,
             quantity: 3,
@@ -401,6 +405,7 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .await;
     // These must NOT count:
     OrderSeed::new(user, OrderStatus::Pending)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: product.id,
             quantity: 5,
@@ -409,6 +414,7 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .insert(&db)
         .await;
     OrderSeed::new(user, OrderStatus::Cancelled)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: product.id,
             quantity: 7,
@@ -417,6 +423,7 @@ async fn sold_counts_only_paid_class_orders(db: PgPool) {
         .insert(&db)
         .await;
     OrderSeed::new(user, OrderStatus::Refunded)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: product.id,
             quantity: 9,
@@ -444,6 +451,7 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
     // multi-row page — a naive un-keyed aggregate would leak counts
     // between products.
     let user = common::seed_member(&db, "list-sold-buyer@example.com", "passw0rd!").await;
+    let now = common::scene_now().now;
     let a = service::create(&db, create("List Sold A", None, "merchandise"))
         .await
         .expect("create a");
@@ -452,6 +460,7 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
         .expect("create b");
 
     OrderSeed::new(user, OrderStatus::Paid)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: a.id,
             quantity: 4,
@@ -460,6 +469,7 @@ async fn list_aggregates_sold_across_products_in_one_batch(db: PgPool) {
         .insert(&db)
         .await;
     OrderSeed::new(user, OrderStatus::Completed)
+        .created_at(now)
         .line(SeedOrderLine::Product {
             product_id: b.id,
             quantity: 9,

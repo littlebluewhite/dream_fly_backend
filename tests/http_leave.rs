@@ -161,7 +161,7 @@ async fn create_duplicate_active_returns_409(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -189,7 +189,7 @@ async fn create_after_prior_cancelled_request_succeeds(db: PgPool) {
         course_id,
         LeaveStatus::Cancelled,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -229,7 +229,7 @@ async fn me_returns_joined_fields_including_makeup(db: PgPool) {
         course_id,
         LeaveStatus::Approved,
         Some(makeup_session_id),
-        app.today(),
+        app.studio_now(),
     )
     .await;
     let leave_id = scene.leave;
@@ -279,7 +279,7 @@ async fn cancel_pending_by_owner_succeeds(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -311,7 +311,7 @@ async fn cancel_non_pending_returns_409(db: PgPool) {
         course_id,
         LeaveStatus::Approved,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -338,7 +338,7 @@ async fn cancel_by_non_owner_returns_403(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -392,7 +392,7 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
         course_a,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
     seed_leave_scene(
@@ -401,7 +401,7 @@ async fn list_as_admin_returns_all_and_supports_filters(db: PgPool) {
         course_b,
         LeaveStatus::Approved,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -496,7 +496,7 @@ async fn list_as_coach_scoped_to_own_courses(db: PgPool) {
         course_a,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
     seed_leave_scene(
@@ -505,7 +505,7 @@ async fn list_as_coach_scoped_to_own_courses(db: PgPool) {
         course_b,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -573,7 +573,7 @@ async fn decide_approve_writes_attendance_leave_and_notification(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -696,7 +696,7 @@ async fn decide_reject_does_not_write_attendance(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -745,7 +745,7 @@ async fn decide_by_non_owning_coach_returns_403(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -771,7 +771,7 @@ async fn decide_invalid_status_value_returns_422(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -806,7 +806,7 @@ async fn decide_approve_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -850,7 +850,7 @@ async fn decide_reject_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -896,7 +896,7 @@ async fn cancel_leave_after_enrolment_cancel_is_409_not_pending(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -1135,7 +1135,7 @@ async fn makeup_cancelled_enrolment_returns_409(db: PgPool) {
         course_id,
         LeaveStatus::Approved,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
     let target_date = app.today() + Duration::days(3);
@@ -1231,7 +1231,7 @@ async fn decide_approve_response_matches_me_row(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -1277,7 +1277,7 @@ async fn decide_reject_response_matches_me_row(db: PgPool) {
         course_id,
         LeaveStatus::Pending,
         None,
-        app.today(),
+        app.studio_now(),
     )
     .await;
 
@@ -1380,7 +1380,7 @@ async fn admin_list_row_matches_me_row_minus_user_fields(db: PgPool) {
         course_id,
         LeaveStatus::Approved,
         Some(makeup_session_id),
-        app.today(),
+        app.studio_now(),
     )
     .await;
 

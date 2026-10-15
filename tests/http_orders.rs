@@ -571,6 +571,7 @@ async fn update_order_status_pending_to_paid_is_400(db: PgPool) {
         .register_member("pending-paid@example.com", "Password!234")
         .await;
     let order_id = OrderSeed::new(buyer.user_id, OrderStatus::Pending)
+        .created_at(app.studio_now().now)
         .insert(&app.db)
         .await;
 
