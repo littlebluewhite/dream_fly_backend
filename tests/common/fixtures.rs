@@ -1105,13 +1105,10 @@ pub async fn seed_course_revenue(
     course_id: Uuid,
     unit_price_cents: i64,
     status: OrderStatus,
-    paid_at: Option<DateTime<Utc>>,
+    paid_at: DateTime<Utc>,
 ) -> Uuid {
-    let mut order = OrderSeed::new(buyer, status);
-    if let Some(paid_at) = paid_at {
-        order = order.paid_at(paid_at);
-    }
-    order
+    OrderSeed::new(buyer, status)
+        .paid_at(paid_at)
         .line(SeedOrderLine::Course {
             course_id,
             unit_price_cents,

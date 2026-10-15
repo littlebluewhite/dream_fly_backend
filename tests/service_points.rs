@@ -29,8 +29,8 @@
 
 mod common;
 
-use chrono::TimeZone;
-use sqlx::PgPool;
+use chrono::{DateTime, TimeZone, Utc};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use common::fixtures::set_points_balance;
@@ -64,6 +64,20 @@ async fn seed_order(db: &PgPool, user_id: Uuid) -> Uuid {
     id
 }
 
+/// Lock `user_id`'s balance in `tx`, then apply `ld` at `at` under that
+/// `BalanceLock` — the two steps every ledger write here takes.
+async fn lock_and_apply(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    ld: LedgerDelta,
+    at: DateTime<Utc>,
+) -> Result<i64, AppError> {
+    let lock = service::lock_balance_tx(tx, user_id)
+        .await
+        .expect("lock balance");
+    service::apply_delta_tx(tx, &lock, ld, at).await
+}
+
 #[sqlx::test]
 async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-earn@example.com", "Password!234").await;
@@ -71,12 +85,9 @@ async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    let balance_after = service::apply_delta_tx(
+    let balance_after = lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::checkout_earn(50, order_id),
         chrono::Utc::now(),
     )
@@ -109,12 +120,9 @@ async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_i
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    let balance_after = service::apply_delta_tx(
+    let balance_after = lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::checkout_redeem(30, order_id),
         chrono::Utc::now(),
     )
@@ -141,12 +149,9 @@ async fn apply_delta_insufficient_balance_returns_conflict_and_does_not_persist(
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    let err = service::apply_delta_tx(
+    let err = lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::checkout_redeem(200, order_id),
         chrono::Utc::now(),
     )
@@ -181,12 +186,9 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-zero@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    let err = service::apply_delta_tx(
+    let err = lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::admin_adjust(0),
         chrono::Utc::now(),
     )
@@ -285,12 +287,9 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
     .expect("add artificial cap constraint");
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    let err = service::apply_delta_tx(
+    let err = lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::admin_adjust(5000),
         chrono::Utc::now(),
     )
@@ -333,20 +332,17 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    service::apply_delta_tx(
+    lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::checkout_earn(10, order_id),
         chrono::Utc::now(),
     )
     .await
     .expect("earn should succeed");
-    service::apply_delta_tx(
+    lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::checkout_redeem(30, order_id),
         chrono::Utc::now(),
     )
@@ -584,12 +580,14 @@ async fn ledger_lists_a_chain_from_the_balance_whatever_the_write_order(db: PgPo
         (-60, jan(15)),
     ] {
         let mut tx = db.begin().await.expect("begin tx");
-        let lock = service::lock_balance_tx(&mut tx, user_id)
-            .await
-            .expect("lock balance");
-        service::apply_delta_tx(&mut tx, &lock, LedgerDelta::admin_adjust(delta), created_at)
-            .await
-            .expect("apply delta");
+        lock_and_apply(
+            &mut tx,
+            user_id,
+            LedgerDelta::admin_adjust(delta),
+            created_at,
+        )
+        .await
+        .expect("apply delta");
         tx.commit().await.expect("commit");
     }
 
@@ -641,12 +639,9 @@ async fn points_me_reads_balance_ledger_total_and_earned_from_one_snapshot(db: P
     let second_order = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let lock = service::lock_balance_tx(&mut tx, user_id)
-        .await
-        .expect("lock balance");
-    service::apply_delta_tx(
+    lock_and_apply(
         &mut tx,
-        &lock,
+        user_id,
         LedgerDelta::checkout_earn(100, first_order),
         t,
     )
@@ -679,12 +674,9 @@ async fn points_me_reads_balance_ledger_total_and_earned_from_one_snapshot(db: P
     common::wait_for_lock_waiter(&db, t0_pid).await;
     assert!(!reader.is_finished(), "the read must be blocked behind T0");
 
-    let lock = service::lock_balance_tx(&mut t0, user_id)
-        .await
-        .expect("lock balance in T0");
-    service::apply_delta_tx(
+    lock_and_apply(
         &mut t0,
-        &lock,
+        user_id,
         LedgerDelta::checkout_earn(50, second_order),
         t,
     )

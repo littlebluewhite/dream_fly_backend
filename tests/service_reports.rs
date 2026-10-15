@@ -1034,7 +1034,7 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
         course_b,
         30_000,
         OrderStatus::Paid,
-        Some(months_ago(now, 11)),
+        months_ago(now, 11),
     )
     .await;
     // …but 12 months back is outside the window, and refunded never counts.
@@ -1044,28 +1044,12 @@ async fn admin_report_coach_revenue_only_course_lines(db: PgPool) {
         course_a,
         99_999,
         OrderStatus::Paid,
-        Some(months_ago(now, 12)),
+        months_ago(now, 12),
     )
     .await;
-    seed_course_revenue(
-        &db,
-        buyer,
-        course_a,
-        88_888,
-        OrderStatus::Refunded,
-        Some(now),
-    )
-    .await;
+    seed_course_revenue(&db, buyer, course_a, 88_888, OrderStatus::Refunded, now).await;
     // A coachless course's line is attributed to nobody (and must not 500).
-    seed_course_revenue(
-        &db,
-        buyer,
-        course_orphan,
-        7_777,
-        OrderStatus::Paid,
-        Some(now),
-    )
-    .await;
+    seed_course_revenue(&db, buyer, course_orphan, 7_777, OrderStatus::Paid, now).await;
 
     let report = service::admin_report(&db, common::studio_now_utc(now))
         .await
@@ -2535,7 +2519,7 @@ async fn coach_scope_includes_delisted_courses_on_every_surface(db: PgPool) {
         s3,
     )
     .await;
-    seed_course_revenue(&db, s1, course_y, 5_000, OrderStatus::Paid, Some(now)).await;
+    seed_course_revenue(&db, s1, course_y, 5_000, OrderStatus::Paid, now).await;
 
     // Y is delisted only after its roster/session/leave request are all in
     // place — delisting must not retroactively erase any of this.
