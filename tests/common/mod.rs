@@ -21,7 +21,7 @@ pub mod twilio;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-use chrono::Utc;
+use chrono::{SubsecRound, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -79,10 +79,18 @@ pub fn studio_now_utc(now: chrono::DateTime<Utc>) -> StudioNow {
     }
 }
 
-/// Today's date with the studio timezone pinned to UTC (the default test
-/// config) — for service-layer tests that have no `TestApp`.
+/// The scene instant (場景時刻): the "now" a test is set at, as a
+/// [`StudioNow`] in UTC (the default test config) truncated to microseconds.
+/// Postgres `timestamptz` keeps no finer, so an instant sampled here and
+/// written to the DB reads back equal.
+pub fn scene_now() -> StudioNow {
+    studio_now_utc(Utc::now().trunc_subsecs(6))
+}
+
+/// Today's date at the scene instant ([`scene_now`]) — for service-layer
+/// tests that have no `TestApp`.
 pub fn today_utc() -> chrono::NaiveDate {
-    studio_now_utc(Utc::now()).today()
+    scene_now().today()
 }
 
 /// Build a Redis connection for tests (db 15, clear of the dev db 0).
@@ -143,7 +151,18 @@ pub async fn auth_for(db: &PgPool, user_id: Uuid) -> AuthUser {
 /// `member` (via `seed_member`'s owner, `create_account`, as in production);
 /// `extra` roles are granted on top.
 pub async fn seed_user_with_roles(db: &PgPool, email: &str, extra: &[Role]) -> Uuid {
-    let user_id = seed_member(db, email, "Password!234").await;
+    seed_user_with_roles_at(db, email, extra, scene_now().now).await
+}
+
+/// [`seed_user_with_roles`] with an explicit `users.created_at` — `TestApp`
+/// passes its clock's "now".
+pub async fn seed_user_with_roles_at(
+    db: &PgPool,
+    email: &str,
+    extra: &[Role],
+    now: chrono::DateTime<Utc>,
+) -> Uuid {
+    let user_id = seed_member_at(db, email, "Password!234", now).await;
 
     for role in extra {
         let mut conn = db.acquire().await.expect("acquire conn");

@@ -225,6 +225,13 @@ _Avoid_: 遞補佇列(「佇列」暗示自動出隊消費,與人工遞補定案
 seam 往下延伸到 SQL(ADR-0017):業務時間(會被讀取拿去分桶、或拿去跟取樣時刻比較的欄位)由 repository 收 `now` 並綁進 SQL,不寫 `NOW()`;稽核時間(`updated_at` 等)刻意留給 `NOW()`,哪些欄位算稽核時間由 `tests/business_time.rs` 的 `AUDIT_COLUMNS` 持有——源碼掃描,DB 時鐘寫進清單外的欄位就失敗(ADR-0017 Addendum 2026-10-11)。
 _Avoid_: 把 `studio_clock` 也算進這層 seam(它的函式簽章未變,只是呼叫端現在傳的是 handler 取樣值)
 
+**場景時刻(Scene Instant)**:
+測試裡一個場景的「現在」——`tests/common` 的 `scene_now()` = `studio_now_utc(Utc::now().trunc_subsecs(6))`:時區是測試 config 的 UTC,`now` 截到微秒(Postgres `timestamptz` 只存到微秒,截過的時刻寫進 DB 再讀回來仍相等,不必每支測試各自重新發現 `trunc_subsecs(6)`)。
+`TestApp` 開場就把時鐘 seam 的測試替身 `MockClock` 釘在 `scene_now().now`;`MockClock` 一律釘住、從不讀系統時鐘,只在測試 `set`/`advance` 時移動——同一測試的每個請求取樣到同一個 `now`,`TestApp` 種的使用者(`seed_user_with_roles`/`seed_admin`/`seed_coach_user`)在 `app.studio_now().now` 加入,預期日期取 `app.today()`,測試本體與 handler 不再各讀各的牆鐘(台北跨午夜不再偶發失敗)。沒有 `TestApp` 的 service 測試用 `today_utc()`(= `scene_now().today()`)。
+`MockClock` 只管 handler 經 `AppState::clock` 取樣的時刻:短期狀態與存取快取的 TTL(in-memory adapter 用 `Instant`)、JWT 效期(`Utc::now`)都不讀它。
+釘住的代價:同一測試裡連續請求寫出的業務時間相同,要靠時間分出先後的斷言(依時間排序的列表、「會往前走」的時戳)在請求之間 `app.clock.advance(…)`。
+_Avoid_: 在 `TestApp` 測試本體以 `Utc::now()` 推預期日期(用 `app.today()`)、手寫 `trunc_subsecs(6)`(用 `scene_now()`)
+
 **週課表(Weekly Schedule)**:
 `course_schedule_slots` 表的型別與讀取歸 `courses`(`courses::model::CourseScheduleSlot`、`courses::repository::find_slots_by_course`),**寫入歸 `sessions::calendar`**:`set_initial_schedule_tx`(`create_course`)與 `replace_weekly_schedule_tx`(`update_course`:換 slot + 對齊未來場次)是這張表僅有的兩個 runtime 寫入點,輸入列 `calendar::SlotRow` 由 `courses::service` 解析驗證後傳入(seed 直寫 slot 仍 bypass,ADR-0010)。
 courses 的 create/update/get 是唯一消費端。

@@ -23,6 +23,10 @@
 //!   the in-memory adapters above, `Overrides` swaps only email and clock,
 //!   so the HTTP client, SMS client, Google adapter and background tracker
 //!   are the production ones
+//! - pins the clock (`app.clock`, a `MockClock`) at the scene instant
+//!   (`common::scene_now`) when it spawns: every request sees the same "now"
+//!   until the test calls `set`/`advance`. The users it seeds join at that
+//!   "now", and tests take expected dates from `app.today()`
 //! - wraps the real production router (`startup::build_router`) so every
 //!   test exercises the entire middleware stack + extractors + handlers
 //! - exposes [`MockEmailClient`] via `app.email` so tests can assert on
@@ -166,7 +170,7 @@ pub struct TestApp {
 
 impl TestApp {
     /// The studio's "now" as the service layer sees it: the app's configured
-    /// studio timezone plus its (possibly pinned) clock.
+    /// studio timezone plus its pinned clock.
     pub fn studio_now(&self) -> StudioNow {
         StudioNow {
             tz: self.config.server.studio_timezone,
@@ -231,10 +235,12 @@ impl TestApp {
     /// Seed a user directly in the DB and return `(user_id, access_token)`.
     /// Every user is born a `member` (via `seed_member`'s owner,
     /// `create_account`, as in production); `extra` roles are granted on
-    /// top. Use this when a test needs an admin or coach without going
-    /// through `/auth/register`.
+    /// top. The user joins (`users.created_at`) at the app's "now". Use this
+    /// when a test needs an admin or coach without going through
+    /// `/auth/register`.
     pub async fn seed_user_with_roles(&self, email: &str, extra: &[Role]) -> (Uuid, String) {
-        let user_id = super::seed_user_with_roles(&self.db, email, extra).await;
+        let user_id =
+            super::seed_user_with_roles_at(&self.db, email, extra, self.studio_now().now).await;
 
         // `create_account` lowercases the email; the token must carry the
         // stored form.
@@ -353,7 +359,7 @@ async fn spawn<F: FnOnce(&mut AppConfig)>(
     let config = test_app_config(adjust);
 
     let email = Arc::new(MockEmailClient::new());
-    let clock = Arc::new(MockClock::new());
+    let clock = Arc::new(MockClock::new(super::scene_now().now));
     let access_cache = Arc::new(InMemoryAccessCache::new());
     let config_arc = Arc::new(config);
 

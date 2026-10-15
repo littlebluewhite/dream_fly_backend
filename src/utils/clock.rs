@@ -37,8 +37,7 @@ use chrono::{DateTime, Utc};
 /// Trait-object facade for "now" so `AppState` can hold an `Arc<dyn Clock>`.
 /// In production this is backed by [`SystemClock`] (`Utc::now()`); in
 /// integration tests it is backed by `MockClock` (`tests/common/mocks.rs`),
-/// which can pin the clock to a fixed instant or delegate to the real system
-/// clock.
+/// which stays pinned at an instant the test sets and moves.
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
 }

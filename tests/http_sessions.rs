@@ -55,7 +55,7 @@ async fn course_sessions_default_range_materializes_todays_slot(db: PgPool) {
         .await;
     let course_id = seed_course(&app.db, "Sessions Default Range Course", None).await;
 
-    let today = Utc::now().date_naive();
+    let today = app.today();
     seed_course_schedule_slot(&app.db, course_id, dow_of(today), t(9, 0), t(10, 0)).await;
 
     let resp = app
@@ -133,7 +133,7 @@ async fn course_sessions_future_slot_status_is_upcoming(db: PgPool) {
     // that starts strictly after today (not the default [today, ...]) is
     // what keeps this deterministic: today's own occurrence of that
     // weekday never enters the response.
-    let future_date = Utc::now().date_naive() + Duration::days(7);
+    let future_date = app.today() + Duration::days(7);
     seed_course_schedule_slot(&app.db, course_id, dow_of(future_date), t(9, 0), t(10, 0)).await;
 
     let resp = app
@@ -187,7 +187,7 @@ async fn today_as_coach_returns_own_course_with_enrolled_count(db: PgPool) {
     let own_course = seed_course(&app.db, "HTTP Today Own Course", Some(coach.coach_id)).await;
     let other_course = seed_course(&app.db, "HTTP Today Other Course", None).await;
 
-    let today = Utc::now().date_naive();
+    let today = app.today();
     let dow = dow_of(today);
     seed_course_schedule_slot(&app.db, own_course, dow, t(9, 0), t(10, 0)).await;
     seed_course_schedule_slot(&app.db, other_course, dow, t(9, 0), t(10, 0)).await;
@@ -233,7 +233,7 @@ async fn today_as_admin_returns_all_courses(db: PgPool) {
 
     let course_a = seed_course(&app.db, "HTTP Today Admin Course A", None).await;
     let course_b = seed_course(&app.db, "HTTP Today Admin Course B", None).await;
-    let today = Utc::now().date_naive();
+    let today = app.today();
     let dow = dow_of(today);
     seed_course_schedule_slot(&app.db, course_a, dow, t(9, 0), t(10, 0)).await;
     seed_course_schedule_slot(&app.db, course_b, dow, t(14, 0), t(15, 0)).await;
@@ -273,7 +273,7 @@ async fn today_as_admin_includes_coach_name_and_venue(db: PgPool) {
     let course_without_coach =
         seed_course(&app.db, "HTTP Today No Coach No Venue Course", None).await;
 
-    let today = Utc::now().date_naive();
+    let today = app.today();
     let dow = dow_of(today);
     SlotSeed::new(course_with_coach, dow, t(9, 0), t(10, 0))
         .venue("Studio A")

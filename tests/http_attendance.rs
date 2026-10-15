@@ -6,7 +6,7 @@ mod common;
 
 use chrono::{Duration, NaiveTime, Utc};
 use common::fixtures::{seed_course, seed_course_session, seed_enrolment, seed_leave_request};
-use common::http::spawn_test_app;
+use common::http::{TestApp, spawn_test_app};
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::permissions::model::Role;
@@ -18,8 +18,8 @@ fn t(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).unwrap()
 }
 
-fn yesterday() -> chrono::NaiveDate {
-    (Utc::now() - Duration::days(1)).date_naive()
+fn yesterday(app: &TestApp) -> chrono::NaiveDate {
+    app.today() - Duration::days(1)
 }
 
 async fn attendance_records_count(db: &PgPool, session_id: Uuid) -> i64 {
@@ -74,14 +74,7 @@ async fn roster_as_non_course_coach_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let owner = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Roster Owned Course", Some(owner.coach_id)).await;
-    let session_id = seed_course_session(
-        &app.db,
-        course_id,
-        Utc::now().date_naive(),
-        t(9, 0),
-        t(10, 0),
-    )
-    .await;
+    let session_id = seed_course_session(&app.db, course_id, app.today(), t(9, 0), t(10, 0)).await;
 
     let other = app.seed_coach_user().await;
 
@@ -97,14 +90,7 @@ async fn roster_as_course_coach_shows_active_enrolments_with_null_status(db: PgP
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Roster Course", Some(coach.coach_id)).await;
-    let session_id = seed_course_session(
-        &app.db,
-        course_id,
-        Utc::now().date_naive(),
-        t(9, 0),
-        t(10, 0),
-    )
-    .await;
+    let session_id = seed_course_session(&app.db, course_id, app.today(), t(9, 0), t(10, 0)).await;
 
     let member_a = app
         .register_member("att-roster-a@example.com", "Password!234")
@@ -170,14 +156,7 @@ async fn roster_as_admin_works_for_any_course(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Roster Admin Course", None).await;
-    let session_id = seed_course_session(
-        &app.db,
-        course_id,
-        Utc::now().date_naive(),
-        t(9, 0),
-        t(10, 0),
-    )
-    .await;
+    let session_id = seed_course_session(&app.db, course_id, app.today(), t(9, 0), t(10, 0)).await;
     let member = app
         .register_member("att-roster-admin-member@example.com", "Password!234")
         .await;
@@ -241,14 +220,7 @@ async fn attendance_put_as_non_course_coach_returns_403(db: PgPool) {
     let app = spawn_test_app(db).await;
     let owner = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Put Owned Course", Some(owner.coach_id)).await;
-    let session_id = seed_course_session(
-        &app.db,
-        course_id,
-        Utc::now().date_naive(),
-        t(9, 0),
-        t(10, 0),
-    )
-    .await;
+    let session_id = seed_course_session(&app.db, course_id, app.today(), t(9, 0), t(10, 0)).await;
     let member = app
         .register_member("att-put-member@example.com", "Password!234")
         .await;
@@ -278,7 +250,8 @@ async fn attendance_put_cross_course_enrolment_rejects_whole_batch_with_no_write
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Course A", None).await;
     let other_course_id = seed_course(&app.db, "Attendance Course B", None).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
 
     let member_in = app
         .register_member("att-cross-in@example.com", "Password!234")
@@ -324,7 +297,8 @@ async fn attendance_put_cancelled_enrolment_rejects_whole_batch(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Cancelled Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let member = app
         .register_member("att-cancelled-member@example.com", "Password!234")
         .await;
@@ -351,7 +325,8 @@ async fn attendance_put_invalid_status_returns_422(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Invalid Status Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let member = app
         .register_member("att-invalid-status@example.com", "Password!234")
         .await;
@@ -391,7 +366,8 @@ async fn attendance_put_is_idempotent_and_overwrites_on_second_call(db: PgPool) 
     let app = spawn_test_app(db).await;
     let coach = app.seed_coach_user().await;
     let course_id = seed_course(&app.db, "Idempotent Course", Some(coach.coach_id)).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
 
     let member_a = app
         .register_member("att-idem-a@example.com", "Password!234")
@@ -501,7 +477,8 @@ async fn attendance_put_present_over_approved_leave_rejects_whole_batch(db: PgPo
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Approved Leave Guard Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let member_a = app
         .register_member("att-approved-leave-a@example.com", "Password!234")
         .await;
@@ -573,7 +550,8 @@ async fn attendance_put_leave_over_approved_leave_is_idempotent(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Approved Leave Idempotent Course", None).await;
-    let session_id = seed_course_session(&app.db, course_id, yesterday(), t(9, 0), t(10, 0)).await;
+    let session_id =
+        seed_course_session(&app.db, course_id, yesterday(&app), t(9, 0), t(10, 0)).await;
     let member = app
         .register_member("att-approved-leave-idem@example.com", "Password!234")
         .await;
@@ -825,7 +803,7 @@ async fn future_session_still_appears_in_roster(db: PgPool) {
     let session_id = seed_course_session(
         &app.db,
         course_id,
-        (Utc::now() + Duration::days(3)).date_naive(),
+        app.today() + Duration::days(3),
         t(9, 0),
         t(10, 0),
     )
@@ -850,7 +828,7 @@ async fn attendance_put_future_session_returns_422_and_writes_nothing(db: PgPool
     let session_id = seed_course_session(
         &app.db,
         course_id,
-        (Utc::now() + Duration::days(1)).date_naive(),
+        app.today() + Duration::days(1),
         t(9, 0),
         t(10, 0),
     )
@@ -881,7 +859,7 @@ async fn attendance_put_at_exact_start_boundary_returns_200(db: PgPool) {
     let app = spawn_test_app(db).await;
     let (_admin_id, admin_token) = app.seed_admin().await;
     let course_id = seed_course(&app.db, "Attendance Boundary Course", None).await;
-    let today = Utc::now().date_naive();
+    let today = app.today();
     let session_id = seed_course_session(&app.db, course_id, today, t(9, 0), t(10, 0)).await;
     let member = app
         .register_member("att-boundary-member@example.com", "Password!234")
