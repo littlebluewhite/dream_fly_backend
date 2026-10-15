@@ -27,10 +27,9 @@ use super::fulfilment;
 use super::idempotency::{self, IdempotencyKey, Recorded};
 use super::locks;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
-use super::paid_order;
 use super::pricing;
 use super::refund::{self, TransitionDecision};
-use super::repository;
+use super::repository::{self, OrderAmounts};
 use super::tx_witness::TxReleased;
 
 /// The checkout request after every check that needs no database: the
@@ -104,11 +103,12 @@ fn parse_request(req: CheckoutRequest) -> Result<CheckoutIntent, AppError> {
 ///   order is replayed (`idempotency::record`).
 ///
 /// Every rejection after the transaction opens rolls the whole checkout
-/// back. On success the order is created already `paid` together with its
-/// order_items and points ledger rows (`paid_order::record_paid_order_tx`),
-/// followed by enrolments, subscriptions, the cart clear, the idempotency
-/// row and the outbox event — one transaction — then the inline
-/// notification.
+/// back. On success the order is created already `paid`, followed by its
+/// order_items, points ledger rows, enrolments, subscriptions, the cart
+/// clear, the idempotency row and the outbox event — one transaction — then
+/// the inline notification. The order, order_items, ledger rows, enrolments
+/// and subscriptions all carry the one sampled `now` (purchase instant,
+/// ADR-0017); checkout is the only runtime writer of paid order rows.
 ///
 /// The transactional cart/coupon reads and the enrolment/subscription DTO
 /// assembly go through their owning modules' service seams (ADR-0005), so
@@ -276,23 +276,35 @@ pub async fn checkout(
     // the exact rule.
     let lines = fulfilment::order_lines(&cart, &reserved);
 
-    // Record the paid order FIRST — order_id is needed before
-    // enrolments/subscriptions can link to it. `record_paid_order_tx`
-    // writes the order row (already `paid`), its order_items and the
-    // checkout points ledger at the one sampled `now`
-    // (`orders::paid_order`); `locks.balance()` proves the buyer's
-    // `users` row is already locked, so the ledger writes add no lock
-    // dependency.
-    let order = paid_order::record_paid_order_tx(
+    // Create the order row FIRST, already `paid` — order_id is needed
+    // before order_items, ledger rows, enrolments and subscriptions can
+    // link to it. Every artifact of this purchase is stamped with the one
+    // sampled `now` (purchase instant, ADR-0017).
+    let order = repository::create_order(
         &mut tx,
-        locks.balance(),
+        user_id,
         &order_number,
+        OrderAmounts {
+            total_cents: outcome.total_cents,
+            discount_cents: outcome.discount_cents,
+            points_used: outcome.points_used,
+            points_earned: outcome.points_earned,
+        },
+        outcome.applied_coupon_code.as_deref(),
         intent.payment_method,
-        &lines,
-        &outcome,
         now,
     )
     .await?;
+    repository::create_order_items(&mut tx, order.id, &lines, now).await?;
+
+    // Points ledger — `PricingOutcome::ledger_deltas` owns the order
+    // (redeem before earn) and the zero-skip. The buyer's `users` row is
+    // already locked (`locks.balance()`), so these writes add no lock
+    // dependency; the locked balance capped `points_used` in
+    // `pricing::price`, so the redeem cannot overdraw.
+    for delta in outcome.ledger_deltas(order.id) {
+        points_service::apply_delta_tx(&mut tx, user_id, delta, now).await?;
+    }
 
     // Artifacts.
     // Enrolments — course lines. `enrol_batch_from_purchase_tx` walks
