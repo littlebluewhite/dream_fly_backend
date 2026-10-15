@@ -24,6 +24,11 @@
 //! `subscription_derived_status` (W7-7), an `INSERT` that leaves a timestamp
 //! column out (its `DEFAULT` fills it), and a bound value that is the wrong
 //! instant.
+//!
+//! A second rule keeps the test harness on the scene instant: in
+//! `tests/common/**`, `Utc::now`, `Local::now` and `SystemTime::now` may
+//! appear only in the `fn`s `WALL_CLOCK_SITES` lists, each with a pinned
+//! read count.
 
 use std::fs;
 use std::ops::Range;
@@ -653,5 +658,222 @@ fn f() {
     assert_eq!(
         audit_problems(&sites, &[], &unmapped),
         ["  UNMAPPED entry sample \"INSERT INTO s\": 2 DB-clock hits, expects 1"]
+    );
+}
+
+/// Where the test harness (`tests/common/**`) may read the wall clock
+/// (`Utc::now`, `Local::now`, `SystemTime::now`), keyed by `(file, enclosing
+/// fn)` with how many reads the entry covers and why. Everything else in the
+/// harness takes the caller's instant (ADR-0017 Addendum 2026-10-15:
+/// 測試場景時刻). `Instant::now` is not a business time and is not scanned.
+const WALL_CLOCK_SITES: &[(&str, &str, usize, &str)] = &[
+    (
+        "tests/common/google.rs",
+        "sign_id_token_with",
+        1,
+        "id_token iat/exp: the app's JWT validation checks exp against the real clock",
+    ),
+    (
+        "tests/common/mod.rs",
+        "scene_now",
+        1,
+        "the scene instant itself: the one sample a scene is set at",
+    ),
+    (
+        "tests/common/mod.rs",
+        "seed_member",
+        1,
+        "\"just joined\" default; users.created_at only moves new-member counts and list order",
+    ),
+];
+
+#[test]
+fn harness_reads_the_wall_clock_only_at_listed_sites() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&root.join("tests/common"), &mut files);
+    let mut reads = Vec::new();
+    for path in files {
+        let file = slash_path(path.strip_prefix(root).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        reads.extend(
+            wall_clock_reads(&text, &file)
+                .into_iter()
+                .map(|read| (file.clone(), read)),
+        );
+    }
+    let problems = wall_clock_problems(&reads, WALL_CLOCK_SITES);
+    assert!(
+        problems.is_empty(),
+        "wall clock read in the test harness outside WALL_CLOCK_SITES:\n{}\n\
+         Take the caller's instant (`app.studio_now()`, `common::scene_now()`) as a parameter. \
+         A read that must stay goes into WALL_CLOCK_SITES with a reason; fix stale counts.",
+        problems.join("\n")
+    );
+}
+
+/// One `Utc::now` / `Local::now` / `SystemTime::now` in Rust code.
+struct WallClockRead {
+    line: usize,
+    /// The innermost named `fn` around it; empty outside any.
+    func: String,
+}
+
+/// What `reads` (`(file, read)`) break against `allowed`: a read no entry
+/// covers, and an entry whose read count is not the one it pins.
+fn wall_clock_problems(
+    reads: &[(String, WallClockRead)],
+    allowed: &[(&str, &str, usize, &str)],
+) -> Vec<String> {
+    let mut found = vec![0; allowed.len()];
+    let mut problems = Vec::new();
+    for (file, read) in reads {
+        match allowed
+            .iter()
+            .position(|(f, func, _, _)| f == file && *func == read.func)
+        {
+            Some(i) => found[i] += 1,
+            None => problems.push(format!(
+                "  {file}:{}  `{}` reads the wall clock",
+                read.line, read.func
+            )),
+        }
+    }
+    for ((file, func, hits, _), found) in allowed.iter().zip(found) {
+        if found != *hits {
+            problems.push(format!(
+                "  WALL_CLOCK_SITES entry {file} `{func}`: {found} wall-clock reads, expects {hits}"
+            ));
+        }
+    }
+    problems
+}
+
+/// Every wall-clock read in the Rust source `text`. Works on tokens, so
+/// comments never match, nor string literals (doc comments reach the token
+/// stream as `#[doc = "…"]` literals).
+fn wall_clock_reads(text: &str, file: &str) -> Vec<WallClockRead> {
+    let stream: TokenStream = text
+        .parse()
+        .unwrap_or_else(|e| panic!("tokenize {file}: {e}"));
+    let mut out = Vec::new();
+    wall_clock_reads_in(stream, "", &mut out);
+    out
+}
+
+fn wall_clock_reads_in(stream: TokenStream, func: &str, out: &mut Vec<WallClockRead>) {
+    let toks: Vec<TokenTree> = stream.into_iter().collect();
+    let ident = |i: usize| match toks.get(i) {
+        Some(TokenTree::Ident(id)) => id.to_string(),
+        _ => String::new(),
+    };
+    let punct =
+        |i: usize, c: char| matches!(toks.get(i), Some(TokenTree::Punct(p)) if p.as_char() == c);
+    // The name of a `fn` whose body has not been reached yet.
+    let mut pending: Option<String> = None;
+    for (i, tt) in toks.iter().enumerate() {
+        match tt {
+            TokenTree::Group(g) => {
+                let inner = match (&pending, g.delimiter()) {
+                    (Some(name), Delimiter::Brace) => name.clone(),
+                    _ => func.to_owned(),
+                };
+                if g.delimiter() == Delimiter::Brace {
+                    pending = None;
+                }
+                wall_clock_reads_in(g.stream(), &inner, out);
+            }
+            TokenTree::Ident(id) if id == "fn" => {
+                pending = Some(ident(i + 1)).filter(|n| !n.is_empty())
+            }
+            TokenTree::Ident(id)
+                if matches!(id.to_string().as_str(), "Utc" | "Local" | "SystemTime")
+                    && punct(i + 1, ':')
+                    && punct(i + 2, ':')
+                    && ident(i + 3) == "now" =>
+            {
+                out.push(WallClockRead {
+                    line: id.span().start().line,
+                    func: func.to_owned(),
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `"<line> <fn>"` per wall-clock read in `sample`.
+fn wall_clock_hits(sample: &str) -> Vec<String> {
+    wall_clock_reads(sample, "sample")
+        .iter()
+        .map(|r| format!("{} {}", r.line, r.func))
+        .collect()
+}
+
+#[test]
+fn wall_clock_matcher_finds_each_clock_and_names_its_fn() {
+    let sample = r##"
+fn a() -> DateTime<Utc> {
+    let t = chrono::Utc::now();
+    let d = Local::now().date_naive();
+    std::time::SystemTime::now()
+}
+impl Seed {
+    pub async fn b(&self) {
+        self.at.unwrap_or_else(Utc::now);
+        let f = |x: i64| -> i64 { x + Utc::now().timestamp() };
+    }
+}
+fn outer() {
+    fn inner() { Utc::now(); }
+    Utc::now();
+}
+"##;
+    assert_eq!(
+        wall_clock_hits(sample),
+        ["3 a", "4 a", "5 a", "9 b", "10 b", "14 inner", "15 outer"]
+    );
+}
+
+#[test]
+fn wall_clock_matcher_skips_comments_strings_and_other_nows() {
+    let sample = r##"
+//! Utc::now()
+/// Seeded at `Utc::now()`.
+#[doc = "Utc::now()"]
+/** Local::now() */
+// SystemTime::now()
+/* Utc::now() */
+fn f(g: fn() -> i64) {
+    let deadline = std::time::Instant::now();
+    let id = Uuid::now_v7();
+    let now = app.studio_now().now;
+    panic!("call Utc::now() yourself");
+}
+"##;
+    assert!(wall_clock_hits(sample).is_empty());
+}
+
+#[test]
+fn wall_clock_entry_pins_its_read_count() {
+    let sample = r##"
+fn listed() { Utc::now(); Utc::now(); }
+fn unlisted() { Utc::now(); }
+"##;
+    let reads: Vec<(String, WallClockRead)> = wall_clock_reads(sample, "sample")
+        .into_iter()
+        .map(|read| ("sample".to_owned(), read))
+        .collect();
+    let allowed = [
+        ("sample", "listed", 1, "one read"),
+        ("sample", "gone", 1, "nothing reads here any more"),
+    ];
+    assert_eq!(
+        wall_clock_problems(&reads, &allowed),
+        [
+            "  sample:3  `unlisted` reads the wall clock",
+            "  WALL_CLOCK_SITES entry sample `listed`: 2 wall-clock reads, expects 1",
+            "  WALL_CLOCK_SITES entry sample `gone`: 0 wall-clock reads, expects 1",
+        ]
     );
 }
