@@ -111,3 +111,21 @@ checkout 的內部編排(取鎖 → 讀購物車 → 上架檢查 → 定價 →
   外寫已付訂單列是 GLOSSARY「購買時刻」的 _Avoid_。
 - 本 ADR 的決策不變:共用「歷史寫入」module 仍延後,重開條件 1 仍未成立(`tests/common/fixtures.rs` 的
   `OrderSeed` 照舊直寫列、不產 points ledger)。
+
+## Addendum (2026-10-15): 種子購買時間線
+
+Addendum 2026-10-11 讓 seed 當真實結帳的呼叫者;買與推狀態的規則原本散在 `dataset::run` 的資料集公式之間,只能用
+整份資料集測。R21 把這一步收成 `bin/seed/dataset/timeline.rs`(GLOSSARY「種子購買時間線」),介面只有
+`buy_and_walk(db, at, Vec<SeedPurchase>) -> Vec<Walked>`:依 `ts` 穩定排序,每筆先以 `idempotency::replay` 預查
+key、未命中才經購物車與 `checkout` 買下,買完立刻經 `update_order_status` 推到目標狀態,依購買順序回傳。
+
+- **排程刪除**:原本完成/退款訂單要等購買進行到它第一步的時間才推(`walk_due` 加最小堆),好讓每位會員的
+  `point_ledger.balance_after` 依 `created_at` 往前走。ADR-0018 把 `balance_after` 改成讀時推導後,明細不依賴
+  寫入順序,排程失去理由。改成買完即推仍安全:退款的 `refund_clawback` 一定寫在自己的 `checkout_earn` 之後,seed
+  結帳不用點數,沖銷不會遇到餘額不足;每步時刻仍是 `min(paid_at + 位移, at.now)`,種子時戳不變量照舊成立。保留
+  `ts` 排序,讓 outbox 事件與站內通知依購買順序產生。
+- **保留 `replay` 預查**:改成「清空 → 加入 → 帶 key 結帳 → 再清空」雖然少一次查詢,但開發者下架某個種子商品後
+  重跑會在加入購物車時失敗,而且每次重跑都改寫所有種子會員的購物車。
+- `refuse_legacy_seed_rows`、`insert_pending_order_if_absent` 與點數結算留在 `run`;介面測試在 `timeline.rs`,用
+  最小目錄,不跑整份資料集。
+- 本 ADR 的決策不變:共用「歷史寫入」module 仍延後,重開條件 1 仍未成立。

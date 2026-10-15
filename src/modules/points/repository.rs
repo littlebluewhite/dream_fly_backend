@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::utils::studio_clock::StudioNow;
@@ -8,10 +8,13 @@ use super::model::{OrderPointsFlow, PointLedgerEntry, PointReason};
 
 /// Current points balance for a user (NOT NULL column on `users`). `None`
 /// means no such user.
-pub async fn find_balance(db: &PgPool, user_id: Uuid) -> Result<Option<i64>, sqlx::Error> {
+pub async fn find_balance(
+    executor: impl sqlx::PgExecutor<'_>,
+    user_id: Uuid,
+) -> Result<Option<i64>, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT points_balance FROM users WHERE id = $1")
         .bind(user_id)
-        .fetch_optional(db)
+        .fetch_optional(executor)
         .await
 }
 
@@ -34,38 +37,50 @@ pub async fn lock_balance_tx(
         .await
 }
 
-/// This user's ledger entries, newest first, paginated.
+/// This user's ledger entries, newest first by `(created_at, id)`, paginated.
+/// `balance_after` is derived here, not stored (ADR-0018): the user's
+/// balance at read time minus the `delta`s of every newer row. The window
+/// runs before `LIMIT`/`OFFSET`, so each page chains on from the one before
+/// it whatever order the rows were written in.
 pub async fn find_ledger_by_user(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<PointLedgerEntry>, sqlx::Error> {
     sqlx::query_as::<_, PointLedgerEntry>(
-        "SELECT id, user_id, delta, balance_after, reason, order_id, created_at \
+        "SELECT id, user_id, delta, \
+                ((SELECT points_balance FROM users WHERE id = $1) \
+                 - COALESCE(SUM(delta) OVER newer, 0))::BIGINT AS balance_after, \
+                reason, order_id, created_at \
          FROM point_ledger \
          WHERE user_id = $1 \
-         ORDER BY created_at DESC \
+         WINDOW newer AS (ORDER BY created_at DESC, id DESC \
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) \
+         ORDER BY created_at DESC, id DESC \
          LIMIT $2 OFFSET $3",
     )
     .bind(user_id)
     .bind(limit as i64)
     .bind(offset as i64)
-    .fetch_all(db)
+    .fetch_all(executor)
     .await
 }
 
-pub async fn count_ledger_by_user(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
+pub async fn count_ledger_by_user(
+    executor: impl sqlx::PgExecutor<'_>,
+    user_id: Uuid,
+) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM point_ledger WHERE user_id = $1")
         .bind(user_id)
-        .fetch_one(db)
+        .fetch_one(executor)
         .await
 }
 
 /// Sum of the user's `checkout_earn` deltas in the studio month containing
 /// `at.now`. Clawbacks and every other reason are deliberately not netted.
 pub async fn sum_earned_in_studio_month(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     at: StudioNow,
 ) -> Result<i64, sqlx::Error> {
@@ -77,7 +92,7 @@ pub async fn sum_earned_in_studio_month(
     .bind(user_id)
     .bind(at.now)
     .bind(at.tz.name())
-    .fetch_one(db)
+    .fetch_one(executor)
     .await
 }
 
@@ -140,28 +155,27 @@ pub async fn find_order_flow_sums_tx(
 
 /// Insert the ledger row recording an applied delta, in the same
 /// transaction as the balance update. `created_at` 是業務時間(`earned_this_month`
-/// 依它分桶),綁 handler 取樣的 `now`(ADR-0017)。
+/// 依它分桶),綁 handler 取樣的 `now`(ADR-0017)。No `balance_after`:
+/// `find_ledger_by_user` derives it at read time (ADR-0018).
 pub async fn insert_ledger_tx(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     delta: i64,
-    balance_after: i64,
     reason: PointReason,
     order_id: Option<Uuid>,
     now: DateTime<Utc>,
-) -> Result<PointLedgerEntry, sqlx::Error> {
-    sqlx::query_as::<_, PointLedgerEntry>(
-        "INSERT INTO point_ledger (id, user_id, delta, balance_after, reason, order_id, created_at) \
-         VALUES ($1, $2, $3, $4, $5::point_reason, $6, $7) \
-         RETURNING id, user_id, delta, balance_after, reason, order_id, created_at",
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO point_ledger (id, user_id, delta, reason, order_id, created_at) \
+         VALUES ($1, $2, $3, $4::point_reason, $5, $6)",
     )
     .bind(Uuid::now_v7())
     .bind(user_id)
     .bind(delta)
-    .bind(balance_after)
     .bind(reason)
     .bind(order_id)
     .bind(now)
-    .fetch_one(&mut **tx)
-    .await
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }

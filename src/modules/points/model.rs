@@ -255,12 +255,13 @@ impl PointsTier {
     }
 }
 
-/// Bare `point_ledger` table row.
+/// A `point_ledger` row as `repository::find_ledger_by_user` lists it.
 #[derive(Debug, sqlx::FromRow)]
 pub struct PointLedgerEntry {
     pub id: Uuid,
     pub user_id: Uuid,
     pub delta: i64,
+    /// Not a column: derived at read time from the user's balance (ADR-0018).
     pub balance_after: i64,
     pub reason: PointReason,
     pub order_id: Option<Uuid>,

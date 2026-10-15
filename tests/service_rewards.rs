@@ -244,7 +244,6 @@ async fn my_redemptions_joins_reward_name_and_paginates(db: PgPool) {
         &db,
         user_id,
         -15,
-        85,
         PointReason::Redeem,
         None,
         chrono::Utc::now(),
