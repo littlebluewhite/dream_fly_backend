@@ -832,7 +832,7 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
 
 #[sqlx::test]
 async fn checkout_full_course_rolls_back_everything(db: PgPool) {
-    let full_course = seed_full_course(&db, "Full Class", 1).await;
+    let full_course = seed_full_course(&db, "Full Class", 1, common::scene_now().now).await;
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
     // Also request points redemption: checkout has already written the
     // points ledger by the time the enrolment check (course
@@ -979,7 +979,13 @@ async fn checkout_time_based_entitlement_quantity_over_one_is_422_before_course_
     // `enrol_batch_from_purchase_tx` ever reaches the full course, so this
     // must come back 422, not 409 — pinning the doc's priority order (line
     // quantity 400/422 before stock 409 and course 409).
-    let full_course = seed_full_course(&db, "Entitlement Priority Course", 1).await;
+    let full_course = seed_full_course(
+        &db,
+        "Entitlement Priority Course",
+        1,
+        common::scene_now().now,
+    )
+    .await;
     let membership_2 = seed_entitlement_product(
         &db,
         "quantity-guard-2",
@@ -1829,7 +1835,10 @@ async fn admin_list_orders_exposes_paid_at(db: PgPool) {
     )
     .await
     .expect("checkout");
-    let pending_id = OrderSeed::new(user, OrderStatus::Pending).insert(&db).await;
+    let pending_id = OrderSeed::new(user, OrderStatus::Pending)
+        .created_at(common::scene_now().now)
+        .insert(&db)
+        .await;
 
     let pagination = PaginationParams {
         page: 1,
@@ -2469,6 +2478,7 @@ async fn refund_of_directly_built_paid_order_is_pure_status_flip(db: PgPool) {
     set_points_balance(&db, user, 100).await;
     let product = common::seed_product(&db, "direct-paid-prod", 1_000, Some(5)).await;
     let order_id = OrderSeed::new(user, OrderStatus::Paid)
+        .created_at(common::scene_now().now)
         .line(SeedOrderLine::Product {
             product_id: product,
             quantity: 2,
@@ -2779,6 +2789,7 @@ async fn checkout_same_key_twin_committed_mid_flight_replays_twin(db: PgPool) {
     let product = common::seed_product(&db, "twin-prod", 1000, Some(5)).await;
     common::add_to_cart(&db, user, product, 1).await;
     let o_twin = OrderSeed::new(user, OrderStatus::Paid)
+        .created_at(common::scene_now().now)
         .line(SeedOrderLine::Product {
             product_id: product,
             quantity: 1,

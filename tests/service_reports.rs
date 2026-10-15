@@ -291,6 +291,7 @@ async fn admin_report_revenue_counts_only_paid_family(db: PgPool) {
         .await;
     OrderSeed::new(user_id, OrderStatus::Pending)
         .total_cents(999_999)
+        .created_at(now)
         .insert(&db)
         .await;
 
@@ -530,6 +531,7 @@ async fn admin_report_kpis_split_this_and_last_month(db: PgPool) {
         .await;
     OrderSeed::new(buyer, OrderStatus::Pending)
         .total_cents(4_000)
+        .created_at(now)
         .insert(&db)
         .await;
 
@@ -590,6 +592,7 @@ async fn admin_report_breakdown_excludes_pending_and_refunded(db: PgPool) {
         .insert(&db)
         .await;
     OrderSeed::new(buyer, OrderStatus::Pending)
+        .created_at(now)
         .line(excluded_course)
         .line(excluded_merch)
         .insert(&db)
@@ -1112,6 +1115,7 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
         today - Duration::days(5),
         t(9, 0),
         AttendanceStatus::Present,
+        common::scene_now().now,
     )
     .await;
     // A member marked only `leave` -> denominator 0 -> excluded.
@@ -1121,6 +1125,7 @@ async fn admin_report_att_dist_excludes_leave_and_unmarked(db: PgPool) {
         today - Duration::days(5),
         t(10, 0),
         AttendanceStatus::Leave,
+        common::scene_now().now,
     )
     .await;
 

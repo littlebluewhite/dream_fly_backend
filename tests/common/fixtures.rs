@@ -24,6 +24,7 @@ use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::waitlist::model::WaitlistStatus;
+use dream_fly_backend::utils::studio_clock::StudioNow;
 
 use super::mocks::InMemoryAccessCache;
 use super::{add_course_to_cart, add_to_cart, seed_member, seed_member_at};
@@ -522,15 +523,17 @@ impl SeedOrderLine {
 /// `discount_cents = 0`. `total_cents` defaults to the pre-discount sum of
 /// line subtotals (the reports' gross line income 口徑); set it explicitly
 /// for a line-less order that only needs `orders.total_cents`.
-/// `created_at = paid_at.unwrap_or(now)` so the two timestamps never
-/// straddle a month boundary. `order_number` embeds the full UUID, not a
-/// truncated prefix: UUIDv7's leading hex chars are a millisecond
-/// timestamp, so same-millisecond seeds would otherwise collide on its
-/// UNIQUE constraint.
+/// `created_at` defaults to `paid_at`, so the two timestamps never straddle a
+/// month boundary; an order with no `paid_at` must set it with
+/// `.created_at(t)`, the test's instant (the fixture never reads the wall
+/// clock). `order_number` embeds the full UUID, not a truncated prefix:
+/// UUIDv7's leading hex chars are a millisecond timestamp, so
+/// same-millisecond seeds would otherwise collide on its UNIQUE constraint.
 pub struct OrderSeed<'a> {
     user_id: Uuid,
     status: OrderStatus,
     paid_at: Option<DateTime<Utc>>,
+    created_at: Option<DateTime<Utc>>,
     payment_method: Option<&'a str>,
     lines: Vec<SeedOrderLine>,
     total_cents: Option<i64>,
@@ -542,6 +545,7 @@ impl<'a> OrderSeed<'a> {
             user_id,
             status,
             paid_at: None,
+            created_at: None,
             payment_method: None,
             lines: Vec::new(),
             total_cents: None,
@@ -551,6 +555,13 @@ impl<'a> OrderSeed<'a> {
     pub fn paid_at(self, paid_at: DateTime<Utc>) -> Self {
         Self {
             paid_at: Some(paid_at),
+            ..self
+        }
+    }
+
+    pub fn created_at(self, created_at: DateTime<Utc>) -> Self {
+        Self {
+            created_at: Some(created_at),
             ..self
         }
     }
@@ -581,7 +592,10 @@ impl<'a> OrderSeed<'a> {
         let total_cents = self
             .total_cents
             .unwrap_or_else(|| self.lines.iter().map(SeedOrderLine::subtotal_cents).sum());
-        let created_at = self.paid_at.unwrap_or_else(Utc::now);
+        let created_at = self.created_at.or(self.paid_at).expect(
+            "OrderSeed without paid_at: call .created_at(t) with the test's instant \
+             (app.studio_now().now, or common::scene_now().now without a TestApp)",
+        );
 
         sqlx::query(
             r#"
@@ -1054,23 +1068,24 @@ pub struct AttendanceScene {
     pub attendance: Uuid,
 }
 
-/// 「某課程在某日某時段有一筆已點名出勤」:`seed_member`(自動編號 email) +
-/// `seed_enrolment`(active, now)+ `seed_course_session`(`start_time` 起
+/// 「某課程在某日某時段有一筆已點名出勤」:`seed_member_at`(自動編號 email,
+/// now)+ `seed_enrolment`(active, now)+ `seed_course_session`(`start_time` 起
 /// 一小時)+ `seed_attendance`(status, marked_by=member),取代四段式 inline
 /// 序列。`start_time` 顯式入參:`course_sessions` 有 UNIQUE(course_id,
 /// session_date, start_time),固定時間會讓同課同日的第二筆場景直接撞鍵,
-/// 呼叫端需自行錯開。Returns the new scene.
+/// 呼叫端需自行錯開。`now` 是呼叫端的場景時刻,會員加入與報名都蓋它。
+/// Returns the new scene.
 pub async fn seed_marked_attendance(
     db: &PgPool,
     course_id: Uuid,
     session_date: NaiveDate,
     start_time: NaiveTime,
     status: AttendanceStatus,
+    now: DateTime<Utc>,
 ) -> AttendanceScene {
     let email = format!("attendance-{}@example.com", Uuid::now_v7());
-    let member = seed_member(db, &email, "Password!234").await;
-    let enrolment =
-        seed_enrolment(db, member, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let member = seed_member_at(db, &email, "Password!234", now).await;
+    let enrolment = seed_enrolment(db, member, course_id, EnrolmentStatus::Active, now).await;
     let end_time = start_time + Duration::hours(1);
     let session = seed_course_session(db, course_id, session_date, start_time, end_time).await;
     let attendance = seed_attendance(db, session, enrolment, status, member).await;
@@ -1138,7 +1153,7 @@ pub struct LeaveScene {
 }
 
 /// 「某會員在某課程明日 09:00 場次請假(指定狀態)」:`seed_course_session`
-/// (明日 09:00–10:00)+ `seed_enrolment`(active, now)+ `seed_leave_request`
+/// (明日 09:00–10:00)+ `seed_enrolment`(active, `at.now`)+ `seed_leave_request`
 /// (status),取代 `http_leave.rs` 反覆出現的五行儀式其中三行。`user_id`/
 /// `course_id` 顯式入參,不像 [`seed_marked_attendance`] 自建新 member——
 /// 請假測試常要「以請假本人的身分」打 owner-only 端點,呼叫端得自行決定用
@@ -1148,22 +1163,22 @@ pub struct LeaveScene {
 /// `makeup_session_id` 給 `Some` 時,額外把它寫回
 /// `leave_requests.makeup_session_id`——回補場次本身仍由呼叫端以
 /// `seed_course_session` 建立,composite 只負責串接這最後一步。
-/// `today` is the studio-local date; the session is placed on the next studio
-/// day. Returns the new scene.
+/// `at` is the scene instant (`app.studio_now()`): the enrolment is stamped
+/// with `at.now` and the session is placed on the studio day after
+/// `at.today()`. Returns the new scene.
 pub async fn seed_leave_scene(
     db: &PgPool,
     user_id: Uuid,
     course_id: Uuid,
     status: LeaveStatus,
     makeup_session_id: Option<Uuid>,
-    today: NaiveDate,
+    at: StudioNow,
 ) -> LeaveScene {
-    let tomorrow = today + Duration::days(1);
+    let tomorrow = at.today() + Duration::days(1);
     let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
     let end = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
     let session = seed_course_session(db, course_id, tomorrow, start, end).await;
-    let enrolment =
-        seed_enrolment(db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
+    let enrolment = seed_enrolment(db, user_id, course_id, EnrolmentStatus::Active, at.now).await;
     let leave = seed_leave_request(db, enrolment, session, status).await;
     if let Some(makeup_id) = makeup_session_id {
         set_makeup_session(db, leave, makeup_id).await;
@@ -1184,12 +1199,18 @@ pub struct FullCourse {
 }
 
 /// 「某課程剛好坐滿」:`CourseSeed`(max_students,不掛
-/// coach)+ 等量的 `seed_member`/`seed_enrolment`(active, now)各造一位占位
+/// coach)+ 等量的 `seed_member_at`/`seed_enrolment`(active, now)各造一位占位
 /// 會員填滿座位,取代「建課、逐一造會員、逐一造 active enrolment」的多段式
 /// inline 序列。參數名沿用 `courses` 表欄位 `max_students`(GLOSSARY.md 座位
-/// 詞條——_Avoid_: capacity)。Returns the new course id and its occupants'
-/// member ids, in creation order.
-pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> FullCourse {
+/// 詞條——_Avoid_: capacity)。`now` 是呼叫端的場景時刻,占位會員加入與報名都
+/// 蓋它。Returns the new course id and its occupants' member ids, in creation
+/// order.
+pub async fn seed_full_course(
+    db: &PgPool,
+    name: &str,
+    max_students: i32,
+    now: DateTime<Utc>,
+) -> FullCourse {
     let course = CourseSeed::new(name)
         .max_students(max_students)
         .insert(db)
@@ -1197,8 +1218,8 @@ pub async fn seed_full_course(db: &PgPool, name: &str, max_students: i32) -> Ful
     let mut occupants = Vec::with_capacity(max_students as usize);
     for _ in 0..max_students {
         let email = format!("occupant-{}@example.com", Uuid::now_v7());
-        let member = seed_member(db, &email, "Password!234").await;
-        seed_enrolment(db, member, course, EnrolmentStatus::Active, Utc::now()).await;
+        let member = seed_member_at(db, &email, "Password!234", now).await;
+        seed_enrolment(db, member, course, EnrolmentStatus::Active, now).await;
         occupants.push(member);
     }
     FullCourse { course, occupants }
