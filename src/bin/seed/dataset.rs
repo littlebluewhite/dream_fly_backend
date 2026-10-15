@@ -47,8 +47,8 @@
 //! (audit columns, ADR-0017). The timeline then walks completed and
 //! refunded orders through `orders::service::update_order_status` — a
 //! refund runs checkout's full compensation (`refund_clawback`, grant and
-//! enrolment cancellation) — each walk once the purchases reach its first
-//! step's instant, so the points ledger is written in time order. A rerun finds each key with
+//! enrolment cancellation) — each straight after it is bought. A rerun
+//! finds each key with
 //! `orders::idempotency::replay` and buys nothing again, so it adds no
 //! order, ledger, enrolment, outbox or notification row. Pending contrast
 //! orders are the one bypass left on this path — checkout only creates

@@ -6,16 +6,13 @@
 //! bought — `run` takes the active enrolments for attendance off them.
 //! The rules live here, behind that one call:
 //! - a key is replayed before the buyer's cart is touched (`buy`);
-//! - purchases are bought in `ts` order, and each walk runs once the
-//!   purchases reach its first step (`walk_due` plus a min-heap);
+//! - purchases are bought in `ts` order, and each is walked straight after
+//!   it is bought;
 //! - each step runs at `min(paid_at + offset, at.now)` (`advance_status`);
 //! - an order a developer already moved off its path is left as it is.
 //!
 //! The legacy-row guard (`refuse_legacy_seed_rows`), the pending contrast
 //! orders and the points settlement stay in `run`.
-
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
 
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
@@ -55,55 +52,30 @@ pub(super) struct Walked {
     pub(super) order: OrderResponse,
 }
 
-/// Buy every purchase oldest first (a stable sort on `ts`) and walk each
-/// completed or refunded order once the purchases reach its first step
-/// (`walk_due`), so each member's ledger `balance_after` moves forward with
-/// the rows' `created_at`: a refund's clawback lands after every purchase
-/// paid before it. Returns one `Walked` per purchase, in the order bought.
-/// Idempotent on each purchase's `key`: a rerun buys nothing again and only
-/// finishes an interrupted walk.
+/// Buy every purchase oldest first (a stable sort on `ts`, so outbox events
+/// and notifications come out in purchase order) and walk each straight
+/// after buying it. The write order does not matter to the points ledger:
+/// `balance_after` is derived at read time (ADR-0018), and a refund's
+/// clawback always follows its own earn while the seed spends no points, so
+/// it never finds the balance short (`Conflict("點數不足")`).
+/// Returns one `Walked` per purchase, in the order bought. Idempotent on
+/// each purchase's `key`: a rerun buys nothing again and only finishes an
+/// interrupted walk.
 pub(super) async fn buy_and_walk(
     db: &PgPool,
     at: StudioNow,
     mut purchases: Vec<SeedPurchase>,
 ) -> anyhow::Result<Vec<Walked>> {
     purchases.sort_by_key(|purchase| purchase.ts);
-    let mut bought: Vec<Option<OrderResponse>> = Vec::with_capacity(purchases.len());
-    let mut due: BinaryHeap<Reverse<(DateTime<Utc>, usize)>> = BinaryHeap::new();
-    let mut walked: Vec<(usize, OrderResponse)> = Vec::with_capacity(purchases.len());
-    for i in 0..=purchases.len() {
-        let next_ts = purchases.get(i).map(|purchase| purchase.ts);
-        while let Some(&Reverse((when, j))) = due.peek() {
-            if next_ts.is_some_and(|ts| when > ts) {
-                break;
-            }
-            due.pop();
-            let order = bought[j].take().expect("a due walk's order was bought");
-            walked.push((j, advance_status(db, at, &purchases[j], order).await?));
-        }
-        let Some(purchase) = purchases.get(i) else {
-            break;
-        };
+    let mut walked = Vec::with_capacity(purchases.len());
+    for purchase in &purchases {
         let order = buy(db, at, purchase).await?;
-        match walk_due(at, purchase, &order)? {
-            Some(when) => {
-                due.push(Reverse((when, i)));
-                bought.push(Some(order));
-            }
-            None => {
-                bought.push(None);
-                walked.push((i, order));
-            }
-        }
+        walked.push(Walked {
+            member_idx: purchase.member_idx,
+            order: advance_status(db, at, purchase, order).await?,
+        });
     }
-    walked.sort_by_key(|&(i, _)| i);
-    Ok(walked
-        .into_iter()
-        .map(|(i, order)| Walked {
-            member_idx: purchases[i].member_idx,
-            order,
-        })
-        .collect())
+    Ok(walked)
 }
 
 /// Buy one `SeedPurchase`; returns the order as checkout (or its replay)
@@ -182,19 +154,6 @@ fn status_path(purchase: &SeedPurchase) -> anyhow::Result<&'static [(OrderStatus
             )
         }
     })
-}
-
-/// When `order`'s walk is due: its first step's instant, `None` for a paid
-/// target (no walk).
-fn walk_due(
-    at: StudioNow,
-    purchase: &SeedPurchase,
-    order: &OrderResponse,
-) -> anyhow::Result<Option<DateTime<Utc>>> {
-    let base = order.paid_at.unwrap_or(purchase.ts);
-    Ok(status_path(purchase)?
-        .get(1)
-        .map(|&(_, days)| (base + Duration::days(days)).min(at.now)))
 }
 
 /// Walk a seed order from its current status to `purchase.target` through
