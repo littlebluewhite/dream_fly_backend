@@ -151,7 +151,18 @@ pub async fn auth_for(db: &PgPool, user_id: Uuid) -> AuthUser {
 /// `member` (via `seed_member`'s owner, `create_account`, as in production);
 /// `extra` roles are granted on top.
 pub async fn seed_user_with_roles(db: &PgPool, email: &str, extra: &[Role]) -> Uuid {
-    let user_id = seed_member(db, email, "Password!234").await;
+    seed_user_with_roles_at(db, email, extra, scene_now().now).await
+}
+
+/// [`seed_user_with_roles`] with an explicit `users.created_at` — `TestApp`
+/// passes its clock's "now".
+pub async fn seed_user_with_roles_at(
+    db: &PgPool,
+    email: &str,
+    extra: &[Role],
+    now: chrono::DateTime<Utc>,
+) -> Uuid {
+    let user_id = seed_member_at(db, email, "Password!234", now).await;
 
     for role in extra {
         let mut conn = db.acquire().await.expect("acquire conn");
