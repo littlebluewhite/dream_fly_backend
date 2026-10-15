@@ -18,9 +18,8 @@ use super::repository;
 /// lock (`lock_balance_tx`) in this same transaction, so a ledger write
 /// never takes that lock late, out of the order `orders::locks` fixes, and
 /// the ledger row lands on the witness's `user_id` (ADR-0007 Addendum
-/// 2026-10-15). An
-/// unknown user is `lock_balance_tx`'s 404; a row missing under the lock
-/// here is `AppError::Internal`.
+/// 2026-10-15). An unknown user is `lock_balance_tx`'s 404; a row missing
+/// under the lock here is `AppError::Internal`.
 ///
 /// `ld: LedgerDelta` already pairs the signed delta with its `PointReason`
 /// and (where the reason demands it) an `order_id` at construction time —

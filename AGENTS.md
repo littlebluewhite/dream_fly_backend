@@ -40,7 +40,7 @@ HTTP → CORS → Request ID → Tracing → Security headers → Rate Limit (Ep
 
 - `model.rs` — sqlx `FromRow` structs + enum types (`sqlx::Type`)
 - `dto.rs` — Request (Deserialize + Validate) / Response (Serialize) types, `From<Model>` impls
-- `repository.rs` — database queries as free functions taking `&PgPool` or `&mut Transaction`
+- `repository.rs` — database queries as free functions taking `&PgPool`, `&mut Transaction`, or `impl sqlx::PgExecutor<'_>` (when one query must run on either)
 - `service.rs` — business logic bridging handlers ↔ repositories
 - `handlers.rs` — Axum handlers extracting `State<AppState>`, `AuthUser`, `ValidatedJson<T>`, etc.
 - `routes.rs` — `pub fn router() -> Router<AppState>`

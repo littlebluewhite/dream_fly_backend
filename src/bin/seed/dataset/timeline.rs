@@ -1,18 +1,8 @@
-//! 種子購買時間線 (Seed Purchase Timeline): how `dataset::run` makes its
-//! paid purchase history real. `run` builds the `SeedPurchase` list (the
-//! dataset formulas stay there) and hands it to `buy_and_walk`, which buys
-//! each purchase through the real cart and checkout, walks it through the
-//! order state machine, and returns the orders as walked, in the order
-//! bought — `run` takes the active enrolments for attendance off them.
-//! The rules live here, behind that one call:
-//! - a key is replayed before the buyer's cart is touched (`buy`);
-//! - purchases are bought in `ts` order, and each is walked straight after
-//!   it is bought;
-//! - each step runs at `min(paid_at + offset, at.now)` (`advance_status`);
-//! - an order a developer already moved off its path is left as it is.
-//!
-//! The legacy-row guard (`refuse_legacy_seed_rows`), the pending contrast
-//! orders and the points settlement stay in `run`.
+//! 種子購買時間線 (Seed Purchase Timeline): `buy_and_walk` buys the seed's
+//! paid purchases through the real cart and checkout and walks each through
+//! the order state machine. The rules (replay before the cart, buy in `ts`
+//! order, step times, orders moved off their path) are in the GLOSSARY entry
+//! 「種子購買時間線」 and ADR-0010 Addendum 2026-10-15.
 
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
@@ -30,10 +20,11 @@ use dream_fly_backend::utils::studio_clock::StudioNow;
 /// One paid seed order as its buyer places it — what to buy, for whom, when
 /// — bought by `buy` through the real cart and `orders::service::checkout`,
 /// so pricing, order lines, the points ledger and every artifact come from
-/// checkout itself, not a seed-side copy of its steps. `key` is the checkout `Idempotency-Key` (`DF-SEED-…`) and the
-/// purchase's identity across runs; `buyer` is `seed-member-{member_idx:02}`;
-/// `ts` is the instant it is paid at. `target` is where `advance_status`
-/// then walks the order: paid, completed or refunded.
+/// checkout itself, not a seed-side copy of its steps. `key` is the
+/// checkout `Idempotency-Key` (`DF-SEED-…`) and the purchase's identity
+/// across runs; `buyer` is `seed-member-{member_idx:02}`; `ts` is the
+/// instant it is paid at. `target` is where `advance_status` then walks the
+/// order: paid, completed or refunded.
 pub(super) struct SeedPurchase {
     pub(super) key: String,
     pub(super) buyer: Uuid,

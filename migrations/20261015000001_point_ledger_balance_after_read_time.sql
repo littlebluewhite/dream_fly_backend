@@ -11,6 +11,9 @@
 --
 -- 明細排序改為 `(created_at DESC, id DESC)`:`id` 讓同一刻的列有固定順序,
 -- 翻頁穩定。`idx_point_ledger_user` 隨之重建成同一個順序。
+--
+-- 只能往前:套用後,舊版 binary 寫不了點數帳——它的 `INSERT` 指名的
+-- `balance_after` 欄位已不存在。
 -- =============================================================================
 
 ALTER TABLE point_ledger DROP COLUMN balance_after;
