@@ -69,16 +69,7 @@ pub async fn apply_delta_tx(
         Err(e) => return Err(AppError::Database(e)),
     };
 
-    repository::insert_ledger_tx(
-        tx,
-        user_id,
-        delta,
-        balance_after,
-        ld.reason(),
-        ld.order_id(),
-        now,
-    )
-    .await?;
+    repository::insert_ledger_tx(tx, user_id, delta, ld.reason(), ld.order_id(), now).await?;
 
     Ok(balance_after)
 }

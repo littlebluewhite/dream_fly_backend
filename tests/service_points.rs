@@ -19,7 +19,8 @@
 //! arm matches on — a seam-local anchor pairing `LedgerDelta`'s
 //! `checkout_earn`/`checkout_redeem` ledger writes with
 //! `find_order_flow_sums_tx`'s read-back, the `/points/me` pagination clamp
-//! (mirrors `service_coupons.rs` / `service_users.rs`), `try_spend_tx`
+//! (mirrors `service_coupons.rs` / `service_users.rs`), the `/points/me`
+//! ledger chain (`balance_after` derived at read time, ADR-0018), `try_spend_tx`
 //! (now `(tx, user_id, cost)` — the spent reason is hard-coded to
 //! `PointReason::Redeem` inside the function rather than caller-supplied),
 //! and `adjust_points` (admin CAS adjustment, internally
@@ -27,13 +28,16 @@
 
 mod common;
 
+use chrono::TimeZone;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use common::fixtures::set_points_balance;
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
-use dream_fly_backend::modules::points::dto::AdjustPointsRequest;
+use dream_fly_backend::modules::points::dto::{
+    AdjustPointsRequest, LedgerEntryResponse, PointsMeResponse,
+};
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointReason};
 use dream_fly_backend::modules::points::repository as points_repo;
 use dream_fly_backend::modules::points::service;
@@ -548,6 +552,78 @@ async fn get_my_points_clamps_per_page_to_100(db: PgPool) {
     .expect("get_my_points");
 
     assert_eq!(resp.meta.per_page, 100, "per_page should clamp to 100");
+}
+
+/// One `/points/me` page for `user_id`.
+async fn points_page(db: &PgPool, user_id: Uuid, page: u32, per_page: u32) -> PointsMeResponse {
+    service::get_my_points(
+        db,
+        user_id,
+        &PaginationParams { page, per_page },
+        common::studio_now_utc(chrono::Utc::now()),
+    )
+    .await
+    .expect("get_my_points")
+}
+
+/// The listed ledger chains from the balance however its rows were written
+/// (ADR-0018): written +300 on 1/20, then +100 on 1/10, then −40, +40, −60
+/// all on 1/15, it still lists newest first by business time, starts at the
+/// balance, steps back one `delta` per row to an opening balance of 0, and
+/// two-row pages stitch back into the full list.
+#[sqlx::test]
+async fn ledger_lists_a_chain_from_the_balance_whatever_the_write_order(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-chain@example.com", "Password!234").await;
+    let jan = |day| chrono::Utc.with_ymd_and_hms(2026, 1, day, 3, 0, 0).unwrap();
+    for (delta, created_at) in [
+        (300, jan(20)),
+        (100, jan(10)),
+        (-40, jan(15)),
+        (40, jan(15)),
+        (-60, jan(15)),
+    ] {
+        let mut tx = db.begin().await.expect("begin tx");
+        let lock = service::lock_balance_tx(&mut tx, user_id)
+            .await
+            .expect("lock balance");
+        service::apply_delta_tx(&mut tx, &lock, LedgerDelta::admin_adjust(delta), created_at)
+            .await
+            .expect("apply delta");
+        tx.commit().await.expect("commit");
+    }
+
+    let full = points_page(&db, user_id, 1, 100).await;
+    assert_eq!(full.balance, 340);
+    let rows = &full.ledger;
+    assert_eq!(rows.len(), 5);
+    assert!(
+        rows.windows(2).all(|w| w[0].created_at >= w[1].created_at),
+        "newest first by business time"
+    );
+    assert_eq!(rows[0].balance_after, full.balance, "row 0 is the balance");
+    for (i, w) in rows.windows(2).enumerate() {
+        assert_eq!(
+            w[1].balance_after,
+            w[0].balance_after - w[0].delta,
+            "row {} chains on from row {i}",
+            i + 1
+        );
+    }
+    let oldest = rows.last().expect("five rows");
+    assert_eq!(oldest.balance_after - oldest.delta, 0, "opens from 0");
+
+    let mut stitched = Vec::new();
+    for page in 1..=3 {
+        stitched.extend(points_page(&db, user_id, page, 2).await.ledger);
+    }
+    let chain = |rows: &[LedgerEntryResponse]| -> Vec<(Uuid, i64)> {
+        rows.iter().map(|r| (r.id, r.balance_after)).collect()
+    };
+    assert_eq!(
+        chain(&stitched),
+        chain(rows),
+        "pages stitch into the full list"
+    );
 }
 
 // ---------------------------------------------------------------------
