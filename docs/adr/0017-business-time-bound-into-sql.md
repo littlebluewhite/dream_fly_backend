@@ -101,3 +101,22 @@
   - W7-7:`subscription_derived_status` 內的 `now()` 在 migration 裡,仍列在 `clock.rs` 模組文件;
   - `INSERT` 省略時間欄位、由 `DEFAULT` 填值的情況(例如 runtime 的 `notifications`);
   - 綁了值但綁錯時刻的情況(例如歷史列傳 `at.now`,見 2026-10-09 Addendum)——仍靠逐欄釘時鐘的測試與 seed 不變量。
+
+## Addendum（2026-10-15）：測試場景時刻
+
+- **測試 harness 守同一個判準:業務時間由呼叫端給。** `tests/common` 的「現在」只從場景時刻來(GLOSSARY「場景時刻」):
+  `scene_now()` = `studio_now_utc(Utc::now().trunc_subsecs(6))`;`TestApp` 開場把 `MockClock` 釘在 `scene_now().now`,
+  `MockClock` 一律釘住、不讀系統時鐘。
+- **會寫業務時間的 fixture 收呼叫端的時刻**:`seed_user_with_roles_at(.., now)`、`seed_leave_scene(.., at: StudioNow)`、
+  `seed_marked_attendance(.., now)`、`seed_full_course(.., now)`、`OrderSeed::created_at(t)`(沒有 `paid_at` 時必給,
+  漏給在測試執行時 panic,不是編譯期)。`TestApp` 測試傳 `app.studio_now()`;service 測試傳手上已有的 `now`,沒有就傳
+  `common::scene_now().now`。
+- **由 `tests/business_time.rs` 的 `harness_reads_the_wall_clock_only_at_listed_sites` 持有白名單**:`tests/common/**` 出現
+  `Utc::now`、`Local::now`、`SystemTime::now`,只准在 `WALL_CLOCK_SITES` 列出的函式裡,以「檔案 + 所在 fn」辨識、不靠行號,
+  各附理由與命中數(同一個 fn 多讀一次也失敗)。現列三處:`mod.rs` 的 `scene_now`(場景時刻本身)與 `seed_member`
+  (「剛加入」預設)、`google.rs` 的 `sign_id_token_with`(id_token 的 `iat`/`exp`,app 驗 `exp` 用的是真實時鐘)。
+  掃描以 token 為單位,註解、doc comment、字串 literal 都不算;`Instant::now`(TTL、輪詢期限)量的是經過時間、不是業務
+  時間,不掃。
+- **刻意不做**:測試本體的 `Utc::now()`(約 463 處)、`studio_now_utc(Utc::now())`(約 131 處)、`seed_member` 的呼叫點
+  (`users.created_at` 只影響新會員數與列表順序)。規則只管 harness,不管測試本體。
+- **釘住的代價**:同一測試裡連續請求寫出的業務時間相同,要靠時間分出先後的斷言在請求之間 `app.clock.advance(…)`。
