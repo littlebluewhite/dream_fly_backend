@@ -20,7 +20,8 @@
 //! `checkout_earn`/`checkout_redeem` ledger writes with
 //! `find_order_flow_sums_tx`'s read-back, the `/points/me` pagination clamp
 //! (mirrors `service_coupons.rs` / `service_users.rs`), the `/points/me`
-//! ledger chain (`balance_after` derived at read time, ADR-0018), `try_spend_tx`
+//! ledger chain (`balance_after` derived at read time, ADR-0018), the
+//! `/points/me` snapshot (its four reads in one transaction), `try_spend_tx`
 //! (now `(tx, user_id, cost)` — the spent reason is hard-coded to
 //! `PointReason::Redeem` inside the function rather than caller-supplied),
 //! and `adjust_points` (admin CAS adjustment, internally
@@ -623,6 +624,87 @@ async fn ledger_lists_a_chain_from_the_balance_whatever_the_write_order(db: PgPo
         chain(&stitched),
         chain(rows),
         "pages stitch into the full list"
+    );
+}
+
+/// `/points/me` reads the balance, the ledger page, the total and
+/// `earned_this_month` from one snapshot: a +50 earn that commits after the
+/// balance read but before the ledger read shows up in none of the four.
+/// T0 holds `point_ledger` in ACCESS EXCLUSIVE mode, so the read takes the
+/// balance and then blocks on the ledger; T0 writes the earn and commits only
+/// once `pg_stat_activity` shows the read waiting on it.
+#[sqlx::test]
+async fn points_me_reads_balance_ledger_total_and_earned_from_one_snapshot(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-snapshot@example.com", "Password!234").await;
+    let t = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap();
+    let first_order = seed_order(&db, user_id).await;
+    let second_order = seed_order(&db, user_id).await;
+
+    let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
+    service::apply_delta_tx(
+        &mut tx,
+        &lock,
+        LedgerDelta::checkout_earn(100, first_order),
+        t,
+    )
+    .await
+    .expect("earn 100");
+    tx.commit().await.expect("commit");
+
+    let mut t0 = db.begin().await.expect("begin T0");
+    sqlx::query("LOCK TABLE point_ledger IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *t0)
+        .await
+        .expect("lock point_ledger");
+    let t0_pid = common::backend_pid(&mut t0).await;
+
+    let reader = tokio::spawn({
+        let db = db.clone();
+        async move {
+            service::get_my_points(
+                &db,
+                user_id,
+                &PaginationParams {
+                    page: 1,
+                    per_page: 100,
+                },
+                common::studio_now_utc(t),
+            )
+            .await
+        }
+    });
+    common::wait_for_lock_waiter(&db, t0_pid).await;
+    assert!(!reader.is_finished(), "the read must be blocked behind T0");
+
+    let lock = service::lock_balance_tx(&mut t0, user_id)
+        .await
+        .expect("lock balance in T0");
+    service::apply_delta_tx(
+        &mut t0,
+        &lock,
+        LedgerDelta::checkout_earn(50, second_order),
+        t,
+    )
+    .await
+    .expect("earn 50 in T0");
+    t0.commit().await.expect("commit T0");
+
+    let resp = reader
+        .await
+        .expect("reader panicked")
+        .expect("get_my_points");
+    let rows: Vec<(i64, i64)> = resp
+        .ledger
+        .iter()
+        .map(|r| (r.delta, r.balance_after))
+        .collect();
+    assert_eq!(
+        (resp.balance, rows, resp.meta.total, resp.earned_this_month),
+        (100, vec![(100, 100)], 1, 100),
+        "(balance, ledger, total, earned_this_month) all from before T0's earn"
     );
 }
 
