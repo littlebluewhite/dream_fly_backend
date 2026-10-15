@@ -32,9 +32,10 @@
 //!
 //! **Paid orders are bought through the real checkout.** Every paid,
 //! completed or refunded seed order is a `SeedPurchase` (buyer, lines,
-//! instant `ts`) that `buy_seed_purchase` places the way a member would:
-//! `cart::service::add_item` per line, then `orders::service::checkout`
-//! under its `Idempotency-Key` at `StudioNow { now: ts }`. Two sets of
+//! instant `ts`) that the seed purchase timeline (`timeline::buy_and_walk`)
+//! places the way a member would: `cart::service::add_item` per line, then
+//! `orders::service::checkout` under its `Idempotency-Key` at
+//! `StudioNow { now: ts }`. Two sets of
 //! purchases are merged and bought in `ts` order: the monthly product
 //! orders (`DF-SEED-{YYYYMM}-{seq}`) and the 39 course purchases
 //! (`DF-SEED-ENR-{i:02}-{k}`) that make up the enrolment dataset — every seed
@@ -43,7 +44,7 @@
 //! points ledger, the subscription grants and the enrolments are
 //! checkout's own, all at `ts`; checkout also writes its outbox event,
 //! notification and `order_idempotency` row, which keep the DB clock
-//! (audit columns, ADR-0017). `advance_status` then walks completed and
+//! (audit columns, ADR-0017). The timeline then walks completed and
 //! refunded orders through `orders::service::update_order_status` — a
 //! refund runs checkout's full compensation (`refund_clawback`, grant and
 //! enrolment cancellation) — each walk once the purchases reach its first
@@ -83,8 +84,7 @@
 //! points_balance = ...` against a seed-member row is reset back to its
 //! tier target the next time the seed runs.
 
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 use anyhow::Context;
 use chrono::{DateTime, Datelike, Days, Duration, Months, NaiveDate, NaiveTime, Utc};
@@ -94,16 +94,12 @@ use uuid::Uuid;
 
 use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
-use dream_fly_backend::modules::cart::service as cart_service;
 use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
-use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
 use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
-use dream_fly_backend::modules::orders::idempotency::{self, IdempotencyKey};
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
 use dream_fly_backend::modules::orders::pricing;
 use dream_fly_backend::modules::orders::repository as orders_repository;
-use dream_fly_backend::modules::orders::service as orders_service;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
@@ -111,6 +107,10 @@ use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
+
+mod timeline;
+
+use timeline::{SeedPurchase, Walked};
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
 /// to bind a Postgres `TEXT[]` column.
@@ -590,7 +590,7 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
 /// `upsert_user`, this function grants no points itself: the points-tier
 /// target balance is instead reached through the member's seeded orders'
 /// `checkout_earn`/`refund_clawback` rows (written by checkout and its
-/// refund compensation, see `buy_seed_purchase`) plus a settling
+/// refund compensation, see `timeline`) plus a settling
 /// `LedgerDelta::admin_adjust` the caller applies, every run, once every
 /// order is bought (see the module doc) — so this function doesn't need to
 /// report whether the row was newly inserted; the settlement step runs for
@@ -677,153 +677,6 @@ async fn venue_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
         .fetch_one(db)
         .await
         .with_context(|| format!("fetch id for venue '{slug}'"))
-}
-
-/// One paid seed order as its buyer places it — what to buy, for whom, when
-/// — bought by `buy_seed_purchase` through the real cart and
-/// `orders::service::checkout`, so pricing, order lines, the points ledger
-/// and every artifact come from checkout itself, not a seed-side copy of
-/// its steps. `key` is the checkout `Idempotency-Key` (`DF-SEED-…`) and the
-/// purchase's identity across runs; `buyer` is `seed-member-{member_idx:02}`;
-/// `ts` is the instant it is paid at. `target` is where `advance_status`
-/// then walks the order: paid, completed or refunded.
-struct SeedPurchase {
-    key: String,
-    buyer: Uuid,
-    member_idx: usize,
-    ts: DateTime<Utc>,
-    lines: Vec<(LineTarget, i32)>,
-    coupon: Option<&'static str>,
-    payment_method: &'static str,
-    target: OrderStatus,
-}
-
-/// Buy one `SeedPurchase`; returns the order as checkout (or its replay)
-/// left it, for `advance_status` to walk. Idempotent on `key`: `idempotency::replay` is
-/// asked first and a hit is that order — before the cart is touched, since
-/// a replayed checkout returns without clearing the cart and would leave
-/// re-added lines behind. On a miss the buyer's cart is cleared, every line
-/// goes through `cart::service::add_item`, and `checkout` runs at
-/// `StudioNow { now: ts }` — the order row, its items, its `checkout_earn`
-/// row, its grants and its enrolments all carry `ts` as their business time
-/// (ADR-0017). Checkout also writes its outbox event and notification, once
-/// per key.
-async fn buy_seed_purchase(
-    db: &PgPool,
-    at: StudioNow,
-    purchase: &SeedPurchase,
-) -> anyhow::Result<OrderResponse> {
-    let SeedPurchase {
-        key,
-        buyer,
-        member_idx,
-        ..
-    } = purchase;
-    let parsed = IdempotencyKey::parse(key)
-        .with_context(|| format!("parse seed idempotency key '{key}'"))?;
-    let replayed = idempotency::replay(db, *buyer, Some(&parsed))
-        .await
-        .with_context(|| format!("replay seed purchase '{key}'"))?;
-    let order = match replayed {
-        Some(order) => order,
-        None => {
-            cart_service::clear(db, *buyer).await.with_context(|| {
-                format!("clear cart of seed-member-{member_idx:02} for '{key}'")
-            })?;
-            for &(target, quantity) in &purchase.lines {
-                let (LineTarget::Product(id) | LineTarget::Course(id)) = target;
-                cart_service::add_item(db, *buyer, target.item_type().as_str(), id, quantity)
-                    .await
-                    .with_context(|| format!("add {target:?} to the cart for '{key}'"))?;
-            }
-            orders_service::checkout(
-                db,
-                *buyer,
-                Some(parsed),
-                CheckoutRequest {
-                    coupon_code: purchase.coupon.map(str::to_owned),
-                    use_points: Some(false),
-                    payment_method: Some(purchase.payment_method.to_owned()),
-                },
-                None,
-                StudioNow {
-                    tz: at.tz,
-                    now: purchase.ts,
-                },
-            )
-            .await
-            .with_context(|| format!("checkout seed purchase '{key}'"))?
-        }
-    };
-    Ok(order)
-}
-
-/// `(status, days after paid_at)` from checkout's `paid` to
-/// `purchase.target`: completed is processing (+1 day) then completed
-/// (+3 days), refunded is refunded (+3 days), paid stays put.
-fn status_path(purchase: &SeedPurchase) -> anyhow::Result<&'static [(OrderStatus, i64)]> {
-    Ok(match purchase.target {
-        OrderStatus::Paid => &[(OrderStatus::Paid, 0)],
-        OrderStatus::Completed => &[
-            (OrderStatus::Paid, 0),
-            (OrderStatus::Processing, 1),
-            (OrderStatus::Completed, 3),
-        ],
-        OrderStatus::Refunded => &[(OrderStatus::Paid, 0), (OrderStatus::Refunded, 3)],
-        OrderStatus::Pending | OrderStatus::Processing | OrderStatus::Cancelled => {
-            anyhow::bail!(
-                "seed purchase '{}' cannot target {}",
-                purchase.key,
-                purchase.target.as_str()
-            )
-        }
-    })
-}
-
-/// When `order`'s walk is due: its first step's instant, `None` for a paid
-/// target (no walk).
-fn walk_due(
-    at: StudioNow,
-    purchase: &SeedPurchase,
-    order: &OrderResponse,
-) -> anyhow::Result<Option<DateTime<Utc>>> {
-    let base = order.paid_at.unwrap_or(purchase.ts);
-    Ok(status_path(purchase)?
-        .get(1)
-        .map(|&(_, days)| (base + Duration::days(days)).min(at.now)))
-}
-
-/// Walk a seed order from its current status to `purchase.target` through
-/// `orders::service::update_order_status` — the real transition rules,
-/// outbox event and notification, and for a refund the full refund
-/// compensation (`refund_clawback`, grant and enrolment cancellation). Each
-/// step of `status_path` runs at `min(paid_at + offset, at.now)` (`ts` when
-/// no `paid_at`; the two are equal on a fresh run, and `paid_at` keeps a
-/// rerun on a later day from stamping a step before the payment).
-/// Steps already passed are skipped, so a rerun only finishes an
-/// interrupted walk. An order whose status is off its path — a developer
-/// moved it, say from the admin UI, to processing, refunded or cancelled —
-/// is left as it is.
-async fn advance_status(
-    db: &PgPool,
-    at: StudioNow,
-    purchase: &SeedPurchase,
-    mut order: OrderResponse,
-) -> anyhow::Result<OrderResponse> {
-    let path = status_path(purchase)?;
-    let Some(reached) = path.iter().position(|&(status, _)| status == order.status) else {
-        return Ok(order);
-    };
-    let base = order.paid_at.unwrap_or(purchase.ts);
-    for &(status, days) in &path[reached + 1..] {
-        let now = (base + Duration::days(days)).min(at.now);
-        order = orders_service::update_order_status(db, order.id, status.as_str(), None, now)
-            .await
-            .with_context(|| {
-                format!("move seed order '{}' to {}", purchase.key, status.as_str())
-            })?;
-    }
-    Ok(order)
 }
 
 /// A never-paid contrast order. Checkout only creates orders already paid,
@@ -1886,52 +1739,20 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         }
     }
 
-    // Buy both sets oldest first (a stable sort on `ts`) and walk each
-    // completed or refunded order once the purchases reach its first step
-    // (`walk_due`), so each member's ledger `balance_after` moves forward
-    // with the rows' `created_at`: a refund's clawback lands after every
-    // purchase paid before it. The active enrolments attendance is marked
-    // against are the ones each order holds once walked, in purchase order.
-    purchases.sort_by_key(|purchase| purchase.ts);
-    let mut bought: Vec<Option<OrderResponse>> = Vec::with_capacity(purchases.len());
-    let mut due: BinaryHeap<Reverse<(DateTime<Utc>, usize)>> = BinaryHeap::new();
-    let mut walked: Vec<(usize, OrderResponse)> = Vec::with_capacity(purchases.len());
-    for i in 0..=purchases.len() {
-        let next_ts = purchases.get(i).map(|purchase| purchase.ts);
-        while let Some(&Reverse((when, j))) = due.peek() {
-            if next_ts.is_some_and(|ts| when > ts) {
-                break;
-            }
-            due.pop();
-            let order = bought[j].take().expect("a due walk's order was bought");
-            walked.push((j, advance_status(db, at, &purchases[j], order).await?));
-        }
-        let Some(purchase) = purchases.get(i) else {
-            break;
-        };
-        let order = buy_seed_purchase(db, at, purchase).await?;
-        match walk_due(at, purchase, &order)? {
-            Some(when) => {
-                due.push(Reverse((when, i)));
-                bought.push(Some(order));
-            }
-            None => {
-                bought.push(None);
-                walked.push((i, order));
-            }
-        }
-    }
-    walked.sort_by_key(|&(i, _)| i);
+    // Both sets go through the seed purchase timeline (`timeline`), which
+    // buys and walks them in time order. The active enrolments attendance
+    // is marked against are the ones each order holds once walked, in the
+    // order bought.
+    let walked = timeline::buy_and_walk(db, at, purchases).await?;
     let mut active_enrolments: Vec<(usize, usize, Uuid)> = Vec::new();
-    for (i, order) in walked {
-        let purchase = &purchases[i];
+    for Walked { member_idx, order } in walked {
         for enrolment in order.enrolments {
             if enrolment.status == EnrolmentStatus::Active {
                 let k = course_ids
                     .iter()
                     .position(|&id| id == enrolment.course_id)
                     .expect("seed purchases only buy seed courses");
-                active_enrolments.push((purchase.member_idx, k, enrolment.id));
+                active_enrolments.push((member_idx, k, enrolment.id));
             }
         }
     }

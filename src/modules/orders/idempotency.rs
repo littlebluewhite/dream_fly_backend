@@ -82,8 +82,10 @@ pub(super) enum Recorded {
 /// user returns that order, before any other check. Runs before the checkout
 /// transaction opens (`TxReleased::no_open_tx`). `Ok(None)` — no key, or no
 /// row for `(user_id, key)` yet — means carry on with the checkout.
-/// `pub` for the dev seed, which pre-checks its keys with it before
-/// refilling a buyer's cart (a replayed checkout leaves that cart untouched).
+/// `pub` for the dev seed's purchase timeline (`bin/seed/dataset/timeline.rs`),
+/// which pre-checks each key with it before refilling the buyer's cart (a
+/// replayed checkout leaves that cart untouched); GLOSSARY「種子購買時間線」
+/// records why the seed keeps this pre-check.
 pub async fn replay(
     db: &PgPool,
     user_id: Uuid,
