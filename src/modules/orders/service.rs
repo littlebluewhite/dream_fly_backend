@@ -279,10 +279,12 @@ pub async fn checkout(
     // Create the order row FIRST, already `paid` — order_id is needed
     // before order_items, ledger rows, enrolments and subscriptions can
     // link to it. Every artifact of this purchase is stamped with the one
-    // sampled `now` (purchase instant, ADR-0017).
+    // sampled `now` (purchase instant, ADR-0017). The buyer is the
+    // balance witness's user, like the ledger rows below (ADR-0007 Addendum
+    // 2026-10-15).
     let order = repository::create_order(
         &mut tx,
-        user_id,
+        locks.balance().user_id(),
         &order_number,
         OrderAmounts {
             total_cents: outcome.total_cents,
