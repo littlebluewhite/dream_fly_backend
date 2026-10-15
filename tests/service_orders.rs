@@ -13,7 +13,6 @@
 mod common;
 
 use sqlx::PgPool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -34,12 +33,9 @@ use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::enrolments::service as enrolments_service;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::dto::{CheckoutRequest, OrderResponse};
-use dream_fly_backend::modules::orders::fulfilment;
 use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::model::OrderStatus;
-use dream_fly_backend::modules::orders::paid_order;
-use dream_fly_backend::modules::orders::pricing;
 use dream_fly_backend::modules::orders::service;
 use dream_fly_backend::modules::products::model::{ProductType, quantity_range_msg};
 use dream_fly_backend::modules::products::service as product_service;
@@ -110,43 +106,26 @@ async fn checkout_decrements_stock(db: PgPool) {
     assert_eq!(common::product_stock(&db, product).await, Some(1));
 }
 
-/// ADR-0017:訂單的 `paid_at`/`created_at` 是業務時間(報表依 `paid_at` 分桶),
-/// 必須等於 handler 取樣的 `now`,不是 DB 的 `NOW()`。
+/// 購買時刻(ADR-0017):一次結帳寫下的訂單、訂單行、點數帳、報名與訂閱,
+/// 業務時間都等於 handler 取樣的 `now`,不是 DB 的 `NOW()`。
 #[sqlx::test]
-async fn checkout_stamps_paid_at_and_created_at_with_sampled_now(db: PgPool) {
-    use chrono::TimeZone;
-    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
-    let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
-    let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
-    common::add_to_cart(&db, user, product, 1).await;
-
-    let resp = service::checkout(
-        &db,
-        user,
-        None,
-        CheckoutRequest::default(),
-        None,
-        common::studio_now_utc(t),
-    )
-    .await
-    .expect("checkout");
-
-    assert_eq!(resp.paid_at, Some(t));
-    assert_eq!(resp.created_at, t);
-}
-
-/// ADR-0017:`order_items.created_at` 跟訂單列、結帳點數帳同屬一個付款時間,
-/// 必須等於 handler 取樣的 `now`,不是 DB 的 `NOW()`。
-#[sqlx::test]
-async fn checkout_stamps_items_and_ledger_with_sampled_now(db: PgPool) {
+async fn checkout_stamps_every_purchase_artifact_with_the_sampled_now(db: PgPool) {
     use chrono::TimeZone;
     let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
     let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
     set_points_balance(&db, user, 500).await;
-    let first = common::seed_product(&db, "prod-1", 300_000, Some(3)).await;
-    let second = common::seed_product(&db, "prod-2", 100_000, Some(3)).await;
-    common::add_to_cart(&db, user, first, 1).await;
-    common::add_to_cart(&db, user, second, 1).await;
+    let course = CourseSeed::new("Purchase Instant Course").insert(&db).await;
+    let membership = seed_entitlement_product(
+        &db,
+        "purchase-instant",
+        ProductType::Membership,
+        5000,
+        Some(30),
+        None,
+    )
+    .await;
+    add_course_to_cart(&db, user, course).await;
+    common::add_to_cart(&db, user, membership, 1).await;
 
     let resp = service::checkout(
         &db,
@@ -163,128 +142,49 @@ async fn checkout_stamps_items_and_ledger_with_sampled_now(db: PgPool) {
     .await
     .expect("checkout");
 
+    assert_eq!(resp.paid_at, Some(t));
+    assert_eq!(resp.created_at, t);
+    assert_eq!(resp.enrolments.len(), 1);
+    assert_eq!(resp.enrolments[0].enrolled_at, t);
+    assert_eq!(resp.subscriptions.len(), 1);
+    assert_eq!(resp.subscriptions[0].started_at, t);
+
     let item_times: Vec<chrono::DateTime<chrono::Utc>> =
         sqlx::query_scalar("SELECT created_at FROM order_items WHERE order_id = $1")
             .bind(resp.id)
             .fetch_all(&db)
             .await
             .unwrap();
-    assert_eq!(item_times.len(), 2);
-    assert!(item_times.iter().all(|&at| at == t), "got: {item_times:?}");
+    assert_eq!(item_times, vec![t, t]);
 
-    let ledger_times: Vec<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT created_at FROM point_ledger WHERE order_id = $1")
+    let enrolment_times: Vec<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT created_at FROM enrolments WHERE order_id = $1")
             .bind(resp.id)
             .fetch_all(&db)
             .await
             .unwrap();
-    assert_eq!(ledger_times.len(), 2, "redeem + earn");
-    assert!(
-        ledger_times.iter().all(|&at| at == t),
-        "got: {ledger_times:?}"
-    );
-}
+    assert_eq!(enrolment_times, vec![t]);
 
-/// 已付訂單落帳:訂單列、訂單行、結帳點數帳同一個付款時間,點數帳照
-/// `ledger_deltas` 的內容與順序寫入。
-#[sqlx::test]
-async fn record_paid_order_tx_writes_row_items_and_ledger_at_one_instant(db: PgPool) {
-    use chrono::TimeZone;
-    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
-    let user = common::seed_member(&db, "buyer@example.com", "passw0rd!").await;
-    set_points_balance(&db, user, 500).await;
-    let product = common::seed_product(&db, "prod-1", 300_000, Some(3)).await;
-    common::add_to_cart(&db, user, product, 1).await;
-
-    let mut tx = db.begin().await.unwrap();
-    let checkout_locks = locks::acquire_checkout_locks(&mut tx, user).await.unwrap();
-    let cart_items =
-        cart_service::find_cart_items_for_checkout_tx(&mut tx, checkout_locks.balance())
-            .await
-            .unwrap();
-    let cart = fulfilment::ensure_all_purchasable(cart_items).unwrap();
-    let outcome = pricing::price(&cart, None, 500, true).unwrap();
-    let lines = fulfilment::order_lines(&cart, &HashMap::new());
-
-    let order = paid_order::record_paid_order_tx(
-        &mut tx,
-        checkout_locks.balance(),
-        "DF-PAIDORDER01",
-        "credit_card",
-        &lines,
-        &outcome,
-        t,
-    )
-    .await
-    .expect("record paid order");
-    tx.commit().await.unwrap();
-
-    assert_eq!(order.paid_at, Some(t));
-    assert_eq!(order.created_at, t);
-
-    let item_times: Vec<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT created_at FROM order_items WHERE order_id = $1")
-            .bind(order.id)
-            .fetch_all(&db)
-            .await
-            .unwrap();
-    assert_eq!(item_times, vec![t]);
-
-    // Redeem (negative) sorts before earn (positive) — the apply order.
-    let ledger: Vec<(String, i64, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "SELECT reason::text, delta, created_at FROM point_ledger \
+    let ledger: Vec<(String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT reason::text, created_at FROM point_ledger \
          WHERE order_id = $1 ORDER BY delta",
     )
-    .bind(order.id)
+    .bind(resp.id)
     .fetch_all(&db)
     .await
     .unwrap();
-    let expected: Vec<(String, i64)> = outcome
-        .ledger_deltas(order.id)
-        .iter()
-        .map(|d| (d.reason().as_str().to_string(), d.delta()))
-        .collect();
-    assert_eq!(expected.len(), 2, "redeem + earn");
-    let written: Vec<(String, i64)> = ledger.iter().map(|(r, d, _)| (r.clone(), *d)).collect();
-    assert_eq!(written, expected);
-    assert!(ledger.iter().all(|(_, _, at)| *at == t), "got: {ledger:?}");
+    assert_eq!(
+        ledger,
+        vec![
+            ("checkout_redeem".to_string(), t),
+            ("checkout_earn".to_string(), t),
+        ]
+    );
 
     assert_eq!(
         common::points_balance_of(&db, user).await,
-        500 - outcome.points_used + outcome.points_earned
+        500 - resp.points_used + resp.points_earned
     );
-}
-
-/// ADR-0017:報名的 `enrolled_at`/`created_at` 是業務時間(報表依 `created_at`
-/// 分桶),結帳買課必須蓋上 handler 取樣的 `now`。
-#[sqlx::test]
-async fn checkout_stamps_enrolment_with_sampled_now(db: PgPool) {
-    use chrono::TimeZone;
-    let t = chrono::Utc.with_ymd_and_hms(2020, 1, 15, 3, 0, 0).unwrap();
-    let course = CourseSeed::new("Sampled Now Course").insert(&db).await;
-    let user = common::seed_member(&db, "enrol-now@example.com", "passw0rd!").await;
-    add_course_to_cart(&db, user, course).await;
-
-    let resp = service::checkout(
-        &db,
-        user,
-        None,
-        CheckoutRequest::default(),
-        None,
-        common::studio_now_utc(t),
-    )
-    .await
-    .expect("checkout");
-
-    assert_eq!(resp.enrolments.len(), 1);
-    assert_eq!(resp.enrolments[0].enrolled_at, t);
-    let created_at: chrono::DateTime<chrono::Utc> =
-        sqlx::query_scalar("SELECT created_at FROM enrolments WHERE id = $1")
-            .bind(resp.enrolments[0].id)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    assert_eq!(created_at, t);
 }
 
 #[sqlx::test]
@@ -934,8 +834,8 @@ async fn checkout_use_points_caps_at_balance(db: PgPool) {
 async fn checkout_full_course_rolls_back_everything(db: PgPool) {
     let full_course = seed_full_course(&db, "Full Class", 1).await;
     let product = common::seed_product(&db, "prod-1", 1000, Some(3)).await;
-    // Also request points redemption: `record_paid_order_tx` has already
-    // written the points ledger by the time the enrolment check (course
+    // Also request points redemption: checkout has already written the
+    // points ledger by the time the enrolment check (course
     // capacity) fails, so a stray point_ledger row or balance mutation
     // below would mean the rollback missed it.
     let user = seed_carted_member(

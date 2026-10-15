@@ -91,3 +91,23 @@ seed 已付訂單的訂閱授權改走 checkout 的 `subscriptions::service::gra
 - **共用「歷史寫入」module 仍然延後**:重開條件 1 未達成——`tests/common/fixtures.rs` 的 `OrderSeed` 照舊直寫
   列、不產 points ledger,沒有第二個需要造「已結帳、已結算」歷史訂單的測試族群。條件 2 則由結帳路徑本身取代了
   這個 seam 的必要性,不必另建。
+
+## Addendum (2026-10-15)
+
+已付訂單落帳併回 checkout(R21):`orders::paid_order` 刪除,`record_paid_order_tx` 的三步——
+`repository::create_order`、`create_order_items`、`PricingOutcome::ledger_deltas` 逐筆 `apply_delta_tx`——寫回
+`orders::service::checkout` 本體,位置不變(`reserve_stock_tx` 之後、報名之前)。Addendum 2026-10-09 立這個 seam
+的理由是兩個 adapter;seed 那一個在 2026-10-11 改走真實結帳後退場,只剩 checkout 一個呼叫端。之後它的介面(7 個
+參數:交易、`BalanceLock`、訂單編號、付款方式、訂單行、定價結果、付款時間)跟本體一樣大,唯一的直接測試得重演
+checkout 的內部編排(取鎖 → 讀購物車 → 上架檢查 → 定價 → 訂單行)才呼叫得到它;一次購買的時間也一半在 module
+裡(訂單、訂單行、點數帳)、一半在 checkout 的區域變數裡(報名、訂閱)。
+
+- checkout 直接擁有購買時刻(GLOSSARY「購買時刻」):訂單、訂單行、結帳點數帳、報名與訂閱都蓋同一個取樣 `now`,
+  由 `checkout_stamps_every_purchase_artifact_with_the_sampled_now`(`tests/service_orders.rs`)在 checkout 介面
+  一次釘住;原本三個 checkout 時刻測試與打在 `record_paid_order_tx` 上的測試併入它。
+- 「只替已鎖的買家記帳」不再由 `record_paid_order_tx` 收 `&BalanceLock` 的型別擔保,改由 checkout 的呼叫順序擔保:
+  `acquire_checkout_locks` 先鎖買家的 `users` 列,點數帳寫在其後、同一交易內。
+- 若再出現第二個寫已付訂單列的 runtime 路徑(例如待付訂單的付款轉移),再評估抽回共用寫入;在那之前,在 checkout
+  外寫已付訂單列是 GLOSSARY「購買時刻」的 _Avoid_。
+- 本 ADR 的決策不變:共用「歷史寫入」module 仍延後,重開條件 1 仍未成立(`tests/common/fixtures.rs` 的
+  `OrderSeed` 照舊直寫列、不產 points ledger)。

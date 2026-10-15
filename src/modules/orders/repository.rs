@@ -63,7 +63,7 @@ pub async fn create_order(
 /// stored verbatim so later reads never need to join the live
 /// product/course catalog. `stock_decremented` is the checkout-time fact of
 /// whether this line actually decremented `products.stock` — the callers
-/// (`paid_order::record_paid_order_tx`, and the dev seed's
+/// (`service::checkout`, and the dev seed's
 /// `insert_pending_order_if_absent` for pending orders) get it
 /// pre-derived per line from `fulfilment::order_lines`; always `false` for
 /// course lines.
