@@ -1,6 +1,7 @@
 //! Integration tests for `points::service`.
 //!
-//! Covers `apply_delta_tx`, which now takes a `points::model::LedgerDelta`
+//! Covers `apply_delta_tx`, which takes the `BalanceLock` witness (so each
+//! test locks the user first) and a `points::model::LedgerDelta`
 //! built via one of its six reason-named constructors instead of a bare
 //! `(delta, reason, order_id)` triple: earn and redeem each carry a real
 //! `order_id` here (a `CheckoutEarn`/`CheckoutRedeem` row with no
@@ -11,7 +12,8 @@
 //! since the failure happened inside an uncommitted transaction), a zero
 //! delta (rejected before touching the DB — via `LedgerDelta::admin_adjust`,
 //! whose zero magnitude the reason-named constructors' `debug_assert`
-//! deliberately lets through), and a nonexistent user (404). Also a
+//! deliberately lets through), and a user row gone under its lock
+//! (`Internal` — the 404 belongs to `lock_balance_tx`). Also a
 //! DB-layer test of the CHECK constraint itself via the repository function
 //! directly — the exact condition `apply_delta_tx`'s `is_check_violation()`
 //! arm matches on — a seam-local anchor pairing `LedgerDelta`'s
@@ -64,9 +66,12 @@ async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
     let balance_after = service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::checkout_earn(50, order_id),
         chrono::Utc::now(),
     )
@@ -99,9 +104,12 @@ async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_i
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
     let balance_after = service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::checkout_redeem(30, order_id),
         chrono::Utc::now(),
     )
@@ -128,9 +136,12 @@ async fn apply_delta_insufficient_balance_returns_conflict_and_does_not_persist(
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
     let err = service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::checkout_redeem(200, order_id),
         chrono::Utc::now(),
     )
@@ -165,9 +176,12 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-zero@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
     let err = service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::admin_adjust(0),
         chrono::Utc::now(),
     )
@@ -189,23 +203,33 @@ async fn apply_delta_zero_returns_validation_error(db: PgPool) {
     );
 }
 
+/// An unknown user is `lock_balance_tx`'s 404, before any ledger write. A
+/// row missing under the lock `apply_delta_tx` is handed means its caller
+/// broke the lock protocol: `Internal`, not a 404 the client could act on.
 #[sqlx::test]
-async fn apply_delta_nonexistent_user_returns_not_found(db: PgPool) {
+async fn apply_delta_on_a_user_row_gone_under_its_lock_is_internal(db: PgPool) {
+    let user_id = common::seed_member(&db, "pts-gone@example.com", "Password!234").await;
+
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .expect("delete the locked user inside the same tx");
     let err = service::apply_delta_tx(
         &mut tx,
-        Uuid::now_v7(),
+        &lock,
         LedgerDelta::admin_adjust(10),
         chrono::Utc::now(),
     )
     .await
-    .expect_err("nonexistent user must 404");
+    .expect_err("a missing locked row must be rejected");
     tx.rollback().await.expect("rollback");
 
-    assert!(
-        matches!(err, AppError::NotFound(ref m) if m == "user not found"),
-        "got {err:?}"
-    );
+    assert!(matches!(err, AppError::Internal(_)), "got {err:?}");
 }
 
 #[sqlx::test]
@@ -256,9 +280,12 @@ async fn apply_delta_unrelated_check_violation_is_not_mapped_to_insufficient_poi
     .expect("add artificial cap constraint");
 
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
     let err = service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::admin_adjust(5000),
         chrono::Utc::now(),
     )
@@ -301,9 +328,12 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
     let order_id = seed_order(&db, user_id).await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let lock = service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock balance");
     service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::checkout_earn(10, order_id),
         chrono::Utc::now(),
     )
@@ -311,7 +341,7 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
     .expect("earn should succeed");
     service::apply_delta_tx(
         &mut tx,
-        user_id,
+        &lock,
         LedgerDelta::checkout_redeem(30, order_id),
         chrono::Utc::now(),
     )

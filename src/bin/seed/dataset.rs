@@ -130,7 +130,8 @@ fn vs(items: &[&str]) -> Vec<String> {
 /// Coach hashes) rather than hashing here, so callers sharing a plaintext
 /// share the hash instead of re-hashing it per call. The INSERT always
 /// writes `points_balance = 0`; when the row is newly inserted (not a
-/// conflict) and `points_balance > 0`, the target balance is granted via
+/// conflict) and `points_balance > 0`, the new row is locked
+/// (`points_service::lock_balance_tx`) and the target balance granted via
 /// `points_service::apply_delta_tx` (`LedgerDelta::admin_adjust`) in the same
 /// transaction as the INSERT — user row and `point_ledger` grant land
 /// atomically (a failed grant rolls back the insert too), and a conflict
@@ -169,9 +170,12 @@ async fn upsert_user(
     let user_id = match inserted {
         Some(id) => {
             if points_balance > 0 {
+                let lock = points_service::lock_balance_tx(&mut tx, id)
+                    .await
+                    .with_context(|| format!("lock points balance of user {email}"))?;
                 points_service::apply_delta_tx(
                     &mut tx,
-                    id,
+                    &lock,
                     LedgerDelta::admin_adjust(points_balance),
                     now,
                 )
@@ -1957,33 +1961,33 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     // gated on "newly inserted") finishes the job. This also means any
     // manual `UPDATE users SET points_balance = ...` a developer runs by
     // hand against a seed-member row is reset back to its tier target on
-    // the next `cargo run --bin seed`.
+    // the next `cargo run --bin seed`. Each member settles in its own
+    // transaction: `lock_balance_tx`, `delta = target − lock.balance()`,
+    // apply, commit.
     let mut settled = 0usize;
     for (user_id, target) in &member_targets {
-        let balance: i64 = sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(db)
+        let mut tx = db
+            .begin()
             .await
-            .with_context(|| format!("fetch points_balance for seed member {user_id}"))?;
-        let delta = target - balance;
+            .with_context(|| format!("begin points settlement tx for seed member {user_id}"))?;
+        let lock = points_service::lock_balance_tx(&mut tx, *user_id)
+            .await
+            .with_context(|| format!("lock points balance of seed member {user_id}"))?;
+        let delta = target - lock.balance();
         if delta != 0 {
-            let mut tx = db
-                .begin()
-                .await
-                .with_context(|| format!("begin points settlement tx for seed member {user_id}"))?;
             points_service::apply_delta_tx(
                 &mut tx,
-                *user_id,
+                &lock,
                 LedgerDelta::admin_adjust(delta),
                 at.now,
             )
             .await
             .with_context(|| format!("settle points-tier balance for seed member {user_id}"))?;
-            tx.commit()
-                .await
-                .with_context(|| format!("commit points settlement for seed member {user_id}"))?;
             settled += 1;
         }
+        tx.commit()
+            .await
+            .with_context(|| format!("commit points settlement for seed member {user_id}"))?;
     }
     println!("[points]   {settled} members settled to their points-tier target");
 

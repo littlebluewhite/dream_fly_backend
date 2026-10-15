@@ -303,7 +303,7 @@ pub async fn checkout(
     // dependency; the locked balance capped `points_used` in
     // `pricing::price`, so the redeem cannot overdraw.
     for delta in outcome.ledger_deltas(order.id) {
-        points_service::apply_delta_tx(&mut tx, user_id, delta, now).await?;
+        points_service::apply_delta_tx(&mut tx, locks.balance(), delta, now).await?;
     }
 
     // Artifacts.

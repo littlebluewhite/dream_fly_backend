@@ -61,9 +61,10 @@
 //! [`CheckoutLocks`], which carries the three witnesses (`BalanceLock`,
 //! `ProductLocks`, `CourseLocks`). The witnesses live with the tables' owners
 //! (points, products, courses); this module only fixes the order. Every later
-//! checkout write goes through a witness: `reserve_stock_tx` takes
-//! `&ProductLocks`, `enrol_batch_from_purchase_tx` takes `&CourseLocks`, and
-//! each walks its lines via the witness's `in_lock_order` — which is also why
+//! checkout write goes through a witness: the ledger's `apply_delta_tx` takes
+//! `&BalanceLock`; `reserve_stock_tx` takes `&ProductLocks`,
+//! `enrol_batch_from_purchase_tx` takes `&CourseLocks`, and those two each
+//! walk their lines via the witness's `in_lock_order` — which is also why
 //! a multi-line 409 names the line with the smallest id. A line the witness
 //! doesn't cover is `AppError::Internal`, not a silent unlocked write.
 //! `ProductLocks` also carries the rows read under the lock (`SELECT *`), so

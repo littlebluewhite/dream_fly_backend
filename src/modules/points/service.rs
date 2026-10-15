@@ -14,6 +14,14 @@ use super::repository;
 
 /// 原子調整點數並寫 ledger；餘額不足（結果 < 0）→ AppError::Conflict("點數不足")。
 ///
+/// Takes `&BalanceLock`: the caller already holds this user's `users` row
+/// lock (`lock_balance_tx`) in this same transaction, so a ledger write
+/// never takes that lock late, out of the order `orders::locks` fixes, and
+/// the ledger row lands on the witness's `user_id` (ADR-0007 Addendum
+/// 2026-10-15). An
+/// unknown user is `lock_balance_tx`'s 404; a row missing under the lock
+/// here is `AppError::Internal`.
+///
 /// `ld: LedgerDelta` already pairs the signed delta with its `PointReason`
 /// and (where the reason demands it) an `order_id` at construction time —
 /// this function just reads the three fields back out
@@ -30,10 +38,11 @@ use super::repository;
 /// function never commits.
 pub async fn apply_delta_tx(
     tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
+    lock: &BalanceLock,
     ld: LedgerDelta,
     now: DateTime<Utc>,
 ) -> Result<i64, AppError> {
+    let user_id = lock.user_id();
     let delta = ld.delta();
     if delta == 0 {
         return Err(AppError::Validation("delta must be non-zero".into()));
@@ -41,7 +50,11 @@ pub async fn apply_delta_tx(
 
     let balance_after = match repository::adjust_balance_tx(tx, user_id, delta).await {
         Ok(Some(balance)) => balance,
-        Ok(None) => return Err(AppError::NotFound("user not found".into())),
+        Ok(None) => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "users row {user_id} missing under its BalanceLock"
+            )));
+        }
         // Scoped to the balance constraint by name: `users` carries other
         // CHECK constraints (`users_has_auth_method` today, possibly more
         // later), and only a `users_points_balance_check` violation means
@@ -76,7 +89,8 @@ pub async fn apply_delta_tx(
 /// doc-comment-only invariant into the type system: `cart::service`'s
 /// `find_cart_items_for_checkout_tx` now takes `&BalanceLock` instead of a
 /// bare `user_id`, so the cart it reads can never be paired with a
-/// different user's lock.
+/// different user's lock. [`apply_delta_tx`] takes it too, so every ledger
+/// write lands on a user whose row is already locked.
 ///
 /// Fields are private; only `lock_balance_tx` can construct one. Read-only
 /// access via `user_id()`/`balance()` — `user_id` is the caller's own
@@ -89,10 +103,14 @@ pub async fn apply_delta_tx(
 /// module (contrast `orders::tx_witness`'s `TxReleased`): that extra layer
 /// guards against the governed code *inside the same module*
 /// (`orders::service`/`orders::idempotency`) hand-building a fake
-/// witness to bypass the constructor. Here the governed caller
-/// (`cart::service`) sits in a different module entirely and simply has no
-/// access to these private fields regardless — plain field privacy is
-/// already the whole defense, exactly as with `SessionLock`.
+/// witness to bypass the constructor. Callers outside this module
+/// (`cart::service`, `orders`, the seed) simply have no access to these
+/// private fields — plain field privacy is the whole defense there, exactly
+/// as with `SessionLock`. Inside it, `try_spend_tx`, `reverse_order_tx` and
+/// `adjust_points` reach the governed `apply_delta_tx` and could hand-build
+/// one; each takes its witness from `lock_balance_tx` (directly or through
+/// `orders::locks`), which stays reviewable in this one file, so still no
+/// `tx_witness` layer (ADR-0007 Addendum 2026-10-15).
 ///
 /// **Why unconditional and first** — the argument `orders::service::checkout`
 /// and its `compensate_order_artifacts_tx` refund counterpart both rely on:
@@ -186,13 +204,13 @@ pub async fn try_spend_tx(
         return Err(AppError::Validation("cost must be positive".into()));
     }
 
-    let balance = lock_balance_tx(tx, user_id).await?.balance();
+    let lock = lock_balance_tx(tx, user_id).await?;
 
-    if balance < cost {
+    if lock.balance() < cost {
         return Err(AppError::Conflict("點數不足".into()));
     }
 
-    apply_delta_tx(tx, user_id, LedgerDelta::redeem(cost), now).await
+    apply_delta_tx(tx, &lock, LedgerDelta::redeem(cost), now).await
 }
 
 /// Reverse one order's checkout point flow inside the caller's transaction —
@@ -222,7 +240,7 @@ pub async fn reverse_order_tx(
         .map_err(AppError::Database)?;
 
     for delta in flow.reversal_deltas(order_id) {
-        apply_delta_tx(tx, lock.user_id(), delta, now).await?;
+        apply_delta_tx(tx, lock, delta, now).await?;
     }
 
     Ok(())
@@ -295,7 +313,8 @@ pub async fn adjust_points(
 ) -> Result<PointsAdjustmentResponse, AppError> {
     let mut tx = db.begin().await?;
 
-    let current_balance = lock_balance_tx(&mut tx, req.user_id).await?.balance();
+    let lock = lock_balance_tx(&mut tx, req.user_id).await?;
+    let current_balance = lock.balance();
     if current_balance != req.expected_balance {
         return Err(AppError::Conflict(format!(
             "balance mismatch: expected {}, actual {}",
@@ -303,13 +322,7 @@ pub async fn adjust_points(
         )));
     }
 
-    let balance = apply_delta_tx(
-        &mut tx,
-        req.user_id,
-        LedgerDelta::admin_adjust(req.delta),
-        now,
-    )
-    .await?;
+    let balance = apply_delta_tx(&mut tx, &lock, LedgerDelta::admin_adjust(req.delta), now).await?;
 
     tx.commit().await?;
 
