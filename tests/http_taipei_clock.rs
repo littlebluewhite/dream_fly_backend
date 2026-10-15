@@ -193,16 +193,7 @@ async fn points_me_earned_this_month_uses_studio_month_boundaries(db: PgPool) {
         (at(2026, 7, 31, 16, 0, 0), PointReason::CheckoutEarn, 2000),   // Taipei Aug 1: excluded
     ];
     for (created_at, reason, delta) in rows {
-        seed_point_ledger_entry(
-            &app.db,
-            user.user_id,
-            delta,
-            delta,
-            reason,
-            None,
-            created_at,
-        )
-        .await;
+        seed_point_ledger_entry(&app.db, user.user_id, delta, reason, None, created_at).await;
     }
 
     let resp = app

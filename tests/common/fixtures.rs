@@ -813,12 +813,12 @@ pub async fn seed_waitlist_entry(
 /// so tests can control `created_at` ordering and exact `reason`/`order_id`
 /// combinations without a real balance mutation. Returns the entry id. Does
 /// not touch `users.points_balance` — pair with `set_points_balance` when a
-/// test also needs the balance to agree with the seeded ledger history.
+/// test also needs the balance to agree with the seeded ledger history (the
+/// listed `balance_after` is derived from that balance, ADR-0018).
 pub async fn seed_point_ledger_entry(
     db: &PgPool,
     user_id: Uuid,
     delta: i64,
-    balance_after: i64,
     reason: PointReason,
     order_id: Option<Uuid>,
     created_at: DateTime<Utc>,
@@ -826,14 +826,13 @@ pub async fn seed_point_ledger_entry(
     let id = Uuid::now_v7();
     sqlx::query(
         r#"
-        INSERT INTO point_ledger (id, user_id, delta, balance_after, reason, order_id, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO point_ledger (id, user_id, delta, reason, order_id, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
         "#,
     )
     .bind(id)
     .bind(user_id)
     .bind(delta)
-    .bind(balance_after)
     .bind(reason)
     .bind(order_id)
     .bind(created_at)

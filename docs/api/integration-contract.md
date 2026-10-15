@@ -592,6 +592,8 @@ Body：`{ course_id: "uuid" }`。回應：[`WaitlistResponse`](../../bindings/Wa
 #### `GET /points/me?page=&per_page=` — 需登入
 回應：[`PointsMeResponse`](../../bindings/PointsMeResponse.ts)（**balance 不分頁，ledger 分頁**——`total`/`page`/`per_page` 只描述 `ledger`）。`ledger` 列為 [`LedgerEntryResponse`](../../bindings/LedgerEntryResponse.ts)，`reason` 值域見 [`PointReason`](../../bindings/PointReason.ts) 與 §1.6。`balance`/`delta`/`balance_after`/`earned_this_month` 單位皆為點數（1 點 = NT$1，§1.6）。
 
+`ledger` 依 `(created_at DESC, id DESC)` 排序：新到舊，同一時刻的列以 `id` 定序，翻頁穩定。`balance_after` 是讀取當下推導的值（ADR-0018），不是寫入當時的快照：以目前餘額為起點，減去排在這一列之前（較新）所有列的 `delta`。因此全表最新一列（`page=1` 的第一列）等於 `balance`，每一列等於上一列的 `balance_after − delta`，翻頁也接得上；補記一筆業務時間較早的列，比它新的列的 `balance_after` 會跟著變。欄位形狀不變。
+
 `earned_this_month`：本工作室月份（`server.studio_timezone`）內 `reason = checkout_earn` 的 `delta` 總和，不分頁、不受 `page`/`per_page` 影響；退款扣回（`refund_clawback`）與其他 reason 一律不計入、不相減，無資料為 `0`。
 
 `delta` 可正可負（`checkout_redeem`/`redeem`/`refund_clawback` 恆為負、`checkout_earn`/`refund_restore` 恆為正——完整值域與符號慣例見 §1.6）。`reason = "redeem"` 的列一律 `order_id: null`（來自 `POST /rewards/{id}/redeem`，與訂單無關，見 §3.23）。

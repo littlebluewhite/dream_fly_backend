@@ -33,7 +33,6 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
         &app.db,
         user_b.user_id,
         10,
-        10,
         PointReason::CheckoutEarn,
         None,
         Utc::now(),
@@ -44,7 +43,6 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
         &app.db,
         user_a.user_id,
         200,
-        200,
         PointReason::CheckoutEarn,
         None,
         Utc::now() - Duration::days(1),
@@ -54,7 +52,6 @@ async fn me_returns_balance_and_ledger_newest_first_only_mine(db: PgPool) {
         &app.db,
         user_a.user_id,
         -50,
-        150,
         PointReason::CheckoutRedeem,
         None,
         Utc::now(),
@@ -104,13 +101,12 @@ async fn me_includes_earned_this_month_counting_only_checkout_earn(db: PgPool) {
         (50, PointReason::AdminAdjust),
         (-5, PointReason::CheckoutRedeem),
     ] {
-        seed_point_ledger_entry(&app.db, user.user_id, delta, delta, reason, None, now).await;
+        seed_point_ledger_entry(&app.db, user.user_id, delta, reason, None, now).await;
     }
     // Same month last year: must not count.
     seed_point_ledger_entry(
         &app.db,
         user.user_id,
-        999,
         999,
         PointReason::CheckoutEarn,
         None,
@@ -148,7 +144,6 @@ async fn me_paginates_newest_first(db: PgPool) {
             &app.db,
             user.user_id,
             10,
-            10 * (i + 1),
             PointReason::CheckoutEarn,
             None,
             Utc::now() - Duration::hours(3 - i),
