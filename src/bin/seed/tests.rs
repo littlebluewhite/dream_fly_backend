@@ -16,7 +16,7 @@ use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service::update_order_status;
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
 use dream_fly_backend::modules::points::repository::sum_earned_in_studio_month;
-use dream_fly_backend::modules::points::service::apply_delta_tx;
+use dream_fly_backend::modules::points::service::{apply_delta_tx, lock_balance_tx};
 use dream_fly_backend::modules::reports::repository::member_stats;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -119,9 +119,12 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
 
     let member_id = user_id_by_email(&db, "seed-member-01@dreamfly.tw").await;
     let mut tx = db.begin().await.expect("begin drift tx");
+    let lock = lock_balance_tx(&mut tx, member_id)
+        .await
+        .expect("lock drift balance");
     apply_delta_tx(
         &mut tx,
-        member_id,
+        &lock,
         LedgerDelta::admin_adjust(500),
         chrono::Utc::now(),
     )

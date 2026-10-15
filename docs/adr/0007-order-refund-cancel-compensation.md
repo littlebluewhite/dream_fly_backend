@@ -748,3 +748,52 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 
 **測試**：不新增。現有的退款端到端測試（`service_orders.rs` 的退款／取消補償、`http_orders.rs` 的
 `update_status_refund_via_http_returns_cancelled_artifacts`）就是閘門。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-10-15）：給點改收 `&BalanceLock`——推翻 2026-07-23 Addendum 對 `apply_delta_tx` 的排除
+
+**遷移登記**：`points::service::apply_delta_tx(tx, user_id, ld, now)` 改為
+`apply_delta_tx(tx, &BalanceLock, ld, now)`，點數帳落在 `lock.user_id()`。UPDATE 沒命中列
+（`Ok(None)`）原回 `NotFound("user not found")`，改回 `AppError::Internal`：列已被同一交易的
+`FOR UPDATE` 鎖住，不會消失；「使用者不存在」的 404 只由 `lock_balance_tx` 回
+（`lock_balance_tx_returns_witness_carrying_user_and_locked_balance` 釘住），所以每條 runtime 路徑
+的狀態碼不變。呼叫端：
+
+- checkout 的點數帳迴圈傳 `locks.balance()`。ADR-0010 2026-10-15 Addendum 刪掉
+  `record_paid_order_tx` 後，「只替已鎖的買家記帳」降為呼叫順序擔保；本則把它收回型別。
+- `reverse_order_tx` 傳它收到的 witness（原本傳 `.user_id()`）。
+- `try_spend_tx`、`adjust_points` 原本就先 `lock_balance_tx`，改傳 witness 本身；比較邏輯與錯誤字串不動。
+- seed `upsert_user`：INSERT 之後、授點之前 `lock_balance_tx` 鎖住新列。
+- seed 結算：開交易 → `lock_balance_tx` → `delta = 目標 − lock.balance()` → `apply_delta_tx` → commit。
+  原本在交易外讀餘額、再開交易寫，讀和寫不在同一把鎖下。
+
+**為什麼推翻**：2026-07-23 Addendum 的排除理由有兩條，都不再成立。
+
+1. 「正確性從不依賴先行顯式鎖（UPDATE 自帶列鎖）」——對單一陳述句成立，對路徑不成立。UPDATE 自帶的
+   鎖要等路徑走到記帳那一步才取；那時若已持有 products/courses 鎖，`users` 就晚於 `products`，跟
+   「訂單鎖協定」相反，正是決策 5 排除的死鎖環。現有 runtime 呼叫端都在寫入前、照鎖序圖的位置先取
+   了這把鎖，UPDATE 只是重入已持有的鎖、不新增邊；但那是慣例，新寫一條記帳路徑的人沒有任何東西提醒。
+   前置條件是真的，型別現在把它說出來。
+2. 「seed 沒有、也不需要先鎖」——seed 補一次 `lock_balance_tx` 只多一個陳述句：`upsert_user` 鎖的是
+   自己剛插入、別的交易還看不到的列；結算反而得到「讀到的餘額就是寫入時的餘額」。兩類呼叫端可以用同
+   一個簽章一視同仁。
+
+另外，witness 把「鎖了誰」與「帳寫給誰」配成一對，鎖 A 寫 B 寫不出來——與
+`find_cart_items_for_checkout_tx` 收 `&BalanceLock` 消滅的是同一類錯。本檔 2026-08-03 Addendum (d)
+說 user 歸屬由 `BalanceLock` 治理；本則讓它真的治理到記帳。
+
+**意識性殘縫**：
+
+- `BalanceLock` 不帶交易的生命週期：在已 commit 的交易取到的 witness，型別上傳得進另一個交易。
+  `ProductLocks`、`CourseLocks`、`SessionLock` 都是這個形狀；真發生時，鎖下找不到列會以 `Internal`
+  浮出，不會誤回 404。
+- 2026-07-23 Addendum 不設 `tx_witness` 隔層，理由是「被治理的呼叫端都在別的模組」。`apply_delta_tx`
+  與 `BalanceLock` 同在 `points::service`，同檔的 `try_spend_tx`、`reverse_order_tx`、`adjust_points`
+  技術上可以手造 witness。接受：三者的 witness 都來自 `lock_balance_tx`（直接或經 `orders::locks`），
+  全在同一檔、審查看得到；`BalanceLock` doc 與 GLOSSARY「給點」的 Avoid 已記下。
+- repository 層的 `adjust_balance_tx`／`insert_ledger_tx` 照舊收裸 `user_id`，比照本檔 2026-07-23 對
+  `cart::repository`、2026-08-03 (c) 對 `insert_ledger_tx` 的登記（ADR-0005 seam）。
+
+**測試**：`tests/service_points.rs` 的 7 處直接呼叫與 `src/bin/seed/tests.rs` 的漂移注入先
+`lock_balance_tx` 再呼叫，斷言不變。刪 `apply_delta_nonexistent_user_returns_not_found`（404 已由上鎖
+那一步釘住）；新增 `apply_delta_on_a_user_row_gone_under_its_lock_is_internal`（同交易內刪掉已鎖的列，
+`apply_delta_tx` 回 `Internal`）。本檔其餘敘述維持決策當下狀態。
