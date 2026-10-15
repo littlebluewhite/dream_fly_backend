@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::utils::studio_clock::StudioNow;
@@ -8,10 +8,13 @@ use super::model::{OrderPointsFlow, PointLedgerEntry, PointReason};
 
 /// Current points balance for a user (NOT NULL column on `users`). `None`
 /// means no such user.
-pub async fn find_balance(db: &PgPool, user_id: Uuid) -> Result<Option<i64>, sqlx::Error> {
+pub async fn find_balance(
+    executor: impl sqlx::PgExecutor<'_>,
+    user_id: Uuid,
+) -> Result<Option<i64>, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT points_balance FROM users WHERE id = $1")
         .bind(user_id)
-        .fetch_optional(db)
+        .fetch_optional(executor)
         .await
 }
 
@@ -40,7 +43,7 @@ pub async fn lock_balance_tx(
 /// runs before `LIMIT`/`OFFSET`, so each page chains on from the one before
 /// it whatever order the rows were written in.
 pub async fn find_ledger_by_user(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     limit: u32,
     offset: u32,
@@ -60,21 +63,24 @@ pub async fn find_ledger_by_user(
     .bind(user_id)
     .bind(limit as i64)
     .bind(offset as i64)
-    .fetch_all(db)
+    .fetch_all(executor)
     .await
 }
 
-pub async fn count_ledger_by_user(db: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
+pub async fn count_ledger_by_user(
+    executor: impl sqlx::PgExecutor<'_>,
+    user_id: Uuid,
+) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM point_ledger WHERE user_id = $1")
         .bind(user_id)
-        .fetch_one(db)
+        .fetch_one(executor)
         .await
 }
 
 /// Sum of the user's `checkout_earn` deltas in the studio month containing
 /// `at.now`. Clawbacks and every other reason are deliberately not netted.
 pub async fn sum_earned_in_studio_month(
-    db: &PgPool,
+    executor: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     at: StudioNow,
 ) -> Result<i64, sqlx::Error> {
@@ -86,7 +92,7 @@ pub async fn sum_earned_in_studio_month(
     .bind(user_id)
     .bind(at.now)
     .bind(at.tz.name())
-    .fetch_one(db)
+    .fetch_one(executor)
     .await
 }
 

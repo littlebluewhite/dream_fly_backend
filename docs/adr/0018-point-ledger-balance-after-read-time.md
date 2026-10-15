@@ -41,7 +41,9 @@
   `apply_delta_tx` 照舊回傳 UPDATE 之後的餘額:`RedeemResponse.balance_after` 與
   `PointsAdjustmentResponse.balance` 用的是「現在的餘額」,不受影響。
 - 讀取端:`PointLedgerEntry.balance_after` 保留,由查詢填入;`LedgerEntryResponse` 與 wire 形狀不變。契約
-  §3.14 補上排序與 `balance_after` 的語意。
+  §3.14 補上排序與 `balance_after` 的語意。`get_my_points` 的四個讀取(餘額、明細、`total`、
+  `earned_this_month`)在同一個 `REPEATABLE READ, READ ONLY` 交易內,共用一個快照,所以 `page=1` 的第一列
+  也等於回應裡的 `balance`(R21-10,`points_me_reads_balance_ledger_total_and_earned_from_one_snapshot`)。
 - 測試 fixture `seed_point_ledger_entry` 去掉 `balance_after` 參數。seed 的
   `seed_points_history_chains_in_time_order` 與 `chain_end` 刪除:鏈由查詢本身擔保,期初為 0 則由 seed
   不變量②的 `points_balance == SUM(point_ledger.delta)` 擔保。seed 的 `walk_due` 排程不再是明細串得起來的前提。
@@ -75,8 +77,6 @@
   值。這正是讀時推導的用意。
 - **繞過點數帳改餘額,整段明細一起位移**:`set_points_balance` 或手寫 SQL 只改 `points_balance`、不寫點數帳,
   明細每一列都差同一個值,期初不是 0。只有 GLOSSARY「給點」記錄在案的測試 bypass 會這樣做。
-- **`/points/me` 的 `balance` 與明細是兩條陳述句**:兩者之間有寫入時,第 0 列可能不等於回應裡的 `balance`。
-  把四個讀取收進同一個快照另案處理(R21-10)。
 
 其他後果:
 

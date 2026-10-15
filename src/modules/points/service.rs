@@ -238,21 +238,32 @@ pub async fn reverse_order_tx(
 }
 
 /// Current balance + paginated ledger (newest first) for `/points/me`.
+///
+/// The four reads run in one `REPEATABLE READ, READ ONLY` transaction, so
+/// they share one snapshot: a points write that commits between them shows
+/// up in all four or in none, and page 1's first row always equals
+/// `balance`.
 pub async fn get_my_points(
     db: &PgPool,
     user_id: Uuid,
     pagination: &PaginationParams,
     at: StudioNow,
 ) -> Result<PointsMeResponse, AppError> {
-    let balance = repository::find_balance(db, user_id)
+    let mut tx = db
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .await?;
+
+    let balance = repository::find_balance(&mut *tx, user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
     let entries =
-        repository::find_ledger_by_user(db, user_id, pagination.limit(), pagination.offset())
+        repository::find_ledger_by_user(&mut *tx, user_id, pagination.limit(), pagination.offset())
             .await?;
-    let total = repository::count_ledger_by_user(db, user_id).await?;
-    let earned_this_month = repository::sum_earned_in_studio_month(db, user_id, at).await?;
+    let total = repository::count_ledger_by_user(&mut *tx, user_id).await?;
+    let earned_this_month = repository::sum_earned_in_studio_month(&mut *tx, user_id, at).await?;
+
+    tx.commit().await?;
 
     Ok(PointsMeResponse {
         balance,
