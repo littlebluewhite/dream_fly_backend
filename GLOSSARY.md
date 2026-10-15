@@ -46,7 +46,7 @@ checkout(`orders::service::checkout`)取樣的 `now`(業務時間,ADR-0017)就�
 這條規則直接寫在 checkout 本體:`reserve_stock_tx` 之後依序 `repository::create_order`(`status='paid'`)→ `create_order_items` → `PricingOutcome::ledger_deltas` 逐筆 `apply_delta_tx`,再接報名(`enrol_batch_from_purchase_tx`)與訂閱授權(`grant_from_purchase_tx`);點數帳排在報名之前,動的是「訂單鎖協定」已鎖的 `users` 列,不增加鎖依賴。
 checkout 是已付訂單列唯一的 runtime 寫入者;已付種子訂單也經 checkout 本身購買(見「Seed 資料集」)。
 `repository::create_order`/`create_order_items` 維持 `pub`:`tests/service_subscriptions.rs`、`tests/service_enrolments.rs` 直接呼叫前者造訂單(測試佈局),seed 的待付訂單(`insert_pending_order_if_absent`)用後者。
-這三步曾收在只有 checkout 一個呼叫端的淺 module「已付訂單落帳」(`orders::paid_order`),已併回 checkout。
+這三步曾收在只有 checkout 一個呼叫端的淺 module「已付訂單落帳」(`orders::paid_order`),已併回 checkout(ADR-0010 Addendum 2026-10-15)。
 _Avoid_: 恢復 `record_paid_order_tx`(介面跟三步本體一樣大,唯一的直接測試得重演 checkout 的內部編排)、在 checkout 外寫已付訂單列(購買產物的時間會再次各寫各的;測試佈局的 `OrderSeed` 與上述直接呼叫 `create_order` 的測試不在此限)
 
 **行計畫(Line Fulfilment)**:
