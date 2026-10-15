@@ -23,7 +23,7 @@
 
 mod common;
 
-use chrono::{Duration, SubsecRound, Utc};
+use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -87,12 +87,10 @@ async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
         .await
         .expect("query product")
         .expect("product exists");
-    // Truncated to microsecond precision: Postgres `timestamptz` stores
-    // microseconds, so encoding `now` for the INSERT below already drops any
-    // finer remainder — fixing `now` at that precision upfront means the
+    // The scene instant is already at Postgres precision, so the
     // round-tripped `expires_at` compares exactly equal instead of needing a
     // ±1 day window.
-    let now = Utc::now().trunc_subsecs(6);
+    let now = common::scene_now().now;
     let mut tx = db.begin().await.expect("begin tx");
     let order_id = seed_order(&mut tx, user_id, 8_000).await;
     let result =

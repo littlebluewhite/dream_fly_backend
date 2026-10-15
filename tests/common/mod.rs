@@ -21,7 +21,7 @@ pub mod twilio;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-use chrono::Utc;
+use chrono::{SubsecRound, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -79,10 +79,18 @@ pub fn studio_now_utc(now: chrono::DateTime<Utc>) -> StudioNow {
     }
 }
 
-/// Today's date with the studio timezone pinned to UTC (the default test
-/// config) — for service-layer tests that have no `TestApp`.
+/// The scene instant (場景時刻): the "now" a test is set at, as a
+/// [`StudioNow`] in UTC (the default test config) truncated to microseconds.
+/// Postgres `timestamptz` keeps no finer, so an instant sampled here and
+/// written to the DB reads back equal.
+pub fn scene_now() -> StudioNow {
+    studio_now_utc(Utc::now().trunc_subsecs(6))
+}
+
+/// Today's date at the scene instant ([`scene_now`]) — for service-layer
+/// tests that have no `TestApp`.
 pub fn today_utc() -> chrono::NaiveDate {
-    studio_now_utc(Utc::now()).today()
+    scene_now().today()
 }
 
 /// Build a Redis connection for tests (db 15, clear of the dev db 0).
