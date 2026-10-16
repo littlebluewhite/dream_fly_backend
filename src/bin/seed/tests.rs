@@ -465,7 +465,7 @@ async fn paid_seed_orders_record_at_paid_instant(db: PgPool) {
 }
 
 /// Every seeded user exists before every seeded row that points at them —
-/// regression: `upsert_user`/`upsert_seed_member` stamped `users.created_at`
+/// regression: the seed's users upsert stamped `users.created_at`
 /// with the run instant while the same users' orders, enrolments, ledger,
 /// bookings, attendance marks, posts and inquiry assignments carry
 /// historical timestamps, so every seed account "joined today": the admin
