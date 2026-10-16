@@ -29,7 +29,7 @@ use super::locks;
 use super::model::{Order, OrderStatus, PAYMENT_METHODS};
 use super::pricing;
 use super::refund::{self, TransitionDecision};
-use super::repository::{self, OrderAmounts};
+use super::repository::{self, NewOrder, OrderAmounts};
 use super::tx_witness::TxReleased;
 
 /// The checkout request after every check that needs no database: the
@@ -284,17 +284,21 @@ pub async fn checkout(
     // 2026-10-15).
     let order = repository::create_order(
         &mut tx,
-        locks.balance().user_id(),
-        &order_number,
-        OrderAmounts {
-            total_cents: outcome.total_cents,
-            discount_cents: outcome.discount_cents,
-            points_used: outcome.points_used,
-            points_earned: outcome.points_earned,
+        &NewOrder {
+            user_id: locks.balance().user_id(),
+            order_number: &order_number,
+            status: OrderStatus::Paid,
+            amounts: OrderAmounts {
+                total_cents: outcome.total_cents,
+                discount_cents: outcome.discount_cents,
+                points_used: outcome.points_used,
+                points_earned: outcome.points_earned,
+            },
+            coupon_code: outcome.applied_coupon_code.as_deref(),
+            payment_method: Some(intent.payment_method),
+            paid_at: Some(now),
+            created_at: now,
         },
-        outcome.applied_coupon_code.as_deref(),
-        intent.payment_method,
-        now,
     )
     .await?;
     repository::create_order_items(&mut tx, order.id, &lines, now).await?;
