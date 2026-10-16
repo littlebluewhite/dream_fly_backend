@@ -18,7 +18,7 @@
 //! usable unique key (rewards, pending orders, time_slots, bookings,
 //! contact_inquiries), idempotency is a SELECT-existence check on the seed's
 //! deterministic natural key (name / `DF-SEED-…` order number /
-//! venue+date+start / user+slot / `df-seed-…` email) instead; paid orders,
+//! venue+date+start / slot / `df-seed-…` email) instead; paid orders,
 //! and the enrolments they carry, are keyed by checkout's own idempotency
 //! (below). Running this binary twice must therefore leave row counts
 //! unchanged on the second run.
