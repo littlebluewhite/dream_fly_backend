@@ -72,19 +72,10 @@
 //! real member does: checkout writes a `checkout_earn` row at `paid_at` for
 //! every paid seed order touching that member, and a refund a
 //! `refund_clawback` on top at the refund instant — never the run instant;
-//! once every order is bought, **every** member (not just ones newly
-//! created this run) gets a `admin_adjust(target − balance)` settling it to
-//! its points-tier target (`member_points_target`, derived from
-//! `PointsTier`), every run — new-month orders keep adding
-//! `checkout_earn` for existing members too (the 12-month window slides),
-//! so without an every-run settlement their balance would drift past its
-//! tier boundary over time. A same-month re-run computes `delta = 0` and
-//! writes nothing, so this stays idempotent; a run that crashes between the
-//! order loop and the settlement loop simply gets settled by the next run
-//! instead (settlement isn't gated on "this member is new"). One side
-//! effect: this also means a developer's manual `UPDATE users SET
-//! points_balance = ...` against a seed-member row is reset back to its
-//! tier target the next time the seed runs.
+//! once every order is bought, `settlement::settle_members` settles
+//! **every** member (not just ones newly created this run) to its
+//! points-tier target with one `admin_adjust(target − balance)`, every run
+//! — the rules are in that module.
 
 use std::collections::HashMap;
 
@@ -94,7 +85,6 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
 use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
@@ -102,18 +92,21 @@ use dream_fly_backend::modules::orders::fulfilment;
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
-use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
-use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 mod accounts;
+mod attendance;
 mod pending;
+mod rental;
+mod settlement;
 mod timeline;
 
 use accounts::{SeedAccount, upsert_account};
 use pending::{PendingSeedOrder, insert_pending_orders};
+use rental::seed_rentals;
+use settlement::settle_members;
 use timeline::{SeedPurchase, Walked};
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
@@ -511,23 +504,6 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
         .min(now)
 }
 
-/// Points-tier target balance for reporting member `i` (1..=24): members
-/// block into `PointsTier::ALL` six at a time on `(i-1)/6`, and each lands
-/// a fixed step above its tier's `floor()` — so the report's 4-tier /
-/// 6-members-each shape follows the tier owner rather than a second copy
-/// of its boundaries.
-fn member_points_target(i: usize) -> i64 {
-    let tier = PointsTier::ALL[(i - 1) / 6];
-    let j = ((i - 1) % 6 + 1) as i64; // 1..=6 within the tier
-    let above_floor = match tier {
-        PointsTier::Regular => 100 + j * 50, //  150-400
-        PointsTier::Bronze => j * 200,       //  700-1700
-        PointsTier::Silver => j * 400,       // 2400-4400
-        PointsTier::Gold => j * 500,         // 5500-8000
-    };
-    tier.floor() + above_floor
-}
-
 /// Fetch a product's id by slug — mirrors `course_id_by_slug`, used to build
 /// the order-item pool after `insert_product`.
 async fn product_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
@@ -545,147 +521,6 @@ async fn venue_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
         .fetch_one(db)
         .await
         .with_context(|| format!("fetch id for venue '{slug}'"))
-}
-
-/// Bulk-insert attendance rows (idempotent on the real
-/// `UNIQUE(session_id, enrolment_id)` constraint). Single UNNEST statement,
-/// mirroring the UNNEST bulk INSERT of `sessions::calendar`'s private
-/// slot-date insert (behind `backfill_for_seed`).
-async fn insert_attendance_bulk(
-    db: &PgPool,
-    marked_by: Uuid,
-    rows: &[(Uuid, Uuid, &'static str, DateTime<Utc>)],
-) -> anyhow::Result<()> {
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let mut ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut session_ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut enrolment_ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut statuses: Vec<String> = Vec::with_capacity(rows.len());
-    let mut marked_ats: Vec<DateTime<Utc>> = Vec::with_capacity(rows.len());
-    for (session_id, enrolment_id, status, marked_at) in rows {
-        ids.push(Uuid::now_v7());
-        session_ids.push(*session_id);
-        enrolment_ids.push(*enrolment_id);
-        statuses.push((*status).to_string());
-        marked_ats.push(*marked_at);
-    }
-
-    sqlx::query(
-        "INSERT INTO attendance_records (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
-         SELECT u.id, u.session_id, u.enrolment_id, u.status::attendance_status, $2, u.marked_at, NOW() \
-         FROM UNNEST($1::uuid[], $3::uuid[], $4::uuid[], $5::text[], $6::timestamptz[]) \
-              AS u(id, session_id, enrolment_id, status, marked_at) \
-         ON CONFLICT (session_id, enrolment_id) DO NOTHING",
-    )
-    .bind(&ids)
-    .bind(marked_by)
-    .bind(&session_ids)
-    .bind(&enrolment_ids)
-    .bind(&statuses)
-    .bind(&marked_ats)
-    .execute(db)
-    .await
-    .context("bulk insert attendance_records")?;
-    Ok(())
-}
-
-/// One venue-rental time slot, column shape per
-/// `schedule::repository::bulk_create_tx` (course_id NULL — pure rental).
-struct TimeSlotSeed {
-    venue_id: Uuid,
-    date: NaiveDate,
-    start_time: NaiveTime,
-    end_time: NaiveTime,
-    capacity: i32,
-    price_cents: i64,
-}
-
-/// Insert a rental slot (idempotent by existence check on
-/// `(venue_id, date, start_time)` — the table's only guard is the GIST
-/// anti-overlap EXCLUDE, which bare ON CONFLICT DO NOTHING also covers as a
-/// belt) and return its id either way. The slot stores no occupancy count:
-/// its `booked` is counted at read time from the `occupying_bookings` view
-/// (ADR-0015), so a slot that crosses into the past and gains a booking on a
-/// later run needs no sync.
-async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uuid> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM time_slots WHERE venue_id = $1 AND date = $2 AND start_time = $3",
-    )
-    .bind(seed.venue_id)
-    .bind(seed.date)
-    .bind(seed.start_time)
-    .fetch_optional(db)
-    .await
-    .context("check existing time_slot")?;
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NOW(), NOW())
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(id)
-    .bind(seed.date)
-    .bind(seed.start_time)
-    .bind(seed.end_time)
-    .bind(seed.venue_id)
-    .bind(seed.capacity)
-    .bind(seed.price_cents)
-    .execute(db)
-    .await
-    .with_context(|| format!("insert time_slot {} {}", seed.date, seed.start_time))?;
-    Ok(id)
-}
-
-/// Insert a rental booking (idempotent by existence check on
-/// `(user_id, time_slot_id)` — the partial unique index excludes cancelled
-/// rows, and the seed assigns at most one booking per slot). `price_cents`
-/// is the slot's price snapshot, per
-/// `bookings::occupancy::insert_occupying_booking_tx`.
-async fn insert_booking_if_absent(
-    db: &PgPool,
-    user_id: Uuid,
-    time_slot_id: Uuid,
-    status: &str,
-    price_cents: i64,
-    created_at: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM bookings WHERE user_id = $1 AND time_slot_id = $2)",
-    )
-    .bind(user_id)
-    .bind(time_slot_id)
-    .fetch_one(db)
-    .await
-    .context("check existing booking")?;
-    if exists {
-        return Ok(());
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO bookings (id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::booking_status, NULL, $5, $6, $6)
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(user_id)
-    .bind(time_slot_id)
-    .bind(status)
-    .bind(price_cents)
-    .bind(created_at)
-    .execute(db)
-    .await
-    .with_context(|| format!("insert booking for slot {time_slot_id}"))?;
-    Ok(())
 }
 
 /// One contact inquiry — trial rows carry the structured `metadata` the
@@ -1343,20 +1178,10 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     // Age buckets (6-12 / 13-17 / 18-25 / 26-40) rotate on (i-1)%4 — six
     // members each, so the age-distribution report always has every bucket.
     // Points tiers (`PointsTier`) block on (i-1)/6 — six members each, see
-    // `member_points_target`. Different index bases so age and tier
-    // decorrelate. `member_hash` is the same Member#2026 hash the test
+    // `settlement::member_points_target` (member `i` is `member_ids[i - 1]`).
+    // Different index bases so age and tier decorrelate. `member_hash` is the same Member#2026 hash the test
     // member above shares — hashed once, up front (see `run`'s precompute).
     let mut member_ids: Vec<Uuid> = Vec::with_capacity(24);
-    // `(user_id, points-tier target balance)` for every one of the 24
-    // members — settled to its tier target after the order loop below has
-    // written every seeded order's `checkout_earn`/`refund_clawback` rows
-    // (see the settlement loop after `[orders]`). Collected for every
-    // member, not just newly-inserted ones: a settling member's balance
-    // must be re-pinned to `target` on every run, not just its first, so
-    // that new-month orders (this run's `[orders]` loop keeps writing
-    // `checkout_earn` for existing members too) can't push an existing
-    // member's balance past its tier boundary over time.
-    let mut member_targets: Vec<(Uuid, i64)> = Vec::with_capacity(24);
     for i in 1..=24usize {
         let age: u32 = match (i - 1) % 4 {
             0 => 7 + (i as u32 % 5),   //  7-11 → 6-12 bucket
@@ -1386,7 +1211,6 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         )
         .await?;
         assign_role(db, user_id, Role::Member).await?;
-        member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);
     }
     println!("[members]  24 seed members ready (seed-member-01..24@dreamfly.tw / Member#2026)");
@@ -1586,48 +1410,9 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     );
 
     // -- settle every member's points-tier target balance --------------------
-    // Every run, for every one of the 24 members (not just newly-inserted
-    // ones): the member's balance so far is whatever its seeded orders'
-    // `checkout_earn`/`refund_clawback` rows above added up to (a refunded
-    // order nets zero); `admin_adjust(target − balance)` tops (or trims)
-    // that up to the exact points-tier target computed in the members loop,
-    // so `points_balance == SUM(point_ledger.delta)` still holds while
-    // keeping the 4-tier/6-members-each report shape. A same-month re-run
-    // adds no new orders for a member already at target, so `delta` is 0
-    // and no row is written — this is what keeps the seed idempotent
-    // despite settling unconditionally. A crash between the order loop and
-    // this loop simply means the next run's settlement (unconditional, not
-    // gated on "newly inserted") finishes the job. This also means any
-    // manual `UPDATE users SET points_balance = ...` a developer runs by
-    // hand against a seed-member row is reset back to its tier target on
-    // the next `cargo run --bin seed`. Each member settles in its own
-    // transaction: `lock_balance_tx`, `delta = target − lock.balance()`,
-    // apply, commit.
-    let mut settled = 0usize;
-    for (user_id, target) in &member_targets {
-        let mut tx = db
-            .begin()
-            .await
-            .with_context(|| format!("begin points settlement tx for seed member {user_id}"))?;
-        let lock = points_service::lock_balance_tx(&mut tx, *user_id)
-            .await
-            .with_context(|| format!("lock points balance of seed member {user_id}"))?;
-        let delta = target - lock.balance();
-        if delta != 0 {
-            points_service::apply_delta_tx(
-                &mut tx,
-                &lock,
-                LedgerDelta::admin_adjust(delta),
-                at.now,
-            )
-            .await
-            .with_context(|| format!("settle points-tier balance for seed member {user_id}"))?;
-            settled += 1;
-        }
-        tx.commit()
-            .await
-            .with_context(|| format!("commit points settlement for seed member {user_id}"))?;
-    }
+    // After every purchase above has written its ledger rows (see
+    // `settlement`).
+    let settled = settle_members(db, &member_ids, at.now).await?;
     println!("[points]   {settled} members settled to their points-tier target");
 
     // -- course sessions: materialize the past 6 months ---------------------
@@ -1644,121 +1429,24 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     // -- attendance (~1500-2000 rows) ---------------------------------------
     // Every active enrolment × that course's already-materialized past
-    // sessions. `(member_idx + session_idx) % 20` → 0-14 present / 15-17
-    // absent / 18-19 leave (~75/15/10); members 22-24 are the low-attendance
-    // group → 0-7 present / 8-16 absent / 17-19 leave (~40/45/15), filling
-    // the attendance-distribution report's low buckets.
-    // `marked_at` treats the session's studio-local `end_time` as if it
-    // were already UTC (same shortcut `at_utc` takes), then clamps to
-    // `at.now` — same clamp reason as `at_utc`: a session dated `today`
-    // (studio-local, can run up to a day ahead of the UTC date) would
-    // otherwise mark attendance hours in the future.
-    let mut past_sessions: Vec<Vec<(Uuid, DateTime<Utc>)>> = Vec::with_capacity(course_ids.len());
-    for course_id in &course_ids {
-        let rows: Vec<(Uuid, NaiveDate, NaiveTime)> = sqlx::query_as(
-            "SELECT id, session_date, end_time FROM course_sessions \
-             WHERE course_id = $1 AND session_date < $2 \
-             ORDER BY session_date, start_time",
-        )
-        .bind(course_id)
-        .bind(today)
-        .fetch_all(db)
-        .await
-        .context("load past sessions for attendance")?;
-        past_sessions.push(
-            rows.into_iter()
-                .map(|(id, d, t)| (id, d.and_time(t).and_utc().min(at.now)))
-                .collect(),
-        );
-    }
-    let mut attendance_rows: Vec<(Uuid, Uuid, &'static str, DateTime<Utc>)> = Vec::new();
-    for (i, k, enrolment_id) in &active_enrolments {
-        for (session_idx, (session_id, marked_at)) in past_sessions[*k].iter().enumerate() {
-            let r = (i + session_idx) % 20;
-            let status = if *i >= 22 {
-                match r {
-                    0..=7 => "present",
-                    8..=16 => "absent",
-                    _ => "leave",
-                }
-            } else {
-                match r {
-                    0..=14 => "present",
-                    15..=17 => "absent",
-                    _ => "leave",
-                }
-            };
-            attendance_rows.push((*session_id, *enrolment_id, status, *marked_at));
-        }
-    }
-    insert_attendance_bulk(db, admin_id, &attendance_rows).await?;
-    println!(
-        "[attendance] {} attendance records ready",
-        attendance_rows.len()
-    );
+    // sessions; the status formula and `marked_at` are `attendance`'s.
+    let marked =
+        attendance::mark_past_sessions(db, at, admin_id, &course_ids, &active_enrolments).await?;
+    println!("[attendance] {marked} attendance records ready");
 
     // -- venue rental: time_slots (~168) + bookings --------------------------
-    // 4 venues × 3 weekly slots × 14 weeks (8 back + this week + 5 ahead),
-    // anchored to this week's Monday. The per-slot index `s` derives from
-    // the slot's *date* (num_days_from_ce), so a slot keeps its booking rule
-    // forever — re-runs in later weeks can't reshuffle history. Past slots:
-    // s%20 → 0-11 completed (60%) / 12-13 cancelled (10%) / 14 no_show (5%)
-    // / 15-19 unbooked.
-    let venue_ids = [
-        venue_id_by_slug(db, "trampoline-zone").await?,
-        venue_id_by_slug(db, "floor-gymnastics-zone").await?,
-        venue_id_by_slug(db, "aerial-skills-zone").await?,
-        venue_id_by_slug(db, "kids-play-zone").await?,
+    // The rental calendar and its past bookings are `rental::seed_rentals`'s
+    // (rules in its doc); `run` only fixes the 4 venues and their prices.
+    let venues = [
+        (venue_id_by_slug(db, "trampoline-zone").await?, 80_000),
+        (
+            venue_id_by_slug(db, "floor-gymnastics-zone").await?,
+            100_000,
+        ),
+        (venue_id_by_slug(db, "aerial-skills-zone").await?, 130_000),
+        (venue_id_by_slug(db, "kids-play-zone").await?, 150_000),
     ];
-    let venue_prices: [i64; 4] = [80_000, 100_000, 130_000, 150_000];
-    let slot_hours: [(u32, u32); 3] = [(10, 12), (14, 16), (19, 21)];
-    let monday = today - Days::new(today.weekday().num_days_from_monday() as u64);
-    let mut rental_slots = 0usize;
-    let mut rental_bookings = 0usize;
-    for w in 0..14i64 {
-        let week_start = monday + Duration::weeks(w - 8);
-        for v in 0..4usize {
-            for (j, &(start_h, end_h)) in slot_hours.iter().enumerate() {
-                let date = week_start + Days::new(((v + j * 2) % 7) as u64);
-                let s = date.num_days_from_ce() as usize * 12 + v * 3 + j;
-                let booking_status = if date < today {
-                    match s % 20 {
-                        0..=11 => Some(BookingStatus::Completed),
-                        12..=13 => Some(BookingStatus::Cancelled),
-                        14 => Some(BookingStatus::NoShow),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                let slot_id = upsert_time_slot(
-                    db,
-                    &TimeSlotSeed {
-                        venue_id: venue_ids[v],
-                        date,
-                        start_time: NaiveTime::from_hms_opt(start_h, 0, 0).expect("valid hour"),
-                        end_time: NaiveTime::from_hms_opt(end_h, 0, 0).expect("valid hour"),
-                        capacity: 1,
-                        price_cents: venue_prices[v],
-                    },
-                )
-                .await?;
-                rental_slots += 1;
-                if let Some(status) = booking_status {
-                    insert_booking_if_absent(
-                        db,
-                        member_ids[(s * 7) % 24],
-                        slot_id,
-                        status.as_str(),
-                        venue_prices[v],
-                        at_utc(date - Days::new(3), 8, at.now),
-                    )
-                    .await?;
-                    rental_bookings += 1;
-                }
-            }
-        }
-    }
+    let (rental_slots, rental_bookings) = seed_rentals(db, at, &venues, &member_ids).await?;
     println!("[rental]   {rental_slots} rental time slots / {rental_bookings} bookings ready");
 
     // -- contact inquiries (past 3 months) -----------------------------------
@@ -1865,34 +1553,4 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         row_counts,
         settled_members: settled,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn member_points_targets_match_the_legacy_formula() {
-        // The 24 targets the old inline `match (i - 1) / 6` produced — the
-        // PointsTier-derived formula must reproduce them exactly.
-        let legacy: [i64; 24] = [
-            150, 200, 250, 300, 350, 400, // <500
-            700, 900, 1_100, 1_300, 1_500, 1_700, // 500-1999
-            2_400, 2_800, 3_200, 3_600, 4_000, 4_400, // 2000-4999
-            5_500, 6_000, 6_500, 7_000, 7_500, 8_000, // ≥5000
-        ];
-        for (i, expected) in (1..=24usize).zip(legacy) {
-            assert_eq!(member_points_target(i), expected, "member {i}");
-        }
-    }
-
-    #[test]
-    fn member_points_targets_put_six_members_in_each_tier() {
-        for &tier in PointsTier::ALL {
-            let members = (1..=24usize)
-                .filter(|&i| PointsTier::from_balance(member_points_target(i)) == tier)
-                .count();
-            assert_eq!(members, 6, "{tier:?}");
-        }
-    }
 }
