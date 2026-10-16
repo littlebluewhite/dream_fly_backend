@@ -6,6 +6,7 @@ use crate::error::AppError;
 use crate::extractors::auth::AuthUser;
 use crate::modules::courses::seats::{self, CourseLocks};
 use crate::modules::leave::service as leave_service;
+use crate::modules::points::service::BalanceLock;
 
 use super::dto::{AttendanceEntryResponse, EnrolmentResponse, MyEnrolmentResponse};
 use super::model::Enrolment;
@@ -49,7 +50,9 @@ async fn enrol_one_tx(
 /// 收 `&CourseLocks`(`courses::seats`):每門課的 `courses` 列必須已由
 /// `lock_courses_tx` 鎖住(witness 外的課程 → `AppError::Internal`),並依
 /// witness 的鎖序(`CourseLocks::in_lock_order`,course_id 升序)逐一走訪——
-/// 排序歸 witness(訂單鎖協定,`orders::locks`),本函式不再自行排序。**不
+/// 排序歸 witness(訂單鎖協定,`orders::locks`),本函式不再自行排序。買家取自
+/// `buyer`(`points::service::BalanceLock`,checkout 傳 `locks.balance()`),
+/// 報名寫在鎖住的那位買家名下。**不
 /// dedup**:`uniq_cart_items_course` partial unique index(migration
 /// `20260704000001`)保證同一使用者的購物車不會出現同一門課兩行,`course_ids`
 /// 天生無重複。
@@ -60,7 +63,7 @@ async fn enrol_one_tx(
 pub async fn enrol_batch_from_purchase_tx(
     tx: &mut Transaction<'_, Postgres>,
     locks: &CourseLocks,
-    user_id: Uuid,
+    buyer: &BalanceLock,
     course_ids: &[Uuid],
     order_id: Uuid,
     now: DateTime<Utc>,
@@ -69,7 +72,7 @@ pub async fn enrol_batch_from_purchase_tx(
 
     let mut enrolments = Vec::with_capacity(ordered.len());
     for course_id in ordered {
-        enrolments.push(enrol_one_tx(tx, locks, user_id, course_id, order_id, now).await?);
+        enrolments.push(enrol_one_tx(tx, locks, buyer.user_id(), course_id, order_id, now).await?);
     }
 
     Ok(enrolments)

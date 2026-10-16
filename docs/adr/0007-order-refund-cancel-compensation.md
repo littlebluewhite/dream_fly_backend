@@ -797,3 +797,38 @@ ADR-0008 的 2026-09-27 Addendum 裁定「報名取消連帶取消其待審假�
 `lock_balance_tx` 再呼叫，斷言不變。刪 `apply_delta_nonexistent_user_returns_not_found`（404 已由上鎖
 那一步釘住）；新增 `apply_delta_on_a_user_row_gone_under_its_lock_is_internal`（同交易內刪掉已鎖的列，
 `apply_delta_tx` 回 `Internal`）。本檔其餘敘述維持決策當下狀態。
+
+## Addendum（2026-10-16）：checkout 剩下的買家寫入改收 `&BalanceLock`
+
+**遷移登記**：checkout 裡其餘以買家 `user_id` 為鍵的步驟，改從同一把餘額鎖拿買家，函式本體讀
+`buyer.user_id()`；checkout 在五個呼叫點都傳 `locks.balance()`：
+
+- `enrolments::service::enrol_batch_from_purchase_tx(tx, &CourseLocks, buyer: &BalanceLock, course_ids, order_id, now)`
+- `subscriptions::service::grant_from_purchase_tx(tx, buyer: &BalanceLock, product, quantity, price_cents, order_id, now)`
+- `cart::service::clear_cart_tx(tx, lock: &BalanceLock)`
+- `orders::idempotency::replay_or(db, tx, buyer: &BalanceLock, key, otherwise)`（`pub(super)`）
+- `orders::idempotency::record(db, tx, buyer: &BalanceLock, key, order_id)`（`pub(super)`）
+
+`561f0b0` 把訂單列的買家改取自 `locks.balance()`，但其餘步驟仍各自收 checkout 的裸 `user_id`，
+「買家身分只有一個來源」只是呼叫端慣例。現在由型別保證：鎖 A、寫 B 編譯不過。`BalanceLock` 不借用
+tx，所以 `record` 以值吃掉 tx 之後它照樣能用。行為零變更。
+
+**回應 2026-07-23 的排除**：那則 Addendum 不讓 `products` 的 reserve/restore 收 `&BalanceLock`。
+排除照舊——它們寫的是商品列（庫存），不是買家的列，買家鎖跟它們的正確性無關，它們已各自收
+`&ProductLocks`/`&RestockLocks`。本則的步驟不同：報名、訂閱、購物車、冪等列寫（或查）的都是買家的
+`user_id` 欄，正是「鎖 A 寫 B」要擋的錯，與 `find_cart_items_for_checkout_tx`、`apply_delta_tx`
+收 `&BalanceLock` 同一類。
+
+**意識性殘縫**：
+
+- repository 層（`enrolments`/`subscriptions`/`cart` 的 `*_tx`、`orders::idempotency` 的私有查詢）
+  照舊收裸 `user_id`，比照本檔 2026-07-23、2026-10-15 的登記（ADR-0005 seam）。
+- `idempotency::replay` 在開交易、上鎖之前就跑，照舊收裸 `user_id`；seed 的購買時間線也用它預查。
+
+**測試**：不加新測試，斷言不改，只搬鎖的位置。`tests/service_enrolments.rs` 的 helper 改收
+`&BalanceLock`，每個 tx 第一句先 `lock_balance_tx`。兩個例外：
+`enrol_maps_db_unique_violation_to_already_enrolled` 要等外部的 `seed_enrolment` commit 之後才上鎖——
+先鎖的話，那筆 INSERT 的 FK `FOR KEY SHARE` 會被 `FOR UPDATE` 永遠擋住；
+`concurrent_enrol_same_user_course_only_one_succeeds` 的鎖要在建立訂單之前拿——否則兩邊先經訂單 FK
+共持 `KEY SHARE`、再升級成 `FOR UPDATE` 會 40P01 死鎖，回滾的那一方剛好讓測試誤過；它的前提說明改成
+「同買家鎖把兩次嘗試序列化，輸家由預查擋下」。`tests/service_subscriptions.rs` 的三個 grant 測試先上鎖。

@@ -80,7 +80,11 @@ pub async fn apply_delta_tx(
 /// `find_cart_items_for_checkout_tx` now takes `&BalanceLock` instead of a
 /// bare `user_id`, so the cart it reads can never be paired with a
 /// different user's lock. [`apply_delta_tx`] takes it too, so every ledger
-/// write lands on a user whose row is already locked.
+/// write lands on a user whose row is already locked. Checkout's other buyer
+/// writes take it the same way — `enrolments::service::enrol_batch_from_purchase_tx`,
+/// `subscriptions::service::grant_from_purchase_tx`, `cart::service::clear_cart_tx`
+/// and `orders::idempotency`'s `replay_or`/`record` — each reading the buyer
+/// from `user_id()` (`orders::locks` module doc).
 ///
 /// Fields are private; only `lock_balance_tx` can construct one. Read-only
 /// access via `user_id()`/`balance()` — `user_id` is the caller's own
@@ -94,7 +98,8 @@ pub async fn apply_delta_tx(
 /// guards against the governed code *inside the same module*
 /// (`orders::service`/`orders::idempotency`) hand-building a fake
 /// witness to bypass the constructor. Callers outside this module
-/// (`cart::service`, `orders`, the seed) simply have no access to these
+/// (`cart::service`, `enrolments::service`, `subscriptions::service`,
+/// `orders`, the seed) simply have no access to these
 /// private fields — plain field privacy is the whole defense there, exactly
 /// as with `SessionLock`. Inside it, `try_spend_tx`, `reverse_order_tx` and
 /// `adjust_points` reach the governed `apply_delta_tx` and could hand-build

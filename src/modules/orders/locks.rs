@@ -61,9 +61,13 @@
 //! [`CheckoutLocks`], which carries the three witnesses (`BalanceLock`,
 //! `ProductLocks`, `CourseLocks`). The witnesses live with the tables' owners
 //! (points, products, courses); this module only fixes the order. Every later
-//! checkout write goes through a witness: the ledger's `apply_delta_tx` takes
-//! `&BalanceLock`; `reserve_stock_tx` takes `&ProductLocks`,
-//! `enrol_batch_from_purchase_tx` takes `&CourseLocks`, and those two each
+//! checkout write goes through a witness. Every write to a buyer-owned
+//! `user_id` column takes `&BalanceLock` (checkout passes `locks.balance()`)
+//! and reads the buyer from it: the ledger's `apply_delta_tx`,
+//! `enrol_batch_from_purchase_tx`, `grant_from_purchase_tx`, `clear_cart_tx`
+//! and `idempotency::replay_or`/`record` — so "lock buyer A, write buyer B"
+//! does not compile. `reserve_stock_tx` takes `&ProductLocks`,
+//! `enrol_batch_from_purchase_tx` takes `&CourseLocks` too, and those two each
 //! walk their lines via the witness's `in_lock_order` — which is also why
 //! a multi-line 409 names the line with the smallest id. A line the witness
 //! doesn't cover is `AppError::Internal`, not a silent unlocked write.

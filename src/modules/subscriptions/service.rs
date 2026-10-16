@@ -3,6 +3,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::points::service::BalanceLock;
 use crate::modules::products::model::Product;
 
 use super::dto::SubscriptionResponse;
@@ -22,12 +23,16 @@ use super::repository;
 /// (checkout's `products::service::reserve_stock_tx` runs it) — `plan`'s
 /// precondition.
 ///
+/// The subscription's owner is `buyer.user_id()` — the buyer whose balance
+/// lock the caller holds (checkout passes `locks.balance()`; see
+/// `orders::locks`).
+///
 /// `price_cents` is the unit price paid and is stored as given. `now` is
 /// the caller-sampled clock (checkout's own `now`), threaded through so
 /// `entitlement::plan` never reads the wall clock itself.
 pub async fn grant_from_purchase_tx(
     tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
+    buyer: &BalanceLock,
     product: &Product,
     quantity: i32,
     price_cents: i64,
@@ -40,7 +45,7 @@ pub async fn grant_from_purchase_tx(
 
     let subscription = repository::insert_tx(
         tx,
-        user_id,
+        buyer.user_id(),
         product.id,
         order_id,
         grant.expires_at,

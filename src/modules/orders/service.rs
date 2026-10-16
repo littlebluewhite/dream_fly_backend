@@ -160,7 +160,7 @@ pub async fn checkout(
         return idempotency::replay_or(
             db,
             tx,
-            user_id,
+            locks.balance(),
             key.as_ref(),
             AppError::BadRequest("cart is empty".into()),
         )
@@ -320,7 +320,7 @@ pub async fn checkout(
     enrolments_service::enrol_batch_from_purchase_tx(
         &mut tx,
         locks.courses(),
-        user_id,
+        locks.balance(),
         &plan.course_ids,
         order.id,
         now,
@@ -346,7 +346,7 @@ pub async fn checkout(
         })?;
         subscriptions_service::grant_from_purchase_tx(
             &mut tx,
-            user_id,
+            locks.balance(),
             product,
             p.quantity,
             p.price_cents,
@@ -357,11 +357,11 @@ pub async fn checkout(
     }
 
     // Clear the cart within the same transaction.
-    cart_service::clear_cart_tx(&mut tx, user_id).await?;
+    cart_service::clear_cart_tx(&mut tx, locks.balance()).await?;
 
     // Record the idempotency key inside the same tx; a concurrent same-key
     // twin that already committed wins, and its order is the response.
-    let mut tx = match idempotency::record(db, tx, user_id, key.as_ref(), order.id).await? {
+    let mut tx = match idempotency::record(db, tx, locks.balance(), key.as_ref(), order.id).await? {
         Recorded::Fresh(tx) => tx,
         Recorded::TwinWon(response) => return Ok(response),
     };
