@@ -83,7 +83,7 @@ pub(super) async fn seed_rentals(
                         db,
                         members[(s * 7) % members.len()],
                         slot_id,
-                        status.as_str(),
+                        status,
                         price_cents,
                         at_utc(date - Days::new(3), 8, at.now),
                     )
@@ -148,7 +148,7 @@ async fn insert_booking_if_absent(
     db: &PgPool,
     user_id: Uuid,
     time_slot_id: Uuid,
-    status: &str,
+    status: BookingStatus,
     price_cents: i64,
     created_at: DateTime<Utc>,
 ) -> anyhow::Result<()> {
@@ -165,7 +165,7 @@ async fn insert_booking_if_absent(
     sqlx::query(
         r#"
         INSERT INTO bookings (id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::booking_status, NULL, $5, $6, $6)
+        VALUES ($1, $2, $3, $4, NULL, $5, $6, $6)
         "#,
     )
     .bind(Uuid::now_v7())

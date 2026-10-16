@@ -1,27 +1,32 @@
 //! The dev/reporting dataset `dataset::run` writes — split out of
 //! `bin/seed/main.rs` (the entry point: env/config/pool/migrate, then one
-//! sampled `StudioNow` handed in here) so the dataset itself, `SeedReport`
-//! and its `#[sqlx::test]`s can live together without dragging in
-//! process-level concerns.
+//! sampled `StudioNow` handed in here) so the dataset itself and
+//! `SeedReport` live apart from process-level concerns; the `#[sqlx::test]`
+//! invariants on `run` are in `bin/seed/tests.rs`.
 //!
-//! Layout, top to bottom: per-table insert helpers (one `// ---` banner per
-//! table), the reporting-dataset helpers, `SeedReport`, then `run`, whose
-//! body walks the tables in `// -- <table> --` steps, and the unit tests.
-//! List the steps with `grep -n '// -- ' src/bin/seed/dataset.rs` and read
-//! the one you need rather than the whole file.
+//! Each seed rule with its own interface is a sub-module: `accounts`
+//! (account birth), `timeline` (paid purchases through checkout), `pending`
+//! (pending contrast orders), `settlement` (points-tier settlement),
+//! `attendance` (past-session marks) and `rental` (venue-rental slots and
+//! bookings) — each module's doc states its own rules and idempotency. This
+//! file keeps, top to bottom: the remaining per-table insert helpers (one
+//! `// ---` banner per table), the reporting-dataset helpers, `SeedReport`,
+//! then `run`, whose body composes the tables and sub-modules in
+//! `// -- <table> --` steps. List the steps with
+//! `grep -n '// -- ' src/bin/seed/dataset.rs` and read the one you need
+//! rather than the whole file.
 //!
-//! Every insert is `INSERT ... ON CONFLICT DO NOTHING` keyed on the table's
-//! natural unique column (email / slug / code) — a bare `ON CONFLICT DO
-//! NOTHING` (no explicit target) no-ops on ANY unique-constraint violation on
-//! that table, so this is safe regardless of whether the unique constraint is
-//! a plain column or a functional `LOWER(slug)` index. Where a table has no
-//! usable unique key (rewards, pending orders, time_slots, bookings,
-//! contact_inquiries), idempotency is a SELECT-existence check on the seed's
-//! deterministic natural key (name / `DF-SEED-…` order number /
-//! venue+date+start / slot / `df-seed-…` email) instead; paid orders,
-//! and the enrolments they carry, are keyed by checkout's own idempotency
-//! (below). Running this binary twice must therefore leave row counts
-//! unchanged on the second run.
+//! Every insert here is `INSERT ... ON CONFLICT DO NOTHING` keyed on the
+//! table's natural unique key (slug / code / a schedule slot's
+//! course+day+start) — a bare `ON CONFLICT DO NOTHING` (no explicit target)
+//! no-ops on ANY unique-constraint violation on that table, so this is safe
+//! regardless of whether the unique constraint is a plain column or a
+//! functional `LOWER(slug)` index. Where a table has no usable unique key
+//! (rewards, contact_inquiries), idempotency is a SELECT-existence check on
+//! the seed's deterministic natural key (name / `df-seed-…` email) instead;
+//! paid orders, and the enrolments they carry, are keyed by checkout's own
+//! idempotency (below). Running this binary twice must therefore leave row
+//! counts unchanged on the second run.
 //!
 //! The 12-month reporting dataset (members / enrolments / orders / sessions /
 //! attendance / venue-rental slots+bookings / inquiries) is **deterministic**:

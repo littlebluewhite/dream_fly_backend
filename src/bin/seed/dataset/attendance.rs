@@ -11,6 +11,7 @@ use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 /// Mark every active enrolment on its course's sessions dated before
@@ -52,21 +53,21 @@ pub(super) async fn mark_past_sessions(
                 .collect(),
         );
     }
-    let mut attendance_rows: Vec<(Uuid, Uuid, &'static str, DateTime<Utc>)> = Vec::new();
+    let mut attendance_rows: Vec<(Uuid, Uuid, AttendanceStatus, DateTime<Utc>)> = Vec::new();
     for (i, k, enrolment_id) in active {
         for (session_idx, (session_id, marked_at)) in past_sessions[*k].iter().enumerate() {
             let r = (i + session_idx) % 20;
             let status = if *i >= 22 {
                 match r {
-                    0..=7 => "present",
-                    8..=16 => "absent",
-                    _ => "leave",
+                    0..=7 => AttendanceStatus::Present,
+                    8..=16 => AttendanceStatus::Absent,
+                    _ => AttendanceStatus::Leave,
                 }
             } else {
                 match r {
-                    0..=14 => "present",
-                    15..=17 => "absent",
-                    _ => "leave",
+                    0..=14 => AttendanceStatus::Present,
+                    15..=17 => AttendanceStatus::Absent,
+                    _ => AttendanceStatus::Leave,
                 }
             };
             attendance_rows.push((*session_id, *enrolment_id, status, *marked_at));
@@ -83,7 +84,7 @@ pub(super) async fn mark_past_sessions(
 async fn insert_attendance_bulk(
     db: &PgPool,
     marked_by: Uuid,
-    rows: &[(Uuid, Uuid, &'static str, DateTime<Utc>)],
+    rows: &[(Uuid, Uuid, AttendanceStatus, DateTime<Utc>)],
 ) -> anyhow::Result<()> {
     if rows.is_empty() {
         return Ok(());
@@ -92,20 +93,20 @@ async fn insert_attendance_bulk(
     let mut ids: Vec<Uuid> = Vec::with_capacity(rows.len());
     let mut session_ids: Vec<Uuid> = Vec::with_capacity(rows.len());
     let mut enrolment_ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut statuses: Vec<String> = Vec::with_capacity(rows.len());
+    let mut statuses: Vec<AttendanceStatus> = Vec::with_capacity(rows.len());
     let mut marked_ats: Vec<DateTime<Utc>> = Vec::with_capacity(rows.len());
     for (session_id, enrolment_id, status, marked_at) in rows {
         ids.push(Uuid::now_v7());
         session_ids.push(*session_id);
         enrolment_ids.push(*enrolment_id);
-        statuses.push((*status).to_string());
+        statuses.push(*status);
         marked_ats.push(*marked_at);
     }
 
     sqlx::query(
         "INSERT INTO attendance_records (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
-         SELECT u.id, u.session_id, u.enrolment_id, u.status::attendance_status, $2, u.marked_at, NOW() \
-         FROM UNNEST($1::uuid[], $3::uuid[], $4::uuid[], $5::text[], $6::timestamptz[]) \
+         SELECT u.id, u.session_id, u.enrolment_id, u.status, $2, u.marked_at, NOW() \
+         FROM UNNEST($1::uuid[], $3::uuid[], $4::uuid[], $5::attendance_status[], $6::timestamptz[]) \
               AS u(id, session_id, enrolment_id, status, marked_at) \
          ON CONFLICT (session_id, enrolment_id) DO NOTHING",
     )
@@ -188,14 +189,19 @@ mod tests {
         .fetch_one(db)
         .await
         .expect("insert course");
+        // Business time bound, not left to the column DEFAULT (the DB clock):
+        // enrolled before the course's first session, 03-04.
+        let enrolled_at = Utc.with_ymd_and_hms(2026, 3, 1, 4, 0, 0).unwrap();
         let mut enrolments = Vec::new();
         for user in &ids[1..] {
             enrolments.push(
                 sqlx::query_scalar::<_, Uuid>(
-                    "INSERT INTO enrolments (user_id, course_id) VALUES ($1, $2) RETURNING id",
+                    "INSERT INTO enrolments (user_id, course_id, enrolled_at, created_at) \
+                     VALUES ($1, $2, $3, $3) RETURNING id",
                 )
                 .bind(user)
                 .bind(course)
+                .bind(enrolled_at)
                 .fetch_one(db)
                 .await
                 .expect("insert enrolment"),
