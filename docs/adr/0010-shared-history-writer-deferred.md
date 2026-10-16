@@ -182,4 +182,5 @@ Addendum 2026-10-15「種子購買時間線」說 `insert_pending_order_if_absen
   - `accounts`、`pending`、`attendance` 的介面測試是新寫的,`tests.rs` 沒有對應區塊搬走(50c6bc1、cd84173、
     27e548a)。
 - 本 ADR 的決策不變:這些子 module 是 seed 內部的 owner,不是共用「歷史寫入」module;`tests/common/fixtures.rs`
-  沒有呼叫它們,`OrderSeed` 照舊直寫列、不產 points ledger,重開條件 1 仍未成立。共用「歷史寫入」module 仍延後。
+  沒有呼叫它們,`OrderSeed` 經 `create_order` / `create_order_items` 寫訂單列,但照舊不走 checkout、
+  不產 points ledger,重開條件 1 仍未成立。共用「歷史寫入」module 仍延後。
