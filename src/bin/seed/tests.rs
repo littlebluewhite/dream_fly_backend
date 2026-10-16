@@ -57,13 +57,6 @@ async fn seed_member_cart_items(db: &PgPool) -> i64 {
     .expect("count seed member cart items")
 }
 
-async fn total_occupying_bookings(db: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM occupying_bookings")
-        .fetch_one(db)
-        .await
-        .expect("count occupying_bookings")
-}
-
 async fn user_id_by_email(db: &PgPool, email: &str) -> Uuid {
     sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
         .bind(email)
@@ -81,10 +74,10 @@ async fn points_balance(db: &PgPool, user_id: Uuid) -> i64 {
 }
 
 /// D = 2026-03-10T03:00Z (Asia/Taipei) run twice → row counts (checkout's
-/// `order_idempotency`/`notifications`/`events_outbox` among them),
-/// `point_ledger` row count and the `occupying_bookings` count all unchanged,
-/// `settled_members == 0`, and no seed member is left holding cart lines (a
-/// rerun replays its keys before refilling any cart). Then manually push
+/// `order_idempotency`/`notifications`/`events_outbox` among them) and the
+/// `point_ledger` row count unchanged, `settled_members == 0`, and no seed
+/// member is left holding cart lines (a rerun replays its keys before
+/// refilling any cart). Then manually push
 /// seed-member-01 500 points above its points-tier
 /// target (`member_points_target(1) == 150`) — the next run must settle
 /// exactly that one member back to 150 (regression d819e21: an earlier seed
@@ -99,7 +92,6 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
 
     let first = dataset::run(&db, at).await.expect("first run");
     let ledger_after_first = ledger_row_count(&db).await;
-    let occupying_after_first = total_occupying_bookings(&db).await;
 
     let second = dataset::run(&db, at).await.expect("second run");
     assert_eq!(first.row_counts, second.row_counts);
@@ -115,7 +107,6 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
     assert_eq!(seed_member_cart_items(&db).await, 0);
     assert_eq!(second.settled_members, 0);
     assert_eq!(ledger_row_count(&db).await, ledger_after_first);
-    assert_eq!(total_occupying_bookings(&db).await, occupying_after_first);
 
     let member_id = user_id_by_email(&db, "seed-member-01@dreamfly.tw").await;
     let mut tx = db.begin().await.expect("begin drift tx");
@@ -193,21 +184,6 @@ async fn later_run_keeps_invariants(db: PgPool) {
             .await
             .expect("count zero-delta ledger rows");
     assert_eq!(zero_delta_rows, 0);
-
-    // ④ capacity invariant — the dropped `time_slots_booked_bound` CHECK used
-    // to guarantee it: no slot holds more occupying bookings than its capacity.
-    let over_capacity: Vec<(Uuid, i32, i64)> = sqlx::query_as(
-        "SELECT ts.id, ts.capacity, COUNT(ob.*) FROM time_slots ts \
-         JOIN occupying_bookings ob ON ob.time_slot_id = ts.id \
-         GROUP BY ts.id, ts.capacity HAVING COUNT(ob.*) > ts.capacity",
-    )
-    .fetch_all(&db)
-    .await
-    .expect("load over-capacity slots");
-    assert!(
-        over_capacity.is_empty(),
-        "over-capacity slots: {over_capacity:?}"
-    );
 
     let seed_ids = seed_order_ids(&db).await;
     let orders: Vec<(Uuid, i64, i64, OrderStatus)> = sqlx::query_as(

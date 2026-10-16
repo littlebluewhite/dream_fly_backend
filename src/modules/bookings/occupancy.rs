@@ -22,9 +22,9 @@
 //! [`crate::modules::courses::seats`]:佔位判斷的 SQL 必須與判斷邏輯同檔,
 //! 鎖協定才能成為 interface 的一部分,而不是散在呼叫端的紀律。
 //!
-//! 【seed bypass】`src/bin/seed/dataset.rs` 佈歷史場租資料時**不消費**本模組——
-//! 它是 pool-based 冪等批次,直接插入指定狀態(`completed`/`cancelled`/
-//! `no_show`)的 booking 列;沒有快取欄位要同步,佔不佔位由
+//! 【seed bypass】`src/bin/seed/dataset/rental.rs`(`seed_rentals`)佈歷史
+//! 場租資料時**不消費**本模組——它是 pool-based 冪等批次,直接插入指定狀態
+//! (`completed`/`cancelled`/`no_show`)的 booking 列;沒有快取欄位要同步,佔不佔位由
 //! `occupying_bookings` 讀時決定,所以 seed 連謂詞都不必呼叫。記錄在案的
 //! bypass,不是遺漏;測試 fixture `seed_booking` 同理。
 //!

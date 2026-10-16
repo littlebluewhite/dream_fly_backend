@@ -93,7 +93,6 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use dream_fly_backend::modules::bookings::model::BookingStatus;
 use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
 use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
@@ -110,9 +109,11 @@ use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 mod accounts;
+mod rental;
 mod timeline;
 
 use accounts::{SeedAccount, upsert_account};
+use rental::seed_rentals;
 use timeline::{SeedPurchase, Walked};
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
@@ -656,102 +657,6 @@ async fn insert_attendance_bulk(
     .execute(db)
     .await
     .context("bulk insert attendance_records")?;
-    Ok(())
-}
-
-/// One venue-rental time slot, column shape per
-/// `schedule::repository::bulk_create_tx` (course_id NULL — pure rental).
-struct TimeSlotSeed {
-    venue_id: Uuid,
-    date: NaiveDate,
-    start_time: NaiveTime,
-    end_time: NaiveTime,
-    capacity: i32,
-    price_cents: i64,
-}
-
-/// Insert a rental slot (idempotent by existence check on
-/// `(venue_id, date, start_time)` — the table's only guard is the GIST
-/// anti-overlap EXCLUDE, which bare ON CONFLICT DO NOTHING also covers as a
-/// belt) and return its id either way. The slot stores no occupancy count:
-/// its `booked` is counted at read time from the `occupying_bookings` view
-/// (ADR-0015), so a slot that crosses into the past and gains a booking on a
-/// later run needs no sync.
-async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uuid> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM time_slots WHERE venue_id = $1 AND date = $2 AND start_time = $3",
-    )
-    .bind(seed.venue_id)
-    .bind(seed.date)
-    .bind(seed.start_time)
-    .fetch_optional(db)
-    .await
-    .context("check existing time_slot")?;
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO time_slots (id, date, start_time, end_time, venue_id, course_id, capacity, price_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NOW(), NOW())
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(id)
-    .bind(seed.date)
-    .bind(seed.start_time)
-    .bind(seed.end_time)
-    .bind(seed.venue_id)
-    .bind(seed.capacity)
-    .bind(seed.price_cents)
-    .execute(db)
-    .await
-    .with_context(|| format!("insert time_slot {} {}", seed.date, seed.start_time))?;
-    Ok(id)
-}
-
-/// Insert a rental booking (idempotent by existence check on
-/// `(user_id, time_slot_id)` — the partial unique index excludes cancelled
-/// rows, and the seed assigns at most one booking per slot). `price_cents`
-/// is the slot's price snapshot, per
-/// `bookings::occupancy::insert_occupying_booking_tx`.
-async fn insert_booking_if_absent(
-    db: &PgPool,
-    user_id: Uuid,
-    time_slot_id: Uuid,
-    status: &str,
-    price_cents: i64,
-    created_at: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM bookings WHERE user_id = $1 AND time_slot_id = $2)",
-    )
-    .bind(user_id)
-    .bind(time_slot_id)
-    .fetch_one(db)
-    .await
-    .context("check existing booking")?;
-    if exists {
-        return Ok(());
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO bookings (id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::booking_status, NULL, $5, $6, $6)
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(user_id)
-    .bind(time_slot_id)
-    .bind(status)
-    .bind(price_cents)
-    .bind(created_at)
-    .execute(db)
-    .await
-    .with_context(|| format!("insert booking for slot {time_slot_id}"))?;
     Ok(())
 }
 
@@ -1767,67 +1672,18 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     );
 
     // -- venue rental: time_slots (~168) + bookings --------------------------
-    // 4 venues × 3 weekly slots × 14 weeks (8 back + this week + 5 ahead),
-    // anchored to this week's Monday. The per-slot index `s` derives from
-    // the slot's *date* (num_days_from_ce), so a slot keeps its booking rule
-    // forever — re-runs in later weeks can't reshuffle history. Past slots:
-    // s%20 → 0-11 completed (60%) / 12-13 cancelled (10%) / 14 no_show (5%)
-    // / 15-19 unbooked.
-    let venue_ids = [
-        venue_id_by_slug(db, "trampoline-zone").await?,
-        venue_id_by_slug(db, "floor-gymnastics-zone").await?,
-        venue_id_by_slug(db, "aerial-skills-zone").await?,
-        venue_id_by_slug(db, "kids-play-zone").await?,
+    // The rental calendar and its past bookings are `rental::seed_rentals`'s
+    // (rules in its doc); `run` only fixes the 4 venues and their prices.
+    let venues = [
+        (venue_id_by_slug(db, "trampoline-zone").await?, 80_000),
+        (
+            venue_id_by_slug(db, "floor-gymnastics-zone").await?,
+            100_000,
+        ),
+        (venue_id_by_slug(db, "aerial-skills-zone").await?, 130_000),
+        (venue_id_by_slug(db, "kids-play-zone").await?, 150_000),
     ];
-    let venue_prices: [i64; 4] = [80_000, 100_000, 130_000, 150_000];
-    let slot_hours: [(u32, u32); 3] = [(10, 12), (14, 16), (19, 21)];
-    let monday = today - Days::new(today.weekday().num_days_from_monday() as u64);
-    let mut rental_slots = 0usize;
-    let mut rental_bookings = 0usize;
-    for w in 0..14i64 {
-        let week_start = monday + Duration::weeks(w - 8);
-        for v in 0..4usize {
-            for (j, &(start_h, end_h)) in slot_hours.iter().enumerate() {
-                let date = week_start + Days::new(((v + j * 2) % 7) as u64);
-                let s = date.num_days_from_ce() as usize * 12 + v * 3 + j;
-                let booking_status = if date < today {
-                    match s % 20 {
-                        0..=11 => Some(BookingStatus::Completed),
-                        12..=13 => Some(BookingStatus::Cancelled),
-                        14 => Some(BookingStatus::NoShow),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                let slot_id = upsert_time_slot(
-                    db,
-                    &TimeSlotSeed {
-                        venue_id: venue_ids[v],
-                        date,
-                        start_time: NaiveTime::from_hms_opt(start_h, 0, 0).expect("valid hour"),
-                        end_time: NaiveTime::from_hms_opt(end_h, 0, 0).expect("valid hour"),
-                        capacity: 1,
-                        price_cents: venue_prices[v],
-                    },
-                )
-                .await?;
-                rental_slots += 1;
-                if let Some(status) = booking_status {
-                    insert_booking_if_absent(
-                        db,
-                        member_ids[(s * 7) % 24],
-                        slot_id,
-                        status.as_str(),
-                        venue_prices[v],
-                        at_utc(date - Days::new(3), 8, at.now),
-                    )
-                    .await?;
-                    rental_bookings += 1;
-                }
-            }
-        }
-    }
+    let (rental_slots, rental_bookings) = seed_rentals(db, at, &venues, &member_ids).await?;
     println!("[rental]   {rental_slots} rental time slots / {rental_bookings} bookings ready");
 
     // -- contact inquiries (past 3 months) -----------------------------------
