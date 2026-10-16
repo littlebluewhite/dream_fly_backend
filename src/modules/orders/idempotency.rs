@@ -18,6 +18,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::modules::points::service::BalanceLock;
 
 use super::dto::OrderResponse;
 use super::repository;
@@ -97,7 +98,8 @@ pub async fn replay(
     replay_by_key(db, user_id, &key.0, TxReleased::no_open_tx()).await
 }
 
-/// Empty-cart branch: replay a same-key twin that already won this cart, or
+/// Empty-cart branch: replay a same-key twin that already won this cart (the
+/// key's user is `buyer.user_id()`, the buyer checkout has locked), or
 /// fail with `otherwise` (checkout's 400「cart is empty」). Takes the checkout
 /// tx by value and always ends it (rolled back): with no key it is simply
 /// dropped before `otherwise` is returned, exactly as a plain `Err` return
@@ -117,7 +119,7 @@ pub async fn replay(
 pub(super) async fn replay_or(
     db: &PgPool,
     tx: Transaction<'static, Postgres>,
-    user_id: Uuid,
+    buyer: &BalanceLock,
     key: Option<&IdempotencyKey>,
     otherwise: AppError,
 ) -> Result<OrderResponse, AppError> {
@@ -125,16 +127,17 @@ pub(super) async fn replay_or(
     let Some(key) = key else {
         return Err(otherwise);
     };
-    match replay_by_key(db, user_id, &key.0, released).await? {
+    match replay_by_key(db, buyer.user_id(), &key.0, released).await? {
         Some(response) => Ok(response),
         None => Err(otherwise),
     }
 }
 
-/// Record `(user_id, key) → order_id` inside the checkout transaction, so
-/// either both the order and the key persist or neither does; a concurrent
-/// retry sees either nothing (and races for the lock) or the committed row.
-/// With no key the tx comes straight back as `Fresh`.
+/// Record `(buyer.user_id(), key) → order_id` inside the checkout
+/// transaction, so either both the order and the key persist or neither
+/// does; a concurrent retry sees either nothing (and races for the lock) or
+/// the committed row. `buyer` is the balance lock checkout holds. With no key
+/// the tx comes straight back as `Fresh`.
 ///
 /// Takes the tx by value so the losing branch cannot forget to release it:
 /// on a unique violation a concurrent same-key twin beat us — the tx is
@@ -155,13 +158,14 @@ pub(super) async fn replay_or(
 pub(super) async fn record(
     db: &PgPool,
     mut tx: Transaction<'static, Postgres>,
-    user_id: Uuid,
+    buyer: &BalanceLock,
     key: Option<&IdempotencyKey>,
     order_id: Uuid,
 ) -> Result<Recorded, AppError> {
     let Some(key) = key else {
         return Ok(Recorded::Fresh(tx));
     };
+    let user_id = buyer.user_id();
     match insert_idempotency_tx(&mut tx, user_id, &key.0, order_id).await {
         Ok(()) => Ok(Recorded::Fresh(tx)),
         Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => {

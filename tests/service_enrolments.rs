@@ -7,7 +7,8 @@
 //! - a course outside the `CourseLocks` witness is Internal.
 //! - cancelling an enrolment frees the seat for a second enrol.
 //! - concurrent enrol attempts for the same user+course: exactly one wins
-//!   (the `FOR UPDATE` course lock serializes the two transactions).
+//!   (the buyer's `users`-row `FOR UPDATE`, taken first as in checkout,
+//!   serializes the two transactions).
 //! - the partial unique index `uniq_enrolments_active` itself: a direct
 //!   duplicate insert (bypassing the service's lock + pre-check) raises a
 //!   unique violation, and the service maps a genuine DB-level violation
@@ -31,6 +32,7 @@ use dream_fly_backend::modules::enrolments::repository as enrolments_repo;
 use dream_fly_backend::modules::enrolments::service;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::orders::repository as orders_repo;
+use dream_fly_backend::modules::points::service::{self as points_service, BalanceLock};
 
 /// `enrolments.order_id` is a real FK into `orders`, so tests need an actual
 /// order row committed in the same transaction rather than a bare random
@@ -59,12 +61,20 @@ async fn seed_order(
     .id
 }
 
+/// Take the buyer's balance lock — checkout's first statement, so each tx
+/// below opens with it.
+async fn lock_buyer(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, user_id: Uuid) -> BalanceLock {
+    points_service::lock_balance_tx(tx, user_id)
+        .await
+        .expect("lock buyer")
+}
+
 /// One course through the purchase path: `lock_courses_tx` then
 /// `enrol_batch_from_purchase_tx`, the same pair `orders::locks` +
-/// `checkout` run.
+/// `checkout` run, for the buyer whose balance lock the caller holds.
 async fn enrol(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
+    buyer: &BalanceLock,
     course_id: Uuid,
     order_id: Uuid,
 ) -> Result<Enrolment, AppError> {
@@ -72,7 +82,7 @@ async fn enrol(
     let mut enrolments = service::enrol_batch_from_purchase_tx(
         tx,
         &locks,
-        user_id,
+        buyer,
         &[course_id],
         order_id,
         chrono::Utc::now(),
@@ -87,8 +97,9 @@ async fn enrol_from_purchase_creates_active_enrolment(db: PgPool) {
     let course_id = seed_course(&db, "Enrol Course A", None).await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = lock_buyer(&mut tx, user_id).await;
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
-    let enrolment = enrol(&mut tx, user_id, course_id, order_id)
+    let enrolment = enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect("enrol");
     tx.commit().await.expect("commit");
@@ -109,15 +120,17 @@ async fn enrol_full_course_returns_course_is_full_conflict(db: PgPool) {
     let user_b = common::seed_member(&db, "enrol-full-b@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer_a = lock_buyer(&mut tx, user_a).await;
     let order_a = seed_order(&mut tx, user_a, 50_000).await;
-    enrol(&mut tx, user_a, course_id, order_a)
+    enrol(&mut tx, &buyer_a, course_id, order_a)
         .await
         .expect("first enrol fills the only seat");
     tx.commit().await.expect("commit");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
+    let buyer_b = lock_buyer(&mut tx2, user_b).await;
     let order_b = seed_order(&mut tx2, user_b, 50_000).await;
-    let err = enrol(&mut tx2, user_b, course_id, order_b)
+    let err = enrol(&mut tx2, &buyer_b, course_id, order_b)
         .await
         .expect_err("second enrol must be rejected: course is full");
     tx2.rollback().await.expect("rollback");
@@ -134,15 +147,17 @@ async fn enrol_duplicate_active_returns_already_enrolled_conflict(db: PgPool) {
     let user_id = common::seed_member(&db, "enrol-dup@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = lock_buyer(&mut tx, user_id).await;
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
-    enrol(&mut tx, user_id, course_id, order_id)
+    enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect("first enrol");
     tx.commit().await.expect("commit");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
+    let buyer = lock_buyer(&mut tx2, user_id).await;
     let order_id_2 = seed_order(&mut tx2, user_id, 50_000).await;
-    let err = enrol(&mut tx2, user_id, course_id, order_id_2)
+    let err = enrol(&mut tx2, &buyer, course_id, order_id_2)
         .await
         .expect_err("second enrol for the same user+course must be rejected");
     tx2.rollback().await.expect("rollback");
@@ -160,6 +175,7 @@ async fn enrol_course_outside_the_witness_is_internal(db: PgPool) {
     let user_id = common::seed_member(&db, "enrol-witness@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = lock_buyer(&mut tx, user_id).await;
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
     let locks = seats::lock_courses_tx(&mut tx, &[locked])
         .await
@@ -167,7 +183,7 @@ async fn enrol_course_outside_the_witness_is_internal(db: PgPool) {
     let err = service::enrol_batch_from_purchase_tx(
         &mut tx,
         &locks,
-        user_id,
+        &buyer,
         &[locked, unlocked],
         order_id,
         chrono::Utc::now(),
@@ -185,8 +201,9 @@ async fn cancel_then_reenrol_succeeds(db: PgPool) {
     let user_id = common::seed_member(&db, "enrol-re@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = lock_buyer(&mut tx, user_id).await;
     let order_id = seed_order(&mut tx, user_id, 50_000).await;
-    let first = enrol(&mut tx, user_id, course_id, order_id)
+    let first = enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect("first enrol");
     tx.commit().await.expect("commit");
@@ -201,8 +218,9 @@ async fn cancel_then_reenrol_succeeds(db: PgPool) {
     cancel_tx.commit().await.expect("commit cancel");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
+    let buyer = lock_buyer(&mut tx2, user_id).await;
     let order_id_2 = seed_order(&mut tx2, user_id, 50_000).await;
-    let second = enrol(&mut tx2, user_id, course_id, order_id_2)
+    let second = enrol(&mut tx2, &buyer, course_id, order_id_2)
         .await
         .expect("re-enrol after cancel should succeed");
     tx2.commit().await.expect("commit tx2");
@@ -270,7 +288,11 @@ async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
     // Commit the conflicting active enrolment from outside the transaction.
     seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
 
-    let err = enrol(&mut tx, user_id, course_id, order_id)
+    // The buyer lock comes only now: taken before the outside commit above,
+    // its `FOR UPDATE` on the `users` row would block that INSERT's FK
+    // `FOR KEY SHARE` forever (this tx never commits before it).
+    let buyer = lock_buyer(&mut tx, user_id).await;
+    let err = enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect_err("the insert must trip the partial unique index");
     tx.rollback().await.expect("rollback");
@@ -283,11 +305,15 @@ async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
-    // Two concurrent enrol attempts (lock + batch) for the same user+course.
-    // Exactly one must succeed and exactly one active row must exist after.
-    // Note: this validates the `FOR UPDATE` course-lock serialization — the
-    // loser blocks on the lock until the winner commits, so it is the
-    // pre-check that rejects it here. The unique-index second line of
+    // Two concurrent enrol attempts (buyer lock + course lock + batch) for
+    // the same user+course. Exactly one must succeed and exactly one active
+    // row must exist after. Note: like checkout, each attempt takes the
+    // buyer's `users`-row `FOR UPDATE` as its first statement — before the
+    // order INSERT, whose FK `FOR KEY SHARE` on that same row would otherwise
+    // let both attempts share it and then deadlock (40P01) upgrading to
+    // `FOR UPDATE`, a rollback that would pass this test by accident. So the
+    // same-buyer lock is what serializes the two: the loser blocks there
+    // until the winner commits, and it is the pre-check that rejects it. The unique-index second line of
     // defense is exercised directly by
     // `duplicate_active_insert_trips_partial_unique_index` and
     // `enrol_maps_db_unique_violation_to_already_enrolled` above.
@@ -296,6 +322,7 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
 
     async fn attempt(db: PgPool, user_id: Uuid, course_id: Uuid) -> bool {
         let mut tx = db.begin().await.expect("begin tx");
+        let buyer = lock_buyer(&mut tx, user_id).await;
         let order_id = orders_repo::create_order(
             &mut tx,
             user_id,
@@ -313,7 +340,7 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
         .await
         .expect("seed order")
         .id;
-        match enrol(&mut tx, user_id, course_id, order_id).await {
+        match enrol(&mut tx, &buyer, course_id, order_id).await {
             Ok(_) => {
                 tx.commit().await.expect("commit");
                 true

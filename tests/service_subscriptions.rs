@@ -34,6 +34,7 @@ use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::orders::dto::CheckoutRequest;
 use dream_fly_backend::modules::orders::repository as orders_repo;
 use dream_fly_backend::modules::orders::service as orders_service;
+use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::products::repository as products_repo;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
@@ -92,9 +93,12 @@ async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
     // ±1 day window.
     let now = common::scene_now().now;
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = points_service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock buyer");
     let order_id = seed_order(&mut tx, user_id, 8_000).await;
     let result =
-        service::grant_from_purchase_tx(&mut tx, user_id, &product, 2, 8_000, order_id, now)
+        service::grant_from_purchase_tx(&mut tx, &buyer, &product, 2, 8_000, order_id, now)
             .await
             .expect("grant");
     tx.commit().await.expect("commit");
@@ -130,8 +134,11 @@ async fn grant_starts_at_the_callers_now_not_the_db_clock(db: PgPool) {
         .expect("query product")
         .expect("product exists");
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = points_service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock buyer");
     let order_id = seed_order(&mut tx, user_id, 8_000).await;
-    let sub = service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 8_000, order_id, now)
+    let sub = service::grant_from_purchase_tx(&mut tx, &buyer, &product, 1, 8_000, order_id, now)
         .await
         .expect("grant")
         .expect("expected Some(subscription)");
@@ -152,9 +159,12 @@ async fn grant_non_entitlement_product_type_returns_none(db: PgPool) {
         .expect("query product")
         .expect("product exists");
     let mut tx = db.begin().await.expect("begin tx");
+    let buyer = points_service::lock_balance_tx(&mut tx, user_id)
+        .await
+        .expect("lock buyer");
     let order_id = seed_order(&mut tx, user_id, 1_500).await;
     let result =
-        service::grant_from_purchase_tx(&mut tx, user_id, &product, 1, 1_500, order_id, Utc::now())
+        service::grant_from_purchase_tx(&mut tx, &buyer, &product, 1, 1_500, order_id, Utc::now())
             .await
             .expect("grant should not error for a non-entitlement product");
     tx.rollback().await.expect("rollback");

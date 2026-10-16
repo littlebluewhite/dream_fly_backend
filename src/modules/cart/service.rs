@@ -183,11 +183,13 @@ pub async fn find_cart_items_for_checkout_tx(
 
 /// Clear the cart inside the caller's transaction — `orders::service::checkout`.
 /// Distinct from the pool-based [`clear`] above (the `_tx` suffix marks the
-/// transactional variant); the two coexist. Strict pass-through, no error
-/// mapping.
+/// transactional variant); the two coexist. Clears the cart of the buyer
+/// whose balance lock the caller holds (`lock.user_id()`), so checkout can't
+/// clear a different user's cart than the one it read. Strict pass-through,
+/// no error mapping.
 pub async fn clear_cart_tx(
     tx: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
+    lock: &BalanceLock,
 ) -> Result<(), AppError> {
-    Ok(repository::clear_cart_tx(tx, user_id).await?)
+    Ok(repository::clear_cart_tx(tx, lock.user_id()).await?)
 }
