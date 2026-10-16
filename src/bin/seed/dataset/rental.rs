@@ -138,11 +138,12 @@ async fn upsert_time_slot(db: &PgPool, seed: &TimeSlotSeed) -> anyhow::Result<Uu
     Ok(id)
 }
 
-/// Insert a rental booking (idempotent by existence check on
-/// `(user_id, time_slot_id)` — the partial unique index excludes cancelled
-/// rows, and the seed assigns at most one booking per slot). `price_cents`
-/// is the slot's price snapshot, per
-/// `bookings::occupancy::insert_occupying_booking_tx`.
+/// Insert a rental booking unless the slot already has one, whoever booked
+/// it and in whatever status (the seed assigns at most one booking per slot,
+/// and a slot a developer booked in the app before it became past is not
+/// booked again — the partial unique index on `(user_id, time_slot_id)`
+/// would not stop a second booker). `price_cents` is the slot's price
+/// snapshot, per `bookings::occupancy::insert_occupying_booking_tx`.
 async fn insert_booking_if_absent(
     db: &PgPool,
     user_id: Uuid,
@@ -151,14 +152,12 @@ async fn insert_booking_if_absent(
     price_cents: i64,
     created_at: DateTime<Utc>,
 ) -> anyhow::Result<()> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM bookings WHERE user_id = $1 AND time_slot_id = $2)",
-    )
-    .bind(user_id)
-    .bind(time_slot_id)
-    .fetch_one(db)
-    .await
-    .context("check existing booking")?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM bookings WHERE time_slot_id = $1)")
+            .bind(time_slot_id)
+            .fetch_one(db)
+            .await
+            .context("check existing booking")?;
     if exists {
         return Ok(());
     }
@@ -401,5 +400,63 @@ mod tests {
                 .await
                 .expect("load the slot's bookings");
         assert_eq!(on_slot, vec![(booking_id, "cancelled".to_owned())]);
+    }
+
+    /// Drift: a developer books every future seed slot in the app for a
+    /// member outside the seed's roster; once those slots are past, a rerun
+    /// books none of them again, so each keeps the developer's booking alone.
+    /// The booking is a direct INSERT of the `confirmed` row the app's
+    /// occupancy insert writes (that path is private to `bookings`).
+    #[sqlx::test]
+    async fn rerun_leaves_a_slot_booked_in_the_app_alone(db: PgPool) {
+        let c = minimal_catalog(&db).await;
+        seed(&db, &c, at()).await;
+        let developer = upsert_account(
+            &db,
+            &SeedAccount {
+                email: "app-member@dreamfly.tw",
+                name: "App 會員",
+                password_hash: "not-a-real-hash",
+                birth_date: None,
+                points: 0,
+                joined_at: at().now,
+            },
+            at().now,
+        )
+        .await
+        .expect("upsert app member");
+        let app_booked: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "INSERT INTO bookings (id, user_id, time_slot_id, status, note, price_cents, created_at, updated_at) \
+             SELECT gen_random_uuid(), $1, id, 'confirmed'::booking_status, NULL, price_cents, $3, $3 \
+             FROM time_slots WHERE date >= $2 \
+             RETURNING id, time_slot_id",
+        )
+        .bind(developer)
+        .bind(at().today())
+        .bind(at().now)
+        .fetch_all(&db)
+        .await
+        .expect("book the future slots in the app");
+        assert!(!app_booked.is_empty());
+
+        seed(&db, &c, later(14)).await;
+
+        let all = bookings(&db).await;
+        // Without the app bookings, the rerun would have booked some of these
+        // slots (see `past_slots_are_booked_by_date`).
+        assert!(
+            app_booked.iter().any(|(_, slot)| all
+                .iter()
+                .any(|(_, s, _, _, date)| s == slot && *date < later(14).today())),
+            "no app-booked slot became past"
+        );
+        for (booking_id, slot_id) in &app_booked {
+            let on_slot: Vec<Uuid> = all
+                .iter()
+                .filter(|(_, s, ..)| s == slot_id)
+                .map(|(id, ..)| *id)
+                .collect();
+            assert_eq!(on_slot, vec![*booking_id], "slot {slot_id}");
+        }
     }
 }
