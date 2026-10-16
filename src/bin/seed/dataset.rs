@@ -72,19 +72,10 @@
 //! real member does: checkout writes a `checkout_earn` row at `paid_at` for
 //! every paid seed order touching that member, and a refund a
 //! `refund_clawback` on top at the refund instant — never the run instant;
-//! once every order is bought, **every** member (not just ones newly
-//! created this run) gets a `admin_adjust(target − balance)` settling it to
-//! its points-tier target (`member_points_target`, derived from
-//! `PointsTier`), every run — new-month orders keep adding
-//! `checkout_earn` for existing members too (the 12-month window slides),
-//! so without an every-run settlement their balance would drift past its
-//! tier boundary over time. A same-month re-run computes `delta = 0` and
-//! writes nothing, so this stays idempotent; a run that crashes between the
-//! order loop and the settlement loop simply gets settled by the next run
-//! instead (settlement isn't gated on "this member is new"). One side
-//! effect: this also means a developer's manual `UPDATE users SET
-//! points_balance = ...` against a seed-member row is reset back to its
-//! tier target the next time the seed runs.
+//! once every order is bought, `settlement::settle_members` settles
+//! **every** member (not just ones newly created this run) to its
+//! points-tier target with one `admin_adjust(target − balance)`, every run
+//! — the rules are in that module.
 
 use std::collections::HashMap;
 
@@ -104,16 +95,16 @@ use dream_fly_backend::modules::orders::pricing;
 use dream_fly_backend::modules::orders::repository as orders_repository;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
-use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
-use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 mod accounts;
+mod settlement;
 mod timeline;
 
 use accounts::{SeedAccount, upsert_account};
+use settlement::settle_members;
 use timeline::{SeedPurchase, Walked};
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
@@ -509,23 +500,6 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
         .expect("valid seed hour")
         .and_utc()
         .min(now)
-}
-
-/// Points-tier target balance for reporting member `i` (1..=24): members
-/// block into `PointsTier::ALL` six at a time on `(i-1)/6`, and each lands
-/// a fixed step above its tier's `floor()` — so the report's 4-tier /
-/// 6-members-each shape follows the tier owner rather than a second copy
-/// of its boundaries.
-fn member_points_target(i: usize) -> i64 {
-    let tier = PointsTier::ALL[(i - 1) / 6];
-    let j = ((i - 1) % 6 + 1) as i64; // 1..=6 within the tier
-    let above_floor = match tier {
-        PointsTier::Regular => 100 + j * 50, //  150-400
-        PointsTier::Bronze => j * 200,       //  700-1700
-        PointsTier::Silver => j * 400,       // 2400-4400
-        PointsTier::Gold => j * 500,         // 5500-8000
-    };
-    tier.floor() + above_floor
 }
 
 /// Fetch a product's id by slug — mirrors `course_id_by_slug`, used to build
@@ -1413,20 +1387,10 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     // Age buckets (6-12 / 13-17 / 18-25 / 26-40) rotate on (i-1)%4 — six
     // members each, so the age-distribution report always has every bucket.
     // Points tiers (`PointsTier`) block on (i-1)/6 — six members each, see
-    // `member_points_target`. Different index bases so age and tier
-    // decorrelate. `member_hash` is the same Member#2026 hash the test
+    // `settlement::member_points_target` (member `i` is `member_ids[i - 1]`).
+    // Different index bases so age and tier decorrelate. `member_hash` is the same Member#2026 hash the test
     // member above shares — hashed once, up front (see `run`'s precompute).
     let mut member_ids: Vec<Uuid> = Vec::with_capacity(24);
-    // `(user_id, points-tier target balance)` for every one of the 24
-    // members — settled to its tier target after the order loop below has
-    // written every seeded order's `checkout_earn`/`refund_clawback` rows
-    // (see the settlement loop after `[orders]`). Collected for every
-    // member, not just newly-inserted ones: a settling member's balance
-    // must be re-pinned to `target` on every run, not just its first, so
-    // that new-month orders (this run's `[orders]` loop keeps writing
-    // `checkout_earn` for existing members too) can't push an existing
-    // member's balance past its tier boundary over time.
-    let mut member_targets: Vec<(Uuid, i64)> = Vec::with_capacity(24);
     for i in 1..=24usize {
         let age: u32 = match (i - 1) % 4 {
             0 => 7 + (i as u32 % 5),   //  7-11 → 6-12 bucket
@@ -1456,7 +1420,6 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         )
         .await?;
         assign_role(db, user_id, Role::Member).await?;
-        member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);
     }
     println!("[members]  24 seed members ready (seed-member-01..24@dreamfly.tw / Member#2026)");
@@ -1658,48 +1621,9 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     );
 
     // -- settle every member's points-tier target balance --------------------
-    // Every run, for every one of the 24 members (not just newly-inserted
-    // ones): the member's balance so far is whatever its seeded orders'
-    // `checkout_earn`/`refund_clawback` rows above added up to (a refunded
-    // order nets zero); `admin_adjust(target − balance)` tops (or trims)
-    // that up to the exact points-tier target computed in the members loop,
-    // so `points_balance == SUM(point_ledger.delta)` still holds while
-    // keeping the 4-tier/6-members-each report shape. A same-month re-run
-    // adds no new orders for a member already at target, so `delta` is 0
-    // and no row is written — this is what keeps the seed idempotent
-    // despite settling unconditionally. A crash between the order loop and
-    // this loop simply means the next run's settlement (unconditional, not
-    // gated on "newly inserted") finishes the job. This also means any
-    // manual `UPDATE users SET points_balance = ...` a developer runs by
-    // hand against a seed-member row is reset back to its tier target on
-    // the next `cargo run --bin seed`. Each member settles in its own
-    // transaction: `lock_balance_tx`, `delta = target − lock.balance()`,
-    // apply, commit.
-    let mut settled = 0usize;
-    for (user_id, target) in &member_targets {
-        let mut tx = db
-            .begin()
-            .await
-            .with_context(|| format!("begin points settlement tx for seed member {user_id}"))?;
-        let lock = points_service::lock_balance_tx(&mut tx, *user_id)
-            .await
-            .with_context(|| format!("lock points balance of seed member {user_id}"))?;
-        let delta = target - lock.balance();
-        if delta != 0 {
-            points_service::apply_delta_tx(
-                &mut tx,
-                &lock,
-                LedgerDelta::admin_adjust(delta),
-                at.now,
-            )
-            .await
-            .with_context(|| format!("settle points-tier balance for seed member {user_id}"))?;
-            settled += 1;
-        }
-        tx.commit()
-            .await
-            .with_context(|| format!("commit points settlement for seed member {user_id}"))?;
-    }
+    // After every purchase above has written its ledger rows (see
+    // `settlement`).
+    let settled = settle_members(db, &member_ids, at.now).await?;
     println!("[points]   {settled} members settled to their points-tier target");
 
     // -- course sessions: materialize the past 6 months ---------------------
@@ -1937,34 +1861,4 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         row_counts,
         settled_members: settled,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn member_points_targets_match_the_legacy_formula() {
-        // The 24 targets the old inline `match (i - 1) / 6` produced — the
-        // PointsTier-derived formula must reproduce them exactly.
-        let legacy: [i64; 24] = [
-            150, 200, 250, 300, 350, 400, // <500
-            700, 900, 1_100, 1_300, 1_500, 1_700, // 500-1999
-            2_400, 2_800, 3_200, 3_600, 4_000, 4_400, // 2000-4999
-            5_500, 6_000, 6_500, 7_000, 7_500, 8_000, // ≥5000
-        ];
-        for (i, expected) in (1..=24usize).zip(legacy) {
-            assert_eq!(member_points_target(i), expected, "member {i}");
-        }
-    }
-
-    #[test]
-    fn member_points_targets_put_six_members_in_each_tier() {
-        for &tier in PointsTier::ALL {
-            let members = (1..=24usize)
-                .filter(|&i| PointsTier::from_balance(member_points_target(i)) == tier)
-                .count();
-            assert_eq!(members, 6, "{tier:?}");
-        }
-    }
 }
