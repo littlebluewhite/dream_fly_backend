@@ -8,18 +8,21 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use dream_fly_backend::modules::attendance::model::AttendanceStatus;
 use dream_fly_backend::modules::auth::access::AccessCache;
 use dream_fly_backend::modules::bookings::model::BookingStatus;
+use dream_fly_backend::modules::cart::model::LineTarget;
 use dream_fly_backend::modules::coaches::dto::CreateCoachRequest;
 use dream_fly_backend::modules::coaches::service as coaches_service;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
 use dream_fly_backend::modules::leave::service as leave_service;
+use dream_fly_backend::modules::orders::fulfilment::OrderLine;
 use dream_fly_backend::modules::orders::model::OrderStatus;
+use dream_fly_backend::modules::orders::repository::{self as orders_repo, NewOrder, OrderAmounts};
 use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::products::model::ProductType;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
@@ -501,6 +504,29 @@ pub enum SeedOrderLine {
 }
 
 impl SeedOrderLine {
+    /// The line as `create_order_items` writes it: the `LineTarget` owns
+    /// `item_type`/`product_id`/`course_id`; never `stock_decremented`.
+    fn order_line(&self) -> OrderLine {
+        let (target, quantity, price_cents) = match *self {
+            Self::Product {
+                product_id,
+                quantity,
+                unit_price_cents,
+            } => (LineTarget::Product(product_id), quantity, unit_price_cents),
+            Self::Course {
+                course_id,
+                unit_price_cents,
+            } => (LineTarget::Course(course_id), 1, unit_price_cents),
+        };
+        OrderLine {
+            target,
+            quantity,
+            price_cents,
+            name: "Test Line".to_string(),
+            stock_decremented: false,
+        }
+    }
+
     fn subtotal_cents(&self) -> i64 {
         match self {
             Self::Product {
@@ -515,8 +541,9 @@ impl SeedOrderLine {
     }
 }
 
-/// Builder for an `orders` row plus its `order_items`, inserted directly via
-/// SQL (bypassing `orders::service::checkout`) so tests can set an exact
+/// Builder for an `orders` row plus its `order_items`, written through
+/// `orders::repository::create_order` / `create_order_items` but bypassing
+/// `orders::service::checkout` (no ledger rows, no grants) so tests can set an exact
 /// `status` — including `pending`/`cancelled`/`refunded`, which checkout
 /// never produces — and the revenue-report dimensions (`payment_method`,
 /// `paid_at`). Defaults: no lines, `paid_at`/`payment_method` NULL,
@@ -526,9 +553,9 @@ impl SeedOrderLine {
 /// `created_at` defaults to `paid_at`, so the two timestamps never straddle a
 /// month boundary; an order with no `paid_at` must set it with
 /// `.created_at(t)`, the test's instant (the fixture never reads the wall
-/// clock). `order_number` embeds the full UUID, not a truncated prefix:
-/// UUIDv7's leading hex chars are a millisecond timestamp, so
-/// same-millisecond seeds would otherwise collide on its UNIQUE constraint.
+/// clock). `order_number` embeds a full UUIDv7, not a truncated prefix:
+/// its leading hex chars are a millisecond timestamp, so same-millisecond
+/// seeds would otherwise collide on the UNIQUE constraint.
 pub struct OrderSeed<'a> {
     user_id: Uuid,
     status: OrderStatus,
@@ -585,73 +612,57 @@ impl<'a> OrderSeed<'a> {
         }
     }
 
-    /// Returns the order id.
-    pub async fn insert(self, db: &PgPool) -> Uuid {
-        let order_id = Uuid::now_v7();
-        let order_number = format!("TEST-{order_id}");
+    fn created_at_or_panic(&self) -> DateTime<Utc> {
+        self.created_at.or(self.paid_at).expect(
+            "OrderSeed without paid_at: call .created_at(t) with the test's instant \
+             (app.studio_now().now, or common::scene_now().now without a TestApp)",
+        )
+    }
+
+    /// Insert the order and its lines in `tx`. Returns the order id.
+    pub async fn insert_tx(self, tx: &mut Transaction<'_, Postgres>) -> Uuid {
+        let order_number = format!("TEST-{}", Uuid::now_v7());
         let total_cents = self
             .total_cents
             .unwrap_or_else(|| self.lines.iter().map(SeedOrderLine::subtotal_cents).sum());
-        let created_at = self.created_at.or(self.paid_at).expect(
-            "OrderSeed without paid_at: call .created_at(t) with the test's instant \
-             (app.studio_now().now, or common::scene_now().now without a TestApp)",
-        );
+        let created_at = self.created_at_or_panic();
 
-        sqlx::query(
-            r#"
-            INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, payment_method, paid_at, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $8)
-            "#,
+        let order = orders_repo::create_order(
+            tx,
+            &NewOrder {
+                user_id: self.user_id,
+                order_number: &order_number,
+                status: self.status,
+                amounts: OrderAmounts {
+                    total_cents,
+                    discount_cents: 0,
+                    points_used: 0,
+                    points_earned: 0,
+                },
+                coupon_code: None,
+                payment_method: self.payment_method,
+                paid_at: self.paid_at,
+                created_at,
+            },
         )
-        .bind(order_id)
-        .bind(self.user_id)
-        .bind(&order_number)
-        .bind(self.status)
-        .bind(total_cents)
-        .bind(self.payment_method)
-        .bind(self.paid_at)
-        .bind(created_at)
-        .execute(db)
         .await
         .expect("insert order");
 
-        for line in &self.lines {
-            let (item_type, product_id, course_id, quantity, unit_price_cents) = match *line {
-                SeedOrderLine::Product {
-                    product_id,
-                    quantity,
-                    unit_price_cents,
-                } => (
-                    "product",
-                    Some(product_id),
-                    None,
-                    quantity,
-                    unit_price_cents,
-                ),
-                SeedOrderLine::Course {
-                    course_id,
-                    unit_price_cents,
-                } => ("course", None, Some(course_id), 1, unit_price_cents),
-            };
-            sqlx::query(
-                r#"
-                INSERT INTO order_items (id, order_id, item_type, product_id, course_id, quantity, unit_price_cents, name, created_at)
-                VALUES ($1, $2, $3::cart_item_type, $4, $5, $6, $7, 'Test Line', $8)
-                "#,
-            )
-            .bind(Uuid::now_v7())
-            .bind(order_id)
-            .bind(item_type)
-            .bind(product_id)
-            .bind(course_id)
-            .bind(quantity)
-            .bind(unit_price_cents)
-            .bind(created_at)
-            .execute(db)
+        let lines: Vec<OrderLine> = self.lines.iter().map(SeedOrderLine::order_line).collect();
+        orders_repo::create_order_items(tx, order.id, &lines, created_at)
             .await
-            .expect("insert order_item");
-        }
+            .expect("insert order_items");
 
+        order.id
+    }
+
+    /// `insert_tx` in its own transaction. Returns the order id.
+    pub async fn insert(self, db: &PgPool) -> Uuid {
+        // Name the missing instant before touching the pool.
+        self.created_at_or_panic();
+        let mut tx = db.begin().await.expect("begin order tx");
+        let order_id = self.insert_tx(&mut tx).await;
+        tx.commit().await.expect("commit order tx");
         order_id
     }
 }
