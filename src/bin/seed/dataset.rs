@@ -52,7 +52,7 @@
 //! `orders::idempotency::replay` and buys nothing again, so it adds no
 //! order, ledger, enrolment, outbox or notification row. Pending contrast
 //! orders are the one bypass left on this path — checkout only creates
-//! paid orders — and `insert_pending_order_if_absent` writes them through
+//! paid orders — and `pending::insert_pending_orders` writes them through
 //! `orders::repository::create_order` / `create_order_items`.
 //! `run` refuses, before any write, a database an older version of this
 //! binary seeded (`refuse_legacy_seed_rows`): its seed enrolments and paid
@@ -88,10 +88,8 @@ use uuid::Uuid;
 use dream_fly_backend::modules::cart::model::{CheckoutLine, LineTarget};
 use dream_fly_backend::modules::contact::model::InquiryType;
 use dream_fly_backend::modules::enrolments::model::EnrolmentStatus;
-use dream_fly_backend::modules::orders::fulfilment::{self, PurchasableCart};
+use dream_fly_backend::modules::orders::fulfilment;
 use dream_fly_backend::modules::orders::model::{OrderStatus, PAYMENT_METHODS};
-use dream_fly_backend::modules::orders::pricing;
-use dream_fly_backend::modules::orders::repository as orders_repository;
 use dream_fly_backend::modules::permissions::model::Role;
 use dream_fly_backend::modules::permissions::repository as permissions_repository;
 use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
@@ -100,11 +98,13 @@ use dream_fly_backend::utils::studio_clock::StudioNow;
 
 mod accounts;
 mod attendance;
+mod pending;
 mod rental;
 mod settlement;
 mod timeline;
 
 use accounts::{SeedAccount, upsert_account};
+use pending::{PendingSeedOrder, insert_pending_orders};
 use rental::seed_rentals;
 use settlement::settle_members;
 use timeline::{SeedPurchase, Walked};
@@ -521,76 +521,6 @@ async fn venue_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
         .fetch_one(db)
         .await
         .with_context(|| format!("fetch id for venue '{slug}'"))
-}
-
-/// A never-paid contrast order. Checkout only creates orders already paid,
-/// so this bypasses checkout — the one documented bypass left on the order
-/// path (ADR-0010) — but still writes through checkout's own row writers,
-/// `create_order` (`status: Pending`) and `create_order_items`: `lines` is
-/// the `PurchasableCart` checkout would price (built through
-/// `fulfilment::ensure_all_purchasable`), priced by `orders::pricing::price`
-/// with no coupon and no points; `paid_at = NULL`, `points_earned = 0`, no
-/// ledger rows, no grants.
-struct PendingSeedOrder {
-    order_number: String,
-    user_id: Uuid,
-    created_at: DateTime<Utc>,
-    payment_method: &'static str,
-    lines: PurchasableCart,
-}
-
-/// Insert a pending order + its order_items (idempotent by existence check
-/// on `order_number` — order_items has no unique key of its own, so the
-/// parent check guards both). The row goes through `create_order`, the
-/// items through checkout's own `fulfilment::order_lines` and
-/// `create_order_items`, both at `created_at`.
-async fn insert_pending_order_if_absent(
-    db: &PgPool,
-    seed: &PendingSeedOrder,
-) -> anyhow::Result<()> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE order_number = $1)")
-            .bind(&seed.order_number)
-            .fetch_one(db)
-            .await
-            .with_context(|| format!("check existing order '{}'", seed.order_number))?;
-    if exists {
-        return Ok(());
-    }
-
-    let pricing = pricing::price(&seed.lines, None, 0, false)
-        .with_context(|| format!("price seed order '{}'", seed.order_number))?;
-    let mut tx = db.begin().await.context("begin order tx")?;
-    // Seed never decrements stock, so no line is marked `stock_decremented`.
-    let lines = fulfilment::order_lines(&seed.lines, &HashMap::new());
-
-    let order = orders_repository::create_order(
-        &mut tx,
-        &orders_repository::NewOrder {
-            user_id: seed.user_id,
-            order_number: &seed.order_number,
-            status: OrderStatus::Pending,
-            amounts: orders_repository::OrderAmounts {
-                total_cents: pricing.total_cents,
-                discount_cents: pricing.discount_cents,
-                points_used: 0,
-                points_earned: 0,
-            },
-            coupon_code: pricing.applied_coupon_code.as_deref(),
-            payment_method: Some(seed.payment_method),
-            paid_at: None,
-            created_at: seed.created_at,
-        },
-    )
-    .await
-    .with_context(|| format!("insert order '{}'", seed.order_number))?;
-
-    orders_repository::create_order_items(&mut tx, order.id, &lines, seed.created_at)
-        .await
-        .with_context(|| format!("insert order_items for '{}'", seed.order_number))?;
-
-    tx.commit().await.context("commit order tx")?;
-    Ok(())
 }
 
 /// One contact inquiry — trial rows carry the structured `metadata` the
@@ -1317,6 +1247,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
         PAYMENT_METHODS[4], // cash
     ];
     let mut purchases: Vec<SeedPurchase> = Vec::new();
+    let mut pending_orders: Vec<PendingSeedOrder> = Vec::new();
     let mut order_total = 0usize;
     for m in (0..12u32).rev() {
         let month_first = today
@@ -1376,17 +1307,13 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             if status == OrderStatus::Pending {
                 let lines = fulfilment::ensure_all_purchasable(lines)
                     .with_context(|| format!("gate seed order DF-SEED-{ym}-{seq:02}"))?;
-                insert_pending_order_if_absent(
-                    db,
-                    &PendingSeedOrder {
-                        order_number: format!("DF-SEED-{ym}-{seq:02}"),
-                        user_id: member_ids[member_idx - 1],
-                        created_at: ts,
-                        payment_method: PM_CYCLE[g % 10],
-                        lines,
-                    },
-                )
-                .await?;
+                pending_orders.push(PendingSeedOrder {
+                    order_number: format!("DF-SEED-{ym}-{seq:02}"),
+                    user_id: member_ids[member_idx - 1],
+                    created_at: ts,
+                    payment_method: PM_CYCLE[g % 10],
+                    lines,
+                });
             } else {
                 // Every seq-2 order applies DREAMFLY100 — checkout loads
                 // the code from the `[coupons]` row above. Seed purchases
@@ -1405,6 +1332,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             order_total += 1;
         }
     }
+    insert_pending_orders(db, &pending_orders).await?;
 
     // -- course purchases → enrolments (39, spread over the past 6 months) --
     // Every member buys course (i*7)%6; even i adds (i*5+1)%6; i%5==0 adds
