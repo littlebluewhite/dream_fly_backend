@@ -23,7 +23,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use common::fixtures::{
-    CourseSeed, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
+    CourseSeed, OrderSeed, seed_course, seed_course_session, seed_enrolment, seed_leave_request,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::courses::seats;
@@ -31,35 +31,8 @@ use dream_fly_backend::modules::enrolments::model::{Enrolment, EnrolmentStatus};
 use dream_fly_backend::modules::enrolments::repository as enrolments_repo;
 use dream_fly_backend::modules::enrolments::service;
 use dream_fly_backend::modules::leave::model::LeaveStatus;
-use dream_fly_backend::modules::orders::repository as orders_repo;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::service::{self as points_service, BalanceLock};
-
-/// `enrolments.order_id` is a real FK into `orders`, so tests need an actual
-/// order row committed in the same transaction rather than a bare random
-/// UUID (mirrors `tests/service_subscriptions.rs`).
-async fn seed_order(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-    total_cents: i64,
-) -> Uuid {
-    orders_repo::create_order(
-        tx,
-        user_id,
-        &format!("TEST-{}", Uuid::now_v7()),
-        orders_repo::OrderAmounts {
-            total_cents,
-            discount_cents: 0,
-            points_used: 0,
-            points_earned: 0,
-        },
-        None,
-        "credit_card",
-        chrono::Utc::now(),
-    )
-    .await
-    .expect("seed order")
-    .id
-}
 
 /// Take the buyer's balance lock — checkout's first statement, so each tx
 /// below opens with it.
@@ -98,7 +71,10 @@ async fn enrol_from_purchase_creates_active_enrolment(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let buyer = lock_buyer(&mut tx, user_id).await;
-    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     let enrolment = enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect("enrol");
@@ -121,7 +97,10 @@ async fn enrol_full_course_returns_course_is_full_conflict(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let buyer_a = lock_buyer(&mut tx, user_a).await;
-    let order_a = seed_order(&mut tx, user_a, 50_000).await;
+    let order_a = OrderSeed::new(user_a, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     enrol(&mut tx, &buyer_a, course_id, order_a)
         .await
         .expect("first enrol fills the only seat");
@@ -129,7 +108,10 @@ async fn enrol_full_course_returns_course_is_full_conflict(db: PgPool) {
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let buyer_b = lock_buyer(&mut tx2, user_b).await;
-    let order_b = seed_order(&mut tx2, user_b, 50_000).await;
+    let order_b = OrderSeed::new(user_b, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx2)
+        .await;
     let err = enrol(&mut tx2, &buyer_b, course_id, order_b)
         .await
         .expect_err("second enrol must be rejected: course is full");
@@ -148,7 +130,10 @@ async fn enrol_duplicate_active_returns_already_enrolled_conflict(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let buyer = lock_buyer(&mut tx, user_id).await;
-    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect("first enrol");
@@ -156,7 +141,10 @@ async fn enrol_duplicate_active_returns_already_enrolled_conflict(db: PgPool) {
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let buyer = lock_buyer(&mut tx2, user_id).await;
-    let order_id_2 = seed_order(&mut tx2, user_id, 50_000).await;
+    let order_id_2 = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx2)
+        .await;
     let err = enrol(&mut tx2, &buyer, course_id, order_id_2)
         .await
         .expect_err("second enrol for the same user+course must be rejected");
@@ -176,7 +164,10 @@ async fn enrol_course_outside_the_witness_is_internal(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let buyer = lock_buyer(&mut tx, user_id).await;
-    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     let locks = seats::lock_courses_tx(&mut tx, &[locked])
         .await
         .expect("lock course");
@@ -202,7 +193,10 @@ async fn cancel_then_reenrol_succeeds(db: PgPool) {
 
     let mut tx = db.begin().await.expect("begin tx");
     let buyer = lock_buyer(&mut tx, user_id).await;
-    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     let first = enrol(&mut tx, &buyer, course_id, order_id)
         .await
         .expect("first enrol");
@@ -219,7 +213,10 @@ async fn cancel_then_reenrol_succeeds(db: PgPool) {
 
     let mut tx2 = db.begin().await.expect("begin tx2");
     let buyer = lock_buyer(&mut tx2, user_id).await;
-    let order_id_2 = seed_order(&mut tx2, user_id, 50_000).await;
+    let order_id_2 = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx2)
+        .await;
     let second = enrol(&mut tx2, &buyer, course_id, order_id_2)
         .await
         .expect("re-enrol after cancel should succeed");
@@ -242,14 +239,20 @@ async fn duplicate_active_insert_trips_partial_unique_index(db: PgPool) {
     let user_id = common::seed_member(&db, "enrol-uniq@example.com", "Password!234").await;
 
     let mut tx = db.begin().await.expect("begin tx");
-    let order_a = seed_order(&mut tx, user_id, 50_000).await;
+    let order_a = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     enrolments_repo::insert_tx(&mut tx, user_id, course_id, order_a, chrono::Utc::now())
         .await
         .expect("first insert");
     tx.commit().await.expect("commit");
 
     let mut tx2 = db.begin().await.expect("begin tx2");
-    let order_b = seed_order(&mut tx2, user_id, 50_000).await;
+    let order_b = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx2)
+        .await;
     let err = enrolments_repo::insert_tx(&mut tx2, user_id, course_id, order_b, chrono::Utc::now())
         .await
         .expect_err(
@@ -283,7 +286,10 @@ async fn enrol_maps_db_unique_violation_to_already_enrolled(db: PgPool) {
         .await
         .expect("set isolation level");
     // First query in the tx pins the snapshot (before the duplicate exists).
-    let order_id = seed_order(&mut tx, user_id, 50_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
 
     // Commit the conflicting active enrolment from outside the transaction.
     seed_enrolment(&db, user_id, course_id, EnrolmentStatus::Active, Utc::now()).await;
@@ -323,23 +329,10 @@ async fn concurrent_enrol_same_user_course_only_one_succeeds(db: PgPool) {
     async fn attempt(db: PgPool, user_id: Uuid, course_id: Uuid) -> bool {
         let mut tx = db.begin().await.expect("begin tx");
         let buyer = lock_buyer(&mut tx, user_id).await;
-        let order_id = orders_repo::create_order(
-            &mut tx,
-            user_id,
-            &format!("TEST-{}", Uuid::now_v7()),
-            orders_repo::OrderAmounts {
-                total_cents: 50_000,
-                discount_cents: 0,
-                points_used: 0,
-                points_earned: 0,
-            },
-            None,
-            "credit_card",
-            chrono::Utc::now(),
-        )
-        .await
-        .expect("seed order")
-        .id;
+        let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+            .paid_at(Utc::now())
+            .insert_tx(&mut tx)
+            .await;
         match enrol(&mut tx, &buyer, course_id, order_id).await {
             Ok(_) => {
                 tx.commit().await.expect("commit");

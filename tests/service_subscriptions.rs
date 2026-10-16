@@ -28,11 +28,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use common::fixtures::{
-    SeedCartLine, seed_carted_member, seed_entitlement_product, seed_subscription,
+    OrderSeed, SeedCartLine, seed_carted_member, seed_entitlement_product, seed_subscription,
 };
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::modules::orders::dto::CheckoutRequest;
-use dream_fly_backend::modules::orders::repository as orders_repo;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service as orders_service;
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::products::model::ProductType;
@@ -40,33 +40,6 @@ use dream_fly_backend::modules::products::repository as products_repo;
 use dream_fly_backend::modules::subscriptions::model::SubscriptionStatus;
 use dream_fly_backend::modules::subscriptions::repository as subscriptions_repo;
 use dream_fly_backend::modules::subscriptions::service;
-
-/// `subscriptions.order_id` is a real FK into `orders`, so grant tests need
-/// an actual order row committed in the same transaction rather than a bare
-/// random UUID.
-async fn seed_order(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-    total_cents: i64,
-) -> Uuid {
-    orders_repo::create_order(
-        tx,
-        user_id,
-        &format!("TEST-{}", Uuid::now_v7()),
-        orders_repo::OrderAmounts {
-            total_cents,
-            discount_cents: 0,
-            points_used: 0,
-            points_earned: 0,
-        },
-        None,
-        "credit_card",
-        chrono::Utc::now(),
-    )
-    .await
-    .expect("seed order")
-    .id
-}
 
 // ---------------------------------------------------------------------------
 // grant_from_purchase_tx
@@ -96,7 +69,10 @@ async fn grant_session_count_with_valid_days_also_sets_expiry(db: PgPool) {
     let buyer = points_service::lock_balance_tx(&mut tx, user_id)
         .await
         .expect("lock buyer");
-    let order_id = seed_order(&mut tx, user_id, 8_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(now)
+        .insert_tx(&mut tx)
+        .await;
     let result =
         service::grant_from_purchase_tx(&mut tx, &buyer, &product, 2, 8_000, order_id, now)
             .await
@@ -137,7 +113,10 @@ async fn grant_starts_at_the_callers_now_not_the_db_clock(db: PgPool) {
     let buyer = points_service::lock_balance_tx(&mut tx, user_id)
         .await
         .expect("lock buyer");
-    let order_id = seed_order(&mut tx, user_id, 8_000).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(now)
+        .insert_tx(&mut tx)
+        .await;
     let sub = service::grant_from_purchase_tx(&mut tx, &buyer, &product, 1, 8_000, order_id, now)
         .await
         .expect("grant")
@@ -162,7 +141,10 @@ async fn grant_non_entitlement_product_type_returns_none(db: PgPool) {
     let buyer = points_service::lock_balance_tx(&mut tx, user_id)
         .await
         .expect("lock buyer");
-    let order_id = seed_order(&mut tx, user_id, 1_500).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Paid)
+        .paid_at(Utc::now())
+        .insert_tx(&mut tx)
+        .await;
     let result =
         service::grant_from_purchase_tx(&mut tx, &buyer, &product, 1, 1_500, order_id, Utc::now())
             .await
