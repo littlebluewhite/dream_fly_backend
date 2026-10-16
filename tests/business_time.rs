@@ -174,7 +174,7 @@ const AUDIT_COLUMNS: &[(&str, &str)] = &[
 /// to an exempt statement fails instead of riding its exemption.
 const UNMAPPED: &[(&str, &str, usize, &str)] = &[
     (
-        "src/bin/seed/dataset.rs",
+        "src/bin/seed/dataset/attendance.rs",
         "INSERT INTO attendance_records",
         1,
         "INSERT … SELECT FROM UNNEST: NOW() lands in attendance_records.created_at",
