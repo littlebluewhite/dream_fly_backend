@@ -196,3 +196,9 @@ guard 的 `NOT EXISTS` 分支同樣放行。見證:`plan_present_for_non_approve
 為止，不必重提；若真要重開，以決策 6 的「以本 ADR 為起點」為準，並先有產品裁決。
 
 本檔其餘敘述維持決策當下狀態。
+
+## Addendum(2026-10-16):seed 出勤寫入的現名
+
+Addendum 2026-09-27 提到的 seed `insert_attendance_bulk` 現在是 `bin/seed/dataset/attendance.rs` 的私有批次寫入,
+對外介面是 `mark_past_sessions`(R22-13,27e548a;GLOSSARY「Seed 資料集」的「點名」)。仍照 ADR-0010 bypass,
+本 ADR 的決策不變。

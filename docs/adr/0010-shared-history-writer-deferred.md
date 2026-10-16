@@ -140,3 +140,46 @@ seed 的待付款對照單(`insert_pending_order_if_absent`,`status: Pending`)�
 - 這不是本 ADR 延後的共用「歷史寫入」module:它只擁有一張表的一列,不寫訂單行以外的購買產物。`OrderSeed` 照舊
   不寫點數帳、不走 checkout,也不造「已結帳、已結算」的歷史。
 - 重開條件 1 照字面仍不成立:沒有第二個需要造那種歷史訂單的測試族群。裁決不變,共用「歷史寫入」module 仍延後。
+
+## Addendum (2026-10-16): seed 規則各有 interface,run 只留組合
+
+R22 把 seed 每條有自己規則的寫入收成 `bin/seed/dataset/` 下的子 module,各有一個窄介面與只用最小目錄的
+`#[sqlx::test]`,不跑整份資料集;`dataset::run` 只組資料集公式、依序呼叫它們。本則更正上兩則的過時說法:
+Addendum 2026-10-15「種子購買時間線」說 `insert_pending_order_if_absent` 與點數結算留在 `run`,Addendum
+2026-10-16「訂單列只有一個寫入者」把待付款對照單記成 `insert_pending_order_if_absent`——兩者都已不在 `run`,
+該函式也已不存在。Addendum 2026-10-11 的 bypass 清單裡 `upsert_user`/`upsert_seed_member` 與
+`insert_pending_order_if_absent` 兩個名字同理過時;那幾則照當時狀態保留,現況以本則為準。
+
+- **子 module**(GLOSSARY 各詞條是規則 owner):
+  - `accounts::upsert_account`——帳號誕生,seed 唯一一份 `INSERT INTO users`,兩份 users upsert 合一(GLOSSARY
+    「帳號誕生」)。
+  - `settlement::settle_members`——每位報表會員結算到點數級距目標(GLOSSARY「點數級距」)。
+  - `pending::insert_pending_orders`——待付款對照單,經 `orders::repository::create_order` 與
+    `create_order_items`(GLOSSARY「Seed 資料集」的「待付款對照單」)。
+  - `attendance::mark_past_sessions`——種子點名,批次寫入是私有的(GLOSSARY「Seed 資料集」的「點名」)。
+  - `rental::seed_rentals`——場租時段與過去時段的預約;「是否已有預約」只看 `time_slot_id`(R22-15,
+    256bbc5)(GLOSSARY「場租佔位」)。
+  - `timeline::buy_and_walk`——種子購買時間線,不變(Addendum 2026-10-15)。
+- **留在 `run` 的,與原因**:
+  - 目錄(教練、課程與週課表時段、商品、優惠碼、獎勵、公告、場館):每個 helper 只是一張表的冪等寫入,
+    沒有跨表規則,值是資料不是規則;抽成 module 只是把資料搬家,介面跟呼叫端一樣大。冪等由 `tests.rs`
+    的 `same_instant_rerun_is_noop`(`row_counts` 不變)涵蓋。
+  - 洽詢(`contact_inquiries`):同上,一個月份公式寫一張表;時戳上界由 `seeded_timestamps_never_exceed_run_instant`
+    涵蓋。
+  - `refuse_legacy_seed_rows`:守的是 `run` 自己的前置條件(任何寫入前),只有對 `run` 測才有意義
+    (`run_refuses_a_database_seeded_by_an_older_seed`)。
+  - 場次回填:規則已有 production owner `sessions::calendar::backfill_for_seed`,`run` 只給課程與日期範圍。
+  - `assign_role`:規則 owner 是 `permissions::repository::assign_role`,`run` 這層只是包一個連線、以
+    `assume_uncached` 消掉 `AccessDirty`;誰拿哪個角色是組合決定,所以 `accounts` 不收角色。
+  - 資料集公式本身:月度商品訂單、39 筆課程購買、待付單取哪幾筆、場館與價格,組好交給上列子 module。
+- **`bin/seed/tests.rs` 的搬遷**:只留對整份 `run` 才成立的不變量。
+  - 測試 1 `same_instant_rerun_is_noop_and_settles_drift` 改名 `same_instant_rerun_is_noop`;它後半的 +500 漂移收斂
+    搬到 `settlement.rs`(`drift_written_out_of_time_order_settles_into_one_chain`、
+    `settles_each_member_to_its_target_once`)(27c425c)。
+  - 測試 1 的 `occupying_bookings` 計數不變搬到 `rental.rs` 的 `same_instant_rerun_adds_nothing`;
+    `later_run_keeps_invariants` 的容量不變量 ④ 搬到 `rental.rs` 的 `never_exceeds_capacity`(4a14489)。
+  - helper `user_id_by_email`、`points_balance`、`total_occupying_bookings` 隨之刪除。
+  - `accounts`、`pending`、`attendance` 的介面測試是新寫的,`tests.rs` 沒有對應區塊搬走(50c6bc1、cd84173、
+    27e548a)。
+- 本 ADR 的決策不變:這些子 module 是 seed 內部的 owner,不是共用「歷史寫入」module;`tests/common/fixtures.rs`
+  沒有呼叫它們,`OrderSeed` 照舊直寫列、不產 points ledger,重開條件 1 仍未成立。共用「歷史寫入」module 仍延後。
