@@ -33,36 +33,16 @@ use chrono::{DateTime, TimeZone, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use common::fixtures::set_points_balance;
+use common::fixtures::{OrderSeed, set_points_balance};
 use dream_fly_backend::error::AppError;
 use dream_fly_backend::extractors::pagination::PaginationParams;
+use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::points::dto::{
     AdjustPointsRequest, LedgerEntryResponse, PointsMeResponse,
 };
 use dream_fly_backend::modules::points::model::{LedgerDelta, PointReason};
 use dream_fly_backend::modules::points::repository as points_repo;
 use dream_fly_backend::modules::points::service;
-
-/// Insert a minimal order row directly, purely so `point_ledger.order_id`
-/// has a valid FK target. Local to this test file (not a shared fixture,
-/// mirrors `http_orders.rs`'s file-local `seed_product_via_admin`) since
-/// points tests only need the barest possible order shell.
-async fn seed_order(db: &PgPool, user_id: Uuid) -> Uuid {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, created_at, updated_at)
-        VALUES ($1, $2, $3, 'pending'::order_status, 1000, 0, NOW(), NOW())
-        "#,
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(format!("TEST-PTS-{id}"))
-    .execute(db)
-    .await
-    .expect("insert order");
-    id
-}
 
 /// Lock `user_id`'s balance in `tx`, then apply `ld` at `at` under that
 /// `BalanceLock` — the two steps every ledger write here takes.
@@ -82,7 +62,10 @@ async fn lock_and_apply(
 async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-earn@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 10).await;
-    let order_id = seed_order(&db, user_id).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Pending)
+        .created_at(chrono::Utc::now())
+        .insert(&db)
+        .await;
 
     let mut tx = db.begin().await.expect("begin tx");
     let balance_after = lock_and_apply(
@@ -117,7 +100,10 @@ async fn apply_delta_earn_increases_balance_and_writes_ledger_row(db: PgPool) {
 async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_id(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-redeem@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 100).await;
-    let order_id = seed_order(&db, user_id).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Pending)
+        .created_at(chrono::Utc::now())
+        .insert(&db)
+        .await;
 
     let mut tx = db.begin().await.expect("begin tx");
     let balance_after = lock_and_apply(
@@ -146,7 +132,10 @@ async fn apply_delta_redeem_decreases_balance_and_writes_ledger_row_with_order_i
 async fn apply_delta_insufficient_balance_returns_conflict_and_does_not_persist(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-insufficient@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 100).await;
-    let order_id = seed_order(&db, user_id).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Pending)
+        .created_at(chrono::Utc::now())
+        .insert(&db)
+        .await;
 
     let mut tx = db.begin().await.expect("begin tx");
     let err = lock_and_apply(
@@ -329,7 +318,10 @@ async fn find_order_flow_sums_tx_returns_positive_magnitudes_for_earn_and_redeem
 ) {
     let user_id = common::seed_member(&db, "pts-flow-sums@example.com", "Password!234").await;
     set_points_balance(&db, user_id, 100).await; // covers the 30-point redeem below
-    let order_id = seed_order(&db, user_id).await;
+    let order_id = OrderSeed::new(user_id, OrderStatus::Pending)
+        .created_at(chrono::Utc::now())
+        .insert(&db)
+        .await;
 
     let mut tx = db.begin().await.expect("begin tx");
     lock_and_apply(
@@ -635,8 +627,14 @@ async fn ledger_lists_a_chain_from_the_balance_whatever_the_write_order(db: PgPo
 async fn points_me_reads_balance_ledger_total_and_earned_from_one_snapshot(db: PgPool) {
     let user_id = common::seed_member(&db, "pts-snapshot@example.com", "Password!234").await;
     let t = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap();
-    let first_order = seed_order(&db, user_id).await;
-    let second_order = seed_order(&db, user_id).await;
+    let first_order = OrderSeed::new(user_id, OrderStatus::Pending)
+        .created_at(t)
+        .insert(&db)
+        .await;
+    let second_order = OrderSeed::new(user_id, OrderStatus::Pending)
+        .created_at(t)
+        .insert(&db)
+        .await;
 
     let mut tx = db.begin().await.expect("begin tx");
     lock_and_apply(
