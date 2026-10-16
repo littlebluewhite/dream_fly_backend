@@ -64,9 +64,10 @@
 //! freshly migrated database: rows left over from an older run of this seed
 //! (which wrote the column directly, with no backing ledger) are not
 //! backfilled, an accepted legacy shape.
-//! Named accounts (`upsert_user`) get their whole balance via one
+//! Every account is born through `accounts::upsert_account`; a named
+//! account with opening points gets its whole balance via one
 //! `LedgerDelta::admin_adjust` in the same transaction as the INSERT. The 24
-//! reporting members (`upsert_seed_member`) instead earn theirs the way a
+//! reporting members are born with 0 points and instead earn theirs the way a
 //! real member does: checkout writes a `checkout_earn` row at `paid_at` for
 //! every paid seed order touching that member, and a refund a
 //! `refund_clawback` on top at the refund instant — never the run instant;
@@ -108,8 +109,10 @@ use dream_fly_backend::modules::sessions::calendar::backfill_for_seed;
 use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
+mod accounts;
 mod timeline;
 
+use accounts::{SeedAccount, upsert_account};
 use timeline::{SeedPurchase, Walked};
 
 /// Convert a fixed list of `&str` literals into the `Vec<String>` sqlx needs
@@ -119,84 +122,8 @@ fn vs(items: &[&str]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// users + roles
+// roles (accounts themselves are born in `accounts`)
 // ---------------------------------------------------------------------------
-
-/// Insert a user (idempotent on `email`) and return its id whether the row
-/// was just inserted or already existed. `created_at` is the account's
-/// historical join instant (`run`'s `joined_at`), not the run instant — the
-/// user must predate the seeded rows that reference it. Takes an already-hashed password
-/// (see `run`'s one-Argon2-per-plaintext precompute of the Admin/Member/
-/// Coach hashes) rather than hashing here, so callers sharing a plaintext
-/// share the hash instead of re-hashing it per call. The INSERT always
-/// writes `points_balance = 0`; when the row is newly inserted (not a
-/// conflict) and `points_balance > 0`, the new row is locked
-/// (`points_service::lock_balance_tx`) and the target balance granted via
-/// `points_service::apply_delta_tx` (`LedgerDelta::admin_adjust`) in the same
-/// transaction as the INSERT — user row and `point_ledger` grant land
-/// atomically (a failed grant rolls back the insert too), and a conflict
-/// (already exists) never grants, so re-runs stay idempotent.
-async fn upsert_user(
-    db: &PgPool,
-    email: &str,
-    name: &str,
-    password_hash: &str,
-    points_balance: i64,
-    created_at: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> anyhow::Result<Uuid> {
-    let mut tx = db
-        .begin()
-        .await
-        .with_context(|| format!("begin tx for user {email}"))?;
-
-    let inserted: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, points_balance, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, 0, $5, NOW())
-        ON CONFLICT DO NOTHING
-        RETURNING id
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(email)
-    .bind(name)
-    .bind(password_hash)
-    .bind(created_at)
-    .fetch_optional(&mut *tx)
-    .await
-    .with_context(|| format!("insert user {email}"))?;
-
-    let user_id = match inserted {
-        Some(id) => {
-            if points_balance > 0 {
-                let lock = points_service::lock_balance_tx(&mut tx, id)
-                    .await
-                    .with_context(|| format!("lock points balance of user {email}"))?;
-                points_service::apply_delta_tx(
-                    &mut tx,
-                    &lock,
-                    LedgerDelta::admin_adjust(points_balance),
-                    now,
-                )
-                .await
-                .with_context(|| format!("grant seed points to user {email}"))?;
-            }
-            id
-        }
-        None => sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-            .bind(email)
-            .fetch_one(&mut *tx)
-            .await
-            .with_context(|| format!("fetch id for user {email}"))?,
-    };
-
-    tx.commit()
-        .await
-        .with_context(|| format!("commit tx for user {email}"))?;
-
-    Ok(user_id)
-}
 
 /// Attach a role to a user — delegates to
 /// `permissions::repository::assign_role` (idempotent, `ON CONFLICT
@@ -581,66 +508,6 @@ fn at_utc(date: NaiveDate, hour: u32, now: DateTime<Utc>) -> DateTime<Utc> {
         .expect("valid seed hour")
         .and_utc()
         .min(now)
-}
-
-/// Insert a reporting-dataset member (idempotent on `email`) and return its
-/// id. Unlike `upsert_user` this takes a precomputed hash (all 24 members
-/// share one dev password — hashing argon2 once instead of 24× per run) and
-/// writes `birth_date`, which backs the age-bracket report bucket. Unlike
-/// `upsert_user`, this function grants no points itself: the points-tier
-/// target balance is instead reached through the member's seeded orders'
-/// `checkout_earn`/`refund_clawback` rows (written by checkout and its
-/// refund compensation, see `timeline`) plus a settling
-/// `LedgerDelta::admin_adjust` the caller applies, every run, once every
-/// order is bought (see the module doc) — so this function doesn't need to
-/// report whether the row was newly inserted; the settlement step runs for
-/// every member regardless.
-/// `created_at` is the member's historical join instant, as in `upsert_user`.
-async fn upsert_seed_member(
-    db: &PgPool,
-    email: &str,
-    name: &str,
-    password_hash: &str,
-    birth_date: NaiveDate,
-    created_at: DateTime<Utc>,
-) -> anyhow::Result<Uuid> {
-    let mut tx = db
-        .begin()
-        .await
-        .with_context(|| format!("begin tx for seed member {email}"))?;
-
-    let inserted: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        INSERT INTO users (id, email, name, password_hash, phone_verified, is_active, points_balance, birth_date, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, false, true, 0, $5, $6, NOW())
-        ON CONFLICT DO NOTHING
-        RETURNING id
-        "#,
-    )
-    .bind(Uuid::now_v7())
-    .bind(email)
-    .bind(name)
-    .bind(password_hash)
-    .bind(birth_date)
-    .bind(created_at)
-    .fetch_optional(&mut *tx)
-    .await
-    .with_context(|| format!("insert seed member {email}"))?;
-
-    let user_id = match inserted {
-        Some(id) => id,
-        None => sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-            .bind(email)
-            .fetch_one(&mut *tx)
-            .await
-            .with_context(|| format!("fetch id for seed member {email}"))?,
-    };
-
-    tx.commit()
-        .await
-        .with_context(|| format!("commit tx for seed member {email}"))?;
-
-    Ok(user_id)
 }
 
 /// Points-tier target balance for reporting member `i` (1..=24): members
@@ -1038,7 +905,7 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     // Hash each distinct dev plaintext once, up front — Admin#2026 (admin),
     // Member#2026 (test member + all 24 reporting members) and Coach#2026
-    // (all 4 coaches) — instead of once per `upsert_user`/`upsert_seed_member`
+    // (all 4 coaches) — instead of once per `upsert_account`
     // call: 7 Argon2 hashes down to 3 per run.
     let admin_hash = password::hash_password("Admin#2026".to_string())
         .await
@@ -1066,13 +933,16 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     );
 
     // -- admin -----------------------------------------------------------
-    let admin_id = upsert_user(
+    let admin_id = upsert_account(
         db,
-        "admin@dreamfly.tw",
-        "系統管理員",
-        &admin_hash,
-        0,
-        joined_at,
+        &SeedAccount {
+            email: "admin@dreamfly.tw",
+            name: "系統管理員",
+            password_hash: &admin_hash,
+            birth_date: None,
+            points: 0,
+            joined_at,
+        },
         at.now,
     )
     .await?;
@@ -1080,13 +950,16 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
     println!("[users]    admin ready: admin@dreamfly.tw / Admin#2026");
 
     // -- test member -------------------------------------------------------
-    let member_id = upsert_user(
+    let member_id = upsert_account(
         db,
-        "member@dreamfly.tw",
-        "測試會員",
-        &member_hash,
-        1250,
-        joined_at,
+        &SeedAccount {
+            email: "member@dreamfly.tw",
+            name: "測試會員",
+            password_hash: &member_hash,
+            birth_date: None,
+            points: 1250,
+            joined_at,
+        },
         at.now,
     )
     .await?;
@@ -1139,13 +1012,16 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     let mut coach_ids: HashMap<&'static str, Uuid> = HashMap::new();
     for seed in &coach_seeds {
-        let user_id = upsert_user(
+        let user_id = upsert_account(
             db,
-            seed.email,
-            seed.user_name,
-            &coach_hash,
-            0,
-            joined_at,
+            &SeedAccount {
+                email: seed.email,
+                name: seed.user_name,
+                password_hash: &coach_hash,
+                birth_date: None,
+                points: 0,
+                joined_at,
+            },
             at.now,
         )
         .await?;
@@ -1563,8 +1439,19 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
             .expect("valid seed birth_date");
         let email = format!("seed-member-{i:02}@dreamfly.tw");
         let name = format!("示範會員{i:02}");
-        let user_id =
-            upsert_seed_member(db, &email, &name, &member_hash, birth_date, joined_at).await?;
+        let user_id = upsert_account(
+            db,
+            &SeedAccount {
+                email: &email,
+                name: &name,
+                password_hash: &member_hash,
+                birth_date: Some(birth_date),
+                points: 0,
+                joined_at,
+            },
+            at.now,
+        )
+        .await?;
         assign_role(db, user_id, Role::Member).await?;
         member_targets.push((user_id, member_points_target(i)));
         member_ids.push(user_id);

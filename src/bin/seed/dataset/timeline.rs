@@ -194,7 +194,8 @@ mod tests {
 
     use super::{SeedPurchase, Walked, buy_and_walk};
     use crate::dataset::{
-        ProductSeed, collect_row_counts, insert_product, product_id_by_slug, upsert_seed_member,
+        ProductSeed, SeedAccount, collect_row_counts, insert_product, product_id_by_slug,
+        upsert_account,
     };
 
     /// The run instant every test here buys at: 2026-03-10T03:00Z, Asia/Taipei.
@@ -221,13 +222,17 @@ mod tests {
     async fn minimal_catalog(db: &PgPool) -> Catalog {
         let mut members = [Uuid::nil(); 2];
         for (i, member) in members.iter_mut().enumerate() {
-            *member = upsert_seed_member(
+            *member = upsert_account(
                 db,
-                &format!("seed-member-{:02}@dreamfly.tw", i + 1),
-                "示範會員",
-                "not-a-real-hash",
-                NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
-                Utc.with_ymd_and_hms(2025, 1, 1, 4, 0, 0).unwrap(),
+                &SeedAccount {
+                    email: &format!("seed-member-{:02}@dreamfly.tw", i + 1),
+                    name: "示範會員",
+                    password_hash: "not-a-real-hash",
+                    birth_date: Some(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap()),
+                    points: 0,
+                    joined_at: Utc.with_ymd_and_hms(2025, 1, 1, 4, 0, 0).unwrap(),
+                },
+                at().now,
             )
             .await
             .expect("upsert seed member");
