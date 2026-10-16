@@ -7,8 +7,7 @@ use crate::modules::cart::model::CartItemType;
 use super::fulfilment::OrderLine;
 use super::model::{AdminOrderRow, Order, OrderItem, OrderStatus, OrderSummaryRow};
 
-/// The four order-row amount fields that previously formed a run of
-/// same-shaped `i64` positional arguments in `create_order`. Named
+/// The four order-row amount fields of a [`NewOrder`]. Named
 /// `OrderAmounts` rather than `OrderMoney` because `points_used`/
 /// `points_earned` are points, not money.
 #[derive(Clone, Copy)]
@@ -19,37 +18,48 @@ pub struct OrderAmounts {
     pub points_earned: i64,
 }
 
-/// Create the order row. Checkout in this application has no separate
-/// payment-capture step — succeeding IS the payment — so the row is
-/// inserted already `status = 'paid'` with `paid_at` stamped, rather than
-/// starting `pending` and needing a follow-up transition.
-/// `paid_at`/`created_at` 是業務時間(報表依 `paid_at` 分桶),綁呼叫端取樣的
-/// `now`;`updated_at` 是稽核時間,留給 `NOW()`(ADR-0017)。
+/// One `orders` row as `create_order` writes it. A struct rather than
+/// eight positional arguments (clippy `too_many_arguments`).
+pub struct NewOrder<'a> {
+    pub user_id: Uuid,
+    pub order_number: &'a str,
+    pub status: OrderStatus,
+    pub amounts: OrderAmounts,
+    pub coupon_code: Option<&'a str>,
+    /// `None` is stored NULL; the revenue report shows it as 'unknown'.
+    pub payment_method: Option<&'a str>,
+    pub paid_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Create the order row — the one writer of `orders` rows. Checkout has no
+/// separate payment-capture step (succeeding IS the payment), so it passes
+/// `status: Paid` with `paid_at = created_at = now`; the dev seed's pending
+/// contrast orders and the tests' `OrderSeed` pass their own status/times.
+/// `id` is `gen_random_uuid()`. `paid_at`/`created_at` 是業務時間(報表依
+/// `paid_at` 分桶),綁呼叫端給的值;`updated_at` 是稽核時間,一律 `NOW()`
+/// (ADR-0017)。
 pub async fn create_order(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    user_id: Uuid,
-    order_number: &str,
-    amounts: OrderAmounts,
-    coupon_code: Option<&str>,
-    payment_method: &str,
-    now: DateTime<Utc>,
+    order: &NewOrder<'_>,
 ) -> Result<Order, sqlx::Error> {
     sqlx::query_as::<_, Order>(
         "INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents, \
          coupon_code, points_used, points_earned, payment_method, paid_at, created_at, updated_at) \
-         VALUES (gen_random_uuid(), $1, $2, 'paid'::order_status, $3, $4, $5, $6, $7, $8, $9, \
-         $9, NOW()) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) \
          RETURNING *",
     )
-    .bind(user_id)
-    .bind(order_number)
-    .bind(amounts.total_cents)
-    .bind(amounts.discount_cents)
-    .bind(coupon_code)
-    .bind(amounts.points_used)
-    .bind(amounts.points_earned)
-    .bind(payment_method)
-    .bind(now)
+    .bind(order.user_id)
+    .bind(order.order_number)
+    .bind(order.status)
+    .bind(order.amounts.total_cents)
+    .bind(order.amounts.discount_cents)
+    .bind(order.coupon_code)
+    .bind(order.amounts.points_used)
+    .bind(order.amounts.points_earned)
+    .bind(order.payment_method)
+    .bind(order.paid_at)
+    .bind(order.created_at)
     .fetch_one(&mut **tx)
     .await
 }
@@ -199,8 +209,8 @@ pub async fn find_items_by_order(
     .await
 }
 
-/// Single atomic UPDATE of the status. `paid_at` is never touched: every
-/// order is inserted already `paid` with `paid_at` stamped (see
+/// Single atomic UPDATE of the status. `paid_at` is never touched: checkout
+/// inserts every order already `paid` with `paid_at` stamped (see
 /// `create_order`), and there is no `pending → paid` transition, so a status
 /// change never has a payment time to stamp (a refunded/cancelled order
 /// keeps its original `paid_at`).

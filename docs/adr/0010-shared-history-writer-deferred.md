@@ -129,3 +129,14 @@ key、未命中才經購物車與 `checkout` 買下,買完立刻經 `update_orde
 - `refuse_legacy_seed_rows`、`insert_pending_order_if_absent` 與點數結算留在 `run`;介面測試在 `timeline.rs`,用
   最小目錄,不跑整份資料集。
 - 本 ADR 的決策不變:共用「歷史寫入」module 仍延後,重開條件 1 仍未成立。
+
+## Addendum (2026-10-16): 訂單列只有一個寫入者
+
+R22 讓 `orders::repository::create_order(tx, &NewOrder)` 成為 `orders` 列唯一的寫入者:checkout(`status: Paid`)、
+seed 的待付款對照單(`insert_pending_order_if_absent`,`status: Pending`)與測試 fixture `OrderSeed`(`insert_tx`
+= `create_order` + `create_order_items`,`insert` 包成一個交易)都經它;另外三份 `INSERT INTO orders` 與報名、訂閱
+測試各自複製的 `seed_order` helper 刪除。
+
+- 這不是本 ADR 延後的共用「歷史寫入」module:它只擁有一張表的一列,不寫訂單行以外的購買產物。`OrderSeed` 照舊
+  不寫點數帳、不走 checkout,也不造「已結帳、已結算」的歷史。
+- 重開條件 1 照字面仍不成立:沒有第二個需要造那種歷史訂單的測試族群。裁決不變,共用「歷史寫入」module 仍延後。

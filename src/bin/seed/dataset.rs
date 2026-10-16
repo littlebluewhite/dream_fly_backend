@@ -52,7 +52,8 @@
 //! `orders::idempotency::replay` and buys nothing again, so it adds no
 //! order, ledger, enrolment, outbox or notification row. Pending contrast
 //! orders are the one bypass left on this path — checkout only creates
-//! paid orders — and `insert_pending_order_if_absent` writes them directly.
+//! paid orders — and `insert_pending_order_if_absent` writes them through
+//! `orders::repository::create_order` / `create_order_items`.
 //! `run` refuses, before any write, a database an older version of this
 //! binary seeded (`refuse_legacy_seed_rows`): its seed enrolments and paid
 //! `DF-SEED-…`-numbered orders were written directly, carry no key, and
@@ -548,11 +549,13 @@ async fn venue_id_by_slug(db: &PgPool, slug: &str) -> anyhow::Result<Uuid> {
 }
 
 /// A never-paid contrast order. Checkout only creates orders already paid,
-/// so this stays a direct `orders` INSERT — the one documented bypass left
-/// on the order path (ADR-0010): `lines` is the `PurchasableCart` checkout
-/// would price (built through `fulfilment::ensure_all_purchasable`), priced
-/// by `orders::pricing::price` with no coupon and no points; `paid_at =
-/// NULL`, `points_earned = 0`, no ledger rows, no grants.
+/// so this bypasses checkout — the one documented bypass left on the order
+/// path (ADR-0010) — but still writes through checkout's own row writers,
+/// `create_order` (`status: Pending`) and `create_order_items`: `lines` is
+/// the `PurchasableCart` checkout would price (built through
+/// `fulfilment::ensure_all_purchasable`), priced by `orders::pricing::price`
+/// with no coupon and no points; `paid_at = NULL`, `points_earned = 0`, no
+/// ledger rows, no grants.
 struct PendingSeedOrder {
     order_number: String,
     user_id: Uuid,
@@ -563,8 +566,9 @@ struct PendingSeedOrder {
 
 /// Insert a pending order + its order_items (idempotent by existence check
 /// on `order_number` — order_items has no unique key of its own, so the
-/// parent check guards both). The items go through checkout's own
-/// `fulfilment::order_lines` and `create_order_items`, at `created_at`.
+/// parent check guards both). The row goes through `create_order`, the
+/// items through checkout's own `fulfilment::order_lines` and
+/// `create_order_items`, both at `created_at`.
 async fn insert_pending_order_if_absent(
     db: &PgPool,
     seed: &PendingSeedOrder,
@@ -585,29 +589,28 @@ async fn insert_pending_order_if_absent(
     // Seed never decrements stock, so no line is marked `stock_decremented`.
     let lines = fulfilment::order_lines(&seed.lines, &HashMap::new());
 
-    let order_id = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO orders (id, user_id, order_number, status, total_cents, discount_cents,
-                            coupon_code, points_used, points_earned, payment_method, paid_at,
-                            created_at, updated_at)
-        VALUES ($1, $2, $3, $4::order_status, $5, $6, $7, 0, 0, $8, NULL, $9, $9)
-        "#,
+    let order = orders_repository::create_order(
+        &mut tx,
+        &orders_repository::NewOrder {
+            user_id: seed.user_id,
+            order_number: &seed.order_number,
+            status: OrderStatus::Pending,
+            amounts: orders_repository::OrderAmounts {
+                total_cents: pricing.total_cents,
+                discount_cents: pricing.discount_cents,
+                points_used: 0,
+                points_earned: 0,
+            },
+            coupon_code: pricing.applied_coupon_code.as_deref(),
+            payment_method: Some(seed.payment_method),
+            paid_at: None,
+            created_at: seed.created_at,
+        },
     )
-    .bind(order_id)
-    .bind(seed.user_id)
-    .bind(&seed.order_number)
-    .bind(OrderStatus::Pending.as_str())
-    .bind(pricing.total_cents)
-    .bind(pricing.discount_cents)
-    .bind(&pricing.applied_coupon_code)
-    .bind(seed.payment_method)
-    .bind(seed.created_at)
-    .execute(&mut *tx)
     .await
     .with_context(|| format!("insert order '{}'", seed.order_number))?;
 
-    orders_repository::create_order_items(&mut tx, order_id, &lines, seed.created_at)
+    orders_repository::create_order_items(&mut tx, order.id, &lines, seed.created_at)
         .await
         .with_context(|| format!("insert order_items for '{}'", seed.order_number))?;
 
