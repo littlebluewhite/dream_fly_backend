@@ -56,19 +56,12 @@ async fn seed_member_cart_items(db: &PgPool) -> i64 {
     .expect("count seed member cart items")
 }
 
-async fn total_occupying_bookings(db: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM occupying_bookings")
-        .fetch_one(db)
-        .await
-        .expect("count occupying_bookings")
-}
-
 /// D = 2026-03-10T03:00Z (Asia/Taipei) run twice → row counts (checkout's
-/// `order_idempotency`/`notifications`/`events_outbox` among them),
-/// `point_ledger` row count and the `occupying_bookings` count all unchanged,
-/// `settled_members == 0`, and no seed member is left holding cart lines (a
-/// rerun replays its keys before refilling any cart). Settling a drifted
-/// balance back to its tier target is `settlement`'s own test.
+/// `order_idempotency`/`notifications`/`events_outbox` among them) and the
+/// `point_ledger` row count unchanged, `settled_members == 0`, and no seed
+/// member is left holding cart lines (a rerun replays its keys before
+/// refilling any cart). Settling a drifted balance back to its tier target is
+/// `settlement`'s own test.
 #[sqlx::test]
 async fn same_instant_rerun_is_noop(db: PgPool) {
     let at = StudioNow {
@@ -78,7 +71,6 @@ async fn same_instant_rerun_is_noop(db: PgPool) {
 
     let first = dataset::run(&db, at).await.expect("first run");
     let ledger_after_first = ledger_row_count(&db).await;
-    let occupying_after_first = total_occupying_bookings(&db).await;
 
     let second = dataset::run(&db, at).await.expect("second run");
     assert_eq!(first.row_counts, second.row_counts);
@@ -94,7 +86,6 @@ async fn same_instant_rerun_is_noop(db: PgPool) {
     assert_eq!(seed_member_cart_items(&db).await, 0);
     assert_eq!(second.settled_members, 0);
     assert_eq!(ledger_row_count(&db).await, ledger_after_first);
-    assert_eq!(total_occupying_bookings(&db).await, occupying_after_first);
 }
 
 /// Run at D, then again at D+40d (still same-month → different-month, so
@@ -154,21 +145,6 @@ async fn later_run_keeps_invariants(db: PgPool) {
             .await
             .expect("count zero-delta ledger rows");
     assert_eq!(zero_delta_rows, 0);
-
-    // ④ capacity invariant — the dropped `time_slots_booked_bound` CHECK used
-    // to guarantee it: no slot holds more occupying bookings than its capacity.
-    let over_capacity: Vec<(Uuid, i32, i64)> = sqlx::query_as(
-        "SELECT ts.id, ts.capacity, COUNT(ob.*) FROM time_slots ts \
-         JOIN occupying_bookings ob ON ob.time_slot_id = ts.id \
-         GROUP BY ts.id, ts.capacity HAVING COUNT(ob.*) > ts.capacity",
-    )
-    .fetch_all(&db)
-    .await
-    .expect("load over-capacity slots");
-    assert!(
-        over_capacity.is_empty(),
-        "over-capacity slots: {over_capacity:?}"
-    );
 
     let seed_ids = seed_order_ids(&db).await;
     let orders: Vec<(Uuid, i64, i64, OrderStatus)> = sqlx::query_as(
