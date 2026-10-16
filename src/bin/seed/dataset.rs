@@ -100,6 +100,7 @@ use dream_fly_backend::utils::password;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
 mod accounts;
+mod attendance;
 mod settlement;
 mod timeline;
 
@@ -588,51 +589,6 @@ async fn insert_pending_order_if_absent(
         .with_context(|| format!("insert order_items for '{}'", seed.order_number))?;
 
     tx.commit().await.context("commit order tx")?;
-    Ok(())
-}
-
-/// Bulk-insert attendance rows (idempotent on the real
-/// `UNIQUE(session_id, enrolment_id)` constraint). Single UNNEST statement,
-/// mirroring the UNNEST bulk INSERT of `sessions::calendar`'s private
-/// slot-date insert (behind `backfill_for_seed`).
-async fn insert_attendance_bulk(
-    db: &PgPool,
-    marked_by: Uuid,
-    rows: &[(Uuid, Uuid, &'static str, DateTime<Utc>)],
-) -> anyhow::Result<()> {
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let mut ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut session_ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut enrolment_ids: Vec<Uuid> = Vec::with_capacity(rows.len());
-    let mut statuses: Vec<String> = Vec::with_capacity(rows.len());
-    let mut marked_ats: Vec<DateTime<Utc>> = Vec::with_capacity(rows.len());
-    for (session_id, enrolment_id, status, marked_at) in rows {
-        ids.push(Uuid::now_v7());
-        session_ids.push(*session_id);
-        enrolment_ids.push(*enrolment_id);
-        statuses.push((*status).to_string());
-        marked_ats.push(*marked_at);
-    }
-
-    sqlx::query(
-        "INSERT INTO attendance_records (id, session_id, enrolment_id, status, marked_by, marked_at, created_at) \
-         SELECT u.id, u.session_id, u.enrolment_id, u.status::attendance_status, $2, u.marked_at, NOW() \
-         FROM UNNEST($1::uuid[], $3::uuid[], $4::uuid[], $5::text[], $6::timestamptz[]) \
-              AS u(id, session_id, enrolment_id, status, marked_at) \
-         ON CONFLICT (session_id, enrolment_id) DO NOTHING",
-    )
-    .bind(&ids)
-    .bind(marked_by)
-    .bind(&session_ids)
-    .bind(&enrolment_ids)
-    .bind(&statuses)
-    .bind(&marked_ats)
-    .execute(db)
-    .await
-    .context("bulk insert attendance_records")?;
     Ok(())
 }
 
@@ -1640,58 +1596,10 @@ pub async fn run(db: &PgPool, at: StudioNow) -> anyhow::Result<SeedReport> {
 
     // -- attendance (~1500-2000 rows) ---------------------------------------
     // Every active enrolment × that course's already-materialized past
-    // sessions. `(member_idx + session_idx) % 20` → 0-14 present / 15-17
-    // absent / 18-19 leave (~75/15/10); members 22-24 are the low-attendance
-    // group → 0-7 present / 8-16 absent / 17-19 leave (~40/45/15), filling
-    // the attendance-distribution report's low buckets.
-    // `marked_at` treats the session's studio-local `end_time` as if it
-    // were already UTC (same shortcut `at_utc` takes), then clamps to
-    // `at.now` — same clamp reason as `at_utc`: a session dated `today`
-    // (studio-local, can run up to a day ahead of the UTC date) would
-    // otherwise mark attendance hours in the future.
-    let mut past_sessions: Vec<Vec<(Uuid, DateTime<Utc>)>> = Vec::with_capacity(course_ids.len());
-    for course_id in &course_ids {
-        let rows: Vec<(Uuid, NaiveDate, NaiveTime)> = sqlx::query_as(
-            "SELECT id, session_date, end_time FROM course_sessions \
-             WHERE course_id = $1 AND session_date < $2 \
-             ORDER BY session_date, start_time",
-        )
-        .bind(course_id)
-        .bind(today)
-        .fetch_all(db)
-        .await
-        .context("load past sessions for attendance")?;
-        past_sessions.push(
-            rows.into_iter()
-                .map(|(id, d, t)| (id, d.and_time(t).and_utc().min(at.now)))
-                .collect(),
-        );
-    }
-    let mut attendance_rows: Vec<(Uuid, Uuid, &'static str, DateTime<Utc>)> = Vec::new();
-    for (i, k, enrolment_id) in &active_enrolments {
-        for (session_idx, (session_id, marked_at)) in past_sessions[*k].iter().enumerate() {
-            let r = (i + session_idx) % 20;
-            let status = if *i >= 22 {
-                match r {
-                    0..=7 => "present",
-                    8..=16 => "absent",
-                    _ => "leave",
-                }
-            } else {
-                match r {
-                    0..=14 => "present",
-                    15..=17 => "absent",
-                    _ => "leave",
-                }
-            };
-            attendance_rows.push((*session_id, *enrolment_id, status, *marked_at));
-        }
-    }
-    insert_attendance_bulk(db, admin_id, &attendance_rows).await?;
-    println!(
-        "[attendance] {} attendance records ready",
-        attendance_rows.len()
-    );
+    // sessions; the status formula and `marked_at` are `attendance`'s.
+    let marked =
+        attendance::mark_past_sessions(db, at, admin_id, &course_ids, &active_enrolments).await?;
+    println!("[attendance] {marked} attendance records ready");
 
     // -- venue rental: time_slots (~168) + bookings --------------------------
     // 4 venues × 3 weekly slots × 14 weeks (8 back + this week + 5 ahead),

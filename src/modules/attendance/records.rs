@@ -16,8 +16,9 @@
 //! 兩個讀取([`find_active_enrolment_ids_in`]、
 //! [`find_approved_leave_enrolment_ids_tx`])是 [`mark_tx`] 的私有步驟,都
 //! 在 tx 內跑:READ COMMITTED 下每條語句本來就各取快照,valid-set 從 pool
-//! 移進 tx 不改錯誤序與狀態碼。seed 的 `insert_attendance_bulk`、fixtures 的
-//! `seed_attendance` 是記錄在案的 bypass(ADR-0010)。名冊等讀取照「跨模組
+//! 移進 tx 不改錯誤序與狀態碼。seed 的 `mark_past_sessions`
+//! (`bin/seed/dataset/attendance.rs`)、fixtures 的 `seed_attendance` 是記錄在
+//! 案的 bypass(ADR-0010)。名冊等讀取照「跨模組
 //! 讀表」慣例留在 `attendance::repository`。
 
 use std::collections::HashSet;
