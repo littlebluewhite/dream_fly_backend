@@ -3,7 +3,7 @@
 //! `dataset::run` and then reads the seeded rows back with plain SQL,
 //! rather than reaching into `dataset`'s private helpers. See that
 //! module's doc for the shape being pinned (per-table idempotency keys,
-//! the points-tier settlement loop).
+//! that settlement runs after the purchase timeline).
 
 use std::collections::HashMap;
 
@@ -14,9 +14,8 @@ use uuid::Uuid;
 
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service::update_order_status;
-use dream_fly_backend::modules::points::model::{LedgerDelta, PointsTier};
+use dream_fly_backend::modules::points::model::PointsTier;
 use dream_fly_backend::modules::points::repository::sum_earned_in_studio_month;
-use dream_fly_backend::modules::points::service::{apply_delta_tx, lock_balance_tx};
 use dream_fly_backend::modules::reports::repository::member_stats;
 use dream_fly_backend::utils::studio_clock::StudioNow;
 
@@ -64,34 +63,14 @@ async fn total_occupying_bookings(db: &PgPool) -> i64 {
         .expect("count occupying_bookings")
 }
 
-async fn user_id_by_email(db: &PgPool, email: &str) -> Uuid {
-    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-        .bind(email)
-        .fetch_one(db)
-        .await
-        .expect("fetch user id")
-}
-
-async fn points_balance(db: &PgPool, user_id: Uuid) -> i64 {
-    sqlx::query_scalar("SELECT points_balance FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(db)
-        .await
-        .expect("fetch points_balance")
-}
-
 /// D = 2026-03-10T03:00Z (Asia/Taipei) run twice → row counts (checkout's
 /// `order_idempotency`/`notifications`/`events_outbox` among them),
 /// `point_ledger` row count and the `occupying_bookings` count all unchanged,
 /// `settled_members == 0`, and no seed member is left holding cart lines (a
-/// rerun replays its keys before refilling any cart). Then manually push
-/// seed-member-01 500 points above its points-tier
-/// target (`member_points_target(1) == 150`) — the next run must settle
-/// exactly that one member back to 150 (regression d819e21: an earlier seed
-/// wrote `points_balance` directly instead of going through the ledger, so
-/// a drifted balance never got corrected).
+/// rerun replays its keys before refilling any cart). Settling a drifted
+/// balance back to its tier target is `settlement`'s own test.
 #[sqlx::test]
-async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
+async fn same_instant_rerun_is_noop(db: PgPool) {
     let at = StudioNow {
         tz: taipei(),
         now: Utc.with_ymd_and_hms(2026, 3, 10, 3, 0, 0).unwrap(),
@@ -116,26 +95,6 @@ async fn same_instant_rerun_is_noop_and_settles_drift(db: PgPool) {
     assert_eq!(second.settled_members, 0);
     assert_eq!(ledger_row_count(&db).await, ledger_after_first);
     assert_eq!(total_occupying_bookings(&db).await, occupying_after_first);
-
-    let member_id = user_id_by_email(&db, "seed-member-01@dreamfly.tw").await;
-    let mut tx = db.begin().await.expect("begin drift tx");
-    let lock = lock_balance_tx(&mut tx, member_id)
-        .await
-        .expect("lock drift balance");
-    apply_delta_tx(
-        &mut tx,
-        &lock,
-        LedgerDelta::admin_adjust(500),
-        chrono::Utc::now(),
-    )
-    .await
-    .expect("apply drift");
-    tx.commit().await.expect("commit drift tx");
-    assert_eq!(points_balance(&db, member_id).await, 650);
-
-    let third = dataset::run(&db, at).await.expect("third run");
-    assert_eq!(third.settled_members, 1);
-    assert_eq!(points_balance(&db, member_id).await, 150);
 }
 
 /// Run at D, then again at D+40d (still same-month → different-month, so
@@ -168,7 +127,9 @@ async fn later_run_keeps_invariants(db: PgPool) {
         assert_eq!(balance, ledger_sum.unwrap_or(0), "user {user_id}");
     }
 
-    // ② the 24 seed members land 6-per-tier under `PointsTier::from_balance`.
+    // ② the 24 seed members land 6-per-tier under `PointsTier::from_balance`
+    // — only if `run` settles after `buy_and_walk` has written this run's
+    // `checkout_earn` rows.
     let member_balances: Vec<i64> = sqlx::query_scalar(
         "SELECT points_balance FROM users WHERE email LIKE 'seed-member-%@dreamfly.tw'",
     )
