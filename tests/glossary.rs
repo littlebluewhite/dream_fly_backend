@@ -31,18 +31,6 @@ use std::path::Path;
 /// shortened.
 #[rustfmt::skip]
 const PENDING: &[&str] = &[
-    // R23-08: orders, points, checkout
-    "訂單定價",
-    "購買時刻",
-    "行計畫",
-    "訂單鎖協定",
-    "營收狀態集",
-    "給點",
-    "退款",
-    "結帳快照",
-    "結帳冪等",
-    "權益授予",
-    "上架可見性",
 
     // R23-09: accounts, authorization, infrastructure
 
