@@ -5,10 +5,8 @@
 //! 閘門掛在 router 上,看 route table 就知道授權層級,不必逐支翻 handler
 //! 首行。
 //!
-//! **為何三個閘門各是一個函式,而非同一個參數化 factory**:三支本體只差
-//! 第二步那一行角色判斷,factory 省不了什麼;各自具名,`startup.rs` 掛載
-//! 處的函式名就是授權層級,「`require_coach` 不含 admin」也寫在本函式裡,
-//! 而不是角色清單裡少一個元素。
+//! 三個閘門(`require_admin`/`require_staff`/本檔)各是一個具名函式,沒有
+//! 參數化 factory;三支本體只差第二步那一行角色判斷。
 //!
 //! **Fail-closed**:與 `require_admin`/`require_staff` 相同的兩步短路——先
 //! `AuthUser::from_request_parts`(401 平價),再角色判斷(403 平價),任一
