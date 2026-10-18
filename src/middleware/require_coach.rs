@@ -1,14 +1,12 @@
 //! Coach 角色閘門(route 層單點)。
 //!
 //! **為何是 route 層 middleware,而非逐 handler 首行**:`attendance::my_students`、
-//! `reports::coach_report` 兩支過去各自在 handler 首行留
-//! `auth.require_role(Role::Coach)?;` 一行,並記錄「建第三個單角色 gate 不值得」
-//! 的決定——彼時 carve-out 僅零星一兩處,不成規模。現況兩條路徑同形(皆
-//! coach-only、admin 刻意排除),審查認定 route-table 可信度(掛在哪個
-//! router 上即一望可知授權層級,不必逐支翻 handler 首行)已值得多開一個
-//! gate 家族成員,故反轉該決定,比照 `require_admin`/`require_staff` 補上
-//! 本檔——沿用兩者的兩步 fail-closed 結構,獨立成一個函式而非參數化
-//! factory(理由同 `require_staff` 檔頭)。
+//! `reports::coach_report` 兩條路徑同形(皆 coach-only、admin 刻意排除),
+//! 閘門掛在 router 上,看 route table 就知道授權層級,不必逐支翻 handler
+//! 首行。
+//!
+//! 三個閘門(`require_admin`/`require_staff`/本檔)各是一個具名函式,沒有
+//! 參數化 factory;三支本體只差第二步那一行角色判斷。
 //!
 //! **Fail-closed**:與 `require_admin`/`require_staff` 相同的兩步短路——先
 //! `AuthUser::from_request_parts`(401 平價),再角色判斷(403 平價),任一

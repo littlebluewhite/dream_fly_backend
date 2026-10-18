@@ -1395,8 +1395,8 @@ async fn google_auth_rejects_inactive_account(db: PgPool) {
 }
 
 /// Only account birth (`LinkPlan::grant_member`, `Create` only) grants
-/// `member`: a returning Google user (`Refresh`) whose `member` role an admin
-/// removed does not get it back.
+/// `member`: a returning Google user (`Refresh`) whose `member` role row was
+/// deleted does not get it back.
 #[sqlx::test]
 async fn google_auth_refresh_does_not_regrant_removed_member(db: PgPool) {
     let google = FakeGoogleIdentity::verified("google-sub-regrant", "regrant@example.com");
