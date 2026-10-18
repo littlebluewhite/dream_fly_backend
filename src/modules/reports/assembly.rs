@@ -14,6 +14,16 @@
 //! `now`, and keeping it out of the struct keeps every field in
 //! `AdminReportInputs` a plain repository-query result, nothing
 //! server/clock-flavored mixed in.
+//!
+//! Each report section is declared three times on purpose:
+//! `AdminReportResponse` (the wire shape), [`AdminReportInputs`] (one field
+//! per repository query) and [`assemble_admin_report`] (the shaping between
+//! them). They are three different things (output contract, query result,
+//! shaping rule), and a section missing from one makes the compiler point at
+//! the other two. Do not fold them into one declaration with a macro or a
+//! shared type: that ties the query results to the wire shape, so the pure
+//! core could no longer change on its own. The 2026-10-03 architecture
+//! review ruled to keep the triplication; don't re-raise it.
 
 use super::dto::{
     AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection, AdminReportResponse,

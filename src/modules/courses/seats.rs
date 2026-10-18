@@ -190,7 +190,8 @@ struct SessionSeats {
 impl SessionSeats {
     /// 目標場次剩餘座位 = `max_students - active + 該場次核准請假 - 已補進
     /// 該場次的補課`——請假釋出座位、補課佔用座位(controller ruling
-    /// 2026-07-06,契約 §3.20)。
+    /// 2026-07-06,契約 §3.20)。請假與補課兩數都讀 `leave_requests`,不讀
+    /// 核准投影出的出勤 `leave` 列:口頭請假不釋出座位。
     fn remaining(&self) -> i64 {
         self.max_students as i64 - self.active_count + self.approved_leave_count - self.makeup_count
     }

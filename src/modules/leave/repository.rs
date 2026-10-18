@@ -1,3 +1,30 @@
+//! Leave-request reads and writes. [`VIEW_COLUMNS`]/[`VIEW_JOINS`] are the
+//! prototype of the read projection idiom (讀取投影慣例), which
+//! `certificates::repository` and `waitlist::repository` follow too:
+//!
+//! - What a resource's response looks like is owned by one pair of private
+//!   consts, `*_VIEW_COLUMNS` (the select list, every column under a fixed
+//!   row-source alias) and `*_VIEW_JOINS` (the JOINs, assuming that alias is
+//!   already in scope), plus one `FromRow` row type. Every reader, and every
+//!   write whose response is that row, builds the same projection with
+//!   `format!`.
+//! - A write responds through a data-modifying CTE:
+//!   `WITH x AS (INSERT/UPDATE … RETURNING *) SELECT {COLS} FROM x {JOINS}`.
+//!   One statement writes and returns the projected row: no second read in
+//!   the transaction, no `Internal` branch for a row that vanished, no
+//!   response fields copied by hand from the request.
+//! - The CTE's row source is always `RETURNING`, never a view: subqueries in
+//!   the same statement see the snapshot from before it, so a view does not
+//!   yet hold the row being written.
+//! - Readers keep their own row source (table or view) and share only the
+//!   columns and the JOINs.
+//! - A transition with no response body (a `DELETE`-type endpoint) returns
+//!   the bare table row.
+//!
+//! The decision reads ([`find_decision_context`], [`find_for_makeup_tx`])
+//! are not this projection: they keep the raw `enrolments` JOIN so a
+//! cancelled enrolment still finds its leave request (409, not 404).
+
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 

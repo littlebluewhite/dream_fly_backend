@@ -10,6 +10,13 @@
 //! instant flows down through services as an ordinary `now: DateTime<Utc>`
 //! argument.
 //!
+//! Wall-clock business logic never calls `Utc::now()` itself: it takes the
+//! handler's sample as `now`, or as `at: StudioNow` when it also needs the
+//! studio timezone. Two documented carve-outs read the system clock directly
+//! because their time is not wall-clock business time: auth token expiry
+//! (`auth::session`, `utils::jwt`) and a post's `published_at` stamp
+//! (`posts::service`).
+//!
 //! Synchronous trait, not `async_trait`: reading the clock is not I/O
 //! (unlike `EmailSender`/`SmsClient`, which perform real network sends and
 //! so need `async fn`).

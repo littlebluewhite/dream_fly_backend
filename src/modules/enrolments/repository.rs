@@ -1,3 +1,19 @@
+//! Enrolment reads and writes. 有效報名 (Active Enrolments) is the
+//! `active_enrolments` view (`status = 'active'`, migration
+//! `20260711000001`): every read, here or in another module, that asks
+//! whether an enrolment holds a seat now goes through it. Two kinds of site
+//! read `enrolments` itself on purpose:
+//! - the write side: the INSERT, the cancel UPDATE and [`find_by_id_tx`]'s
+//!   lock on the cancel path (a statement cannot read the view it is
+//!   changing);
+//! - reads that must also see cancelled enrolments: [`find_owner`], the
+//!   `/enrolments/me` list ([`find_by_user_with_course`]) and the history
+//!   JOINs in certificates, leave and the attendance reports.
+//!
+//! The reports' new-enrolment counts are an event 口徑 (how many enrolments
+//! happened in a period), not this one, so they stay off the view as well
+//! (see the migration).
+
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
