@@ -1209,10 +1209,10 @@ pub struct FullCourse {
 /// 「某課程剛好坐滿」:`CourseSeed`(max_students,不掛
 /// coach)+ 等量的 `seed_member_at`/`seed_enrolment`(active, now)各造一位占位
 /// 會員填滿座位,取代「建課、逐一造會員、逐一造 active enrolment」的多段式
-/// inline 序列。參數名沿用 `courses` 表欄位 `max_students`(GLOSSARY.md 座位
-/// 詞條——_Avoid_: capacity)。`now` 是呼叫端的場景時刻,占位會員加入與報名都
-/// 蓋它。Returns the new course id and its occupants' member ids, in creation
-/// order.
+/// inline 序列。參數名沿用 `courses` 表欄位 `max_students`,與
+/// `courses::seats::CourseSeats` 同名(不叫 capacity:那是場租時段的欄位)。
+/// `now` 是呼叫端的場景時刻,占位會員加入與報名都蓋它。Returns the new course
+/// id and its occupants' member ids, in creation order.
 pub async fn seed_full_course(
     db: &PgPool,
     name: &str,

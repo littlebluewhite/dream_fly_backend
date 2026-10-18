@@ -33,33 +33,6 @@ use std::path::Path;
 const PENDING: &[&str] = &[
 
     // R23-09: accounts, authorization, infrastructure
-
-    // R23-10: courses, sessions, leave, rental, reports, clock
-    "留存",
-    "漏斗",
-    "場租",
-    "場租佔位",
-    "試上預約",
-    "系統設定",
-    "場次狀態",
-    "座位",
-    "出席口徑",
-    "點名計畫",
-    "請假",
-    "請假規則",
-    "請假讀取投影",
-    "讀取投影慣例",
-    "場次物化",
-    "有效報名",
-    "候補",
-    "週課表",
-    "時段狀態",
-    "對話配對",
-    "studio 時間軸 SQL 攣生",
-    "報表組裝",
-    "工作室時鐘",
-    "時鐘 seam",
-    "場景時刻",
 ];
 
 /// Fewer entries than this means the parse broke (a format change would

@@ -524,7 +524,9 @@ pub async fn retention(db: &PgPool, at: StudioNow) -> Result<Vec<RetentionRow>, 
 /// studio-local *date* of each row (`AT TIME ZONE` for the `TIMESTAMPTZ`
 /// `created_at`) against `today - 90`, so「90 天窗」is a studio-calendar window
 /// (a row created 91 studio days ago is out; 90 or fewer is in). No middle
-/// stages are fabricated.
+/// stages are fabricated, and no conversion rate is computed: the response
+/// carries the two raw counts, and a client that wants a percentage divides
+/// them itself.
 pub async fn funnel(db: &PgPool, at: StudioNow) -> Result<FunnelRow, sqlx::Error> {
     // new_enrolments 刻意不換底至 active_enrolments view——同 kpis 的「報名事件」口徑,見 migration `20260711000001` 標頭。
     sqlx::query_as::<_, FunnelRow>(
@@ -619,7 +621,10 @@ pub async fn venue_usage(
 /// Coach scope comes from the witness's own `course_ids()` (the caller
 /// materialized exactly the coach's courses), the same set
 /// `sessions::find_today_sessions_in` binds — one scope, not a second
-/// `coach_id` JOIN restating it.
+/// `coach_id` JOIN restating it. `pending_attendance` counts sessions with
+/// no attendance row of any status (leave included), so it reads
+/// `attendance_records` itself: a different 口徑 from `countable_attendance`,
+/// deliberately not moved onto that view.
 pub async fn coach_today_and_pending(
     db: &PgPool,
     day: &MaterializedDay,

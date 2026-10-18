@@ -27,6 +27,18 @@
 //! uses a different `AppError` variant and wording (422 `Validation` 中文
 //! ×2, 400 `BadRequest` 英文 ×2) — the same "caller owns the wording" shape
 //! as `AuthUser::owns_or_admin`.
+//!
+//! Services take the pair as one [`StudioNow`]; the free functions here
+//! still take `(tz, now)`, and `StudioNow` only carries the two together.
+//!
+//! The SQL side keeps its own copy of the [`today`]/[`month_key`] rule: the
+//! STABLE functions `studio_today(now, tz)` and `studio_month_anchor(now, tz)`
+//! (migration `20260803000001`), which `reports::repository` calls instead of
+//! inlining the zone-then-truncate expression. The two copies cannot merge
+//! across the language boundary, so cross tests in `tests/service_reports.rs`
+//! (`today_matches_sql_studio_today`,
+//! `month_key_matches_sql_studio_month_anchor`) run both on the same
+//! cross-timezone samples and pin them equal.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;

@@ -37,7 +37,11 @@ impl SlotStatus {
     /// Derive a slot's booking status from current facts. `is_closed` (an
     /// admin intent flag set via `PATCH /schedule/slots/{id}`) takes
     /// priority over the booked/capacity computation — an admin-closed slot
-    /// reads as `closed` even if it technically still has open seats.
+    /// reads as `closed` even if it technically still has open seats. The
+    /// same flag gates new bookings (`bookings::occupancy::occupy_slot_tx`
+    /// locks only `is_closed = false` slots) but never the cancellation of
+    /// existing ones. Of the three inputs only `capacity` and `is_closed`
+    /// are stored; `booked` is counted at read time.
     ///
     /// The `limited` threshold is integer arithmetic mirroring the SQL this
     /// replaces (`(capacity * 0.8)::int`, which *rounds* rather than

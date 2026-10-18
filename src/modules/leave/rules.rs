@@ -32,6 +32,14 @@
 //! status = 'pending'`, backed by `find_owner_tx`'s `FOR UPDATE`) is
 //! untouched here — it's already a single SQL-enforced check, and wrapping
 //! it in a pure function here would just be dead code alongside it.
+//!
+//! **Concurrency.** Both decision reads (`repository::find_decision_context`,
+//! `repository::find_for_makeup_tx`) read the enrolment's active flag and
+//! then write. An enrolment cancellation that commits after that read leaves
+//! the legitimate "approved, then withdrew" state: the seat formula only
+//! looks at today's `active_enrolments`, never at the enrolment as it was at
+//! approval or makeup time. So no extra lock narrows this window, same
+//! family as ADR-0008's "approved leave has no undo" gap.
 
 use crate::error::AppError;
 use crate::modules::sessions::model::CourseSession;

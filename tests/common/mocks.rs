@@ -91,6 +91,10 @@ impl EmailSender for MockEmailClient {
 /// - short-lived state TTLs (rate limits, OTP, reset tokens) and the access
 ///   cache TTLs — the in-memory adapters time them with `std::time::Instant`;
 /// - JWTs — issued and validated against `Utc::now()`.
+///
+/// Because it stays pinned, every request in a test writes the same business
+/// time. An assertion that needs time order (a list sorted by time, a stamp
+/// that must move forward) calls `advance` between the requests.
 pub struct MockClock {
     pinned: RwLock<DateTime<Utc>>,
 }

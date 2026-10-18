@@ -28,6 +28,17 @@
 //! `occupying_bookings` 讀時決定,所以 seed 連謂詞都不必呼叫。記錄在案的
 //! bypass,不是遺漏;測試 fixture `seed_booking` 同理。
 //!
+//! 【寫入規則】
+//! - 新增 booking 一律經 [`occupy_slot_tx`] → [`insert_occupying_booking_tx`],
+//!   不在別處 INSERT `bookings`;之後任何改寫 `bookings.status` 的路徑(例如
+//!   狀態轉移端點)也放進本模組。
+//! - 新增 `BookingStatus` 變體時同時決定它佔不佔位:改 `occupies_seat`,並以
+//!   新 migration 重建 `occupying_bookings`。
+//! - 計佔位一律數 `occupying_bookings`,不在 SQL 手寫 `status <> 'cancelled'`
+//!   或另一份狀態清單;佔用數不再落地成 `time_slots` 欄位。
+//! - `Pending` 目前沒有寫入者:runtime 佔位寫 `confirmed`、釋出寫
+//!   `cancelled`,seed 只寫 `completed`/`cancelled`/`no_show`。
+//!
 //! 殘餘誠實縫(同 `orders::tx_witness::TxReleased` 的
 //! `no_open_tx` 自證式):`SlotOccupancy` 的 `#[must_use]` 只擋得住「值
 //! 完全未被使用」這個編譯期可查的情形——一旦綁定給變數,呼叫端仍可能只
