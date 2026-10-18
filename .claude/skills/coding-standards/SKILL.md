@@ -13,6 +13,12 @@ Conventions (module layout, DB patterns, studio time, seams) live in `AGENTS.md`
 ## Idempotent reruns
 - [ ] **Rerun after drift**: code that must be safe to run twice (the seed, retried jobs, `Idempotency-Key` paths) is tested by rerunning it after the state was moved by a normal app flow in between (an order cancelled, shipped, or refunded), not only on an untouched database.
 
+## How tests assert
+Applies to assertions and setup the diff adds or changes. Older raw SQL is switched when its test changes for another reason; no sweep.
+- [ ] **Domain facts through the owner**: an assertion about a domain fact (an order's points ledger, a leave request's status, a user's roles, an order's status) reads it through the owning module's read (e.g. `points::service::get_my_points`, `permissions::repository::find_role_names_by_user`, `orders::service::get_order`) or over HTTP, not from its table. A table read pins the schema and can keep passing after the model it describes is gone.
+- [ ] **Raw SQL only where the table is the property**: partial unique indexes and constraints, row locks, the `enum_range` probe, studio SQL functions, hash-at-rest, outbox rows no owner reads, database-wide totals.
+- [ ] **Bypass setup says what it bypasses**: raw setup SQL (a bypass fixture) names the owner it skips, as the fixtures in `tests/common/fixtures.rs` do. If it builds a state no owner produces, it also says why the test needs that state.
+
 ## Guard tests
 - [ ] **Pinned allowlists**: an exemption entry in a scanner test (e.g. `UNMAPPED` in `tests/business_time.rs`) pins its expected hit count, so a new hit at the same site fails the test instead of riding the exemption.
 
