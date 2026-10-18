@@ -1,3 +1,31 @@
+//! 給點 (Point Grant) — every change to a user's points balance, with its
+//! `point_ledger` row. [`apply_delta_tx`] is the only path: one balance
+//! UPDATE and one ledger INSERT in the caller's transaction, never one
+//! without the other, and it never commits. No business code writes
+//! `users.points_balance` directly; the dev seed grants, earns, refunds and
+//! settles through this same function.
+//!
+//! - **Lock first.** The caller locks the user's `users` row with
+//!   [`lock_balance_tx`] and passes the [`BalanceLock`] it returns; the row
+//!   lands on the witness's `user_id`. Only `lock_balance_tx` builds one
+//!   (field privacy outside this module, a review rule inside it), so no
+//!   write skips the lock or takes it late (lock order: `orders::locks`).
+//! - **The write is a `LedgerDelta`** (`points::model`): its constructors fix
+//!   each reason's sign and require an `order_id` for the checkout and refund
+//!   reasons; `admin_adjust` is the one signed escape. A zero delta is
+//!   rejected. Callers never pass a bare delta, reason or `order_id`.
+//! - **Refunds** reach it only through [`reverse_order_tx`], which reads the
+//!   order's own ledger trace.
+//! - **The ledger's order and each row's `balance_after` belong to the read**
+//!   (`repository::find_ledger_by_user`, ADR-0018): `balance_after` is not a
+//!   column and no other SQL computes it, so callers may write rows in any
+//!   order.
+//!
+//! Test-harness bypasses, layout shortcuts and never business paths:
+//! `set_points_balance` writes the balance without a ledger row, and
+//! `seed_point_ledger_entry` writes a ledger row without the balance (both
+//! in `tests/common/fixtures.rs`). There are no others.
+
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;

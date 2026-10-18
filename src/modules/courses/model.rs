@@ -94,8 +94,8 @@ impl Course {
 
     /// 課程現在能不能買／排候補：下架則 `BadRequest` (400)
     /// `"course is not available"`。cart 加入與 waitlist 加入共用；結帳的
-    /// 下架 gate（422、整批）與公開瀏覽的 404 是刻意不同的分流，不走這裡
-    /// （CONTEXT「上架可見性」）。
+    /// 下架 gate（422、整批）與公開瀏覽的 404 是刻意不同的分流，不走這裡：
+    /// 已登入買家主動加入時，「目前不可購買」比遮蔽性的 404 有用。
     pub fn ensure_purchasable(&self) -> Result<(), AppError> {
         if !self.is_active {
             return Err(AppError::BadRequest("course is not available".into()));
