@@ -209,7 +209,8 @@ impl OrderPointsFlow {
 /// 本型別是級距規則的 Rust owner;`reports::repository::tier_distribution`
 /// 的 SQL `CASE` 是它的 SQL 攣生面(報表在 DB 端分桶),兩者由交叉測試
 /// `points_tier_matches_sql_tier_distribution_case`(`tests/service_reports.rs`)
-/// 錨定,不是靠手抄保持一致。
+/// 錨定,不是靠手抄保持一致。Rust 端要用級距一律經本型別,不另抄一份
+/// 500/2000/5000 邊界(seed 報表會員的點數目標也由它推導)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, VariantArray)]
 pub enum PointsTier {
     Regular,

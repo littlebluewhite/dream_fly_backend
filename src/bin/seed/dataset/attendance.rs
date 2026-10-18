@@ -1,10 +1,11 @@
 //! Seed attendance: `mark_past_sessions` marks every active seed enrolment
 //! on each already-materialized past session of its course — the seed's one
 //! `INSERT INTO attendance_records`, a documented ADR-0010 bypass of
-//! `attendance::records` (the runtime writer). The rules (the status
-//! formula, `marked_at` clamped to the run instant, today's sessions left
-//! unmarked, a re-marked row kept on rerun) are in the GLOSSARY entry
-//! 「Seed 資料集」.
+//! `attendance::records` (the runtime writer). Its rules, spelled out on
+//! `mark_past_sessions`: the status follows a fixed formula over member and
+//! session index; `marked_at` is the session's end, clamped to the run
+//! instant; a session dated studio-local today is left unmarked; a row
+//! already there, a coach's re-mark included, is kept on rerun.
 
 use anyhow::Context;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};

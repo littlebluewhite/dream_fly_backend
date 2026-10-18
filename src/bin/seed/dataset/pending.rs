@@ -4,7 +4,10 @@
 //! still go through the orders module's own writers — `create_order`
 //! (`status: Pending`, `paid_at: None`) and `create_order_items` — priced by
 //! `orders::pricing::price`; the seed keeps no order-column list of its own.
-//! The rules are in the GLOSSARY entry 「Seed 資料集」.
+//! Its rules: priced with no coupon and no points; no ledger row, grant or
+//! stock decrement; idempotent on `order_number` whatever the row's status
+//! is now, so one an admin cancelled stays cancelled. `run` hands over one
+//! per month (seq 7).
 
 use std::collections::HashMap;
 

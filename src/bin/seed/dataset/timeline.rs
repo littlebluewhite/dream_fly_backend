@@ -1,8 +1,24 @@
 //! 種子購買時間線 (Seed Purchase Timeline): `buy_and_walk` buys the seed's
 //! paid purchases through the real cart and checkout and walks each through
-//! the order state machine. The rules (replay before the cart, buy in `ts`
-//! order, step times, orders moved off their path) are in the GLOSSARY entry
-//! 「種子購買時間線」 and ADR-0010 Addendum 2026-10-15.
+//! the order state machine (ADR-0010 Addendum 2026-10-15). Its rules, each
+//! kept by the function named:
+//! - **replay before the cart** (`buy`): a key checkout already recorded is
+//!   that order, and the cart is not touched. Clearing and refilling the
+//!   cart before a keyed checkout instead would fail a rerun at add-to-cart
+//!   once a developer delists a seed product, and would rewrite every seed
+//!   member's cart on every run;
+//! - **buy in `ts` order, walk straight after** (`buy_and_walk`);
+//! - **step times from `paid_at`**: each step at `min(paid_at + offset,
+//!   at.now)` (`advance_status`, offsets in `status_path`); a refund runs
+//!   checkout's full compensation;
+//! - **orders off their path stay**: one a developer moved elsewhere is
+//!   handed back as it is.
+//!
+//! Pricing, the order rows, the ledger, grants and enrolments are
+//! checkout's own, at `ts`; nothing here copies a step of checkout or the
+//! state machine. Buying and walking stay in this module rather than in
+//! `run`, so these rules are tested on a minimal catalog instead of the
+//! whole dataset.
 
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};

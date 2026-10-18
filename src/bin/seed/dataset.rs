@@ -4,11 +4,20 @@
 //! `SeedReport` live apart from process-level concerns; the `#[sqlx::test]`
 //! invariants on `run` are in `bin/seed/tests.rs`.
 //!
+//! The dataset lives in the `seed` bin, never in the `dream_fly_backend`
+//! library, on purpose: it holds plaintext dev credentials
+//! (`admin@dreamfly.tw` / `Admin#2026`, …), so it stays out of production's
+//! dependency tree. That boundary is separate from ADR-0010's bypass of the
+//! runtime protocols, and just as deliberate.
+//!
 //! Each seed rule with its own interface is a sub-module: `accounts`
 //! (account birth), `timeline` (paid purchases through checkout), `pending`
 //! (pending contrast orders), `settlement` (points-tier settlement),
 //! `attendance` (past-session marks) and `rental` (venue-rental slots and
-//! bookings) — each module's doc states its own rules and idempotency. This
+//! bookings) — each module's doc states its own rules and idempotency, and
+//! its interface tests sit in the same file on a minimal catalog, not the
+//! whole dataset; `bin/seed/tests.rs` keeps only invariants that hold for
+//! the whole `run` (ADR-0010 Addendum 2026-10-16). This
 //! file keeps, top to bottom: the remaining per-table insert helpers (one
 //! `// ---` banner per table), the reporting-dataset helpers, `SeedReport`,
 //! then `run`, whose body composes the tables and sub-modules in
@@ -64,6 +73,24 @@
 //! `DF-SEED-…`-numbered orders were written directly, carry no key, and
 //! would be bought a second time — reset the dev database first.
 //!
+//! Paid orders and their enrolments are the only seed rows a runtime flow
+//! produces; taking `at: StudioNow` does not make the rest go through one.
+//! **Still direct writes** (ADR-0010 bypass): accounts (`accounts`), the
+//! catalog (courses, products, coupons, rewards, posts, venues), course
+//! weekly schedule slots, attendance (`attendance`), the session backfill
+//! (`sessions::calendar::backfill_for_seed`), rental slots and bookings
+//! (`rental`), contact inquiries and the pending contrast orders
+//! (`pending`). Never copy a step of checkout or the order state machine
+//! into the seed — pricing, the paid-order row, the ledger, grants,
+//! enrolments, refund compensation — and never write an enrolment directly:
+//! a new artifact comes from checkout.
+//!
+//! **One clock sample.** `main.rs` builds `at` once; every business
+//! timestamp `run` writes (`posts.published_at`, `at_utc`'s monthly
+//! instants, attendance `marked_at`) derives from `at.now`, never
+//! `Utc::now()`. A literal SQL `NOW()` may land only in an audit column
+//! (ADR-0017); `tests/business_time.rs` scans the seed's SQL too.
+//!
 //! `points_balance` is granted through `points::service::apply_delta_tx`,
 //! never written to the column directly, so `points_balance ==
 //! SUM(point_ledger.delta)` holds for every seeded user — but only on a
@@ -81,6 +108,37 @@
 //! **every** member (not just ones newly created this run) to its
 //! points-tier target with one `admin_adjust(target − balance)`, every run
 //! — the rules are in that module.
+//!
+//! **Invariants** of the whole `run`, one `#[sqlx::test]` each in
+//! `bin/seed/tests.rs`, in file order. A seed order is one with a
+//! `DF-SEED-%` idempotency key, or a `DF-SEED-%` number (the pending ones).
+//! 1. A rerun at the same `at` is a no-op: row counts (checkout's
+//!    `order_idempotency`, `notifications` and `events_outbox` included, all
+//!    non-empty) and the ledger row count unchanged, no member settled, and
+//!    no seed member holding cart lines (a rerun replays its keys before it
+//!    touches a cart).
+//! 2. A rerun 40 days later keeps `points_balance == SUM(point_ledger.delta)`,
+//!    six reporting members per tier (it fails if settlement runs before the
+//!    purchase timeline), each seed order's `points_earned` / `points_used`
+//!    equal to its ledger rows, each refund's `refund_clawback` equal to its
+//!    earn, and no `delta = 0` row. Every non-pending seed order carries a
+//!    key and no key belongs to two buyers: a key's buyer derives from the
+//!    absolute month or `(i, k)` alone, so the later run replays the key
+//!    instead of buying it again for another member.
+//! 3. No seeded timestamp is later than `at.now`.
+//! 4. Ledger time is `paid_at`: a seed order's `checkout_earn` /
+//!    `checkout_redeem` rows are at its `paid_at`, its refund rows within
+//!    `[paid_at, at.now]`, its items at its `created_at`.
+//! 5. Accounts predate the rows that reference them: every seed account's
+//!    `users.created_at` is the shared `joined_at` (the first of the month
+//!    before the oldest order month), so this month's new members never
+//!    count a seed account.
+//! 6. Course orders enrol their buyer: every course line of a non-pending
+//!    seed order has exactly one enrolment with the same order, buyer and
+//!    course, at the order's `paid_at`, cancelled exactly when the order is
+//!    refunded; no enrolment lacks an order. 39 course lines, 3 refunded.
+//! 7. A database an older seed wrote is refused before any write
+//!    (`refuse_legacy_seed_rows`).
 
 use std::collections::HashMap;
 

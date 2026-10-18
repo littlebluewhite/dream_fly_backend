@@ -85,8 +85,8 @@ pub(super) enum Recorded {
 /// row for `(user_id, key)` yet — means carry on with the checkout.
 /// `pub` for the dev seed's purchase timeline (`bin/seed/dataset/timeline.rs`),
 /// which pre-checks each key with it before refilling the buyer's cart (a
-/// replayed checkout leaves that cart untouched); GLOSSARY「種子購買時間線」
-/// records why the seed keeps this pre-check.
+/// replayed checkout leaves that cart untouched); that module's doc records
+/// why the seed keeps this pre-check.
 pub async fn replay(
     db: &PgPool,
     user_id: Uuid,
