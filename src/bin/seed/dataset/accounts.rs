@@ -1,8 +1,19 @@
 //! 帳號誕生 (Account Birth), seed side: `upsert_account` is the seed's one
 //! `INSERT INTO users` — admin, test member, coaches and reporting members
-//! are all born through it. The rules (born at `joined_at`, opening points
-//! as one `admin_adjust`, never granted again) are in the GLOSSARY entries
-//! 「帳號誕生」 and 「給點」; roles stay with `run`'s `assign_role`.
+//! are all born through it. Its rules:
+//! - idempotent on `email`; a new account is born at its `joined_at`, a
+//!   historical instant, never the run instant;
+//! - opening points are one `LedgerDelta::admin_adjust` through
+//!   `points::service::apply_delta_tx`, in the INSERT's transaction and only
+//!   for a new row with `points > 0`; 0 points write no ledger row, and an
+//!   existing row is never granted again, whatever the app has done to its
+//!   balance since;
+//! - accounts sharing a dev plaintext share one password hash: the caller
+//!   hashes each plaintext once;
+//! - not born through `auth::provisioning::create_account`, which would queue
+//!   a `user_registered` outbox event on every rerun (that module's doc says
+//!   why it leaves the seed out);
+//! - roles stay with `run`'s `assign_role`.
 
 use anyhow::Context;
 use chrono::{DateTime, NaiveDate, Utc};

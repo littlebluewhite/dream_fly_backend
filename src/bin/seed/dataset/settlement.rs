@@ -2,7 +2,11 @@
 //! each reporting member to its points-tier target (`member_points_target`)
 //! with one `admin_adjust(target − balance)`, every run, after the purchase
 //! timeline has written the members' `checkout_earn`/`refund_clawback`
-//! rows. The rules are in the GLOSSARY entries 「點數級距」 and 「給點」.
+//! rows. The targets follow `PointsTier` (six members per tier), never a
+//! second copy of its boundaries. Every member settles on every run, each in
+//! its own transaction through `points::service::apply_delta_tx`; a member
+//! already at target writes nothing, so a same-instant rerun settles no one,
+//! and a developer's hand-edited balance is reset to target.
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};

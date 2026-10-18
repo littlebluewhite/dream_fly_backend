@@ -1,9 +1,18 @@
 //! 場租佔位 (Venue-Rental Occupancy), seed side: `seed_rentals` lays out the
 //! rental `time_slots` and the past slots' `bookings` directly, a documented
 //! ADR-0010 bypass of `bookings::occupancy` (no cached count to sync —
-//! occupancy is counted at read time from `occupying_bookings`). The rules
-//! (slots per week, booking status keyed by the slot's date, never above
-//! capacity, a rerun adds nothing) are in the GLOSSARY entry 「場租佔位」;
+//! occupancy is counted at read time from `occupying_bookings`, so the
+//! seed calls no occupancy predicate either). Its rules:
+//! - each venue gets 3 capacity-1 slots a week over 14 weeks;
+//! - only slots dated before `at.today()` are booked, status and booker
+//!   keyed by the slot's date, so a later run keeps every past booking as it
+//!   was and only books slots that have since become past;
+//! - a slot gets at most one booking whoever holds it: a seed booking a
+//!   developer cancelled stays cancelled, and a slot booked in the app is
+//!   not booked again once past; no slot goes above its capacity;
+//! - a same-instant rerun adds nothing;
+//! - seed bookings are only `Completed`, `Cancelled` or `NoShow`.
+//!
 //! `run` looks the venues up by slug and hands them in.
 
 use anyhow::Context;
