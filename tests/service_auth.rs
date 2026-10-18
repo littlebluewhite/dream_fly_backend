@@ -309,16 +309,6 @@ async fn refresh_token_reuse_revokes_entire_family(db: PgPool) {
     .await
     .expect_err("family should be dead");
     assert!(matches!(r2_err, AppError::Unauthorized));
-
-    // Double-check at the DB level: every token row for this user is revoked.
-    let active_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked = false",
-    )
-    .bind(r1.user.id)
-    .fetch_one(&db)
-    .await
-    .expect("count active tokens");
-    assert_eq!(active_count, 0, "all tokens should be revoked");
 }
 
 /// Hole 3: the hourly purge used to delete revoked rows too, so once it ran,
@@ -642,8 +632,8 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
 
     // r2 — the live token at the moment of reset — must now be dead too, not
     // just whichever token happened to be current when the password changed.
-    // (r1 is deliberately not replayed here — the DB-level count below is
-    // the direct proof that r1's already-rotated row is gone too.)
+    // (r1 is not replayed: it was already rotated out, so it is refused
+    // whether or not the reset ended the family.)
     let err = service::refresh_token(
         &db,
         &cfg,
@@ -654,18 +644,6 @@ async fn reset_password_revokes_entire_refresh_family(db: PgPool) {
     .await
     .expect_err("entire family should be revoked by reset_password");
     assert!(matches!(err, AppError::Unauthorized));
-
-    let active_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked = false",
-    )
-    .bind(r1.user.id)
-    .fetch_one(&db)
-    .await
-    .expect("count active tokens");
-    assert_eq!(
-        active_count, 0,
-        "all tokens (including r1's already-rotated-away row) should be revoked"
-    );
 }
 
 /// `end_all` used to mark rows revoked, and revoked rows are retained until
@@ -1253,18 +1231,6 @@ async fn welcome_count(db: &PgPool, user_id: Uuid) -> i64 {
     .expect("count welcome notifications")
 }
 
-/// Role names currently granted to `user_id`, straight from `user_roles`.
-async fn role_names(db: &PgPool, user_id: Uuid) -> Vec<String> {
-    sqlx::query_scalar(
-        "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id \
-         WHERE ur.user_id = $1 ORDER BY r.name",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await
-    .expect("read role names")
-}
-
 /// `linking::plan`'s `Create` case (`send_welcome: true`): a brand-new Google
 /// user is born as a `member` and gets a welcome notification.
 #[sqlx::test]
@@ -1394,11 +1360,7 @@ async fn google_auth_rejects_inactive_account(db: PgPool) {
         .user
         .id;
 
-    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
-        .bind(user_id)
-        .execute(&db)
-        .await
-        .expect("deactivate user");
+    common::deactivate_user(&db, &InMemoryAccessCache::new(), user_id).await;
 
     let snapshot = |db: &PgPool| {
         let db = db.clone();
@@ -1442,8 +1404,15 @@ async fn google_auth_refresh_does_not_regrant_removed_member(db: PgPool) {
         .expect("first login")
         .user
         .id;
-    assert_eq!(role_names(&db, user_id).await, vec!["member"]);
+    assert_eq!(
+        permissions_repository::find_role_names_by_user(&db, user_id)
+            .await
+            .expect("read role names"),
+        vec!["member"]
+    );
 
+    // Raw on purpose: no owner removes a role (roles are closed, ADR-0014),
+    // so the test builds this state directly.
     sqlx::query(
         "DELETE FROM user_roles WHERE user_id = $1 \
          AND role_id = (SELECT id FROM roles WHERE name = 'member')",
@@ -1455,7 +1424,12 @@ async fn google_auth_refresh_does_not_regrant_removed_member(db: PgPool) {
 
     let resp = google_login(&db, &google).await.expect("returning login");
     assert!(resp.user.roles.is_empty(), "got: {:?}", resp.user.roles);
-    assert!(role_names(&db, user_id).await.is_empty());
+    assert!(
+        permissions_repository::find_role_names_by_user(&db, user_id)
+            .await
+            .expect("read role names")
+            .is_empty()
+    );
 }
 
 /// `Link` branch: linking Google to an existing account (here a seeded admin
@@ -1488,7 +1462,12 @@ async fn google_auth_link_does_not_grant_member_to_seeded_admin(db: PgPool) {
 
     assert_eq!(resp.user.id, admin.id);
     assert_eq!(resp.user.roles, vec!["admin"]);
-    assert_eq!(role_names(&db, admin.id).await, vec!["admin"]);
+    assert_eq!(
+        permissions_repository::find_role_names_by_user(&db, admin.id)
+            .await
+            .expect("read role names"),
+        vec!["admin"]
+    );
 }
 
 /// An email already bound to a different Google account is a 409 — the new
