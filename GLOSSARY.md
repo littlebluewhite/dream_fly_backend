@@ -5,11 +5,11 @@ Dream Fly 工作室預約與商務後端的領域語言。於 notifications 接�
 ## Language
 
 **Notification**:
-持久化、只顯示給單一使用者的 in-app 訊息。在領域動作 commit 之後 best-effort 寫入,絕不阻擋或回滾觸發它的動作(ADR-0009)。owner 是 `notifications::service`。
+持久化、只顯示給單一使用者的 in-app 訊息,由領域動作觸發(ADR-0009)。owner 是 `notifications::service`。
 _Avoid_: alert, push(本系統無外部推播通道), message
 
 **Event**:
-描述業務事實(如 order created、user registered)的 outbox/Kafka 紀錄,在業務交易內寫入,供 audit 與外部整合。非使用者可見——Event 不是 Notification。
+描述業務事實(如 order created、user registered)的 outbox/Kafka 紀錄,在業務交易內寫入,供 audit 與外部整合。非使用者可見——Event 不是 Notification。owner 是 `kafka::outbox`。
 _Avoid_: notification, message
 
 **工作室時鐘(Studio Clock)**:
@@ -17,19 +17,19 @@ _Avoid_: notification, message
 _Avoid_: 伺服器時間、拿 UTC 日期當「今天」、沒說是誰的「本地時間」
 
 **課程教練所有權(Course-Coach Ownership)**:
-單一資源的教練 gate:呼叫者是不是這堂課的教練,admin 直接放行,不是則 403。owner 是 `coaches::service::require_course_coach`。發證書用的「教過此生」關係 gate 是另一種形狀,留在 certificates。
+單一資源的教練 gate:呼叫者是不是這堂課的教練,admin 直接放行,不是則 403。owner 是 `coaches::service`。發證書用的「教過此生」關係 gate 是另一種形狀,留在 certificates。
 _Avoid_: 把發證書的關係 gate 與單課 gate 混同、與「教練範圍」混同(那是名下範圍,不是單資源 gate)
 
 **教練範圍(Coach Scope)**:
-教練名下的課程與學員:`courses.coach_id` 指向該教練的全部課程,不論是否下架;學員是這些課程有效報名去重後的使用者。owner 是 `coaches::service::resolve_scope`,為什麼含下架課程見 ADR-0012。
-_Avoid_: 用下架把課程移出教練名下(要取消報名或改派教練)、替單一讀取端加回上架過濾
+教練名下的全部課程(已下架的也算)與這些課程的學員。owner 是 `coaches::service`,為什麼含下架課程見 ADR-0012。
+_Avoid_: 把下架當成移出教練名下
 
 **訂單定價(Order Pricing)**:
 結帳的金額算術:小計、優惠碼折抵、點數折抵上限、應付總額與這張訂單賺的點數,是不碰資料庫的純函式。owner 是 `orders::pricing`。
 _Avoid_: 計價、報價、quote
 
 **購買時刻(Purchase Instant)**:
-一次結帳取樣的那一個業務時間;這次購買寫下的訂單、訂單行、點數帳、報名與訂閱都蓋這個時刻(ADR-0017)。owner 是 `orders::service::checkout`。
+一次結帳取樣的那一個業務時間;這次購買寫下的訂單、訂單行、點數帳、報名與訂閱都蓋這個時刻(ADR-0017)。owner 是 `orders::service`。
 _Avoid_: 下單時間、付款時間(結帳沒有另外的付款步驟,兩者都是購買時刻)
 
 **行計畫(Line Fulfilment)**:
@@ -37,7 +37,7 @@ _Avoid_: 下單時間、付款時間(結帳沒有另外的付款步驟,兩者都
 _Avoid_: 分派、dispatch(那是動作,這裡指切出來的計畫)、鎖序(排序歸鎖的 witness)
 
 **訂單鎖協定(Order Lock Protocol)**:
-結帳與退款在第一筆寫入前取得所有列鎖的固定順序:買家的 users 列最先,再依 id 升序鎖要動的商品與課程;之後的寫入都要出示鎖的 witness(ADR-0007)。owner 是 `orders::locks`。
+結帳與退款在第一筆寫入前、依固定順序取得所有列鎖的協定,之後的寫入都出示鎖的 witness(ADR-0007)。owner 是 `orders::locks`。
 _Avoid_: 預鎖、pre-lock、在寫入端各自再排序一次
 
 **營收狀態集(Revenue Statuses)**:
@@ -69,11 +69,11 @@ _Avoid_: 加點、扣點(正負都是給點,方向由點數帳的 reason 決定)
 _Avoid_: 會員等級、membership level
 
 **Seed 資料集(Seed Dataset)**:
-dev 資料庫的種子資料:固定的開發帳號與目錄,加上 12 個月、可重現的報表資料集;冪等,重跑不重複寫入。只活在 seed 這個 bin,owner 是 `dataset::run`(ADR-0010)。
+dev 資料庫的種子資料:固定的開發帳號與目錄,加上 12 個月、可重現的報表資料集;冪等,重跑不重複寫入。只活在 seed 這個 bin,owner 是 `dataset`(ADR-0010)。
 _Avoid_: fixture(那是測試 harness 的佈局)、demo data、假資料
 
 **`run` 只做組合(Run Only Composes)**:
-seed 資料集本體的分工:有自己規則的種子寫入各是 `dataset` 底下一個有介面的子 module,本體只把它們和單表的目錄寫入依序串起來(ADR-0010 Addendum 2026-10-16)。
+seed 資料集本體的分工:有自己規則的種子寫入各是一個有介面的子 module,本體只把它們和單表的目錄寫入依序串起來(ADR-0010 Addendum 2026-10-16)。owner 是 `dataset`。
 _Avoid_: 把子 module 的規則寫回資料集公式之間、只靠整份資料集測一條種子規則
 
 **點名(Seed Attendance)**:
@@ -113,8 +113,8 @@ _Avoid_: 出勤率(那是算出來的比率,不是口徑本身)、attendance_rec
 _Avoid_: 與「出席口徑」混同(那是讀取統計的口徑,這裡是寫入前的驗證)
 
 **請假(Leave)**:
-會員對已報名課程某一場次的請假申請,由該課教練或 admin 審核。核准時把該場次出勤投影成請假,而且核准恆勝:點名不能覆寫已核准的請假(ADR-0008)。owner 是 `leave::service`。
-_Avoid_: 把核准投影出的請假出勤與口頭請假當成同一種、把核准恆勝讀成雙向覆寫
+會員對已報名課程某一場次的請假申請,由該課教練或 admin 審核;核准的假投影成該場次的請假出勤(ADR-0008)。owner 是 `leave::service`。
+_Avoid_: 把核准投影出的請假出勤與口頭請假當成同一種
 
 **請假規則(Leave Rules)**:
 審核請假與預約補課前的純判斷:這次審核是否合法、假單能不能約補課、補課場次合不合格,不碰資料庫。owner 是 `leave::rules`。
@@ -145,7 +145,7 @@ handler 在請求開始取樣一次的「現在」,當參數往下傳給 service
 _Avoid_: 把工作室時鐘也算進這層 seam(它只收呼叫端傳入的值)
 
 **場景時刻(Scene Instant)**:
-測試裡一個場景的「現在」:截到微秒的 UTC 時刻。TestApp 開場就把時鐘釘在這裡,測試本體與 handler 讀同一個現在。owner 是 `common::scene_now`。
+測試裡一個場景的「現在」:截到微秒的 UTC 時刻。TestApp 開場就把時鐘釘在這裡,測試本體與 handler 讀同一個現在。owner 是測試 harness 的 `common`。
 _Avoid_: 在 TestApp 測試本體用系統時鐘推預期日期(用 app.today())、手寫微秒截斷
 
 **週課表(Weekly Schedule)**:
@@ -177,7 +177,7 @@ _Avoid_: 在 session 模組之外直寫 refresh token、另造第二份簽發流
 _Avoid_: 在 credentials 之外計或清登入失敗、信任呼叫端算好的密碼比對結果
 
 **恆定成本(Constant Cost)**:
-登入失敗不論帳號存不存在,都付一次 Argon2 驗證的成本,回應時間因此不洩漏帳號是否存在;只有已鎖的 email 走快速路徑。owner 是 `utils::password::verify_password`。
+登入失敗不論帳號存不存在,都付一次 Argon2 驗證的成本,回應時間因此不洩漏帳號是否存在;只有已鎖的 email 走快速路徑。owner 是 `utils::password`。
 _Avoid_: 為查無帳號或只綁 Google 的帳號提早 return、略過 Argon2
 
 **帳號存取(Account Access)**:
@@ -209,7 +209,7 @@ _Avoid_: 把下架的 422 與空購物車的 400 混為一談(全部下架的購
 _Avoid_: 全域唯一的 key(範圍是使用者加 key)、以為任何錯誤都會重播
 
 **帳號誕生(Account Birth)**:
-新帳號誕生的那一步:建 users 列、授予 member 角色、排入 user_registered 事件。owner 是 `auth::provisioning::create_account`;Google 首登與 seed 刻意不經它,理由在該 module doc。
+新帳號誕生的那一步:建 users 列、授予 member 角色、排入 user_registered 事件。owner 是 `auth::provisioning`;Google 首登與 seed 刻意不經它,理由在該 module doc。
 _Avoid_: 在登入路徑上冪等地重授 member、把 Google 首登或 seed 算成它的呼叫端
 
 **Google 身分(Google Identity)**:
@@ -229,11 +229,11 @@ _Avoid_: 把衍生自時鐘的值塞進查詢結果的輸入、把報表區段�
 _Avoid_: 開通、訂閱狀態(那是讀時推導,不是授予)
 
 **唯一鍵衝突映射(Unique-Conflict Mapping)**:
-DB 唯一或排他約束違例翻成 409 的那一層:判準是約束本身,不是寫入前的 SELECT 預檢。owner 是 `AppError::conflict_on_unique` 這一組函式。
-_Avoid_: 在新的唯一性檢查前補 SELECT 預檢(TOCTOU)、假設 coaches 的 slug 也大小寫不敏感
+DB 唯一或排他約束違例翻成 409 的那一層。owner 是 `error`。
+_Avoid_: 唯一性預檢、重複檢查(這一層不檢查,只翻譯違例)
 
 **跨模組讀表(Cross-Module Table Reads)**:
-模組直接 SELECT 或 JOIN 另一模組的表,不繞經對方的 repository:讀開放、寫歸戶,寫入仍只經該表的 owner。讀開放不代表可以拿另一模組的現況重建歷史事實,那種值要在寫入時快照(見「場次物化」)。
+模組直接 SELECT 或 JOIN 另一模組擁有的表,不繞經對方的 repository。這是跨模組的慣例,沒有單一 owner module,規則寫在 coding-standards 審查清單。
 _Avoid_: 為了跨模組讀再包一層轉手 repository 或 wrapper(ADR-0005)
 
 **執行環境(AppEnv)**:
@@ -241,7 +241,7 @@ _Avoid_: 為了跨模組讀再包一層轉手 repository 或 wrapper(ADR-0005)
 _Avoid_: 與 config crate 的 `config::Environment` 混同(那是設定來源,與部署層級無關)
 
 **事件派送(Outbox Dispatch)**:
-把 outbox 裡的事件送上 Kafka:認領、在交易外發送、用短交易記帳;失敗列退避重試,沒有終止狀態。owner 是 `kafka::outbox::drain_once`,重試政策見 ADR-0013。
+把 outbox 裡的事件送上 Kafka:認領、在交易外發送、用短交易記帳;失敗列退避重試,沒有終止狀態。owner 是 `kafka::outbox`,重試政策見 ADR-0013。
 _Avoid_: 在交易裡 await publish、替 outbox 加放棄或死信狀態(outbox 是事件唯一的來源)
 
 **消費迴圈(Consumer Loop)**:
@@ -249,5 +249,5 @@ audit consumer 的主迴圈:一次解決一則訊息,暫時性失敗對同一則
 _Avoid_: 暫時性失敗先跳過、讀下一則(後續 commit 會越過失敗那則,等於丟掉)、退避中收到 shutdown 時 commit
 
 **Wire enum 值域(Wire Enum Domain)**:
-一個 wire enum 允許的值:由各型別的 `ALL` 與 `as_str` 單一擁有,FromStr、422 的允許值文字與跨語言一致性測試都從它推導;大小寫政策逐型別固定。
+一個 wire enum 允許的值:由各型別的 `ALL` 與 `as_str` 單一擁有,owner 是型別所在模組的 model。FromStr、422 的允許值文字與跨語言一致性測試都從它推導;大小寫政策逐型別固定。
 _Avoid_: 把 leave 的核決動詞解析器,或 SQL 綁定用的狀態陣列(如「營收狀態集」),當成 wire enum 值域

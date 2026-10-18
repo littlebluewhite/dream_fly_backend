@@ -51,7 +51,7 @@
 //! `orders::service::checkout` under its `Idempotency-Key` at
 //! `StudioNow { now: ts }`. Two sets of
 //! purchases are merged and bought in `ts` order: the monthly product
-//! orders (`DF-SEED-{YYYYMM}-{seq}`) and the 39 course purchases
+//! orders (`DF-SEED-{YYYYMM}-{seq}`) and the course purchases
 //! (`DF-SEED-ENR-{i:02}-{k}`) that make up the enrolment dataset — every seed
 //! enrolment is the one checkout makes for a bought course line, so every
 //! one has its order. Pricing, order lines, the paid-order record and its
@@ -109,36 +109,19 @@
 //! points-tier target with one `admin_adjust(target − balance)`, every run
 //! — the rules are in that module.
 //!
-//! **Invariants** of the whole `run`, one `#[sqlx::test]` each in
-//! `bin/seed/tests.rs`, in file order. A seed order is one with a
-//! `DF-SEED-%` idempotency key, or a `DF-SEED-%` number (the pending ones).
-//! 1. A rerun at the same `at` is a no-op: row counts (checkout's
-//!    `order_idempotency`, `notifications` and `events_outbox` included, all
-//!    non-empty) and the ledger row count unchanged, no member settled, and
-//!    no seed member holding cart lines (a rerun replays its keys before it
-//!    touches a cart).
-//! 2. A rerun 40 days later keeps `points_balance == SUM(point_ledger.delta)`,
-//!    six reporting members per tier (it fails if settlement runs before the
-//!    purchase timeline), each seed order's `points_earned` / `points_used`
-//!    equal to its ledger rows, each refund's `refund_clawback` equal to its
-//!    earn, and no `delta = 0` row. Every non-pending seed order carries a
-//!    key and no key belongs to two buyers: a key's buyer derives from the
-//!    absolute month or `(i, k)` alone, so the later run replays the key
-//!    instead of buying it again for another member.
-//! 3. No seeded timestamp is later than `at.now`.
-//! 4. Ledger time is `paid_at`: a seed order's `checkout_earn` /
-//!    `checkout_redeem` rows are at its `paid_at`, its refund rows within
-//!    `[paid_at, at.now]`, its items at its `created_at`.
-//! 5. Accounts predate the rows that reference them: every seed account's
-//!    `users.created_at` is the shared `joined_at` (the first of the month
-//!    before the oldest order month), so this month's new members never
-//!    count a seed account.
-//! 6. Course orders enrol their buyer: every course line of a non-pending
-//!    seed order has exactly one enrolment with the same order, buyer and
-//!    course, at the order's `paid_at`, cancelled exactly when the order is
-//!    refunded; no enrolment lacks an order. 39 course lines, 3 refunded.
-//! 7. A database an older seed wrote is refused before any write
-//!    (`refuse_legacy_seed_rows`).
+//! **What the whole `run` guarantees**, pinned on the full dataset by
+//! `bin/seed/tests.rs` (a seed order is one with a `DF-SEED-%` idempotency
+//! key, or a `DF-SEED-%` number for the pending ones): a rerun at the same
+//! `at` is a no-op; a later rerun replays every key for the buyer it was
+//! made for (a key's buyer derives from the absolute month or `(i, k)`
+//! alone), so nothing is bought twice; `points_balance ==
+//! SUM(point_ledger.delta)`, and each seed order's points match its ledger
+//! rows; no seeded timestamp is later than `at.now`, and an order's earn and
+//! redeem rows sit at its `paid_at`, its refund rows between `paid_at` and
+//! `at.now`; seed accounts predate every row that references them; each
+//! course line of a paid seed order has exactly one enrolment, cancelled
+//! exactly when the order is refunded; and a database an older seed wrote is
+//! refused before any write.
 
 use std::collections::HashMap;
 

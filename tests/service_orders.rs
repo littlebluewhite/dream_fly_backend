@@ -37,6 +37,7 @@ use dream_fly_backend::modules::orders::idempotency::IdempotencyKey;
 use dream_fly_backend::modules::orders::locks;
 use dream_fly_backend::modules::orders::model::OrderStatus;
 use dream_fly_backend::modules::orders::service;
+use dream_fly_backend::modules::points::dto::LedgerEntryResponse;
 use dream_fly_backend::modules::points::model::PointReason;
 use dream_fly_backend::modules::points::service as points_service;
 use dream_fly_backend::modules::products::model::{ProductType, quantity_range_msg};
@@ -2062,10 +2063,10 @@ async fn checkout_mixed_with_points(db: &PgPool, email: &str) -> (Uuid, OrderRes
     (user, order, limited)
 }
 
-/// How many `refund_restore` / `refund_clawback` rows `user`'s points ledger
-/// holds for `order_id`, read through the owner (`points::service::get_my_points`).
+/// The `refund_restore` / `refund_clawback` rows `user`'s points ledger holds
+/// for `order_id`, read through the owner (`points::service::get_my_points`).
 /// One page of 100 holds a test buyer's whole ledger.
-async fn refund_ledger_rows(db: &PgPool, user: Uuid, order_id: Uuid) -> usize {
+async fn refund_ledger_rows(db: &PgPool, user: Uuid, order_id: Uuid) -> Vec<LedgerEntryResponse> {
     let points = points_service::get_my_points(
         db,
         user,
@@ -2079,7 +2080,7 @@ async fn refund_ledger_rows(db: &PgPool, user: Uuid, order_id: Uuid) -> usize {
     .expect("get_my_points");
     points
         .ledger
-        .iter()
+        .into_iter()
         .filter(|entry| {
             entry.order_id == Some(order_id)
                 && matches!(
@@ -2087,7 +2088,7 @@ async fn refund_ledger_rows(db: &PgPool, user: Uuid, order_id: Uuid) -> usize {
                     PointReason::RefundRestore | PointReason::RefundClawback
                 )
         })
-        .count()
+        .collect()
 }
 
 /// The full-compensation assertion set shared by refund (row 1) and cancel
@@ -2136,39 +2137,23 @@ async fn assert_fully_compensated(
     );
 
     // Exactly one refund_restore (+redeemed) and one refund_clawback
-    // (-earned), both carrying the correct order_id.
-    let restore: (i64, Option<Uuid>) = sqlx::query_as(
-        "SELECT delta, order_id FROM point_ledger \
-         WHERE order_id = $1 AND reason = 'refund_restore'::point_reason",
-    )
-    .bind(order.id)
-    .fetch_one(db)
-    .await
-    .expect("one refund_restore row");
+    // (-earned) for this order, and no other refund row.
+    let rows = refund_ledger_rows(db, user, order.id).await;
+    let deltas = |reason: PointReason| -> Vec<i64> {
+        rows.iter()
+            .filter(|entry| entry.reason == reason)
+            .map(|entry| entry.delta)
+            .collect()
+    };
     assert_eq!(
-        restore.0, order.points_used,
-        "restore reverses the redeemed magnitude"
+        deltas(PointReason::RefundRestore),
+        [order.points_used],
+        "one restore, reversing the redeemed magnitude"
     );
-    assert_eq!(restore.1, Some(order.id));
-
-    let clawback: (i64, Option<Uuid>) = sqlx::query_as(
-        "SELECT delta, order_id FROM point_ledger \
-         WHERE order_id = $1 AND reason = 'refund_clawback'::point_reason",
-    )
-    .bind(order.id)
-    .fetch_one(db)
-    .await
-    .expect("one refund_clawback row");
     assert_eq!(
-        clawback.0, -order.points_earned,
-        "clawback reverses the earned magnitude"
-    );
-    assert_eq!(clawback.1, Some(order.id));
-
-    assert_eq!(
-        refund_ledger_rows(db, user, order.id).await,
-        2,
-        "exactly one restore + one clawback"
+        deltas(PointReason::RefundClawback),
+        [-order.points_earned],
+        "one clawback, reversing the earned magnitude"
     );
 }
 
@@ -2279,37 +2264,34 @@ async fn refund_clawback_insufficient_balance_conflicts_and_rolls_back_all(db: P
     }
 
     // WHOLE compensation rolled back.
-    let status: String = sqlx::query_scalar("SELECT status::text FROM orders WHERE id = $1")
-        .bind(order.id)
-        .fetch_one(&db)
+    let after = service::get_order(&db, order.id, &common::auth_for(&db, user).await)
         .await
-        .unwrap();
-    assert_eq!(status, "paid", "status untouched by the rolled-back refund");
+        .expect("get_order");
+    assert_eq!(
+        after.status,
+        OrderStatus::Paid,
+        "status untouched by the rolled-back refund"
+    );
     // Stock stays at its post-checkout value (5 - 1 = 4).
     assert_eq!(
         common::product_stock(&db, limited).await,
         Some(4),
         "stock untouched (still post-checkout value)"
     );
-    let active_enrolments: i64 =
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM enrolments WHERE order_id = $1 AND status = 'active'::enrolment_status",
-        )
-            .bind(order.id)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    assert_eq!(active_enrolments, 1, "enrolment stays active");
-    let active_subs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM subscriptions WHERE order_id = $1 AND status = 'active'::subscription_status",
-    )
-    .bind(order.id)
-    .fetch_one(&db)
-    .await
-    .unwrap();
-    assert_eq!(active_subs, 1, "subscription stays active");
+    assert_eq!(after.enrolments.len(), 1);
     assert_eq!(
-        refund_ledger_rows(&db, user, order.id).await,
+        after.enrolments[0].status,
+        EnrolmentStatus::Active,
+        "enrolment stays active"
+    );
+    assert_eq!(after.subscriptions.len(), 1);
+    assert_eq!(
+        after.subscriptions[0].status,
+        SubscriptionStatus::Active,
+        "subscription stays active"
+    );
+    assert_eq!(
+        refund_ledger_rows(&db, user, order.id).await.len(),
         0,
         "no refund ledger row survives the rollback"
     );
@@ -2346,7 +2328,7 @@ async fn refunded_same_status_noop_does_not_compensate_twice(db: PgPool) {
     assert_eq!(again.status, OrderStatus::Refunded);
 
     assert_eq!(
-        refund_ledger_rows(&db, user, order.id).await,
+        refund_ledger_rows(&db, user, order.id).await.len(),
         2,
         "no second compensation"
     );
@@ -2599,7 +2581,7 @@ async fn refund_after_member_self_cancel_still_succeeds(db: PgPool) {
         "full points reversal despite prior self-cancel"
     );
     assert_eq!(
-        refund_ledger_rows(&db, user, order.id).await,
+        refund_ledger_rows(&db, user, order.id).await.len(),
         2,
         "both directions reversed"
     );

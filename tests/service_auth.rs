@@ -1360,6 +1360,7 @@ async fn google_auth_rejects_inactive_account(db: PgPool) {
         .user
         .id;
 
+    // The flush reaches nothing: google_auth reads `is_active` from the users row, not a cache.
     common::deactivate_user(&db, &InMemoryAccessCache::new(), user_id).await;
 
     let snapshot = |db: &PgPool| {
