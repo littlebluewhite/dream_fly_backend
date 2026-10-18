@@ -1,3 +1,8 @@
+//! 路由限流:每 IP 的全域桶(`rate_limit:global:{ip}`,每 60 秒 300 次)與疊在
+//! 其上的 auth 桶(`rate_limit:auth:{ip}`,每 60 秒 10 次)。key、門檻、窗口
+//! 私有於此,`EphemeralStore` 只存計數。儲存故障一律 fail-closed:回 500
+//! `{"error":"internal server error"}`,不放行。
+
 use std::net::IpAddr;
 
 use axum::Json;

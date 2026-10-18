@@ -4,8 +4,9 @@
 //! [`health_check`] 同檔(比照 `utils::ephemeral`)。probe 只回答「Redis
 //! PING 得通嗎」與「開機時 Kafka producer 建成了嗎」;逾時、回應 body、狀
 //! 態碼全歸 [`health_check`]。DB 不是 seam:handler 直接對 `AppState::db`
-//! 跑 `SELECT 1`。整合測試換 `StaticHealthProbe`(`tests/common/mocks.rs`),
-//! 所以 HTTP 測試不需要 Redis。
+//! 跑 `SELECT 1`,所以「DB 故障 → 503」沒有測試。整合測試換
+//! `StaticHealthProbe`(`tests/common/mocks.rs`),所以 HTTP 測試不需要
+//! Redis。
 
 use std::time::Duration;
 

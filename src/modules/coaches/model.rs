@@ -15,6 +15,9 @@ pub struct Coach {
     pub certifications: Vec<String>,
     pub is_active: bool,
     pub display_order: i32,
+    /// 欄位級 `UNIQUE`(`coaches_slug_key`),大小寫敏感——不像 courses/
+    /// products/posts/venues 用 `LOWER(slug)` 唯一索引。coaches 沒有以 slug
+    /// 查找的端點(明細走 UUID),slug 只是展示欄位;已知落差。
     pub slug: Option<String>,
     pub photo_url: Option<String>,
     pub created_at: DateTime<Utc>,

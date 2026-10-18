@@ -6,6 +6,12 @@
 //! `refresh_token`/`logout` 只是一行轉呼叫(維持 handler→service 形狀,
 //! ADR-0005)。
 //!
+//! 簽發只有 `start` 一份:register、login、google_auth、refresh_token 四路都
+//! 經它。`end_all` 只有三個呼叫站:`rotate` 的重放與停用分支、
+//! `service::reset_password`、`access::deactivate_tx`(admin 停用帳號,
+//! `users::service::admin_update_user` 在欄位 update 的同一 tx 呼叫)。auth
+//! 之外要結束一個帳號的 session,一律經 `access::deactivate_tx`。
+//!
 //! 由本模組獨力維護的 invariant:
 //! - refresh token 進庫前必雜湊(`jwt::hash_token`,SHA-256——DB 外洩不直接
 //!   洩漏可用憑證);查找也一律以雜湊查,不以原字串查。
@@ -16,12 +22,13 @@
 //! - reuse detection:已 revoke 的 token 再次出現視為竊取重放,整族撤銷。
 //!   只有輪替與單一登出(`end`)會留下 revoked 列;整族撤銷(`end_all`)直接
 //!   刪列,之後舊 token 只得到一般 401,不會把使用者重新登入後的新 session
-//!   誤判為重放而連帶殺掉。
+//!   誤判為重放而連帶殺掉,也不會發出假的 `refresh_token_reuse` 告警。
 //! - 停用帳號(`!is_active`)在任何簽發路徑都拿不到 session(`start` 首行)。
 //! - 輪替先以 `FOR SHARE` 鎖 user 列再鎖 token 列(user-first,與停用、
 //!   `reset_password` 同序),進行中的停用會讓輪替等它 commit 再判斷。
-//! - retention:清理只刪過期列;輪替/登出留下的已 revoke 未過期列保留到過期,
-//!   reuse detection 才認得出重放(過期後由 JWT `exp` 先擋,只差 5 秒 leeway)。
+//! - retention:清理(`main` 每小時呼叫 `purge_expired`)只刪過期列;輪替/
+//!   登出留下的已 revoke 未過期列保留到過期,reuse detection 才認得出重放
+//!   (過期後由 JWT `exp` 先擋,只差 5 秒 leeway)。
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{PgConnection, PgPool};

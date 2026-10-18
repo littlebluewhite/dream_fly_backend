@@ -33,25 +33,6 @@ use std::path::Path;
 const PENDING: &[&str] = &[
 
     // R23-09: accounts, authorization, infrastructure
-    "教練範圍",
-    "課程教練所有權",
-    "授權閘門",
-    "Session 生命週期",
-    "憑證檢查",
-    "恆定成本",
-    "帳號存取",
-    "短期狀態",
-    "帳號誕生",
-    "Google 身分",
-    "健康探針",
-    "AppState 組裝",
-    "唯一鍵衝突映射",
-    "跨模組讀表",
-    "執行環境",
-    "事件派送",
-    "消費迴圈",
-    "Notification",
-    "Wire enum 值域",
 
     // R23-10: courses, sessions, leave, rental, reports, clock
     "留存",

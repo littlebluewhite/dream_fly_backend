@@ -195,7 +195,7 @@ pub async fn start_dispatcher(
 /// There is no terminal state: a row that keeps failing is retried forever,
 /// its backoff capped at [`MAX_RETRY_DELAY`], and every failure is logged at
 /// ERROR (ADR-0013). The outbox is the only copy of the event, so giving up
-/// would lose it.
+/// would lose it. Published rows are never cleaned up either.
 ///
 /// ## Ordering
 ///

@@ -9,6 +9,10 @@
 //! 洩漏「這個 key 被鎖了」,不洩漏「這個帳號存不存在」(不存在的 email 一
 //! 樣會被鎖進同一個計數器)。
 //!
+//! 計數規則:每條 401 分支各計一次失敗,只有兩條例外——停用帳號且密碼對
+//! (不計也不清)、email 已鎖(只讀計數,不查 DB、不驗證);成功清計數。
+//! `tests::verify_counts_each_401_branch_exactly_once` 逐情境釘住 store 呼叫。
+//!
 //! 查無帳號與只綁 Google 的帳號(無 `password_hash`)一律照跑一次 Argon2
 //! (`utils::password::verify_password`,`hash: None` 對假雜湊驗、恆回
 //! `Ok(false)`)——回應時間不再洩漏帳號是否存在(bug #1,1d 修正;此前
