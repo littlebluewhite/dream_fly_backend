@@ -176,6 +176,10 @@ pub struct OrderLine {
 /// `reserve_stock_tx` before this runs) is also `false` — the
 /// `.unwrap_or(false)` this replaces. Output preserves the cart's order,
 /// same "no sorting here" posture as `plan()`.
+///
+/// The derivation stays here. Having products hand back a reservation that
+/// carries the bit is worth reopening only when stock semantics change
+/// (held stock, for one).
 pub fn order_lines(cart: &PurchasableCart, reserved: &HashMap<Uuid, Product>) -> Vec<OrderLine> {
     cart.lines()
         .iter()

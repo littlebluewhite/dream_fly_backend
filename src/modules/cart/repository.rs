@@ -175,7 +175,10 @@ pub async fn find_checkout_targets_tx(
 /// Product and course lines are fetched via two independent queries rather
 /// than one `UNION`, because PostgreSQL rejects `FOR UPDATE`/`FOR SHARE` on
 /// any branch of a set operation ("FOR UPDATE is not allowed with
-/// UNION/INTERSECT/EXCEPT").
+/// UNION/INTERSECT/EXCEPT"). Each query inner-joins the line's target row
+/// and selects that one id with a NULL for the other, so every row decodes
+/// as a `LineTarget`: no decode error (500) can come before checkout's
+/// delisting 422.
 ///
 /// Returned lines are NOT filtered by `is_active` — every line the cart
 /// references comes back, active or not, with `is_active` riding along on
