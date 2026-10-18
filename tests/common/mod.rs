@@ -147,6 +147,18 @@ pub async fn auth_for(db: &PgPool, user_id: Uuid) -> AuthUser {
     }
 }
 
+/// Deactivate an account the way production does: `auth::access::deactivate_tx`
+/// (`is_active = false` and every session ended) in its own tx, then flush the
+/// returned `AccessDirty` on `cache`, the test's access cache.
+pub async fn deactivate_user(db: &PgPool, cache: &dyn access::AccessCache, user_id: Uuid) {
+    let mut tx = db.begin().await.expect("begin tx");
+    let dirty = access::deactivate_tx(&mut tx, user_id)
+        .await
+        .expect("deactivate user");
+    tx.commit().await.expect("commit deactivation");
+    dirty.flush(cache).await;
+}
+
 /// Seed a user directly in the DB and return its id. Every user is born a
 /// `member` (via `seed_member`'s owner, `create_account`, as in production);
 /// `extra` roles are granted on top.

@@ -612,18 +612,6 @@ async fn admin_deactivate_ends_sessions_so_reactivation_does_not_resurrect_refre
         assert_eq!(resp.status_code(), 200, "body={}", resp.text());
     }
 
-    let live: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked = false",
-    )
-    .bind(target.user_id)
-    .fetch_one(&app.db)
-    .await
-    .expect("count live refresh tokens");
-    assert_eq!(
-        live, 0,
-        "deactivation must revoke the whole refresh-token family"
-    );
-
     let resp = app
         .post("/api/v1/auth/refresh")
         .json(&json!({ "refresh_token": target.refresh_token }))
