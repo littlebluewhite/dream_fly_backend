@@ -26,6 +26,9 @@ Applies to assertions and setup the diff adds or changes. Older raw SQL is switc
 - [ ] **GLOSSARY diffs change only definitions and `_Avoid_`**: an edit to `GLOSSARY.md` adds or renames a term, or rewords its definition or `_Avoid_` line. Rules, protocols, function names and test names belong in the owner module's doc (ADR-0019); `tests/glossary.rs` checks each entry's shape.
 - [ ] **Rule changes land in the module doc**: a diff that changes a rule (an invariant, a lock order, an error precedence, a write path) updates the owner module's doc (`//!` or file header) in the same diff.
 
+## Cross-module tables
+- [ ] **Reads open, writes owned** (跨模組讀表): a module may SELECT or JOIN another module's table directly instead of going through that module's repository, but every write to the table goes through its owner. An open read does not license rebuilding a historical fact from another module's current rows: a value that must stay as it was is snapshotted when it is written (see 場次物化 in `GLOSSARY.md`).
+
 ## Domain safety
 - [ ] If domain logic changed, the relevant `docs/adr/` was checked and any conflict with an ADR invariant is surfaced; terms match `GLOSSARY.md`.
 - [ ] Endpoint path, auth, request, or response changes match `docs/api/integration-contract.md`, and a DTO change regenerated `bindings/`.

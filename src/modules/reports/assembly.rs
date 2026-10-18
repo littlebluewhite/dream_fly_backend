@@ -22,8 +22,7 @@
 //! shaping rule), and a section missing from one makes the compiler point at
 //! the other two. Do not fold them into one declaration with a macro or a
 //! shared type: that ties the query results to the wire shape, so the pure
-//! core could no longer change on its own. The 2026-10-03 architecture
-//! review ruled to keep the triplication; don't re-raise it.
+//! core could no longer change on its own.
 
 use super::dto::{
     AdminCoachReportRow, AdminCourseReportRow, AdminMembersSection, AdminReportResponse,

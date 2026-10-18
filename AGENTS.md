@@ -85,8 +85,8 @@ HTTP → CORS → Request ID → Tracing → Security headers → Rate Limit (Ep
 - Studio time: dates and times are studio-timezone wall-clock; convert with
   `src/utils/studio_clock.rs` (`today()`, `to_utc()` returns `None` on DST ambiguity,
   `has_started()`, `has_ended()`). Contract §3.18 裁決 2.
-- Rate limit (`src/middleware/rate_limit.rs`): global per-IP 300/min + auth bucket 10/min, both
-  fail-closed (500 when the store is down).
+- Rate limit: `src/middleware/rate_limit.rs`; buckets, limits and store-failure policy are in its
+  module doc.
 - Config: `config/default.toml` → `config/{APP_ENV}.toml` → env vars `APP__SECTION__KEY`.
 
 ### Kafka (optional, `APP__KAFKA__ENABLED=false` by default)

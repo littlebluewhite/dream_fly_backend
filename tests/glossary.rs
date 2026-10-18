@@ -9,9 +9,10 @@
 //! - the whole entry, term and `_Avoid_` included, has at most
 //!   `MAX_CODE_SPANS` code spans;
 //! - it has an `_Avoid_` line;
-//! - no word is a source path (`src/…`, `bin/…`, see `PATH_ROOTS`), a file
-//!   name (`FILE_EXTENSIONS`), a line number (`:120`, `L120`), a commit hash
-//!   or a round number (`R22`). ADR numbers are fine.
+//! - no word is a source path (`src/…`, `bin/…`, see `PATH_ROOTS`, or the
+//!   tail of a real path under `src/` or `tests/`, like `utils/password`), a
+//!   file name (`FILE_EXTENSIONS`), a line number (`:120`, `L120`), a commit
+//!   hash or a round number (`R22`, `R-22`). ADR numbers are fine.
 //!
 //! An entry starts at a line `**Term**:` and runs to the next one or to a
 //! heading; its name is the term up to its first `(`. Samples that must pass
@@ -23,6 +24,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
 
 /// Fewer entries than this means the parse broke (a format change would
 /// otherwise pass by finding nothing). Lower it only when terms are deleted.
@@ -158,11 +160,41 @@ fn ascii_words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !w.is_empty())
 }
 
+/// Every file and directory under `src/` and `tests/`, from the crate root,
+/// `.rs` dropped: `src/utils/password`.
+static SOURCE_PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    let mut dirs = vec![root.join("src"), root.join("tests")];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path.clone());
+            }
+            let rel = path.strip_prefix(root).unwrap().to_string_lossy();
+            out.push(rel.strip_suffix(".rs").unwrap_or(&rel).to_owned());
+        }
+    }
+    out
+});
+
+/// Whether `word` has a `/` and ends a real path under `src/` or `tests/`:
+/// `utils/password`, `orders/service`. Prose like `live/done` ends none.
+fn is_source_path(word: &str) -> bool {
+    let word = word.trim_end_matches('/');
+    word.contains('/')
+        && SOURCE_PATHS
+            .iter()
+            .any(|p| p.ends_with(&format!("/{word}")))
+}
+
 /// The kind of history or implementation detail `word` is, if any.
 fn word_problem(word: &str) -> Option<&'static str> {
     if word
         .split_once('/')
         .is_some_and(|(root, _)| PATH_ROOTS.contains(&root))
+        || is_source_path(word)
     {
         return Some("path");
     }
@@ -184,7 +216,11 @@ fn word_problem(word: &str) -> Option<&'static str> {
     if parts().any(is_commit_hash) {
         return Some("commit");
     }
-    if parts().any(|p| is_numbered(p, 'R')) {
+    // `R-22` splits into `R` and `22`.
+    let split_round = parts()
+        .zip(parts().skip(1))
+        .any(|(r, n)| r == "R" && is_digits(n));
+    if split_round || parts().any(|p| is_numbered(p, 'R')) {
         return Some("round");
     }
     None
@@ -192,8 +228,12 @@ fn word_problem(word: &str) -> Option<&'static str> {
 
 /// `prefix` followed by digits only: `L395`, `R22`.
 fn is_numbered(part: &str, prefix: char) -> bool {
-    part.strip_prefix(prefix)
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    part.strip_prefix(prefix).is_some_and(is_digits)
+}
+
+/// One or more ASCII digits and nothing else.
+fn is_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// 7 to 40 lowercase hex digits, mixing digits and letters: `d819e21`.
@@ -343,11 +383,11 @@ short.
 fn scanner_flags_paths_files_line_numbers_commits_and_rounds() {
     let sample = "\
 **Paths**:
-見 src/modules/orders/service.rs:64-74、bin/seed/dataset/ 與 dataset.rs,另見 GLOSSARY.md;L395 與 (:2140, :2287-2290);env/config/pool 與 {i:02} 不算。
+見 src/modules/orders/service.rs:64-74、bin/seed/dataset/、utils/password、orders/service 與 dataset.rs,另見 GLOSSARY.md;L395 與 (:2140, :2287-2290);env/config/pool 與 {i:02} 不算。
 _Avoid_: z
 
 **History**:
-回歸 d819e21(R22-09 修正),見R7輪;ADR-0010、12:30、points::service、20261016、deadbeef 都不算。
+回歸 d819e21(R22-09 修正),見R7輪與 R-22;ADR-0010、12:30、points::service、20261016、deadbeef 都不算。
 _Avoid_: w
 ";
     assert_eq!(
@@ -358,6 +398,8 @@ _Avoid_: w
                 vec![
                     "path src/modules/orders/service.rs:64-74".to_owned(),
                     "path bin/seed/dataset/".to_owned(),
+                    "path utils/password".to_owned(),
+                    "path orders/service".to_owned(),
                     "file dataset.rs".to_owned(),
                     "file GLOSSARY.md".to_owned(),
                     "line number L395".to_owned(),
@@ -371,6 +413,7 @@ _Avoid_: w
                     "commit d819e21".to_owned(),
                     "round R22-09".to_owned(),
                     "round R7".to_owned(),
+                    "round R-22".to_owned(),
                 ]
             ),
         ]
