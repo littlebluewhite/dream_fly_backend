@@ -51,7 +51,7 @@
 //! `orders::service::checkout` under its `Idempotency-Key` at
 //! `StudioNow { now: ts }`. Two sets of
 //! purchases are merged and bought in `ts` order: the monthly product
-//! orders (`DF-SEED-{YYYYMM}-{seq}`) and the 39 course purchases
+//! orders (`DF-SEED-{YYYYMM}-{seq}`) and the course purchases
 //! (`DF-SEED-ENR-{i:02}-{k}`) that make up the enrolment dataset — every seed
 //! enrolment is the one checkout makes for a bought course line, so every
 //! one has its order. Pricing, order lines, the paid-order record and its

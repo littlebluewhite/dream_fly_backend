@@ -69,7 +69,7 @@ _Avoid_: 加點、扣點(正負都是給點,方向由點數帳的 reason 決定)
 _Avoid_: 會員等級、membership level
 
 **Seed 資料集(Seed Dataset)**:
-dev 資料庫的種子資料:固定的開發帳號與目錄,加上 12 個月、可重現的報表資料集;冪等,重跑不重複寫入。只活在 seed 這個 bin,owner 是 `dataset::run`(ADR-0010)。
+dev 資料庫的種子資料:固定的開發帳號與目錄,加上 12 個月、可重現的報表資料集;冪等,重跑不重複寫入。只活在 seed 這個 bin,owner 是 `dataset`(ADR-0010)。
 _Avoid_: fixture(那是測試 harness 的佈局)、demo data、假資料
 
 **`run` 只做組合(Run Only Composes)**:
