@@ -147,6 +147,12 @@ impl Product {
     /// tracks stock at all (`stock: None` means unlimited) — `quantity`
     /// above `stock` → 409.
     ///
+    /// The inactive 400 differs on purpose from the public detail
+    /// endpoints' 404 (there a delisted product looks like a missing one) and
+    /// from checkout's delisting gate (422, whole cart, naming every line): a
+    /// signed-in buyer adding to the cart learns more from "not available"
+    /// than from a masking 404.
+    ///
     /// This is a cart-time check against a stock value that can move before
     /// checkout. The authoritative stock check is the atomic decrement at
     /// checkout (`repository::try_decrement_stock_tx`, via

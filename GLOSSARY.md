@@ -39,37 +39,24 @@ _Avoid_: 把某堂課下架當成把它從教練名下移除的手段(要移除�
 端加回 `is_active` 過濾去「修正」跟其他讀取端對不上的數字(七處本就該同口徑)。
 
 **訂單定價(Order Pricing)**:
-`orders::pricing::price → PricingOutcome`,純函式,交易編排留 checkout。`PricingOutcome::ledger_deltas(order_id) → Vec<LedgerDelta>` 是結帳點數帳的單一 owner:`checkout_redeem` 先、`checkout_earn` 後,幅度 0 的方向跳過;逐筆 `apply_delta_tx` 的那個迴圈在 checkout 本體(見「購買時刻」)。退款側的對稱件不在 orders:`points::model::OrderPointsFlow::reversal_deltas(order_id)`(`refund_restore` 先、`refund_clawback` 後,幅度 0 跳過),由 `points::service::reverse_order_tx` 套用(見「退款」)。請求端不需 DB 的檢查(付款方式值域 422、coupon trim、`use_points` 預設)由 `orders::service` 私有的 `parse_request → CheckoutIntent` 吸收;`price` 直接收 `BalanceLock` 鎖到的餘額,只在 `use_points` 時讀它。
+結帳的金額算術:小計、優惠碼折抵、點數折抵上限、應付總額與這張訂單賺的點數,是不碰資料庫的純函式。owner 是 `orders::pricing`。
+_Avoid_: 計價、報價、quote
 
 **購買時刻(Purchase Instant)**:
-checkout(`orders::service::checkout`)取樣的 `now`(業務時間,ADR-0017)就是這次購買的時刻:同一次結帳寫下的訂單列(`paid_at`/`created_at`)、訂單行(`created_at`)、結帳點數帳(`checkout_redeem`/`checkout_earn` 的 `created_at`)、報名(`enrolled_at`/`created_at`)與訂閱(`started_at`)全部蓋這一個值,由 `checkout_stamps_every_purchase_artifact_with_the_sampled_now`(`tests/service_orders.rs`)在 checkout 介面一次釘住。
-這條規則直接寫在 checkout 本體:`reserve_stock_tx` 之後依序 `repository::create_order`(`status='paid'`)→ `create_order_items` → `PricingOutcome::ledger_deltas` 逐筆 `apply_delta_tx`,再接報名(`enrol_batch_from_purchase_tx`)與訂閱授權(`grant_from_purchase_tx`)、清購物車(`clear_cart_tx`)、記冪等 key(`idempotency::record`);點數帳排在報名之前,動的是「訂單鎖協定」已鎖的 `users` 列,不增加鎖依賴。這些買家寫入全收 `locks.balance()`,寫在 witness 的 `user_id`——買家只有這一個來源(見「訂單鎖協定」)。
-checkout 是已付訂單列唯一的 runtime 寫入者;已付種子訂單也經 checkout 本身購買(見「Seed 資料集」)。
-`repository::create_order(tx, &NewOrder)` 是 `orders` 列唯一的寫入者(`id` 用 `gen_random_uuid()`,`updated_at` 一律 `NOW()`)。它與 `create_order_items` 維持 `pub`,因為 checkout 之外還有兩個呼叫端,兩者都不是購買:seed 的待付款對照單(`pending::insert_pending_orders`,`status: Pending`、`paid_at: None`)與測試 fixture `OrderSeed`(`insert_tx` = `create_order` + `create_order_items`,`insert` 是它包一個交易;報名、訂閱與點數測試用它造 FK 用的訂單)。
-這三步曾收在只有 checkout 一個呼叫端的淺 module「已付訂單落帳」(`orders::paid_order`),已併回 checkout(ADR-0010 Addendum 2026-10-15)。
-_Avoid_: 恢復 `record_paid_order_tx`(介面跟三步本體一樣大,唯一的直接測試得重演 checkout 的內部編排)、在 checkout 外寫已付訂單列(購買產物的時間會再次各寫各的;測試佈局的 `OrderSeed` 不在此限)
+一次結帳取樣的那一個業務時間;這次購買寫下的訂單、訂單行、點數帳、報名與訂閱都蓋這個時刻(ADR-0017)。owner 是 `orders::service::checkout`。
+_Avoid_: 下單時間、付款時間(結帳沒有另外的付款步驟,兩者都是購買時刻)
 
 **行計畫(Line Fulfilment)**:
-`orders::fulfilment::plan(&PurchasableCart) → FulfilmentPlan`,純函式(pricing 的姊妹),**不會失敗**(行目標在讀快照時已一次解碼成 `LineTarget`,見「結帳快照」),對 `LineTarget` 一處 exhaustive match(無 `_` arm——新變體 = 此處編譯錯誤)把結帳購物車切成商品行(`ProductFulfilment`:reserve 庫存 + grant 訂閱)與課程 id(enrol),取代 checkout 原本兩次互斥 `.filter(matches!)`。**排序不在此**:寫入保留序(write-reservation order;type-major、id-minor)歸鎖 witness 的 `in_lock_order`——商品 `products::service::ProductLocks`、課程 `courses::seats::CourseLocks`(由「訂單鎖協定」取得);`reserve_stock_tx`/`enrol_batch_from_purchase_tx` 收 witness、依它走訪,不再各自排序——plan() 只保留輸入序,不排序(一個 invariant 兩個 owner 比沒有 owner 更糟)。
-`orders::fulfilment::order_lines → Vec<OrderLine>` 是 `plan()` 的姊妹純函式:把同一份 `PurchasableCart`(連同 `reserve_stock_tx` 回傳的 `reserved` map)攤平成具名 `OrderLine`,`stock_decremented` 的推導規則(product 行且 `reserved[pid].stock.is_some()` 才算扣過;pid 不在 reserved、或 course 行,恆 false)單一歸戶於此,取代原本埋在 `service::checkout` 建構六元組的匿名 closure 裡、不可單測的判斷。
-`stock_decremented` 推導維持歸 fulfilment;只有庫存語意改變(如預留庫存)時才重開「products 回傳 Reservation」。
-_Avoid_: 分派/dispatch(那是動作,這裡指切出來的計畫結構)、鎖序/排序(不在此純函式,歸鎖 witness 的 `in_lock_order`)
+把可購買的購物車切成商品行(扣庫存、授予權益)與課程(報名)的計畫;只切不排序,也不會失敗。owner 是 `orders::fulfilment`。
+_Avoid_: 分派、dispatch(那是動作,這裡指切出來的計畫)、鎖序(排序歸鎖的 witness)
 
 **訂單鎖協定(Order Lock Protocol)**:
-`orders::locks::acquire_checkout_locks(tx, user_id) → CheckoutLocks` 是結帳寫入前所有列鎖的單一 owner,順序固定:`users`(`points::service::lock_balance_tx`,`FOR UPDATE`,無條件、最先)→ 讀購物車目標 id(`cart::service::find_checkout_targets_tx → CheckoutTargets`,不另上鎖)→ `products` 升序 `FOR NO KEY UPDATE`(`products::service::lock_products_tx → ProductLocks`)→ `courses` 升序 `FOR UPDATE`(`courses::seats::lock_courses_tx → CourseLocks`)。
-witness 住在各表 owner,`orders::locks` 只固定順序,依賴方向維持 orders → products/courses。
-`CheckoutLocks` 欄位私有、帶三個 witness;之後的寫入一律收 witness:`reserve_stock_tx` 收 `&ProductLocks`、`enrol_batch_from_purchase_tx` 收 `&CourseLocks`,都依 witness 的 `in_lock_order`(id 升序)走訪——多品項同時失敗時 409 點名最小 id;witness 外的 id → `AppError::Internal`(協定 bug,不是業務拒絕)。
-寫買家 `user_id` 欄的每一步都收 `&BalanceLock`(checkout 傳 `locks.balance()`),函式本體讀 `buyer.user_id()`:點數帳 `apply_delta_tx`、報名 `enrol_batch_from_purchase_tx(tx, &CourseLocks, &BalanceLock, …)`、訂閱 `grant_from_purchase_tx`、清購物車 `clear_cart_tx`、結帳冪等 `idempotency::replay_or`/`record`——「鎖 A 的買家、寫 B 的資料」編譯不過。repository 層照舊收裸 `user_id`(ADR-0005 seam);商品的 reserve/restore 寫的是商品列,不收(ADR-0007 Addendum 2026-10-16)。
-`lock_products_tx` 以 `SELECT * … FOR NO KEY UPDATE` 取鎖,`ProductLocks` 帶回鎖下讀到的列,`reserve_stock_tx` 據此在扣庫存前判斷品項數量(見「結帳快照」),不另讀、不多一把鎖。
-每把鎖一開始就取寫入需要的強度,之後不升級,同商品/同課程的兩個買家在鎖處排隊而非 SHARE→UPDATE 死鎖。
-讀購物車 id 不需鎖:`cart_items.user_id` FK 讓任何新增購物車行都要對 users 列取 `FOR KEY SHARE`,被第一步的 `FOR UPDATE` 擋到 commit(`checkout_locks_block_same_user_cart_insert_until_commit`);購物車只可能變少,快照(`find_cart_items_for_checkout_tx`,只剩 `FOR UPDATE OF ci`)必落在 witness 內。
-同買家論證在 `BalanceLock` doc、跨買家論證(「Cross-buyer dimension」anchor)在 `orders::locks` 模組 doc,散文權威 ADR-0007 決策 5 與其 Addendum。
-退款側是同一協定的另一半:`orders::locks::acquire_refund_locks(tx, &Order) → RefundLocks`(欄位私有,帶 `BalanceLock` + `RestockLocks`)——`users` 無條件最先 → 該單要回補的商品升序 `FOR NO KEY UPDATE`(`products::service::lock_restock_for_order_tx → RestockLocks`,讀 `order_items` 痕跡一次、決定要回補的行,再經 `lock_products_tx` 上鎖;witness 同時帶著 `ProductLocks` 與那份回補行,欄位私有、只有它能建);**不鎖課程**(退款不動座位數)。
-寫入同樣收 witness:`points::service::reverse_order_tx` 收 `&BalanceLock`、`products::service::restore_for_order_tx` 收 `&RestockLocks`——不再讀痕跡,「鎖了哪些商品」與「回補哪些行」是同一份決定,對不上的狀態建不出來——並依 `in_lock_order` 走訪。
-_Avoid_: 預鎖(pre-lock;那是協定之前散在 `cart::repository` 的做法)、在寫入端各自再排序一次(排序歸 witness)
+結帳與退款在第一筆寫入前取得所有列鎖的固定順序:買家的 users 列最先,再依 id 升序鎖要動的商品與課程;之後的寫入都要出示鎖的 witness(ADR-0007)。owner 是 `orders::locks`。
+_Avoid_: 預鎖、pre-lock、在寫入端各自再排序一次
 
 **營收狀態集(Revenue Statuses)**:
-謂詞 owner 是 `OrderStatus::is_revenue`(窮盡 match),`REVENUE_STATUSES` 是 SQL 綁定攣生面(products/reports 綁點不變),兩者由交叉測試錨定。
+計入營收的訂單狀態:paid、processing、completed。owner 是 `OrderStatus::is_revenue`,報表與售出件數的 SQL 綁同一集合。
+_Avoid_: 有效訂單、paid 訂單(處理中與已完成也計入)
 
 **留存(Retention)**:
 `GET /reports/admin` 的 `retention` 段——近 6 個 studio 月的出席 cohort:會員某月有 ≥1 筆 `present` 出勤記錄即該月「活躍」;首次活躍月計入 `new_count`,此後再活躍計入 `returning_count`;`rate` = 上月與本月活躍會員的交集人數 ÷ 上月活躍人數,上月為空集合時為 `null`(undefined,非 0)。量的是「有沒有回來上課」,與 `subscriptions` 的續買/續卡(entitlement 續期,見 ADR-0003)是不同概念。
@@ -93,17 +80,8 @@ seed 端的規則(`seed_rentals(db, at, venues: &[(Uuid, i64)], members) -> (usi
 _Avoid_: 把課程「座位(Seats)」詞條與此混為一談(不同產品線)、在 `bookings::occupancy` 之外(seed 與上述 fixture 這兩處記錄在案的 bypass 除外)寫 `bookings.status`、在 SQL 手寫 `status <> 'cancelled'` 或另一份狀態清單計佔位(一律經 `occupying_bookings`)、把佔用數重新落地成 `time_slots` 欄位
 
 **給點(Point Grant)**:
-`points::service::apply_delta_tx` 是「使用者點數餘額變動且同時落一列 `point_ledger`」的唯一路徑——`users.points_balance` 不接受業務端直寫(runtime 由此函式交易內的 UPDATE + INSERT 協定維護、seed 消費同一 owner:seed 的帳號誕生 `accounts::upsert_account` 只在**新建**列且 `points > 0` 時,於 INSERT 同一交易內先 `lock_balance_tx` 再以 `LedgerDelta::admin_adjust(points)` 開戶給點(時間 = 執行時刻 `now`),0 點不寫帳,既有列不再給點——即使餘額已被 app 動過,重跑也不補;24 位報表會員以 `points: 0` 誕生、不在此處直接授點——該會員的每筆種子購買(月度商品訂單與課程購買)都經 checkout 結帳,由 checkout 在購買時刻寫入 `orders::pricing::price` 算出的 `PricingOutcome::ledger_deltas`(即一列 `checkout_earn`,時間 = 訂單的 `paid_at`;幅度 0 的訂單跳過,`apply_delta_tx` 拒收零 delta),退款訂單經 `update_order_status` 的補償呼叫 `reverse_order_tx`(即一列 `refund_clawback`)沖銷——seed 是結帳與退款的呼叫者,不另抄算式,所有訂單買完後對**每一位**會員(不分新舊)各補一次 `admin_adjust(target − balance)`(開交易 → `lock_balance_tx` → `target − lock.balance()` → 套用 → commit)結清到點數級距目標(`member_points_target`,由「點數級距」的 `PointsTier` 推導)——結算不看「這位會員是不是這次新建」,因為 12 個月報表視窗每次執行都會往前滑一個月、對既有會員繼續寫 `checkout_earn`,若結算只做一次,既有會員的餘額會逐月被訂單推出級距;同月重跑時 `delta` 算出 0、不寫任何列,冪等照樣成立,同樣只經 `apply_delta_tx` 這條唯一路徑,只是 seed 端把呼叫拆成訂單迴圈內的自然賺點與迴圈後、每次執行都做一次的結算兩段。
-副作用:對 seed 會員手動 `UPDATE users SET points_balance...` 的開發用改動,下次跑 seed 會被結算蓋掉)。
-`apply_delta_tx` 現在收 `points::model::LedgerDelta` 而非裸 `(delta, reason, order_id)`——六個建構子與六個 `PointReason` 變體一對一同名,在型別層把「一個 reason ⇒ 固定正負號」(契約 §1.6)與「checkout/refund 類 reason 恆帶 `order_id`」(`uniq_point_ledger_refund_once` 依賴的前提,ADR-0007 決策 7)這兩條原本只能靠呼叫端自律的散文前提焊進建構子;`admin_adjust` 是唯一帶符號的逃生口,語意即「正負皆可的人工調整」,不是前五者遺漏的第六種固定符號。
-簽章是 `apply_delta_tx(tx, &BalanceLock, ld, now)`:呼叫端要先在同一交易內以 `lock_balance_tx` 鎖住 `users` 列、拿到 `BalanceLock`,才寫得了點數帳,帳落在 witness 的 `user_id`——忘了鎖就編譯不過,點數帳也不會在路徑中途才晚取 `users` 鎖(順序見「訂單鎖協定」)。checkout 傳 `locks.balance()`(checkout 其餘的買家寫入同款,見「訂單鎖協定」),`reverse_order_tx` 傳它收到的 witness,`try_spend_tx`/`adjust_points` 傳自己剛取的鎖。不存在的使用者是 `lock_balance_tx` 的 404;鎖下找不到列是 `AppError::Internal`(ADR-0007 Addendum 2026-10-15)。
-runtime 退款/取消補償進 `apply_delta_tx` 的唯一路徑是 `points::service::reverse_order_tx(tx, &BalanceLock, order_id, now)`——points 讀自己的 ledger 痕跡(`find_order_flow_sums_tx`)、套 `OrderPointsFlow::reversal_deltas`,orders 不再組 delta(seed 的退款訂單經 `update_order_status` 走同一條)。
-點數帳明細的順序與 `balance_after` 也歸這個 owner,不靠呼叫端的寫入順序(ADR-0018):`points::repository::find_ledger_by_user` 依 `(created_at DESC, id DESC)` 列出;`balance_after` 不落地(`point_ledger` 沒有這個欄位),以讀取當下的 `users.points_balance` 為錨、減去比它新的所有列的 `delta`,window 在分頁之前算。因此不論寫入順序與時刻,第 0 列 = 餘額、每一列 = 上一列的 `balance_after − delta`、翻頁接得上,由 `ledger_lists_a_chain_from_the_balance_whatever_the_write_order`(`tests/service_points.rs`)釘住。`insert_ledger_tx` 不收 `balance_after`;`apply_delta_tx` 回傳的仍是 UPDATE 後的餘額。
-fixtures 的 `set_points_balance`(`tests/common/fixtures.rs`)是記錄在案的測試 harness bypass——直寫 `points_balance` 略過 ledger,只用於測試佈局階段擺出起始餘額,不是業務路徑,不受此 owner 約束。
-此 bypass 曾有三處未經記錄的手抄孿生——`tests/http_users.rs`(×2)、`tests/service_users.rs`(×1)各自手寫同一句 `UPDATE users SET points_balance...`,未呼叫共用 fixture——現已全數收編改呼叫 `set_points_balance`。
-`fixtures::seed_point_ledger_entry` 是第二個記錄在案的測試 bypass:直寫 `point_ledger` 一列(不帶 `balance_after`,列出時由當下餘額推導——要明細期初為 0,就以 `set_points_balance` 擺出相符的餘額)、不動 `points_balance`,讓測試控制 `created_at` 排序與 `reason`/`order_id` 組合;`reason` 收 `PointReason`(直接 bind,不再以字串 `::point_reason` 轉型),但不經 `LedgerDelta` 建構子——正負號與 `order_id` 的組合由測試自行負責,正是它作為佈局捷徑的用途。
-記錄在案的 bypass 就這兩處(一寫餘額、一寫 ledger),都是測試佈局捷徑,不是業務路徑;先前「唯一 bypass 只有一處」的措辭漏算了後者。
-_Avoid_: 把 `set_points_balance` 當成業務可用的授點手段(它是測試專用的佈局捷徑)、把 `apply_delta_tx`「不 commit」誤讀成「不寫 ledger」(它一定寫 ledger,只是不 commit 交易,由呼叫端負責)、在呼叫端手寫 delta 負號或手傳 reason/order_id(繞過 `LedgerDelta` 建構子等於重新打開型別已經收斂掉的自由度)、在 `points::service` 內手造 `BalanceLock` 來寫點數帳(witness 只能來自 `lock_balance_tx`)、把 `balance_after` 落回 `point_ledger` 或在別的 SQL 另算一份(明細一律經 `find_ledger_by_user`)、為了讓明細串得起來而要求呼叫端依業務時間順序寫點數帳
+使用者點數餘額的每一次變動,連同記下它的那一列點數帳;沒有只動其中一邊的業務路徑。owner 是 `points::service`。
+_Avoid_: 加點、扣點(正負都是給點,方向由點數帳的 reason 決定)、直接改餘額
 
 **點數級距(Points Tier)**:
 會員依點數餘額分入的固定 4 級報表維度(regular、bronze、silver、gold),只用來分桶,不帶任何權益。owner 是 `points::model::PointsTier`。
@@ -251,14 +229,8 @@ _Avoid_: 把 `time_slots`(場租,見『場租(Venue Rental)』詞條)也稱作 s
 _Avoid_: 把 `bookings.status`(`BookingStatus`,`confirmed`/`cancelled`/`completed`/`no_show`,仍落地儲存的預約狀態機)與本詞條混為一談——兩者是不同表、不同語意的「狀態」。
 
 **退款(Refund)**:
-訂單從計入營收的狀態(`OrderStatus::is_revenue`——paid/processing/completed)轉往終態 cancelled 或 refunded 時的補償語意,`orders::service::update_order_status` 內的私有步驟 `compensate_order_artifacts_tx`,由純函式 `orders::refund::decide_transition(current, target) → TransitionDecision`(`NoOp` 同狀態冪等早退 / `Flip` / `FlipAndCompensate`,非法轉移 400)在 `FOR UPDATE` 讀到現況之後決定是否觸發——判「要不要補償」的謂詞 `compensation_required` 已是它的私有細節。**Cancelled 與 Refunded 是同一補償語意的兩個終態標籤,不是兩種不同的補償**。
-補償一律讀「結帳當下的痕跡」而非現況推測,且**每個痕跡由它的 owner 自己讀、自己撤銷**——`compensate_order_artifacts_tx` 是一張平鋪的 owner 呼叫清單,orders 不算任何撤銷量:`orders::locks::acquire_refund_locks`(見「訂單鎖協定」)→ `points::service::reverse_order_tx`(讀 `point_ledger` 的 `checkout_earn`/`checkout_redeem` 實錄 `points::model::OrderPointsFlow`,套 `OrderPointsFlow::reversal_deltas`:方向依序 `refund_restore` 先、`refund_clawback` 後,契約 §1.6,幅度 0 跳過)→ `products::service::restore_for_order_tx`(收 `&RestockLocks`;`order_items` 的 `products::model::OrderStockTrace` 在取鎖時由 `lock_restock_for_order_tx` 讀一次,只回補 `stock_decremented` 快照為 true 的行,restore 不再讀痕跡;快照的推導仍歸 fulfilment)→ `enrolments`/`subscriptions` 的 `cancel_by_order_tx`(依 `order_id` 整批取消;enrolments 同 tx 再把**這次真的翻轉的**報名的待審假單交給 `leave::service::cancel_pending_for_enrolments_tx` 取消,鎖序 enrolments → leave_requests(待審)→ subscriptions)。
-錯誤優先序:404 使用者 → 500 痕跡行解碼失敗(`LineTarget` 拒絕 `order_items_one_target` CHECK 不允許的形狀,取鎖時讀痕跡,今日不可達)→ 409 點數不足 → Internal 商品不存在。
-`orders::refund` 只剩 `decide_transition`。
-是**整單**語意:不論已核銷/使用多少,一律全額反轉,不按使用比例折算。
-餘額不足時整筆回滾(409「點數不足」),不 clamp——修復迴路是 admin 補點端點(`POST /points/adjustments`,§3.14)。
-十個決策點的完整論證見 ADR-0007。
-_Avoid_: 沖銷(那是點數反轉裡「收回已賺點數」單一方向的動作 `refund_clawback`,不是整套補償語意的統稱)、退貨(本系統無實體物流退貨流程,這裡指的是撤銷結帳建立的內部副作用——庫存/點數/entitlement,不涉及商品寄還)、刪單(`orders`/`order_items` 從不刪除,退款是狀態機轉移到終態,原始下單紀錄永久可查)
+把計入營收的訂單轉到 cancelled 或 refunded 時,整單撤銷結帳留下的點數、庫存、報名與訂閱;兩個終態是同一套補償的兩個標籤(ADR-0007)。owner 是 `orders::refund`。
+_Avoid_: 沖銷(那只是收回已賺點數的單一方向)、退貨(本系統沒有實體退貨流程)、刪單(訂單從不刪除)
 
 **對話配對(Conversation Pairing)**:
 `messages::pairing::resolve_pair → (member_id, coach_id)`,純函式(`orders::pricing`/`orders::fulfilment` 的姊妹),`POST /conversations` 的 member/coach 配對與自我拒斥純核 owner。自我拒斥在 `service::resolve_member_coach` 與純核各查一次——service 端先查、擋在 DB round trip 之前(自我請求必 422、不多打一次 DB),純核內重複同一檢查只是讓函式自洽,不是兩套優先序。雙角色(coach 且 member)caller 恆落 coach 側(分支順序:caller-is-coach 先判),故雙角色×雙角色的 A→B 與 B→A 是鏡像對(`(B,A)`/`(A,B)`)而非同一對;兩方向仍共享同一 conversation,由 DB 端無序 unique index(`LEAST`/`GREATEST`)保證,非本核職責。唯一 DB 依賴(`permissions_repository::find_role_names_by_user` 取對方角色)與 get-or-create/unique-violation race 收斂留在 `service`。
@@ -345,31 +317,16 @@ Kafka producer 不進 `AppState`:`main` 的區域變數,只給 outbox dispatcher
 _Avoid_: 在 `new` 之外手寫 `AppState { .. }` literal、為測試再開第二個 `TaskTracker`、把需要連線的 seam 放進 `Overrides`(那會讓它有「預設正式 adapter」而在測試裡偷偷連 Redis)。
 
 **上架可見性(Listing Visibility)**:
-`products`/`courses`/`venues`/`coaches` 四模組的公開明細端點統一收斂:owner 是各自 repository 的 scoped finder——`find_active_by_slug`/`find_active_by_id`(products、courses 兩者皆備;venues 僅 `find_active_by_slug`,因其明細端點本就 slug-only;coaches 僅 `find_active_by_id`,因其明細端點是 UUID-only),`is_active = true` 直接寫進 SQL WHERE,不是 fetch 後再濾——service 端(`get_by_slug`/`get_by_id`/`get_detail`)拿到 `None` 就地回 `NotFound`,已下架資源因此與不存在同形(契約用語見各端點的「已下架資源走公開明細一律 404」註記,含 coaches 的公開班表端點同一謂詞下沉)。公開列表端點(`find_all_active`)本已濾,這輪收斂補的是明細/班表側先前敞開的側門。
-Cart 加入購物車路徑刻意不重用這條謂詞:`cart::service::add_product_item`/`add_course_item` 走一般(未限定 active)的 `find_by_id`,改由 `Product::ensure_purchasable`(`products/model.rs`)回 400「product is not available」、課程行改由 `Course::ensure_purchasable`(`courses/model.rs`)回 400「course is not available」(候補加入 `waitlist::service::join_waitlist` 共用同一個)——課程行的數量規則(只能是 1,422)同在 `Course::ensure_line_quantity`;年齡規則將來若要在加入購物車/候補時檢查,也該放在 `Course` 這裡,不要散在 cart/waitlist service。
-已登入買家主動加入購物車時,「這項目目前不可購買」比對外瀏覽用的遮蔽性 404 更有用。
-結帳自己的下架 gate(甲案,見「結帳快照」詞條)是第三種形狀(422、整批、列名)。
-同一件事(下架)在三個操作站點各自對應不同狀態碼,是刻意分流,不是三套裁決漂移。
-教練自己(或 admin 代管視角)看到的課程/學員範圍不受這條謂詞影響——那是「教練範圍」的獨立語意,見該詞條與 ADR-0012。
-_Avoid_: 把 cart 的 400 或結帳的 422 誤認為上架可見性謂詞沒收乾淨的殘留破口——三者是刻意不同語意,不該收斂成同一種寫法。
+公開瀏覽只看得到上架中的商品、課程、場館與教練;已下架的明細與不存在一樣回 404。教練自己的範圍不受影響(ADR-0012)。owner 是各模組 repository 的 `find_active_by_*`。
+_Avoid_: 把購物車的 400 或結帳的 422 當成這條規則沒收乾淨(三處刻意分流)
 
 **結帳快照(Checkout Snapshot)**:
-`cart::repository::find_cart_items_for_checkout_tx` 刻意不再以 `is_active` 過濾結帳快照——下架行原樣隨隊回傳(`is_active` 欄位隨行攜帶),不再靜默消失。
-`orders::fulfilment::ensure_all_purchasable`(甲案)是把「消失」改回「具名拒絕」的唯一站點:在購物車為空的 400 檢查之後、優惠碼載入之前執行,收集快照裡每個 `!is_active` 行的名稱(維持快照原序,不排序),清單非空就整批 422(`以下項目已下架,請先自購物車移除再結帳:「A」、「B」`);清單為空才放行進 `pricing`/`fulfilment::plan`。
-刻意不比照本函式其他分支接 `TxReleased` 重播——品項下架不是併發結帳造成的(是獨立的 admin 側操作),沒有「贏的孿生交易」可重播。
-cart 側的 MUST 條款(呼叫端必須先跑過 `ensure_all_purchasable` 才能把這份快照視為可購買)單一 owner 是 `cart::repository::find_cart_items_for_checkout_tx` 的 doc comment,`cart::service` 同名轉手層不重複散文、只指回這裡。**解碼一次(decode-once)**:快照每行的目標是 `cart::model::LineTarget { Product(Uuid), Course(Uuid) }`——`item_type`/`product_id`/`course_id` 三欄 union(ADR-0002,DB 形狀不變)在列邊界由手寫 `FromRow` 解碼一次,只接受 `*_one_target` CHECK 允許的兩種形狀,其他一律 `sqlx::Error::Decode`;`CartItem`/`CartItemJoined`/`CheckoutLine`/`OrderLine`/`products::model::OrderStockTrace` 都以 `#[sqlx(flatten)] target` 攜帶它,下游沒有 `Option` id 可 unwrap、沒有「缺 product_id」分支。
-寫回時 `create_order_items` 綁 `target.item_type()`/`product_id()`/`course_id()`(seed 也呼叫它,不再自己重複綁一份),不再用 SQL `CASE` 從 id 反推 `item_type`。
-兩支快照查詢是 inner join,解碼不可能失敗,所以不會在 422 之前冒出 500。**`PurchasableCart`**:`orders::fulfilment::PurchasableCart`(欄位私有)是通過甲案 gate 的快照;`ensure_all_purchasable(Vec<CheckoutLine>) → Result<PurchasableCart>` 是唯一建構點(在優先序清單的位置不變),`pricing::price`、`fulfilment::plan`、`fulfilment::order_lines` 都只收 `&PurchasableCart`——「先跑 gate 才算可購買」由型別保證,不再只靠 doc 的 MUST 條款。**品項數量**:快照行的數量不是 gate 的一部分——每個商品行的合法數量(1–999 → 400、時間制方案非 1 → 422)由 `Product::ensure_line_quantity` 判斷,在 `pricing` 之後、`reserve_stock_tx` 第一筆扣庫存之前,對 `ProductLocks` 帶回的鎖定列依鎖序執行;購物車端已擋,結帳只會在規則上線前的舊列遇到。
-_Avoid_: 把這個 422 與空購物車的 400 混同(購物車非空、但全部品項下架時,回的是這個 422,不是「cart is empty」的 400)。
+結帳在交易內鎖住並讀出的購物車內容,已下架的行也照樣帶出,要通過下架檢查(整批 422)才算可購買。讀取歸 `cart::repository`,下架檢查歸 `orders::fulfilment`。
+_Avoid_: 把下架的 422 與空購物車的 400 混為一談(全部下架的購物車仍非空)
 
 **結帳冪等(Checkout Idempotency)**:
-帶 `Idempotency-Key` 的結帳以 **(user_id, key)** 為作用域去重:同一使用者同一把 key 的第二次結帳回原訂單(含 artifacts),不另建單;不同使用者用同一把 key 互不相干。
-`orders::idempotency` 是 `order_idempotency` 表的唯一 owner:`IdempotencyKey`(欄位私有,`from_headers` 讀 header、`parse` 驗值——trim 後 1–128 個 ASCII 可列印字元,否則 400「Idempotency-Key must be 1-128 ASCII printable characters」,契約 §1.7)是唯一建構點,讀寫表的查詢都是它的私有函式。
-`checkout` 只在**三個重播點**具名呼叫它,位置由 `checkout` doc 的結果優先序清單(唯一權威)決定:`replay`——優先序第 1 條,開交易前預查;`replay_or`——空購物車時,若同 key 孿生已 commit 就重播它,否則回 400「cart is empty」;`record`——在結帳 tx 內寫入 key,唯一鍵違例代表併發孿生已贏,重播它的訂單。
-`replay_or`/`record` 收 `&BalanceLock`,key 的 `user_id` 取自 witness(checkout 傳 `locks.balance()`);`replay` 在上鎖前就跑,照舊收裸 `user_id`。key 為 `None` 時三者都放行。**`TxReleased` 紀律**:重播經 `assemble_response` 走連線池,還握著結帳 tx 的站點必須先釋放——`replay_or`/`record` 以值收下 tx、在函式內 release,呼叫端沒有「忘記先 release」的寫法(見 `orders::tx_witness`)。
-`record` 把唯一鍵違例後「查無列」當 `Internal` 而非放行,依賴**「`order_idempotency` 沒有 DELETE 路徑」**這個前提(違例代表對方已 commit,而 commit 的列永不刪除);將來若加 DELETE,這條論證要重審。**下架 422 刻意不重播**:品項下架是獨立的 admin 側操作,不是併發結帳造成的,沒有贏的孿生可重播(見「結帳快照」)。**seed 是另一個帶 key 的呼叫者**:每筆種子購買以 `DF-SEED-{YYYYMM}-{seq}`(月度商品訂單)或 `DF-SEED-ENR-{i:02}-{k}`(課程購買)為 key 結帳,key 的買家只由絕對月份或 (i, k) 推導、跨次執行固定,重跑因此是同一 (user_id, key) 的重播、不另建單——這就是 seed 已付訂單(連同其報名)的冪等機制,也是它跨次執行的身分(訂單編號由 checkout 發,不是 seed 推導得出的值)。
-seed 的「種子購買時間線」在結帳前先以 `replay` 預查(為此改為 `pub`):重播的結帳不清購物車,先把行加進購物車再讓 checkout 重播,會留下殘行(見該詞條)。
-_Avoid_: 把冪等當成純核或併進 `plan_checkout`(它擁有一張表,查詢與寫入都有 IO;ADR-0007「不做 `plan_checkout`」的裁決不變)、以為 key 是全域唯一(作用域是 (user_id, key))、以為任何 4xx 都會觸發重播(只有空購物車與唯一鍵違例兩個 tx 內站點會重播)。
+帶 `Idempotency-Key` 的結帳以(使用者, key)為範圍去重:同一使用者重送同一把 key,拿回第一次那張訂單,不另建單。owner 是 `orders::idempotency`。
+_Avoid_: 全域唯一的 key(範圍是使用者加 key)、以為任何錯誤都會重播
 
 **帳號誕生(Account Birth)**:
 `auth::provisioning::create_account` 是「`INSERT users` + 指派 `member` 角色 + 排入 `user_registered` outbox 事件」三步驟的單一 owner。
@@ -406,11 +363,8 @@ _Avoid_: 把 `current_month_key` 塞回 `AdminReportInputs` 的欄位(那會讓�
 _Avoid_: 把報表區段(`kpis`/`revenue_breakdown`/…各 section)「只宣告一次」收斂掉——區段目前在三處各宣告一次:`AdminReportResponse`(wire 形狀,`dto.rs`)、`AdminReportInputs`(每個欄位是一個 repository 查詢結果)、`assemble_admin_report` 的組裝處(把輸入塑形成輸出)。三者各自是不同的東西(輸出契約/查詢結果/塑形規則),缺一個區段時編譯器會在另外兩處逼出錯誤,這份重複是刻意維持的;用巨集或共用型別把它壓成一處,會把「查詢結果」與「wire 形狀」綁死,讓純核無法獨立演進。2026-10-03 架構檢視提過、裁決維持現狀(Controller 裁決 10),未來檢視勿重提。
 
 **權益授予(Entitlement Grant)**:
-`subscriptions::entitlement::plan` 是 `grant_from_purchase_tx` 原本 inline 計算的四分支規則抽出的純核(zero IO、owned output,`orders::pricing`/`orders::fulfilment` 同一紀律)——決定「買 `quantity` 份 `product` 授予什麼」:非 entitlement 商品(非 membership/ticket)回 `None`;`session_count` 有設定 → 一列,`total_sessions = remaining_sessions = session_count × quantity`(`valid_days` 若也有設定則 `expires_at` 一併計);否則 `valid_days` 有設定 → 只設 `expires_at`;兩者皆無 → 無期無額的 unlimited 會籍。
-`plan()` **不可失敗**(回 `Option`):「時間制方案(`Product::is_time_based_entitlement`)數量必須是 1」是它的前置條件(`debug_assert!`),規則本身歸 `products::model::Product::ensure_line_quantity`——購物車加入/修改時對合併後/最終數量檢查(`ensure_purchasable`),結帳由 `reserve_stock_tx` 在第一筆扣庫存前依鎖序再檢查一次(422,優先於庫存/課程 409;ADR-0007 2026-10-03 Addendum)。
-`now` 是呼叫端取樣值(checkout 自己的 `now`,經 `grant_from_purchase_tx` 透傳),不在此讀 `Utc::now()`——四個分支的 `expires_at` 因此能在 `#[test]` 裡斷言精確到 `now + Duration::days(n)`,不必留 DB 往返造成的 ±1 天窗。
-此核從不碰 `subscription_derived_status`——那個 SQL function 仍是讀時到期/狀態推導的唯一 owner(ADR-0003 Addendum);`plan()` 只算寫入當下要授予什麼。
-_Avoid_: 把 `subscription_derived_status`(讀時狀態推導)與 `entitlement::plan`(寫時授予計算)當成互相取代的兩份邏輯——寫時決定授予什麼,讀時決定現在算不算 active,是同一個 ADR-0003 底下分工的兩側,不是重複。
+買會籍或票券時,在寫入當下算出買家得到什麼:堂數額度、到期日、兩者皆有,或無期無額;之後算不算有效另由讀時推導(ADR-0003)。owner 是 `subscriptions::entitlement`。
+_Avoid_: 開通、訂閱狀態(那是讀時推導,不是授予)
 
 **唯一鍵衝突映射(Unique-Conflict Mapping)**:
 `AppError::conflict_on_unique`/`conflict_on_constraint`/`conflict_on_exclusion`(`src/error/mod.rs`)是「DB 唯一/排他約束違例 → 409」翻譯的單一 owner——判斷真相是 constraint 本身(SQLSTATE `23505`/`23P01`,`conflict_on_constraint` 額外比對違反的具名約束),不是應用層預檢:先 `SELECT` 查是否已存在、查無再 `INSERT` 的預檢寫法已禁用(Phase 7 的 slug 衝突改吃 DB constraint,刪 SELECT 預檢——`courses`/`products`/`posts`/`venues` 四表皆同),因為預檢與寫入之間永遠有 TOCTOU 窗口,constraint 違例才是唯一不可能漏判的判準。十餘個模組共用同一組函式(email、coupon code、slug、教練班表時段重疊……),各自只傳自己的錯誤文案字串,映射邏輯不重複。

@@ -8,6 +8,18 @@
 //! `products::service::restore_for_order_tx` → `enrolments`/`subscriptions`
 //! 的 `cancel_by_order_tx`——每個 owner 讀自己的結帳痕跡、撤銷自己的副作用
 //! (ADR-0007 決策 8)。
+//!
+//! 退款(Refund)的語意:
+//! - Cancelled 與 Refunded 是同一套補償的兩個終態標籤,不是兩種補償。
+//! - **整單**:不論已核銷或使用多少,一律全額反轉,不按使用比例折算。
+//! - 點數不足時整筆回滾(409「點數不足」),不 clamp;修復迴路是 admin 補點
+//!   端點 `POST /points/adjustments`,補完再重送退款。
+//! - 訂單與訂單行從不刪除:退款是狀態機轉到終態,原始下單紀錄永久可查。
+//!
+//! 補償的錯誤優先序(依步驟先後,先發生者決定回應):404 使用者不存在(取鎖)
+//! → 500 結帳痕跡行解碼失敗(取鎖時讀一次 `order_items`,`LineTarget` 拒收
+//! CHECK 不允許的形狀;今日不可達)→ 409「點數不足」(點數反轉)→
+//! `AppError::Internal` 商品不存在(回補庫存)。
 
 use crate::error::AppError;
 
