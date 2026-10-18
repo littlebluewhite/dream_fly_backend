@@ -60,6 +60,11 @@ pub fn constraint_name(e: &sqlx::Error) -> Option<&str> {
 }
 
 impl AppError {
+    /// The `conflict_on_*` family is the one translation of a DB unique or
+    /// exclusion violation into 409. The constraint is the truth: never
+    /// pre-check with a `SELECT` before the write — the window between the
+    /// two lets a duplicate through (TOCTOU); the violation cannot miss.
+    ///
     /// Translates a unique-constraint violation into a `Conflict(msg)`.
     /// `e` is SQLSTATE 23505 (`unique_violation`) → `Conflict(msg)`;
     /// anything else → `Database(e)` (500, same as an unhandled error).

@@ -237,6 +237,10 @@ fn env_source() -> config::Environment {
 /// (`env_source()` above) — that's a config *source* that reads
 /// `APP__*`-prefixed process env vars into the config tree. This type is
 /// unrelated: it's just "which deployment tier is this process running as".
+///
+/// `is_development`/`is_production` stay two predicates on purpose:
+/// `AppConfig::load()` checks every non-development env (fail-closed),
+/// `validate_production_config` only production.
 pub struct AppEnv(String);
 
 impl AppEnv {

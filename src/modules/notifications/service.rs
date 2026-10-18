@@ -64,6 +64,11 @@ struct NotificationContent {
 /// before this type existed; what changed is that every call site now
 /// shares one uniform shape — domain write inside a transaction, commit,
 /// then `.deliver(db)`. No call site is exempt from that ordering.
+///
+/// Delivery is best-effort: a failed write is logged, never returned, so a
+/// notification never blocks or rolls back the action that triggered it
+/// (ADR-0009). Copy fields come from the row the domain write returned, not
+/// from a second read or from the request.
 #[must_use = "a PendingNotification performs no IO until `.deliver(db)` is awaited — deliver it after the writing transaction commits"]
 pub struct PendingNotification {
     user_id: Uuid,

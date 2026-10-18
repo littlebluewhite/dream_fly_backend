@@ -16,6 +16,9 @@ use crate::utils::google_oauth::{GoogleIdentityProvider, GoogleOAuthClient};
 use crate::utils::sms::SmsClient;
 use crate::utils::studio_clock::StudioNow;
 
+/// 不持有 Redis 連線或 Kafka producer:連線只活在 [`Infra`] 的 adapter 裡,
+/// producer 是 `main` 的區域變數,只給 outbox dispatcher 與
+/// [`Infra::redis`] 的 `kafka_connected` 旗標。
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -103,7 +106,9 @@ impl Infra {
     }
 }
 
-/// 建構時不做 IO 的 seam:`None` = 正式 adapter,`Some` = 測試替身。
+/// 建構時不做 IO 的 seam:`None` = 正式 adapter,`Some` = 測試替身。需要連線
+/// 的 seam 不放這裡:放進來就有了「`None` = 正式 adapter」的預設,測試會在不
+/// 知不覺間連上 Redis。
 #[derive(Default)]
 pub struct Overrides {
     pub email: Option<Arc<dyn EmailSender>>,

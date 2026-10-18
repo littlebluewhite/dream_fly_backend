@@ -56,6 +56,12 @@ pub async fn list_my_report_cards(
 /// §3.22) or admin (no restriction). Writes a "you got a new certificate"
 /// notification to the recipient after the insert (its title taken from the
 /// read projection row the insert returns).
+///
+/// The coach check is the coach–student relation gate ("taught this
+/// student"), kept inline here rather than in `coaches::service`: it has one
+/// caller, and a sibling helper for one caller is a shallow module
+/// (ADR-0005). Move it into `coaches` when a second "coach issues to own
+/// students" endpoint appears.
 pub async fn create_certificate(
     db: &PgPool,
     auth: &AuthUser,

@@ -14,6 +14,10 @@
 //! `GoogleIdentity`; `GoogleOAuthClient` does it for real (code exchange +
 //! JWKS signature verification). Callers never see the id_token or its
 //! claims — only the identity, built after every check has passed.
+//!
+//! Tests split along the same line: login rules run at the service layer
+//! against a fake provider, this adapter runs against `wiremock`, and HTTP
+//! tests keep only the route wiring.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

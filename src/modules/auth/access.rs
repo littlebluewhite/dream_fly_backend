@@ -3,6 +3,19 @@
 //! 經它回報([`AccessDirty`])。快取的 key 格式、TTL、空角色 sentinel、
 //! 快取錯誤一律當 miss(fail-open)全部私有於此,呼叫端看不到 Redis。
 //!
+//! 改變答案的寫入只有三支,各回 [`AccessDirty`]:
+//! `permissions::repository::assign_role`(唯一的 `user_roles` 寫入)、
+//! [`deactivate_tx`]、[`reactivate_tx`]。停用只走 [`deactivate_tx`]:在本模組之外直接
+//! `UPDATE users SET is_active`,session 不會結束,也不會產生 witness。
+//! `reset_password` 不 flush 是對的:它只換密碼並結束 session,`is_active`
+//! 與角色都沒變。[`AccessDirty::assume_uncached`] 只給列在本 tx 內剛建立
+//! 的站點(`provisioning::create_account`、測試 fixture)與 seed 的開發限定
+//! 例外。
+//!
+//! 簽發檢查不經 [`resolve`]:`credentials` 的 `judge`、`session::start` 首行、
+//! `session::rotate` 以 `FOR SHARE` 讀的 user 列都直讀 DB——簽發要的是當下
+//! committed 的真值與 user-first 鎖序,不是可以陳舊 60 秒的快取答案。
+//!
 //! 快取本身是 [`AccessCache`] seam:只存字串、回 `Result`,策略全在本模組。
 //! 正式環境是 [`RedisAccessCache`];整合測試換 in-memory adapter
 //! (`tests/common/mocks.rs`)。

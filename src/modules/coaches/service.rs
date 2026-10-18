@@ -41,10 +41,14 @@ pub async fn resolve(
     Ok(repository::find_by_user_id(db, auth.user_id).await?)
 }
 
-/// 教練範圍(CONTEXT「教練範圍」、ADR-0012):呼叫者名下**全部**課程 id,不論
-/// `is_active`。由 [`resolve_scope`] 一次解析,讀取端只收 `&CoachScope` 並綁
-/// `= ANY($n)`,不再各自重述 `coach_id = $1`。欄位私有:唯一建構點是
-/// `resolve_scope`。
+/// 教練範圍(ADR-0012):呼叫者名下**全部**課程 id——`courses.coach_id` 指向
+/// 該教練的課程,不論 `is_active`;範圍下的學員是這些課程有效報名去重後的
+/// 使用者。下架只影響上架可見性,不把課程移出教練名下(要移出得取消報名或
+/// 改派 `courses.coach_id`)。由 [`resolve_scope`] 一次解析,教練身分的讀取端
+/// 只收 `&CoachScope` 並綁 `= ANY($n)`,不各自重述 `coach_id = $1`,也不替
+/// 單一讀取端加回 `is_active` 過濾;各讀取端同一口徑由
+/// `coach_scope_includes_delisted_courses_on_every_surface` 釘住。欄位私有:
+/// 唯一建構點是 `resolve_scope`。
 pub struct CoachScope {
     course_ids: Vec<Uuid>,
 }
