@@ -100,8 +100,9 @@ HTTP → CORS → Request ID → Tracing → Security headers → Rate Limit (Ep
 ## Agent docs
 
 - **Reviewing a diff** — the checklist is the `coding-standards` skill (`.claude/skills/coding-standards/`).
-- **Domain work** — before exploring or changing a domain area, read `GLOSSARY.md` (glossary) and the
-  `docs/adr/` entries that touch it; how to use them: `docs/agents/domain.md`.
+- **Domain work** — before exploring or changing a domain area, take terms from `GLOSSARY.md`, rules
+  from the owner module's doc, and the why from the `docs/adr/` entries that touch it; the frontend's
+  agreement is `docs/api/integration-contract.md`. How to use them: `docs/agents/domain.md`.
 - **Issues and PRDs** — GitHub issues via `gh`: `docs/agents/issue-tracker.md`.
 - **Triage labels** — canonical names (`needs-triage`, `needs-info`, `ready-for-agent`,
   `ready-for-human`, `wontfix`): `docs/agents/triage-labels.md`.
