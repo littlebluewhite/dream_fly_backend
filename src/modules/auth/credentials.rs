@@ -195,7 +195,7 @@ mod tests {
     /// Pins that every 401 branch of `verify` counts exactly one failure —
     /// except the two branches that must not (a disabled account with the
     /// right password, and an already-locked email, neither of which may
-    /// touch the counter or clear it). See the phase-1 brief's table.
+    /// touch the counter or clear it). The rule is the module doc's 計數規則.
     /// Table-driven against one db: each scenario uses its own email so the
     /// failure counters can't bleed into each other. (Moved here from
     /// `service::tests` in the credentials extraction — same assertions,
