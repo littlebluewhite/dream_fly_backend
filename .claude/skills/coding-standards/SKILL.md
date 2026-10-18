@@ -22,6 +22,10 @@ Applies to assertions and setup the diff adds or changes. Older raw SQL is switc
 ## Guard tests
 - [ ] **Pinned allowlists**: an exemption entry in a scanner test (e.g. `UNMAPPED` in `tests/business_time.rs`) pins its expected hit count, so a new hit at the same site fails the test instead of riding the exemption.
 
+## GLOSSARY and module docs
+- [ ] **GLOSSARY diffs change only definitions and `_Avoid_`**: an edit to `GLOSSARY.md` adds or renames a term, or rewords its definition or `_Avoid_` line. Rules, protocols, function names and test names belong in the owner module's doc (ADR-0019); `tests/glossary.rs` checks each entry's shape.
+- [ ] **Rule changes land in the module doc**: a diff that changes a rule (an invariant, a lock order, an error precedence, a write path) updates the owner module's doc (`//!` or file header) in the same diff.
+
 ## Domain safety
 - [ ] If domain logic changed, the relevant `docs/adr/` was checked and any conflict with an ADR invariant is surfaced; terms match `GLOSSARY.md`.
 - [ ] Endpoint path, auth, request, or response changes match `docs/api/integration-contract.md`, and a DTO change regenerated `bindings/`.

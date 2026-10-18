@@ -18,22 +18,11 @@
 //! and must fail run alongside the real file, and `MIN_ENTRIES` keeps a parse
 //! that finds nothing from passing.
 //!
-//! `PENDING` is temporary: the entries not shortened yet, skipped by the
-//! checks. It is the only exemption. A listed entry that passes, or that the
-//! glossary no longer has, fails the test.
+//! There is no exemption list (ADR-0019): an entry that does not fit is
+//! split into terms, or its rules move to the owner module's doc.
 
 use std::fs;
 use std::path::Path;
-
-/// Entries not shortened yet, by name: one block per ticket, so the tickets
-/// can edit their blocks in parallel. Skipped by the checks; an entry here
-/// that already passes fails the test, so it leaves the list when it is
-/// shortened.
-#[rustfmt::skip]
-const PENDING: &[&str] = &[
-
-    // R23-09: accounts, authorization, infrastructure
-];
 
 /// Fewer entries than this means the parse broke (a format change would
 /// otherwise pass by finding nothing). Lower it only when terms are deleted.
@@ -49,7 +38,7 @@ fn glossary_entries_are_definitions() {
          at a line `**Term**:`",
         entries.len()
     );
-    let problems = glossary_problems(&entries, PENDING);
+    let problems = glossary_problems(&entries);
     assert!(
         problems.is_empty(),
         "GLOSSARY.md entries that are not definitions:\n{}\n\
@@ -215,27 +204,17 @@ fn is_commit_hash(part: &str) -> bool {
         && part.bytes().any(|b| b.is_ascii_alphabetic())
 }
 
-/// One line per entry that breaks a rule, then one per `pending` name
-/// that names no entry. A `pending` entry is not checked, but passing every
-/// check is a problem: it has been shortened and should leave the list.
-fn glossary_problems(entries: &[Entry], pending: &[&str]) -> Vec<String> {
+/// One line per entry that breaks a rule.
+fn glossary_problems(entries: &[Entry]) -> Vec<String> {
     let mut out = Vec::new();
     for entry in entries {
         let problems = entry_problems(entry);
-        let at = format!("  「{}」 line {}", entry.name, entry.line);
-        if pending.contains(&entry.name.as_str()) {
-            if problems.is_empty() {
-                out.push(format!("{at}: passes now, delete it from PENDING"));
-            }
-        } else if !problems.is_empty() {
-            out.push(format!("{at}: {}", problems.join("; ")));
-        }
-    }
-    for name in pending {
-        if !entries.iter().any(|e| e.name == *name) {
+        if !problems.is_empty() {
             out.push(format!(
-                "  PENDING lists 「{name}」, which GLOSSARY.md does not have: delete it or fix \
-                 the name"
+                "  「{}」 line {}: {}",
+                entry.name,
+                entry.line,
+                problems.join("; ")
             ));
         }
     }
@@ -399,16 +378,8 @@ _Avoid_: w
 }
 
 #[test]
-fn a_pending_entry_is_skipped_until_it_passes() {
+fn scanner_lists_every_failing_entry_by_name_and_line() {
     let sample = "\
-**未縮**:
-見 `a` `b` `c`。
-_Avoid_: x
-
-**已縮**:
-短定義。
-_Avoid_: y
-
 **Clean**:
 短。
 _Avoid_: z
@@ -416,13 +387,15 @@ _Avoid_: z
 **Dirty**:
 回歸 d819e21,`a` `b` `c`。
 _Avoid_: w
+
+**NoAvoid**:
+短。
 ";
     assert_eq!(
-        glossary_problems(&entries(sample), &["未縮", "已縮", "改名了"]),
+        glossary_problems(&entries(sample)),
         [
-            "  「已縮」 line 5: passes now, delete it from PENDING",
-            "  「Dirty」 line 13: 3 code spans > 2; commit d819e21",
-            "  PENDING lists 「改名了」, which GLOSSARY.md does not have: delete it or fix the name",
+            "  「Dirty」 line 5: 3 code spans > 2; commit d819e21",
+            "  「NoAvoid」 line 9: no _Avoid_ line",
         ]
     );
 }
